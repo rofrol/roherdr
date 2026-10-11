@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
+use super::agents::{
+    AgentAssignmentInfo, AgentInfo, AgentPromptRequest, AgentTurnEndReason, AgentVerdictWaitReason,
+};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::coordinators::{
     CoordinatorAllowlistMode, CoordinatorInfo, CoordinatorOverride, CoordinatorWouldDeny,
@@ -531,6 +533,22 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    /// `agent.verdict`: the assignment of a prompt and its verdict.
+    AgentAssignment {
+        assignment: AgentAssignmentInfo,
+    },
+    /// `agent.wait_verdict`: why the wait answered, with the assignment herdr keeps.
+    AgentVerdictWaitEnded {
+        request_id: String,
+        reason: AgentVerdictWaitReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignment: Option<AgentAssignmentInfo>,
+        /// What the agent asks, for `question`: its open question, else the dialog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -60,6 +60,10 @@ pub enum SupervisionPredicate {
     /// The file system of a coordinator's repository has less free space
     /// than the build guard's 15 GiB.
     DiskLow,
+    /// Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or
+    /// `WORKER-BLOCKED` line) and no `agent.wait_verdict` received it while none waits for
+    /// it: its waiter was never started, ended on something else, gave up or was killed.
+    VerdictUndelivered,
     #[serde(other)]
     Unknown,
 }

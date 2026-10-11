@@ -7,8 +7,8 @@
                                  a job that waits for a process you did not start; print job id
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
   herdr-job wait-agent PANE [--until STATE | [--request ID] [--until verdict]]
-                                 wait for an agent, its prompt's turn or a pane worker's verdict,
-                                 reconnecting inside one job
+                                 wait for an agent, its prompt's turn or a pane worker's verdict
+                                 (the one herdr recorded), reconnecting inside one job
   herdr-job wait-text FILE PATTERN [--from-start] [-F] [-i] [--pid PID]
                                  wait until text written to FILE matches PATTERN (no line splitting)
   herdr-job list                 show jobs and their state
@@ -2062,8 +2062,10 @@ AGENT_GONE_CODES = {"agent_not_found", "agent_not_running", "pane_not_found", "t
 # The server is restarting or not reachable yet: `server_unavailable` is a
 # live handoff ("server is shutting down") or a request the app could not take.
 # Not `protocol_mismatch`: that one does not pass by waiting.
-# `server_handed_off`: a live handoff ended the wait; the new server takes it again.
-TRANSPORT_CODES = {"server_not_running", "server_unavailable", "server_handed_off"}
+TRANSPORT_CODES = {"server_not_running", "server_unavailable"}
+# `server_handed_off`: a live handoff ended a wait, and the new server already accepts. It is
+# an answer, not a transport failure: the caller asks the new server at once.
+HANDED_OFF_CODE = "server_handed_off"
 # A read the server refuses while the agent works (`agent_not_idle`).
 AGENT_BUSY_CODES = {"agent_not_idle"}
 # The line a worker ends its final message with. `<sha>`/`<reason>`
@@ -2075,14 +2077,17 @@ EXIT_TRANSPORT_GAVE_UP = 5
 EXIT_AWAITING_INPUT = 6
 EXIT_NEEDS_ATTENTION = 7
 EXIT_TRACKING_LOST = 8
+EXIT_UNSUPPORTED = 9
 
 
 def agent_call(*args):
     """Runs a herdr agent command: ("ok", stdout), ("gone", message),
-    ("transport", message) for a lost connection, ("busy", message) for a
-    read refused while the agent works, or ("error", message). A command that
-    prints a result and still exits non-zero (`agent wait-turn` for a turn
-    that did not finish) is ("ok", stdout)."""
+    ("transport", message) for a lost connection, ("handed_off", message)
+    when a live handoff ended a wait, ("busy", message) for a read refused
+    while the agent works, or ("error", message), also for a command an older
+    herdr does not know. A command that prints a result and still exits
+    non-zero (`agent wait-turn` for a turn that did not finish) is ("ok",
+    stdout)."""
     try:
         out = subprocess.run([HERDR, *args], capture_output=True, text=True)
     except OSError as err:
@@ -2096,6 +2101,9 @@ def agent_call(*args):
         except (ValueError, TypeError):
             continue
     text = (out.stderr.strip() or out.stdout.strip())
+    if "herdr agent commands:" in text:
+        # An older herdr printed its usage: it does not know this command.
+        return "error", f"unknown command `herdr agent {args[1] if len(args) > 1 else ''}`"
     for line in reversed(text.splitlines()):
         try:
             code = json.loads(line)["error"]["code"]
@@ -2105,6 +2113,8 @@ def agent_call(*args):
             return "gone", line
         if code in AGENT_BUSY_CODES:
             return "busy", line
+        if code == HANDED_OFF_CODE:
+            return "handed_off", line
         return ("transport" if code in TRANSPORT_CODES else "error"), line
     # Not a server answer: the socket, an empty answer, a handoff in progress.
     return "transport", text or f"exit {out.returncode}"
@@ -2196,18 +2206,31 @@ def worker_verdict(agent):
     return EXIT_NEEDS_ATTENTION, f"turn finished without a WORKER line: {short(lines[-1], 300)}"
 
 
-def call_until_answered(say, *request):
+def call_until_answered(say, *request, handoff_answers=False):
     """One herdr call, repeated only while herdr does not answer (designed
-    backoff); returns (kind, text) of the first answer."""
+    backoff); returns (kind, text) of the first answer. A live handoff's
+    `server_handed_off` is an answer: the new server already accepts, so the
+    call goes to it at once, without a pause; with `handoff_answers` it is
+    returned instead (`("handed_off", text)`), for a wait whose cursor
+    belongs to the old server (`agent wait-change`), so the caller reads
+    everything again. Giving up says that herdr's supervisor reports a
+    verdict nothing received (`verdict_undelivered`)."""
     delay, failing_since = AGENT_RETRY_FIRST_S, None
     while True:
         kind, text = agent_call(*request)
+        if kind == "handed_off":
+            if handoff_answers:
+                return kind, text
+            say("the server handed off; asking the new server")
+            continue
         if kind != "transport":
             return kind, text
         now = time.monotonic()
         failing_since = failing_since or now
         if now - failing_since >= AGENT_GIVE_UP_S:
-            say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}")
+            say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}; "
+                "a verdict herdr records while nothing waits for it is a supervision finding "
+                "(verdict_undelivered, `herdr supervise --report`)")
             sys.exit(EXIT_TRANSPORT_GAVE_UP)
         say(f"herdr did not answer ({short(text, 120)}); retrying in {delay} s")
         time.sleep(delay)
@@ -2251,9 +2274,33 @@ def save_assignment(request, record):
         write_atomic(assignment_file(request), json.dumps(record, ensure_ascii=False))
 
 
+def absorbed_prompt(record):
+    """The prompt and the command id of a record in which Claude took in a
+    queued prompt mid-turn (it reports no turn start for it): the
+    `queue-operation` `remove` with the reason `absorbed_mid_turn`, then the
+    `queued_command` attachment carrying it. An `enqueue` does not count: the
+    agent has not taken the prompt yet. None for any other record."""
+    if record.get("type") == "queue-operation":
+        if record.get("operation") != "remove" or record.get("reason") != "absorbed_mid_turn":
+            return None
+        prompt, command = record.get("content"), record.get("commandUuid")
+    elif record.get("type") == "attachment" and isinstance(record.get("attachment"), dict) \
+            and record["attachment"].get("type") == "queued_command":
+        prompt, command = record["attachment"].get("prompt"), record["attachment"].get("source_uuid")
+    else:
+        return None
+    if isinstance(prompt, list):
+        prompt = "\n".join(part.get("text", "") for part in prompt
+                           if isinstance(part, dict) and part.get("type") == "text")
+    return (prompt, command) if isinstance(prompt, str) else None
+
+
 def transcript_records(path):
     """The main session's records of a JSONL transcript (subagents' skipped):
-    (role, texts, calls_tool) per record, where texts are its text parts."""
+    (role, texts, calls_tool) per record, where texts are its text parts. A
+    prompt Claude took in mid-turn (`absorbed_prompt`) is a user record
+    carrying it, once per command."""
+    absorbed = set()
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
@@ -2261,6 +2308,12 @@ def transcript_records(path):
             except ValueError:
                 continue
             if not isinstance(record, dict) or record.get("isSidechain"):
+                continue
+            if taken := absorbed_prompt(record):
+                prompt, command = taken
+                if command is None or command not in absorbed:
+                    absorbed.add(command)
+                    yield "user", [prompt], False
                 continue
             message = record.get("message")
             if not isinstance(message, dict):
@@ -2332,12 +2385,26 @@ def verdict_exit(say, match, agent):
     sys.exit(EXIT_VERDICT_DONE)
 
 
+def unsupported_exit(say, request, result):
+    """Ends a wait on a prompt request herdr reports `unsupported` (the agent's
+    integration has not reported its turns yet), at once and with its own code,
+    since herdr cannot say when that request's turn or verdict comes."""
+    reason = (result.get("prompt_request") or {}).get("error") or "the agent does not report its turns"
+    say(f"herdr cannot follow request {request} yet: {short(reason, 300)}. Wait for the worker's turn end "
+        f"instead (`herdr-job wait-agent PANE --until verdict` without --request), then prompt it")
+    sys.exit(EXIT_UNSUPPORTED)
+
+
 def resolve_assignment(say, args):
     """The assignment's pane and prompt text: from herdr while it follows the
-    request (recorded for later), else from the record of an earlier wait."""
+    request (recorded for later), else from the record of an earlier wait;
+    None when neither knows it. A request herdr reports `unsupported` ends
+    the wait at once (`unsupported_exit`)."""
     kind, text = call_until_answered(say, "agent", "prompt-status", args.request)
     if kind == "ok":
         result = last_result(text)
+        if (result.get("prompt_request") or {}).get("state") == "unsupported":
+            unsupported_exit(say, args.request, result)
         prompt = result.get("text")
         if not prompt:
             say("herdr does not report the prompt's text (an older herdr?); cannot scope the verdict")
@@ -2349,29 +2416,74 @@ def resolve_assignment(say, args):
         return record
     record = load_assignment(args.request)
     if record:
-        say(f"herdr no longer follows request {args.request} (did it restart?); going on from the transcript")
+        say(f"herdr no longer follows request {args.request} (did it restart?); going on from the recorded assignment")
         return record
     if "prompt_request_not_found" in text:
-        say(f"herdr does not know request {args.request} and no earlier wait recorded it; "
-            "waiting for the pane's next turn end with a WORKER line instead")
+        say(f"herdr does not follow request {args.request} and no earlier wait recorded it")
         return None
     say(f"reading request {args.request} failed: {short(text, 200)}")
     sys.exit(2)
 
 
+def recorded_verdict(say, args, record):
+    """Waits with `herdr agent wait-verdict`: herdr records each assignment's
+    verdict itself at the worker's turn end, keeps it across restarts and live
+    handoffs, and answers at once with one recorded before the wait (also when
+    an earlier waiter was killed); the command follows a live handoff. Exits
+    with the verdict, a question or the agent's exit. Returns when this herdr
+    does not record verdicts (an older one) or keeps no assignment for the
+    request, so the transcript is read instead."""
+    say(f"waiting for the verdict herdr records for prompt request {args.request}")
+    kind, text = call_until_answered(say, "agent", "wait-verdict", args.request)
+    if kind == "gone":
+        say(f"the agent exited without a verdict: {short(text, 200)}")
+        sys.exit(EXIT_VERDICT_AGENT_EXITED)
+    if kind != "ok":
+        if "agent.wait_verdict" in text or "unknown command" in text:
+            say("this herdr does not record verdicts (an older one); reading the transcript instead")
+            return
+        say(f"waiting for the verdict failed: {short(text, 200)}")
+        sys.exit(2)
+    result = last_result(text)
+    reason = result.get("reason")
+    if reason == "unknown_request":
+        say(f"herdr keeps no assignment {args.request}; reading the transcript instead")
+        return
+    if reason == "question":
+        say(f"the worker asks: {short(result.get('question') or 'a dialog (read the pane)', 300)}")
+        sys.exit(EXIT_VERDICT_QUESTION)
+    if reason == "exited":
+        say("the agent exited without a verdict")
+        sys.exit(EXIT_VERDICT_AGENT_EXITED)
+    verdict = (result.get("assignment") or {}).get("verdict") or {}
+    match = WORKER_LINE.match(verdict.get("line") or "")
+    if reason != "verdict" or not match:
+        say(f"herdr answered something this wait does not know: {short(text.strip(), 200)}")
+        sys.exit(2)
+    pane = result.get("pane_id") or (record or {}).get("pane") or args.pane
+    kind, text = call_until_answered(say, "agent", "get", pane)
+    agent = (last_result(text).get("agent") or {}) if kind == "ok" else {}
+    verdict_exit(say, match, {"cwd": agent.get("foreground_cwd") or agent.get("cwd")
+                              or (record or {}).get("cwd")})
+
+
 def wait_for_verdict(say, args):
     """Waits until the assignment of prompt request `args.request` produced a
-    WORKER-DONE/WORKER-BLOCKED line or the worker asks something. Each round
-    reads the agent, then its transcript, then waits for the agent's next
-    state change after the `state_change_seq` it read (`agent wait-change`,
-    an event, no timer), so a change between the read and the wait is never
-    missed and a verdict already written ends the wait at once. When herdr
-    restarts or hands off, the next round reads everything again."""
+    WORKER-DONE/WORKER-BLOCKED line or the worker asks something: first
+    through the verdict herdr records (`recorded_verdict`), else from the
+    worker's transcript. Each round of the transcript reads the agent, then
+    its transcript, then waits for the agent's next state change after the
+    `state_change_seq` it read (`agent wait-change`, an event, no timer), so
+    a change between the read and the wait is never missed and a verdict
+    already written ends the wait at once. When herdr hands off, the round
+    reads everything again at once; when it restarts, once it answers."""
     record = resolve_assignment(say, args) if args.request else None
+    if args.request:
+        recorded_verdict(say, args, record)
     if record is None:
         wait_for_pane_verdict(say, args.pane)
     pane = record["pane"]
-    say(f"waiting for the verdict of prompt request {args.request}")
+    say(f"waiting for the verdict of prompt request {args.request} in the transcript")
     while True:
         kind, text = call_until_answered(say, "agent", "get", pane)
         if kind == "gone":
@@ -2398,11 +2510,22 @@ def wait_for_verdict(say, args):
         if agent.get("agent_status") == "blocked" or agent.get("awaiting_reply"):
             say(f"the worker asks: {short(agent.get('question') or 'a dialog (read the pane)', 300)}")
             sys.exit(EXIT_VERDICT_QUESTION)
-        seq = str(agent.get("state_change_seq", 0))
-        kind, text = call_until_answered(say, "agent", "wait-change", pane, "--after", seq)
-        if kind not in ("ok", "gone"):
-            say(f"waiting for the agent failed: {short(text, 200)}")
-            sys.exit(2)
+        wait_for_change(say, pane, agent)
+
+
+def wait_for_change(say, pane, agent):
+    """Waits for the agent's next state change after the `state_change_seq`
+    in `agent` (`agent wait-change`). A live handoff answers it at once; the
+    sequence belongs to the old server, so the caller reads everything again
+    then, never waits again with the old one."""
+    seq = str(agent.get("state_change_seq", 0))
+    kind, text = call_until_answered(say, "agent", "wait-change", pane, "--after", seq,
+                                     handoff_answers=True)
+    if kind == "handed_off":
+        say("the server handed off; reading everything again from the new server")
+    elif kind not in ("ok", "gone"):
+        say(f"waiting for the agent failed: {short(text, 200)}")
+        sys.exit(2)
 
 
 def wait_for_pane_verdict(say, pane):
@@ -2444,11 +2567,7 @@ def wait_for_pane_verdict(say, pane):
         if agent.get("agent_status") == "blocked" or agent.get("awaiting_reply"):
             say(f"the worker asks: {short(agent.get('question') or 'a dialog (read the pane)', 300)}")
             sys.exit(EXIT_VERDICT_QUESTION)
-        seq = str(agent.get("state_change_seq", 0))
-        kind, text = call_until_answered(say, "agent", "wait-change", pane, "--after", seq)
-        if kind not in ("ok", "gone"):
-            say(f"waiting for the agent failed: {short(text, 200)}")
-            sys.exit(2)
+        wait_for_change(say, pane, agent)
 
 
 def worker_tab(pane):
@@ -2486,6 +2605,9 @@ def cmd_wait_agent(args):
 def wait_for_agent(args):
     say = lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True)
     if args.request:
+        kind, text = call_until_answered(say, "agent", "prompt-status", args.request)
+        if kind == "ok" and (last_result(text).get("prompt_request") or {}).get("state") == "unsupported":
+            unsupported_exit(say, args.request, last_result(text))
         say(f"waiting for the turn of prompt request {args.request}")
         kind, text = call_until_answered(say, "agent", "wait-turn", args.request)
     else:
@@ -2664,8 +2786,12 @@ def main():
                     "something (a question or a dialog); 7: needs attention (the turn failed, was "
                     "interrupted, finished without a WORKER line, or WORKER-DONE names no commit); "
                     "8: herdr lost track of the request (not with --until verdict, which then waits "
-                    "for the pane's next turn end with a WORKER line); 2: another error. With --until "
-                    "verdict nothing but a WORKER line, a question or the agent's exit ends the wait.")
+                    "for the pane's next turn end with a WORKER line); 9: herdr reports the request "
+                    "`unsupported` (the agent's integration has not reported its turns), so it cannot "
+                    "follow it: wait for the worker's turn end instead, then prompt it; 2: another "
+                    "error. With --until verdict nothing but a WORKER line, a question or the agent's "
+                    "exit ends the wait; herdr records the verdict itself at the worker's turn end, so "
+                    "a verdict recorded before the wait, also before a live handoff, ends it at once.")
     wait_agent.add_argument("pane")
     wait_agent.add_argument("--until", action="append", default=[],
                             choices=["idle", "working", "blocked", "done", "unknown", "verdict"],

@@ -58,6 +58,9 @@ pub struct PromptTurns {
     /// The agent label (`claude`, `pi`) whose integration reported turns in this terminal.
     reporting_agent: Option<String>,
     requests: VecDeque<PromptRequest>,
+    /// The transcript the agent's integration reported with its session, where its
+    /// assignments' verdicts are read (`crate::assignments`).
+    transcript: Option<String>,
 }
 
 impl PromptTurns {
@@ -93,6 +96,32 @@ impl PromptTurns {
                 "{agent} has not reported a turn or a session with turn reports in this pane yet (its integration may be missing or older, or it started behind a dialog such as the folder-trust prompt); herdr follows this request once its integration reports the turn"
             ),
         })
+    }
+
+    /// The transcript the agent's integration reported with its session.
+    pub fn transcript(&self) -> Option<&str> {
+        self.transcript.as_deref()
+    }
+
+    pub fn set_transcript(&mut self, path: Option<String>) {
+        if path.is_some() {
+            self.transcript = path;
+        }
+    }
+
+    /// The agent took an accepted request in while a turn worked (Claude writes it as a
+    /// `queued_command` and reports no turn start for it): that turn now works on it, and its
+    /// end ends the request. Returns whether the request changed.
+    pub fn absorbed(&mut self, id: &str) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .find(|request| request.id == id && request.state == PromptTurnState::Accepted)
+        else {
+            return false;
+        };
+        request.state = PromptTurnState::Working;
+        true
     }
 
     /// Starts following a prompt herdr is about to type.
@@ -247,6 +276,19 @@ mod tests {
         assert!(!turns.supported_for(Some("codex")));
         assert!(!turns.supported_for(None));
         assert!(!PromptTurns::default().supported_for(Some("claude")));
+    }
+
+    #[test]
+    fn a_request_taken_in_mid_turn_ends_with_that_turn() {
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "first item");
+        assert!(turns.turn_started(Some("first item"), false));
+        turns.accept("p2".into(), "second item");
+        assert!(turns.absorbed("p2"));
+        assert!(!turns.absorbed("p2"));
+        assert!(turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
+        assert_eq!(turns.state_of("p2"), Some(PromptTurnState::Finished));
     }
 
     #[test]

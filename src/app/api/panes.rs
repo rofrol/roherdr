@@ -1610,10 +1610,16 @@ impl App {
         if let Err(message) = validate_optional_resume_argv(params.resume_argv.as_deref()) {
             return encode_error(id, "invalid_resume_argv", message);
         }
-        if params.turn_reports {
-            if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
+        if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
+            if params.turn_reports {
                 terminal.prompt_turns.mark_reporting(&agent_label);
             }
+            // Where the verdicts of the prompts herdr types into it are read.
+            let transcript = params
+                .agent_session_path
+                .clone()
+                .filter(|path| crate::agent_resume::AgentSessionRef::path(path.clone()).is_some());
+            terminal.prompt_turns.set_transcript(transcript);
         }
         let report_is_newer = self
             .pane_terminal(ws_idx, pane_id)
@@ -1673,7 +1679,7 @@ impl App {
         })
     }
 
-    fn pane_terminal_mut(
+    pub(super) fn pane_terminal_mut(
         &mut self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
@@ -1706,6 +1712,13 @@ impl App {
         };
         terminal.prompt_turns.mark_reporting(&agent_label);
         let finished = params.phase == crate::api::schema::AgentTurnPhase::Finished;
+        // The verdicts this turn end brings, read before the end finishes the requests, so a
+        // prompt the agent took in mid-turn ends with it.
+        let verdicts =
+            finished && params.error.is_none() && self.record_turn_end_verdicts(ws_idx, pane_id);
+        let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
         // A turn the user started (not a continuation, not a prompt sent through the API) is
         // the user's reply: it answers the open questions.
         let answered = params.phase == crate::api::schema::AgentTurnPhase::Started
@@ -1713,6 +1726,7 @@ impl App {
             && terminal.turn_started_by_user()
             && terminal.answer_awaiting_reply();
         let mut changed = answered
+            | verdicts
             | match params.phase {
                 crate::api::schema::AgentTurnPhase::Started => terminal
                     .prompt_turns

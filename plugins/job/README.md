@@ -168,24 +168,38 @@ herdr-job wait "$id"
 - `wait-agent <pane> --request <id> --until verdict` ends only when that
   assignment produced its verdict or the worker asks something, never on a
   pane state or a bare turn end: a worker that ends its turn while its own
-  background job runs is still working. The assignment is the prompt of that
-  request: herdr reports its text (`herdr agent prompt-status`), and the
-  verdict is the last `WORKER-DONE <sha>` or `WORKER-BLOCKED <reason>` line
-  of an assistant text after the user message carrying that prompt, where
-  the text ended its turn (no tool call followed it), so an earlier
-  assignment's verdict never counts. Each round reads the agent and its
+  background job runs is still working. Herdr registers the assignment when
+  it accepts the prompt (anchored at the end of the worker's transcript
+  then) and records its verdict itself when the worker reports a turn end
+  (Claude's `Stop`), once, with the time; the record is kept on disk, so it
+  survives the waiter, a herdr restart and a live handoff. The wait first
+  asks herdr for it (`herdr agent wait-verdict <id>`, which follows a live
+  handoff): a verdict recorded before the wait, also while no waiter ran,
+  ends it at once. Only an older herdr, or one that keeps no assignment for
+  the request, makes it read the transcript itself: the verdict is the last
+  `WORKER-DONE <sha>` or `WORKER-BLOCKED <reason>` line of an assistant
+  text after the record that starts the assignment, where the text ended
+  its turn (no tool call followed it), so an earlier assignment's verdict
+  never counts. The start is the user message carrying the prompt, or, for
+  a prompt Claude took in while it worked, the `queued_command` attachment
+  carrying it (with its `queue-operation` record, counted once); an
+  `enqueue` does not start it. Each round reads the agent and its
   transcript, then waits for the agent's next state change after the
   `state_change_seq` it read (`herdr agent wait-change`, an event, no
   timer): a verdict already written ends the wait at once, and a change
-  between the read and the wait is never missed. Exit 0: `WORKER-DONE` with
-  a commit that exists in the worker's checkout; 4: `WORKER-BLOCKED`; 6: the
-  worker asks (a dialog, or a turn that ended with a question); 3: the agent
-  exited without a verdict; 7: `WORKER-DONE` names no commit. It records the
-  assignment under `~/.local/state/herdr-job/assignments/`, so after a herdr
-  restart or live handoff, which forget the request, it reads the transcript
-  again and goes on. For a request herdr does not know that no earlier wait
-  recorded (an `unsupported` prompt herdr typed before the agent reported
-  its turns, on an older herdr), it says so and waits as below instead.
+  between the read and the wait is never missed. A live handoff answers
+  that wait at once (`server_handed_off`) and the round reads everything
+  again from the new server, without a pause. Exit 0: `WORKER-DONE` with a
+  commit that exists in the worker's checkout; 4: `WORKER-BLOCKED`; 6: the
+  worker asks (a dialog, or a turn that ended with a question); 3: the
+  agent exited without a verdict; 7: `WORKER-DONE` names no commit; 9:
+  herdr reports the request `unsupported` (the worker's integration has not
+  reported its turns, for example while it sits behind the folder-trust
+  dialog), at once: wait for the worker's turn end instead (the form
+  below), then prompt it. It records the assignment under
+  `~/.local/state/herdr-job/assignments/` for that fallback. For a request
+  herdr does not know that no earlier wait recorded, it says so and waits
+  as below instead.
 - `wait-agent <pane> --until verdict` without `--request` ends at the pane's
   next turn end whose final message carries a WORKER line (or at a question
   or the agent's exit). A turn end is a new `completion_seq` in `herdr agent
@@ -202,7 +216,8 @@ herdr-job wait "$id"
   when the message asks something (exit 6), or what needs attention: a turn
   that failed, was interrupted or finished without a WORKER line, or a sha
   that is not a commit (exit 7). An agent that exited ends it with exit 3,
-  and a request herdr no longer knows (its server restarted) with exit 8.
+  a request herdr no longer knows (its server restarted) with exit 8, and
+  one herdr reports `unsupported` with exit 9 at once.
   A turn can end while the worker's own background job still runs, so wait
   for workers with `--until verdict`.
 - `wait-agent <pane> [--until STATE]...` ends when the agent reaches one of
@@ -211,7 +226,11 @@ herdr-job wait "$id"
   `--request <id> --until verdict` for workers.
 - When herdr does not answer (a server restart, `EmptyResponse`, no socket)
   it retries with backoff from 1 s to 30 s and gives up after 15 minutes of
-  continuous failures (exit 5). An agent that is gone ends the wait (exit 3),
+  continuous failures (exit 5). A live handoff's `server_handed_off` is an
+  answer, not such a failure: the call goes to the new server at once. A
+  give-up is not silent: a verdict herdr records while no
+  `agent wait-verdict` waits for it is a supervision finding
+  (`verdict_undelivered`). An agent that is gone ends the wait (exit 3),
   not a retry. Another error exits 2.
 
 `run` also refuses, before it opens the job's tab:

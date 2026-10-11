@@ -966,3 +966,117 @@ fn wait_change_reports_the_agent_not_running_when_its_pane_exits() {
     let response = client.response();
     assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
 }
+
+// `agent.wait_verdict`: the app answers each `agent.verdict` read and, while there is no
+// verdict, the agent read; events about the pane make the wait read again.
+
+fn wait_verdict(client: &mut Client) {
+    client.send(json!({
+        "id": "wait",
+        "method": "agent.wait_verdict",
+        "params": {"request_id": "prompt_v1"}
+    }));
+}
+
+fn reply_assignment(test: &mut SocketTest, verdict: Option<&str>) {
+    let request = test.app_request();
+    let Method::AgentVerdict(params) = &request.request.method else {
+        panic!("expected a verdict read: {:?}", request.request.method);
+    };
+    assert_eq!(params.request_id, "prompt_v1");
+    let mut assignment = json!({"request_id": "prompt_v1", "pane_id": "pane_1", "accepted_ms": 1});
+    if let Some(line) = verdict {
+        assignment["verdict"] =
+            json!({"kind": "done", "line": line, "sha": "abc1234", "recorded_ms": 2});
+    }
+    reply(
+        request,
+        ResponseResult::AgentAssignment {
+            assignment: serde_json::from_value(assignment).unwrap(),
+        },
+    );
+}
+
+fn assert_verdict_wait_ended(client: &mut Client, reason: &str) -> Value {
+    let response = client.response();
+    assert_eq!(response["id"], "wait");
+    assert_eq!(
+        response["result"]["type"], "agent_verdict_wait_ended",
+        "{response}"
+    );
+    assert_eq!(response["result"]["reason"], reason, "{response}");
+    assert_eq!(response["result"]["request_id"], "prompt_v1");
+    response
+}
+
+#[test]
+fn wait_verdict_answers_at_once_with_a_verdict_recorded_before_it() {
+    // Recorded while no waiter ran (its waiter was killed, then the server handed off).
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, Some("WORKER-DONE abc1234 | done"));
+    let response = assert_verdict_wait_ended(&mut client, "verdict");
+    assert_eq!(
+        response["result"]["assignment"]["verdict"]["line"],
+        "WORKER-DONE abc1234 | done"
+    );
+    assert_eq!(response["result"]["pane_id"], "pane_1");
+}
+
+#[test]
+fn wait_verdict_reads_again_on_a_pane_event() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, None);
+    reply_agent(&mut test, "working", 3);
+    test.hub.push(pane_updated());
+    reply_assignment(&mut test, Some("WORKER-DONE abc1234 | done"));
+    assert_verdict_wait_ended(&mut client, "verdict");
+}
+
+#[test]
+fn wait_verdict_ends_when_the_agent_asks_or_exits() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, None);
+    reply_agent(&mut test, "blocked", 3);
+    let response = assert_verdict_wait_ended(&mut client, "question");
+    assert_eq!(response["result"]["question"], "a dialog (read the pane)");
+
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, None);
+    reply_agent(&mut test, "working", 3);
+    test.hub.push(EventEnvelope {
+        event: EventKind::PaneExited,
+        data: EventData::PaneExited {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    reply_assignment(&mut test, None);
+    assert_verdict_wait_ended(&mut client, "exited");
+}
+
+#[test]
+fn wait_verdict_reports_a_request_herdr_does_not_keep() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    let request = test.app_request();
+    request
+        .respond_to
+        .send(
+            json!({
+                "id": request.request.id,
+                "error": {"code": "prompt_request_not_found", "message": "no assignment"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    let response = assert_verdict_wait_ended(&mut client, "unknown_request");
+    assert!(response["result"].get("assignment").is_none());
+}

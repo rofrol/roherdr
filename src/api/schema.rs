@@ -549,6 +549,10 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    #[serde(rename = "agent.verdict")]
+    AgentVerdict(AgentVerdictParams),
+    #[serde(rename = "agent.wait_verdict")]
+    AgentWaitVerdict(AgentWaitVerdictParams),
 }
 
 #[cfg(test)]

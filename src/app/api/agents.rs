@@ -557,6 +557,9 @@ impl App {
                 }
             })
             .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
+        // Registered with the request, before the agent can take the prompt, so its verdict
+        // is recorded even when nothing waits for it then.
+        self.register_assignment(ws_idx, pane_id, &prompt_request.request_id, &params.text);
         self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
         Ok((id, agent, prompt_request, completion))
     }
@@ -587,7 +590,20 @@ impl App {
                     .prompt_turns
                     .text_of(&params.request_id)
                     .map(str::to_string);
+                // A request the agent's integration cannot follow yet stays `unsupported`
+                // until it reports a turn or a session with turn reports.
+                let unsupported = (state == PromptTurnState::Accepted)
+                    .then(|| {
+                        terminal
+                            .prompt_turns
+                            .unsupported_reason(terminal.effective_agent_label())
+                    })
+                    .flatten();
+                let error = unsupported.or(error);
                 let state = match state {
+                    PromptTurnState::Accepted if error.is_some() => {
+                        AgentPromptRequestState::Unsupported
+                    }
                     PromptTurnState::Accepted => AgentPromptRequestState::Accepted,
                     PromptTurnState::Working => AgentPromptRequestState::Working,
                     PromptTurnState::Finished => AgentPromptRequestState::Finished,
@@ -1264,7 +1280,8 @@ mod tests {
     }
 
     fn prompt_request_of(response: &str) -> crate::api::schema::AgentPromptRequest {
-        let success: SuccessResponse = serde_json::from_str(response).unwrap();
+        let success: SuccessResponse = serde_json::from_str(response)
+            .unwrap_or_else(|error| panic!("expected a prompt request ({error}): {response}"));
         let ResponseResult::AgentPrompted {
             prompt_request: Some(request),
             ..
@@ -1302,6 +1319,228 @@ mod tests {
             panic!("expected a prompt status: {response}");
         };
         prompt_request.state
+    }
+
+    /// A Claude pane that reports turns, with its transcript at `transcript`.
+    fn claude_reporting_turns(
+        app: &mut App,
+        transcript: &std::path::Path,
+    ) -> (String, tokio::sync::mpsc::Receiver<Bytes>) {
+        let (pane, rx) = claude_with_runtime(app);
+        app.handle_pane_report_agent_session(
+            "session".into(),
+            crate::api::schema::PaneReportAgentSessionParams {
+                pane_id: pane.clone(),
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                seq: Some(1),
+                agent_session_id: Some("s1".into()),
+                agent_session_path: Some(transcript.display().to_string()),
+                session_start_source: None,
+                resume_argv: None,
+                turn_reports: true,
+            },
+        );
+        (pane, rx)
+    }
+
+    /// A new directory of its own under the system's temporary directory.
+    fn scratch_dir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-agents-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn append_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    fn assignment_of(app: &mut App, request_id: &str) -> crate::api::schema::AgentAssignmentInfo {
+        let response = app.handle_agent_verdict(
+            "verdict".into(),
+            crate::api::schema::AgentVerdictParams {
+                request_id: request_id.into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentAssignment { assignment } = success.result else {
+            panic!("expected an assignment: {response}");
+        };
+        assignment
+    }
+
+    #[tokio::test]
+    async fn a_prompt_taken_in_mid_turn_ends_with_that_turn_and_its_verdict_is_recorded() {
+        let dir = scratch_dir();
+        let transcript = dir.join("session.jsonl");
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": "earlier work"}}),
+            ],
+        );
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_reporting_turns(&mut app, &transcript);
+        report_turn(&mut app, &pane, "started", Some("earlier work"));
+
+        // Typed while the agent works: Claude takes it in mid-turn and reports no turn start.
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("do item two", false),
+        ));
+        assert_eq!(request.state, AgentPromptRequestState::Accepted);
+        assert_eq!(assignment_of(&mut app, &request.request_id).verdict, None);
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "queue-operation", "operation": "remove",
+                    "content": "do item two", "reason": "absorbed_mid_turn", "commandUuid": "c1"}),
+                serde_json::json!({"type": "attachment", "attachment": {"type": "queued_command",
+                    "prompt": "do item two", "source_uuid": "c1"}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "Done.\nWORKER-DONE abc1234 | item two"}]}}),
+            ],
+        );
+        report_turn(&mut app, &pane, "finished", None);
+
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Finished
+        );
+        let assignment = assignment_of(&mut app, &request.request_id);
+        assert_eq!(assignment.pane_id, pane);
+        assert_eq!(assignment.worker.as_deref(), Some("reviewer"));
+        let verdict = assignment.verdict.expect("the verdict is recorded");
+        assert_eq!(verdict.line, "WORKER-DONE abc1234 | item two");
+        assert_eq!(verdict.sha.as_deref(), Some("abc1234"));
+        assert_eq!(verdict.kind, crate::api::schema::AgentVerdictKind::Done);
+
+        // Recorded once: a later turn end with another line changes nothing.
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "text", "text": "WORKER-BLOCKED something else"}]}}),
+            ],
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            assignment_of(&mut app, &request.request_id)
+                .verdict
+                .map(|verdict| verdict.line),
+            Some("WORKER-DONE abc1234 | item two".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verdict_recorded_after_its_waiter_died_is_read_at_once_by_the_next_server() {
+        let dir = scratch_dir();
+        crate::assignments::set_test_dir(Some(dir.join("assignments")));
+        let transcript = dir.join("session.jsonl");
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": "earlier work"}}),
+            ],
+        );
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_reporting_turns(&mut app, &transcript);
+        report_turn(&mut app, &pane, "started", Some("earlier work"));
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("do the item", false),
+        ));
+        // Its waiter (`agent.wait_verdict`) runs, then is killed before the worker finishes.
+        drop(crate::assignments::wait_started(&request.request_id));
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "attachment", "attachment": {"type": "queued_command",
+                    "prompt": "do the item", "source_uuid": "c1"}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "WORKER-DONE abc1234 | the item"}]}}),
+            ],
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        // Nothing received it: the supervision sweep reports it.
+        assert_eq!(
+            crate::assignments::undelivered_unwatched()
+                .iter()
+                .map(|assignment| assignment.request_id.clone())
+                .collect::<Vec<_>>(),
+            vec![request.request_id.clone()]
+        );
+
+        // A live handoff: the new server knows no followed prompt, but reads the assignments
+        // the old one stored.
+        crate::assignments::set_test_dir(Some(dir.join("assignments")));
+        let mut next = app_with_agent();
+        let status = next.handle_agent_prompt_status(
+            "status".into(),
+            crate::api::schema::AgentPromptStatusParams {
+                request_id: request.request_id.clone(),
+            },
+        );
+        assert!(status.contains("prompt_request_not_found"), "{status}");
+        let assignment = assignment_of(&mut next, &request.request_id);
+        assert_eq!(assignment.pane_id, pane);
+        assert_eq!(
+            assignment.verdict.map(|verdict| verdict.line),
+            Some("WORKER-DONE abc1234 | the item".to_string())
+        );
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_earlier_identical_prompt_before_the_anchor_does_not_count() {
+        let dir = scratch_dir();
+        let transcript = dir.join("session.jsonl");
+        append_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": "do the item"}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "WORKER-DONE 1111111 | the old one"}]}}),
+            ],
+        );
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_reporting_turns(&mut app, &transcript);
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("do the item", false),
+        ));
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(assignment_of(&mut app, &request.request_id).verdict, None);
+    }
+
+    #[test]
+    fn an_unknown_assignment_is_not_found() {
+        let mut app = app_with_agent();
+        let response = app.handle_agent_verdict(
+            "verdict".into(),
+            crate::api::schema::AgentVerdictParams {
+                request_id: "prompt_nope".into(),
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "prompt_request_not_found");
     }
 
     #[tokio::test]
@@ -1344,10 +1583,12 @@ mod tests {
 
         let request = prompt_request_of(&run_deferred_agent_prompt(&mut app, "req", params));
         assert_eq!(request.state, AgentPromptRequestState::Unsupported);
-        assert_eq!(
-            prompt_state(&mut app, &request.request_id),
-            AgentPromptRequestState::Accepted
-        );
+        // Its status says so until the integration reports, so a wait on it can end at once.
+        let status = prompt_request(&mut app, &request.request_id);
+        assert_eq!(status.state, AgentPromptRequestState::Unsupported);
+        assert!(status
+            .error
+            .is_some_and(|reason| reason.contains("has not reported a turn")));
 
         report_turn(&mut app, &pane, "started", Some("do the item"));
         assert_eq!(

@@ -752,6 +752,21 @@ fn agent_command() -> Command {
                 "Show a followed prompt's state, pane and text",
             ),
         )
+        .subcommand(id_command(
+            "verdict",
+            "request_id",
+            "Show a prompt's assignment and the WORKER verdict herdr recorded for it",
+        ))
+        .subcommand(
+            id_command(
+                "wait-verdict",
+                "request_id",
+                "Wait for the WORKER verdict of a prompt's assignment",
+            )
+            .after_help(
+                "Answers once herdr records the assignment's WORKER-DONE/WORKER-BLOCKED line (at once when it already did, also before a server restart or live handoff), the agent asks something (a dialog or an open question), or it exits. Follows a live handoff. Exits 0 only for a verdict. No timeout.",
+            ),
+        )
         .subcommand(
             Command::new("attach")
                 .about("Attach directly to an agent terminal")

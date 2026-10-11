@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 use crate::api::schema::{
     AgentPromptConfirmedParams, AgentPromptParams, AgentPromptStatusParams,
     AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
-    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitChangeParams,
-    AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody, ErrorResponse, Method,
-    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentVerdictParams,
+    AgentWaitChangeParams, AgentWaitParams, AgentWaitTurnParams, AgentWaitVerdictParams,
+    EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
+    ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -32,6 +33,8 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "wait-turn" => agent_wait_turn(&args[1..]),
         "wait-change" => agent_wait_change(&scoped_args, scope()),
         "prompt-status" => agent_prompt_status(&args[1..]),
+        "verdict" => agent_verdict(&args[1..]),
+        "wait-verdict" => agent_wait_verdict(&args[1..]),
         "attach" => agent_attach(&scoped_args, scope()),
         "explain" => agent_explain(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
@@ -1220,9 +1223,11 @@ fn unsupported_request_note(response: &serde_json::Value) -> Option<String> {
     let reason = request["error"]
         .as_str()
         .unwrap_or("the agent does not report its turns");
+    let id = request["request_id"].as_str().unwrap_or("?");
     Some(format!(
-        "herdr: prompt request {} is not followed yet: {reason}",
-        request["request_id"].as_str().unwrap_or("?")
+        "herdr: prompt request {id} is not followed yet: {reason}. A wait on it \
+         (`herdr-job wait-agent --request {id}`) ends at once; instead wait for the agent's \
+         turn end, then prompt it"
     ))
 }
 
@@ -1299,6 +1304,42 @@ fn wait_for_turn(request_id: &str) -> std::io::Result<i32> {
     let response = reply.response;
     let exit_code = super::print_response(&response)?;
     if exit_code == 0 && response["result"]["reason"] != "finished" {
+        return Ok(1);
+    }
+    Ok(exit_code)
+}
+
+fn agent_verdict(args: &[String]) -> std::io::Result<i32> {
+    let [request_id] = args else {
+        eprintln!("usage: herdr agent verdict <request_id>");
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:verdict".into(),
+        method: Method::AgentVerdict(AgentVerdictParams {
+            request_id: request_id.clone(),
+        }),
+    })?)
+}
+
+/// Waits with `agent.wait_verdict` across live handoffs and prints why it answered. Exit 0
+/// only for a verdict.
+fn agent_wait_verdict(args: &[String]) -> std::io::Result<i32> {
+    let [request_id] = args else {
+        eprintln!("usage: herdr agent wait-verdict <request_id>");
+        return Ok(2);
+    };
+    let what = format!("the verdict of prompt request {request_id}");
+    let reply = super::reconnect::wait("agent wait-verdict", &what, |_| Request {
+        id: "cli:agent:wait_verdict".into(),
+        method: Method::AgentWaitVerdict(AgentWaitVerdictParams {
+            request_id: request_id.clone(),
+        }),
+    })?;
+    super::reconnect::report_gave_up("agent wait-verdict", &what, &reply);
+    let response = reply.response;
+    let exit_code = super::print_response(&response)?;
+    if exit_code == 0 && response["result"]["reason"] != "verdict" {
         return Ok(1);
     }
     Ok(exit_code)
@@ -1423,6 +1464,8 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait-turn <request_id>");
     eprintln!("  herdr agent wait-change <target> --after <state_change_seq>");
     eprintln!("  herdr agent prompt-status <request_id>");
+    eprintln!("  herdr agent verdict <request_id>");
+    eprintln!("  herdr agent wait-verdict <request_id>");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
@@ -1523,7 +1566,11 @@ mod tests {
         }}});
         assert_eq!(
             unsupported_request_note(&response).as_deref(),
-            Some("herdr: prompt request prompt_1 is not followed yet: claude has not reported")
+            Some(
+                "herdr: prompt request prompt_1 is not followed yet: claude has not reported. A \
+                 wait on it (`herdr-job wait-agent --request prompt_1`) ends at once; instead \
+                 wait for the agent's turn end, then prompt it"
+            )
         );
         let followed = serde_json::json!({"result": {"prompt_request": {
             "request_id": "prompt_2", "state": "accepted",

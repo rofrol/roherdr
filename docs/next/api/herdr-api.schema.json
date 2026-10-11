@@ -1723,6 +1723,18 @@
           ],
           "type": "string"
         },
+        "AgentVerdictParams": {
+          "description": "Reads the assignment herdr registered when it typed a prompt (`agent.prompt` and its\nvariants) and the verdict it recorded for it: the `WORKER-DONE`/`WORKER-BLOCKED` line the\nagent's work ended on, read from its transcript at its turn end. Assignments are kept on\ndisk, so this answers after a restart or a live handoff too; `prompt_request_not_found`\nfor a request herdr never registered or no longer keeps.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "type": "object"
+        },
         "AgentViewBuiltinField": {
           "enum": [
             "status",
@@ -2059,6 +2071,18 @@
         },
         "AgentWaitTurnParams": {
           "description": "Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started\nends, and says how it ended. It checks the request and subscribes to its changes in one\nstep, so a turn that ended before the wait began still answers `finished`. It has no\ntimeout: every outcome is an event, and a request herdr no longer knows (its server\nrestarted) answers `unknown_request` at once.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "AgentWaitVerdictParams": {
+          "description": "Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), the agent\nasks something (`blocked`, or an open question) or its pane goes away, and answers which.\nA verdict recorded before the wait, also by the server a live handoff replaced, answers at\nonce. It has no timeout: every outcome is an event, and a request herdr does not know\nanswers `unknown_request` at once.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -10993,6 +11017,38 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.verdict",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentVerdictParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.wait_verdict",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentWaitVerdictParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -11221,6 +11277,56 @@
     },
     "success_response": {
       "$defs": {
+        "AgentAssignmentInfo": {
+          "description": "A prompt herdr typed into a pane's agent, with the verdict its work ended on.",
+          "properties": {
+            "accepted_ms": {
+              "description": "When herdr accepted the prompt, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "delivered_ms": {
+              "description": "When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The pane the prompt was typed into.",
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "verdict": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentVerdictInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "worker": {
+              "description": "The agent's name in herdr when the prompt was typed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "request_id",
+            "pane_id",
+            "accepted_ms"
+          ],
+          "type": "object"
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -11715,6 +11821,86 @@
             {
               "const": "unknown",
               "description": "Another turn started before this one reported its end, with no signal saying why: the\nuser may have interrupted it (Claude reports no `Stop` for a turn ended with Esc), or\nthe agent took a queued message into its work. Also any reason this client does not\nknow.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentVerdictInfo": {
+          "description": "The `WORKER` line an assignment's work ended on, as herdr recorded it once.",
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentVerdictKind"
+            },
+            "line": {
+              "description": "The line, from `WORKER-DONE` or `WORKER-BLOCKED` on.",
+              "type": "string"
+            },
+            "recorded_ms": {
+              "description": "When herdr recorded it, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sha": {
+              "description": "The commit a `WORKER-DONE` line names.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "line",
+            "recorded_ms"
+          ],
+          "type": "object"
+        },
+        "AgentVerdictKind": {
+          "oneOf": [
+            {
+              "const": "done",
+              "description": "`WORKER-DONE <sha> ...`.",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "description": "`WORKER-BLOCKED <reason>`.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Any kind this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentVerdictWaitReason": {
+          "description": "Why `agent.wait_verdict` answered.",
+          "oneOf": [
+            {
+              "const": "verdict",
+              "description": "Herdr recorded the assignment's verdict; see `assignment.verdict`.",
+              "type": "string"
+            },
+            {
+              "const": "question",
+              "description": "The agent asks something: a dialog (`blocked`) or an open question; see `question`.",
+              "type": "string"
+            },
+            {
+              "const": "exited",
+              "description": "The agent exited or its pane closed without a verdict.",
+              "type": "string"
+            },
+            {
+              "const": "unknown_request",
+              "description": "Herdr never registered this request or no longer keeps it.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Any reason this client does not know.",
               "type": "string"
             }
           ]
@@ -17582,6 +17768,67 @@
                 "type"
               ],
               "type": "object"
+            },
+            {
+              "description": "`agent.verdict`: the assignment of a prompt and its verdict.",
+              "properties": {
+                "assignment": {
+                  "$ref": "#/schemas/success_response/$defs/AgentAssignmentInfo"
+                },
+                "type": {
+                  "const": "agent_assignment",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "assignment"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.wait_verdict`: why the wait answered, with the assignment herdr keeps.",
+              "properties": {
+                "assignment": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/AgentAssignmentInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pane_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "question": {
+                  "description": "What the agent asks, for `question`: its open question, else the dialog.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "$ref": "#/schemas/success_response/$defs/AgentVerdictWaitReason"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_verdict_wait_ended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "request_id",
+                "reason"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -17953,6 +18200,11 @@
             {
               "const": "disk_low",
               "description": "The file system of a coordinator's repository has less free space\nthan the build guard's 15 GiB.",
+              "type": "string"
+            },
+            {
+              "const": "verdict_undelivered",
+              "description": "Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or\n`WORKER-BLOCKED` line) and no `agent.wait_verdict` received it while none waits for\nit: its waiter was never started, ended on something else, gave up or was killed.",
               "type": "string"
             }
           ]

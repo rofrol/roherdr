@@ -179,6 +179,9 @@ struct Facts {
     coordinators: Vec<CoordinatorFacts>,
     panes: Vec<PaneFacts>,
     disks: Vec<DiskFacts>,
+    /// The verdicts of prompts' assignments no `agent.wait_verdict` received while none
+    /// waits for them (`crate::assignments::undelivered_unwatched`).
+    verdicts: Vec<crate::assignments::Assignment>,
 }
 
 /// A predicate that holds now, before it is recorded.
@@ -203,6 +206,7 @@ fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
         SupervisionPredicate::WorkingAfterStop => "working_after_stop",
         SupervisionPredicate::UntrackedShell => "untracked_shell",
         SupervisionPredicate::DiskLow => "disk_low",
+        SupervisionPredicate::VerdictUndelivered => "verdict_undelivered",
         SupervisionPredicate::Unknown => "unknown",
     }
 }
@@ -323,6 +327,9 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
     }
     for disk in &facts.disks {
         candidates.extend(disk_low(disk, facts.observed_ms));
+    }
+    for assignment in &facts.verdicts {
+        candidates.extend(verdict_undelivered(assignment, facts.observed_ms));
     }
     candidates
 }
@@ -479,6 +486,69 @@ fn working_after_stop(pane: &PaneFacts, observed_ms: u64) -> Option<Candidate> {
         evidence: SupervisionEvidence {
             observed_ms,
             event_ids,
+            facts,
+        },
+    })
+}
+
+/// Herdr recorded an assignment's verdict and no `agent.wait_verdict` received it while none
+/// waits for it. It resolves once a wait answers with it.
+fn verdict_undelivered(
+    assignment: &crate::assignments::Assignment,
+    observed_ms: u64,
+) -> Option<Candidate> {
+    let verdict = assignment.verdict.as_ref()?;
+    if assignment.delivered_ms.is_some() {
+        return None;
+    }
+    let mut facts = vec![
+        format!("request: {}", assignment.request_id),
+        format!("pane: {}", assignment.pane_id),
+        format!("verdict: {}", verdict.line),
+        format!("recorded_ms: {}", verdict.recorded_ms),
+        "waiters: none".to_string(),
+    ];
+    if let Some(worker) = &assignment.worker {
+        facts.insert(2, format!("worker: {worker}"));
+    }
+    Some(Candidate {
+        fingerprint: fingerprint(
+            SupervisionPredicate::VerdictUndelivered,
+            &assignment.request_id,
+        ),
+        predicate: SupervisionPredicate::VerdictUndelivered,
+        severity: if verdict.blocked {
+            SupervisionSeverity::Critical
+        } else {
+            SupervisionSeverity::Warning
+        },
+        summary: format!(
+            "{} in pane {}{} ended its assignment ({}) and nothing received it",
+            verdict.line,
+            assignment.pane_id,
+            assignment
+                .worker
+                .as_ref()
+                .map(|worker| format!(" ({worker})"))
+                .unwrap_or_default(),
+            assignment.request_id
+        ),
+        expected_event: format!(
+            "its coordinator reads it: `herdr agent wait-verdict {}` (or `herdr-job wait-agent \
+             {} --request {} --until verdict`)",
+            assignment.request_id, assignment.pane_id, assignment.request_id
+        ),
+        repo: None,
+        coordinator_id: None,
+        pane_id: Some(assignment.pane_id.clone()),
+        run_id: None,
+        job_ids: Vec::new(),
+        evidence: SupervisionEvidence {
+            observed_ms,
+            event_ids: vec![format!(
+                "verdict of {} recorded at {}",
+                assignment.request_id, verdict.recorded_ms
+            )],
             facts,
         },
     })
@@ -891,6 +961,15 @@ pub(crate) fn request_sweep_for_pane(pane_id: &str, what: &str) {
     }
 }
 
+/// Asks for a sweep after `what` happened outside a coordinator's pane, such as a verdict
+/// recorded while no `agent.wait_verdict` waits for it.
+pub(crate) fn request_sweep(what: &str) {
+    let mut requested = lock(&REQUESTED);
+    if requested.is_none() {
+        *requested = Some(what.to_string());
+    }
+}
+
 /// The event that asked for a sweep since the last call, if any; left in
 /// place while a sweep runs, so the next one starts after it.
 pub(crate) fn take_sweep_request() -> Option<String> {
@@ -1135,6 +1214,7 @@ impl WorkerSupervisor {
             coordinators,
             panes,
             disks,
+            verdicts: crate::assignments::undelivered_unwatched(),
         };
         let candidates = evaluate(&facts);
         let changes = self
@@ -1496,6 +1576,7 @@ mod tests {
             coordinators,
             panes,
             disks: Vec::new(),
+            verdicts: Vec::new(),
         }
     }
 
@@ -1504,6 +1585,37 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.predicate)
             .collect()
+    }
+
+    #[test]
+    fn a_verdict_nothing_received_is_a_finding_until_it_is_delivered() {
+        let mut assignment = crate::assignments::Assignment {
+            request_id: "prompt_1_2".into(),
+            pane_id: "w1:p2".into(),
+            agent: Some("claude".into()),
+            worker: Some("w-item".into()),
+            text: "do the item".into(),
+            transcript: None,
+            anchor: None,
+            accepted_ms: 1,
+            order: 0,
+            verdict: crate::assignments::worker_line("WORKER-BLOCKED needs a key", 5),
+            delivered_ms: None,
+        };
+        let mut found = facts(Vec::new(), Vec::new());
+        found.verdicts.push(assignment.clone());
+        let candidates = evaluate(&found);
+        assert_eq!(
+            predicates(&found),
+            vec![SupervisionPredicate::VerdictUndelivered]
+        );
+        assert_eq!(candidates[0].severity, SupervisionSeverity::Critical);
+        assert_eq!(candidates[0].pane_id.as_deref(), Some("w1:p2"));
+        assert!(candidates[0].summary.contains("WORKER-BLOCKED needs a key"));
+
+        assignment.delivered_ms = Some(6);
+        found.verdicts = vec![assignment];
+        assert!(predicates(&found).is_empty());
     }
 
     #[test]

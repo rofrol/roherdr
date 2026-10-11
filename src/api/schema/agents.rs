@@ -536,3 +536,83 @@ pub struct AgentSessionInfo {
     pub kind: crate::agent_resume::AgentSessionRefKind,
     pub value: String,
 }
+
+/// Reads the assignment herdr registered when it typed a prompt (`agent.prompt` and its
+/// variants) and the verdict it recorded for it: the `WORKER-DONE`/`WORKER-BLOCKED` line the
+/// agent's work ended on, read from its transcript at its turn end. Assignments are kept on
+/// disk, so this answers after a restart or a live handoff too; `prompt_request_not_found`
+/// for a request herdr never registered or no longer keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentVerdictParams {
+    pub request_id: String,
+}
+
+/// Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), the agent
+/// asks something (`blocked`, or an open question) or its pane goes away, and answers which.
+/// A verdict recorded before the wait, also by the server a live handoff replaced, answers at
+/// once. It has no timeout: every outcome is an event, and a request herdr does not know
+/// answers `unknown_request` at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentWaitVerdictParams {
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentVerdictKind {
+    /// `WORKER-DONE <sha> ...`.
+    Done,
+    /// `WORKER-BLOCKED <reason>`.
+    Blocked,
+    /// Any kind this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The `WORKER` line an assignment's work ended on, as herdr recorded it once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentVerdictInfo {
+    pub kind: AgentVerdictKind,
+    /// The line, from `WORKER-DONE` or `WORKER-BLOCKED` on.
+    pub line: String,
+    /// The commit a `WORKER-DONE` line names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    /// When herdr recorded it, Unix milliseconds.
+    pub recorded_ms: u64,
+}
+
+/// A prompt herdr typed into a pane's agent, with the verdict its work ended on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentAssignmentInfo {
+    pub request_id: String,
+    /// The pane the prompt was typed into.
+    pub pane_id: String,
+    /// The agent's name in herdr when the prompt was typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    /// When herdr accepted the prompt, Unix milliseconds.
+    pub accepted_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<AgentVerdictInfo>,
+    /// When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_ms: Option<u64>,
+}
+
+/// Why `agent.wait_verdict` answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentVerdictWaitReason {
+    /// Herdr recorded the assignment's verdict; see `assignment.verdict`.
+    Verdict,
+    /// The agent asks something: a dialog (`blocked`) or an open question; see `question`.
+    Question,
+    /// The agent exited or its pane closed without a verdict.
+    Exited,
+    /// Herdr never registered this request or no longer keeps it.
+    UnknownRequest,
+    /// Any reason this client does not know.
+    #[serde(other)]
+    Unknown,
+}

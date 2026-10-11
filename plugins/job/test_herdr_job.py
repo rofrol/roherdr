@@ -1338,21 +1338,22 @@ class WaitAgentTests(unittest.TestCase):
 
     def test_a_finished_turn_with_worker_done_and_its_commit_is_done(self):
         get, sha = self.worker("Working on it.", "Committed.\n\nWORKER-DONE {sha} | caps")
-        code, text, calls = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        code, text, calls = self.run_wait([self.prompt_status(), self.turn("finished"), get], request="prompt_1")
         self.assertEqual(code, 0, text)
         self.assertIn(f"WORKER-DONE {sha} | caps", text)
-        self.assertEqual(calls, [["agent", "wait-turn", "prompt_1"], ["agent", "get", "w:p5"]])
+        self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"], ["agent", "wait-turn", "prompt_1"],
+                                 ["agent", "get", "w:p5"]])
         self.assertEqual(self.sleeps, [])
 
     def test_worker_done_naming_a_missing_commit_needs_attention(self):
         get, _ = self.worker("WORKER-DONE 1a2b3c4 | invented")
-        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        code, text, _ = self.run_wait([self.prompt_status(), self.turn("finished"), get], request="prompt_1")
         self.assertEqual(code, 7, text)
         self.assertIn("not a commit", text)
 
     def test_worker_blocked_is_reported(self):
         get, _ = self.worker("I cannot log in.\nWORKER-BLOCKED needs a login")
-        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        code, text, _ = self.run_wait([self.prompt_status(), self.turn("finished"), get], request="prompt_1")
         self.assertEqual(code, 4, text)
         self.assertIn("WORKER-BLOCKED needs a login", text)
 
@@ -1362,13 +1363,14 @@ class WaitAgentTests(unittest.TestCase):
             with self.subTest(messages=messages):
                 (self.stub_dir / "calls").unlink(missing_ok=True)
                 get, _ = self.worker(*messages, awaiting_reply=awaiting)
-                code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+                code, text, _ = self.run_wait([self.prompt_status(), self.turn("finished"), get],
+                                              request="prompt_1")
                 self.assertEqual(code, 6, text)
                 self.assertIn("awaiting input", text)
 
     def test_a_task_text_placeholder_is_not_a_verdict(self):
         get, _ = self.worker("End with `WORKER-DONE <sha> | <summary>`.\nWORKER-BLOCKED <reason>\nDone, I think.")
-        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        code, text, _ = self.run_wait([self.prompt_status(), self.turn("finished"), get], request="prompt_1")
         self.assertEqual(code, 7, text)
         self.assertIn("without a WORKER line", text)
 
@@ -1379,17 +1381,19 @@ class WaitAgentTests(unittest.TestCase):
                                                 ("unknown_request", None, 8, "tracking lost")):
             with self.subTest(reason=reason):
                 (self.stub_dir / "calls").unlink(missing_ok=True)
-                code, text, calls = self.run_wait([self.turn(reason, error)], request="prompt_1")
+                code, text, calls = self.run_wait([self.prompt_status(), self.turn(reason, error)],
+                                                  request="prompt_1")
                 self.assertEqual(code, exit_code, text)
                 self.assertIn(words, text)
-                self.assertEqual(calls, [["agent", "wait-turn", "prompt_1"]])
+                self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"], ["agent", "wait-turn", "prompt_1"]])
 
     def test_a_restart_during_the_wait_is_retried_then_reported_as_tracking_lost(self):
         empty = [1, "", "Error: empty api response\n"]
-        code, text, calls = self.run_wait([empty, empty, self.turn("unknown_request")], request="prompt_1")
+        code, text, calls = self.run_wait([self.prompt_status(), empty, empty, self.turn("unknown_request")],
+                                          request="prompt_1")
         self.assertEqual(code, 8, text)
         self.assertEqual(self.sleeps, [1, 2])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
 
     # `--request ID --until verdict`: `agent prompt-status` once, then rounds of `agent get`,
     # a read of the transcript and `agent wait-change --after <state_change_seq>`.
@@ -1404,6 +1408,21 @@ class WaitAgentTests(unittest.TestCase):
 
     def not_followed(self):
         return [1, "", json.dumps({"error": {"code": "prompt_request_not_found", "message": "no"}}) + "\n"]
+
+    def older_herdr(self):
+        """An older herdr CLI's answer to `agent wait-verdict`: its usage."""
+        return [2, "", "herdr agent commands:\n  herdr agent list\n"]
+
+    def recorded(self, reason, line=None, **extra):
+        """`agent wait-verdict`'s answer: why it ended, with the recorded verdict."""
+        result = {"type": "agent_verdict_wait_ended", "request_id": "prompt_1", "reason": reason,
+                  "pane_id": "w:p5", **extra}
+        if line is not None:
+            _, sha = self.repo_sha()
+            result["assignment"] = {"request_id": "prompt_1", "pane_id": "w:p5", "accepted_ms": 1,
+                                    "verdict": {"kind": "blocked" if "BLOCKED" in line else "done",
+                                                "line": line.format(sha=sha), "recorded_ms": 2}}
+        return [0 if reason == "verdict" else 1, json.dumps({"result": result}) + "\n", ""]
 
     def repo_sha(self):
         repo = Path(self.tmp.name) / "repo"
@@ -1448,10 +1467,12 @@ class WaitAgentTests(unittest.TestCase):
     def test_a_verdict_already_in_the_transcript_ends_the_wait_at_once(self):
         _, sha = self.repo_sha()
         done = self.transcript("s", ("user", self.PROMPT), ("assistant", "Done.\nWORKER-DONE {sha} | parser"))
-        code, text, calls = self.run_verdict([self.prompt_status(), self.get(done)])
+        code, text, calls = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(done)])
         self.assertEqual(code, 0, text)
         self.assertIn(f"WORKER-DONE {sha} | parser", text)
-        self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"], ["agent", "get", "w:p5"]])
+        self.assertIn("does not record verdicts", text)
+        self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"], ["agent", "wait-verdict", "prompt_1"],
+                                 ["agent", "get", "w:p5"]])
 
     def test_a_bare_turn_end_does_not_end_the_wait(self):
         # The worker ended its turn while its own background test ran, then wrote its verdict.
@@ -1459,11 +1480,11 @@ class WaitAgentTests(unittest.TestCase):
         done = self.transcript("b", ("user", self.PROMPT), ("assistant", "Tests run in the background."),
                                ("user", "<task-notification>done</task-notification>"),
                                ("assistant", "WORKER-DONE {sha} | parser"))
-        code, text, calls = self.run_verdict([self.prompt_status(), self.get(waiting, seq=7), self.changed(),
-                                              self.get(done, seq=9)])
+        code, text, calls = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(waiting, seq=7),
+                                              self.changed(), self.get(done, seq=9)])
         self.assertEqual(code, 0, text)
-        self.assertEqual(calls[2], ["agent", "wait-change", "w:p5", "--after", "7"])
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[3], ["agent", "wait-change", "w:p5", "--after", "7"])
+        self.assertEqual(len(calls), 5)
         self.assertEqual(self.sleeps, [])
 
     def test_an_earlier_assignments_verdict_does_not_count(self):
@@ -1471,7 +1492,7 @@ class WaitAgentTests(unittest.TestCase):
         old = self.transcript("old", ("user", "the previous item"), ("assistant", "WORKER-DONE {sha} | old"))
         new = self.transcript("new", ("user", "the previous item"), ("assistant", "WORKER-DONE {sha} | old"),
                               ("user", self.PROMPT), ("assistant", "WORKER-BLOCKED needs a login"))
-        code, text, calls = self.run_verdict([self.prompt_status(), self.get(old, status="idle"),
+        code, text, calls = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(old, status="idle"),
                                               self.changed(), self.get(new)])
         self.assertEqual(code, 4, text)
         self.assertIn("WORKER-BLOCKED needs a login", text)
@@ -1480,16 +1501,17 @@ class WaitAgentTests(unittest.TestCase):
     def test_a_worker_line_before_a_tool_call_or_while_working_is_not_the_verdict(self):
         went_on = self.transcript("on", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | early"),
                                   ("tool",), ("result",), ("assistant", "Still checking."))
-        code, text, _ = self.run_verdict([self.prompt_status(), self.get(went_on), self.changed(),
-                                          self.get(went_on, status="blocked", question="Allow rm?")])
+        code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(went_on),
+                                          self.changed(), self.get(went_on, status="blocked", question="Allow rm?")])
         self.assertEqual(code, 6, text)
         self.assertIn("Allow rm?", text)
         (self.stub_dir / "calls").unlink()
         # Its tool call may not be written yet: the last text counts once the agent stops working.
         writing = self.transcript("w", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
-        code, text, calls = self.run_verdict([self.prompt_status(), self.get(writing, status="working"),
-                                              self.changed(), self.get(writing, status="done")])
-        self.assertEqual((code, len(calls)), (0, 4), text)
+        code, text, calls = self.run_verdict([self.prompt_status(), self.older_herdr(),
+                                              self.get(writing, status="working"), self.changed(),
+                                              self.get(writing, status="done")])
+        self.assertEqual((code, len(calls)), (0, 5), text)
 
     def test_a_question_ends_the_wait(self):
         asking = self.transcript("q", ("user", self.PROMPT), ("assistant", "Which variant?"))
@@ -1497,22 +1519,23 @@ class WaitAgentTests(unittest.TestCase):
                                                "question": "Which variant?"}):
             with self.subTest(extra=extra):
                 (self.stub_dir / "calls").unlink(missing_ok=True)
-                code, text, _ = self.run_verdict([self.prompt_status(), self.get(asking, **extra)])
+                code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(asking, **extra)])
                 self.assertEqual(code, 6, text)
                 self.assertIn("asks", text)
 
     def test_an_agent_that_exits_without_a_verdict(self):
         working = self.transcript("x", ("user", self.PROMPT), ("assistant", "Working."))
         gone = [1, "", json.dumps({"error": {"code": "agent_not_running", "message": "gone"}}) + "\n"]
-        code, text, _ = self.run_verdict([self.prompt_status(), self.get(working, status="working"),
-                                          gone, gone])
+        code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(),
+                                          self.get(working, status="working"), gone, gone])
         self.assertEqual(code, 3, text)
         self.assertIn("exited without a verdict", text)
 
     def test_a_verdict_written_before_the_agent_exited_still_counts(self):
         done = self.transcript("e", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
         gone = [1, "", json.dumps({"error": {"code": "agent_not_running", "message": "gone"}}) + "\n"]
-        code, text, _ = self.run_verdict([self.prompt_status(), self.get(done, status="working"), gone, gone])
+        code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(done, status="working"),
+                                          gone, gone])
         self.assertEqual(code, 0, text)
 
     def test_a_handoff_or_restart_during_the_wait_reads_everything_again(self):
@@ -1520,35 +1543,127 @@ class WaitAgentTests(unittest.TestCase):
         done = self.transcript("i", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
         handed_off = [1, "", json.dumps({"error": {"code": "server_handed_off", "message": "x"}}) + "\n"]
         empty = [1, "", "Error: empty api response\n"]
-        code, text, calls = self.run_verdict([self.prompt_status(), self.get(waiting, seq=40), handed_off,
-                                              self.changed(seq=2), empty, self.get(done, seq=3)])
+        # A live handoff answers the wait-change at once: the next round reads the agent from
+        # the new server without a pause, never waits again with the old server's sequence.
+        # Only a real transport failure (the empty answer) pauses.
+        code, text, calls = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(waiting, seq=40),
+                                              handed_off, empty, self.get(done, seq=3)])
         self.assertEqual(code, 0, text)
-        self.assertEqual(self.sleeps, [1, 1])
+        self.assertEqual(self.sleeps, [1])
         self.assertEqual([call[1] for call in calls],
-                         ["prompt-status", "get", "wait-change", "wait-change", "get", "get"])
+                         ["prompt-status", "wait-verdict", "get", "wait-change", "get", "get"])
+        self.assertIn("handed off", text)
 
     def test_after_a_restart_it_goes_on_from_the_recorded_assignment(self):
         asking = self.transcript("r", ("user", self.PROMPT), ("assistant", "Which one?"))
-        code, _, _ = self.run_verdict([self.prompt_status(), self.get(asking, status="blocked")])
+        code, _, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(asking, status="blocked")])
         self.assertEqual(code, 6)
         (self.stub_dir / "calls").unlink()
         # The coordinator answered; herdr restarted and forgot the request.
         done = self.transcript("r", ("user", self.PROMPT), ("assistant", "Which one?"),
                                ("user", "the first"), ("assistant", "WORKER-DONE {sha} | parser"))
-        code, text, calls = self.run_verdict([self.not_followed(), self.get(done)])
+        code, text, calls = self.run_verdict([self.not_followed(), self.older_herdr(), self.get(done)])
         self.assertEqual(code, 0, text)
-        self.assertIn("going on from the transcript", text)
+        self.assertIn("going on from the recorded assignment", text)
         self.assertNotIn("tracking lost", text)
 
     def test_a_request_nobody_recorded_waits_for_the_panes_next_worker_line(self):
         working = self.transcript("u", ("user", "the task"), ("assistant", "Working."))
         done = self.transcript("v", ("user", "the task"), ("assistant", "WORKER-DONE {sha} | parser"))
-        code, text, calls = self.run_verdict([self.not_followed(), self.get(working, status="working"),
+        code, text, calls = self.run_verdict([self.not_followed(), self.older_herdr(), self.get(working, status="working"),
                                               self.changed(), self.get(done, seq=9, completion_seq=9)])
         self.assertEqual(code, 0, text)
-        self.assertIn("does not know request prompt_1", text)
+        self.assertIn("does not follow request prompt_1", text)
         self.assertIn("WORKER-DONE", text)
-        self.assertEqual([call[1] for call in calls], ["prompt-status", "get", "wait-change", "get"])
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict", "get", "wait-change", "get"])
+
+    def test_a_verdict_herdr_recorded_ends_the_wait_without_reading_the_transcript(self):
+        _, sha = self.repo_sha()
+        idle = self.get(self.transcript("n", ("user", "unrelated")), status="idle")
+        code, text, calls = self.run_verdict([self.prompt_status(),
+                                              self.recorded("verdict", "WORKER-DONE {sha} | parser"), idle])
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"WORKER-DONE {sha} | parser", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict", "get"])
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_verdict_recorded_while_no_waiter_ran_arrives_at_once_after_a_handoff(self):
+        # The waiter was killed before the worker finished; herdr recorded the verdict at the
+        # worker's Stop, then handed off, and the new server no longer follows the prompt's
+        # turn but keeps its assignment: a new wait gets the verdict at once.
+        _, sha = self.repo_sha()
+        gone = [1, "", json.dumps({"error": {"code": "agent_not_running", "message": "gone"}}) + "\n"]
+        code, text, calls = self.run_verdict([self.not_followed(),
+                                              self.recorded("verdict", "WORKER-BLOCKED needs a login"), gone])
+        self.assertEqual(code, 4, text)
+        self.assertIn("WORKER-BLOCKED needs a login", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict", "get"])
+        self.assertEqual(self.sleeps, [])
+
+    def test_the_recorded_wait_reports_a_question_or_an_exit(self):
+        for reason, extra, exit_code, words in (("question", {"question": "Allow rm?"}, 6, "Allow rm?"),
+                                                ("exited", {}, 3, "exited without a verdict")):
+            with self.subTest(reason=reason):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                code, text, calls = self.run_verdict([self.prompt_status(), self.recorded(reason, **extra)])
+                self.assertEqual(code, exit_code, text)
+                self.assertIn(words, text)
+                self.assertEqual(len(calls), 2)
+
+    def test_an_assignment_herdr_does_not_keep_is_read_from_the_transcript(self):
+        done = self.transcript("k", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
+        unknown = self.recorded("unknown_request")
+        older_server = [1, "", json.dumps({"error": {"code": "invalid_request", "message":
+                                                     "unknown variant `agent.wait_verdict`"}}) + "\n"]
+        for answer in (unknown, older_server):
+            with self.subTest(answer=answer[1] or answer[2]):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                code, text, calls = self.run_verdict([self.prompt_status(), answer, self.get(done)])
+                self.assertEqual(code, 0, text)
+                self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict", "get"])
+
+    def test_an_unsupported_request_ends_the_wait_at_once(self):
+        unsupported = [0, json.dumps({"result": {
+            "type": "agent_prompt_status", "pane_id": "w:p5",
+            "prompt_request": {"request_id": "prompt_1", "state": "unsupported",
+                               "error": "claude has not reported a turn"},
+            "text": "Do the task: fix the parser"}}) + "\n", ""]
+        for until in (["verdict"], []):
+            with self.subTest(until=until):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                code, text, calls = self.run_wait([unsupported], request="prompt_1", until=until)
+                self.assertEqual(code, 9, text)
+                self.assertIn("claude has not reported a turn", text)
+                self.assertIn("then prompt it", text)
+                self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"]])
+                self.assertEqual(self.sleeps, [])
+
+    def test_a_prompt_taken_in_mid_turn_starts_its_assignment(self):
+        # Claude took the prompt in while it worked on the previous one: no user message, a
+        # queue-operation and a queued_command attachment carrying it.
+        _, sha = self.repo_sha()
+        path = Path(self.tmp.name) / "absorbed.jsonl"
+        records = [
+            {"type": "user", "message": {"role": "user", "content": "the previous item"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "WORKER-DONE 0000000 | not this one"},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
+            {"type": "queue-operation", "operation": "enqueue", "content": self.PROMPT},
+            {"type": "queue-operation", "operation": "remove", "content": self.PROMPT,
+             "reason": "absorbed_mid_turn", "commandUuid": "c1"},
+            {"type": "attachment", "attachment": {"type": "queued_command", "prompt": self.PROMPT,
+                                                  "source_uuid": "c1"}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": f"WORKER-DONE {sha} | parser"}]}},
+        ]
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+        code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(path)])
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"WORKER-DONE {sha} | parser", text)
+        records = list(JOB["transcript_records"](path))
+        self.assertEqual(sum(1 for role, texts, _ in records if role == "user" and self.PROMPT in texts), 1)
 
     def test_a_worker_pane_without_a_request_is_refused(self):
         (self.stub_dir / "tabs.json").write_text(json.dumps([{"tab_id": "w:t0", "role": "worker"}]))

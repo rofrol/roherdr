@@ -14,6 +14,7 @@ mod session;
 mod supervision;
 mod tabs;
 mod usage;
+mod verdicts;
 mod waits;
 mod workers;
 mod workspaces;
@@ -1376,6 +1377,16 @@ impl App {
                     request.id,
                     "invalid_request",
                     "agent.wait_change is handled by the api server",
+                );
+            }
+            Method::AgentVerdict(params) => {
+                return self.handle_agent_verdict(request.id, params);
+            }
+            Method::AgentWaitVerdict(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.wait_verdict is handled by the api server",
                 );
             }
             Method::WorkerStart(_)
