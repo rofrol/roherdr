@@ -1102,3 +1102,15 @@ A coordinator's `◔` could name only the workers of its own space
 `wait-agent` once per waited pane and reports a `bg_agents` token; the
 tooltip names those panes' agents in any space. A `wait-agent` wrapped in
 `herdr-job run` counts as the coordinator's own job (shown in `$jobs`).
+
+## `herdr-job wait-text <file> <pattern>`: an event-driven match on new
+
+A VM login prompt without a trailing newline hung `tail -F | grep -m1`
+(guix coordinator, 2026-10-10). Now (66cc298a) `herdr-job wait-text <file>
+<pattern>` follows the file with kqueue/inotify, matches across chunks
+(partial lines, `\r` redraws), handles rotation and truncation, counts only
+new text unless `--from-start`, and ends on the match, a source error or a
+`--pid` exit, never on a duration. No `wait-for-port` (polling). Accepted
+limits: the inotify path is untested on macOS; a truncate immediately
+overwritten past the old length before the read is not seen as a
+truncation. The `todo` skill line is the coordinator's text edit.

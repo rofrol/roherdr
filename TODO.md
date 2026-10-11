@@ -298,22 +298,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   of the user's skill, done by the coordinator's worker next);
   `--until background-drained` (optional, from the fourth report).
 
-- [ ] `herdr-job wait-text <file> <pattern>`: an event-driven match on new [t-xphl4a6t]
-  bytes, partial lines included (from the guix-x86_64-iso-omguix
-  coordinator's report, 2026-10-10: `tail -F serial.log | grep -m1 login:`
-  hung ~4 min because the login prompt has no trailing newline; round
-  20261010-152938-328c). It follows the file with kqueue/inotify, scans a
-  buffer across chunks (no line splitting), handles `\r` redraws, rotation
-  and truncation, counts only text written after it starts unless
-  `--from-start`, and ends on the match (exit 0) or a source error, never
-  on a duration. No `wait-for-port`: all three models: a client gets no
-  event when a remote port starts listening, so it would be polling. For
-  "the VM is ready" the skill names a positive event: one blocking `ssh
-  host true` that exits 0, or a readiness line the guest writes (matched
-  with `wait-text`), never a retry loop. One line in the `todo` skill: a
-  wait names the observable fact it ends on (a verdict line, a handshake,
-  a written marker), never log text guessed to appear.
-
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
