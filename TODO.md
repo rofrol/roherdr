@@ -1375,6 +1375,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the owner sees why it is idle. Decide the shape with the models when
   picked up.
 
+- [ ] A check that TODO.md, DECISIONS.md and decision answers are in [t-kshbojvf]
+  English (the user via the guix coordinator, 2026-10-11: "did you add
+  Polish text to TODO.md? report it to the herdr coordinator"; it had
+  quoted the user verbatim 24 times; the rules now say to translate,
+  dotfiles rule fix pending review). `scripts/todo_edit.py` refuses text
+  with Polish diacritics (ąćęłńóśźż) or a short list of common Polish
+  words, naming the line; `herdr decision add|decide` does the same for its
+  statement and answer; a test for each.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
