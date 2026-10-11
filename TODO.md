@@ -417,6 +417,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `end_by_owner` flag keeps such an exit obligation-free without advancing
   the ack; the test waits for the exit event; 40/40 under stress. Next:
   takeover and views.
+  Step 1 done 2026-10-11 (66bbd4f8): `src/workers/mod.rs` is 688 lines;
+  `WorkerSupervisor` lives in `supervisor/{lifecycle,questions,commands,
+  handoff,takeover,views}.rs` (340-922 lines each). Still large:
+  `runs.rs` 3987, `store.rs` 3813, `tests.rs` 12786 (split later the same
+  way if step 2 needs it). Next: step 2, the per-module review with the
+  models against T3 Code.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
