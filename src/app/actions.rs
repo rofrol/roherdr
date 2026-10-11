@@ -3495,8 +3495,21 @@ mod tests {
             self.terminal().report_awaiting_reply(None, 1)
         }
 
-        fn type_input(&mut self) -> bool {
-            self.terminal().clear_awaiting_reply()
+        fn ask(&mut self, question: &str, now_ms: u64) -> bool {
+            self.terminal()
+                .report_awaiting_reply(Some(question.to_owned()), now_ms)
+        }
+
+        fn submit_reply(&mut self) -> bool {
+            self.terminal().answer_awaiting_reply()
+        }
+
+        fn open(&self) -> Vec<Option<String>> {
+            self.app.terminals[&self.terminal_id]
+                .open_questions()
+                .iter()
+                .map(|open| open.question.clone())
+                .collect()
         }
 
         fn awaiting(&self) -> bool {
@@ -3509,34 +3522,102 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_reply_report_shows_when_the_turn_ends_and_clears_when_the_user_types() {
+    fn awaiting_reply_report_shows_when_the_turn_ends_and_clears_when_the_user_replies() {
         let mut h = AwaitingReplyHarness::new();
 
         h.change(AgentState::Working);
-        assert!(!h.report());
-        assert!(!h.awaiting(), "a report waits for the turn to end");
+        assert!(h.report(), "the question is listed at once");
+        assert!(!h.awaiting(), "the pane's mark waits for the turn to end");
         h.change(AgentState::Idle);
         assert!(h.awaiting());
 
-        assert!(h.type_input());
-        assert!(!h.awaiting(), "typing into the pane answers it");
+        // Typing is no reply: only a submitted one closes the question.
+        assert!(!h.terminal().clear_limit_on_input());
+        assert!(h.awaiting(), "typing keeps the question");
+        assert!(h.submit_reply());
+        assert!(!h.awaiting(), "a submitted reply answers it");
+        assert!(h.open().is_empty());
         h.change(AgentState::Working);
         h.change(AgentState::Idle);
         assert!(!h.awaiting(), "a turn without a report shows nothing");
     }
 
+    #[test]
+    fn several_open_questions_stay_separate_until_withdrawn_or_answered() {
+        let mut h = AwaitingReplyHarness::new();
+        h.change(AgentState::Working);
+
+        assert!(h.ask("Adres Google Wioli?", 10));
+        assert!(h.ask("Install now?", 20));
+        assert!(
+            !h.ask("Adres Google Wioli?", 30),
+            "renewing keeps its entry"
+        );
+        assert!(
+            !h.report(),
+            "a report without words adds nothing to open ones"
+        );
+        assert_eq!(
+            h.open(),
+            vec![
+                Some("Adres Google Wioli?".to_owned()),
+                Some("Install now?".to_owned())
+            ]
+        );
+        let since: Vec<u64> = h.app.terminals[&h.terminal_id]
+            .open_questions()
+            .iter()
+            .map(|open| open.since_ms)
+            .collect();
+        assert_eq!(since, vec![10, 20], "a renewed question keeps its age");
+
+        assert!(h.terminal().withdraw_awaiting_reply(Some("Install now?")));
+        assert!(!h.terminal().withdraw_awaiting_reply(Some("Install now?")));
+        assert_eq!(h.open(), vec![Some("Adres Google Wioli?".to_owned())]);
+        assert!(h.terminal().withdraw_awaiting_reply(None));
+        assert!(h.open().is_empty());
+    }
+
+    #[test]
+    fn a_report_without_words_takes_the_agents_question() {
+        let mut h = AwaitingReplyHarness::new();
+        h.change(AgentState::Idle);
+        assert!(h.report());
+        assert!(h.ask("Which branch?", 5));
+        assert_eq!(h.open(), vec![Some("Which branch?".to_owned())]);
+    }
+
+    #[test]
+    fn a_turn_started_after_api_input_is_not_the_users_reply() {
+        let mut h = AwaitingReplyHarness::new();
+        assert!(h.terminal().turn_started_by_user());
+        h.terminal().note_api_input();
+        assert!(!h.terminal().turn_started_by_user());
+        assert!(
+            h.terminal().turn_started_by_user(),
+            "each turn start uses the API input up"
+        );
+        h.terminal().note_api_input();
+        h.submit_reply();
+        assert!(
+            h.terminal().turn_started_by_user(),
+            "the user's own submit came after it"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn awaiting_reply_report_survives_a_live_handoff() {
-        // The old server holds the report and puts it in the handoff state.
+    fn open_questions_survive_a_live_handoff() {
+        // The old server holds the questions and puts them in the handoff state.
         let mut old = AwaitingReplyHarness::new();
         old.change(AgentState::Idle);
-        old.report();
-        assert!(old.terminal().has_awaiting_reply_report());
+        old.ask("First?", 10);
+        old.ask("Second?", 20);
+        let carried = old.terminal().open_questions_for_handoff();
         let mut state = crate::handoff_runtime::HandoffRuntimeState {
             reported_task: None,
-            awaiting_reply_question: None,
-            awaiting_reply_since_ms: None,
+            awaiting_reply_question: Some("Second?".into()),
+            awaiting_reply_since_ms: Some(20),
             limit_report: None,
             pane_id: 1,
             child_pid: 0,
@@ -3551,22 +3632,39 @@ mod tests {
             initial_history_ansi: None,
             alternate_screen_ansi: None,
             agent_state: None,
-            awaiting_reply_reported: old.terminal().has_awaiting_reply_report(),
+            awaiting_reply_reported: true,
+            open_questions: carried
+                .into_iter()
+                .map(
+                    |(question, since_ms)| crate::handoff_runtime::HandoffOpenQuestion {
+                        question,
+                        since_ms,
+                    },
+                )
+                .collect(),
         };
         // It crosses the process boundary as JSON.
         state = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
-        assert!(state.awaiting_reply_reported);
 
         // The new server starts with a fresh terminal that detects Idle again.
         let mut new = AwaitingReplyHarness::new();
         new.change(AgentState::Idle);
         assert!(!new.awaiting());
-        if state.awaiting_reply_reported {
-            new.terminal().restore_awaiting_reply_report(None, None);
-        }
+        new.terminal()
+            .restore_open_questions(state.carried_open_questions());
         assert!(new.awaiting(), "the mark is back once the agent is idle");
-        // Typing still clears it.
-        assert!(new.type_input());
+        assert_eq!(
+            new.open(),
+            vec![Some("First?".to_owned()), Some("Second?".to_owned())]
+        );
+
+        // An older sender carries its single report.
+        state.open_questions.clear();
+        assert_eq!(
+            state.carried_open_questions(),
+            vec![(Some("Second?".to_owned()), 20)]
+        );
+        assert!(new.submit_reply());
         assert!(!new.awaiting());
     }
 
@@ -3607,25 +3705,19 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_reply_report_before_an_in_turn_prompt_is_dropped() {
+    fn an_open_question_stays_across_a_prompt_inside_the_turn() {
         let mut h = AwaitingReplyHarness::new();
 
-        // The agent reports, then asks with a question form inside the same turn.
+        // The agent asks, then a permission prompt follows while it works on.
         h.change(AgentState::Working);
         h.report();
         h.change(AgentState::Blocked);
         h.change(AgentState::Working);
         h.change(AgentState::Idle);
         assert!(
-            !h.awaiting(),
-            "the form answered inside the turn used it up"
+            h.awaiting(),
+            "only a reply, a withdrawal or the session's end closes it"
         );
-
-        h.change(AgentState::Working);
-        h.report();
-        h.change(AgentState::Blocked);
-        h.change(AgentState::Idle);
-        assert!(!h.awaiting(), "a dismissed form leaves no mark either");
     }
 
     #[test]

@@ -896,12 +896,30 @@ pub(crate) fn is_typed_input(event: &RawInputEvent) -> bool {
     }
 }
 
-/// Whether raw input bytes from a client terminal carry typing (`is_typed_input`).
-pub(crate) fn bytes_carry_typed_input(data: &[u8]) -> bool {
+/// Whether `event` submits what the user typed: a plain Enter press. Shift or Alt with
+/// Enter adds a line in most agents, and a paste carrying a newline is a paste, so neither
+/// submits; a replied question is one the user sent off, not one being written.
+pub(crate) fn is_submit_input(event: &RawInputEvent) -> bool {
+    matches!(
+        event,
+        RawInputEvent::Key(key)
+            if key.code == crossterm::event::KeyCode::Enter
+                && key.kind != crossterm::event::KeyEventKind::Release
+                && key.modifiers.is_empty()
+    )
+}
+
+/// What raw input bytes from a client terminal carry: whether typing (`is_typed_input`) and
+/// whether a submit (`is_submit_input`).
+pub(crate) fn bytes_carry_typed_input(data: &[u8]) -> (bool, bool) {
     let mut framer = RawInputByteFramer::default();
     let mut chunks = framer.push(data);
     chunks.extend(framer.flush_timeout());
-    events_from_framed_chunks(chunks).iter().any(is_typed_input)
+    let events = events_from_framed_chunks(chunks);
+    (
+        events.iter().any(is_typed_input),
+        events.iter().any(is_submit_input),
+    )
 }
 
 #[cfg(any(unix, test))]
@@ -1576,7 +1594,7 @@ mod tests {
     #[test]
     fn typed_input_is_keys_text_and_paste_only() {
         for typed in [&b"y"[..], b"\r", b"\x1b[A", b"\x1b[200~text\x1b[201~"] {
-            assert!(bytes_carry_typed_input(typed), "{typed:?}");
+            assert!(bytes_carry_typed_input(typed).0, "{typed:?}");
         }
         for untyped in [
             &b"\x1b[I"[..],
@@ -1586,7 +1604,24 @@ mod tests {
             b"\x1b]11;rgb:0000/0000/0000\x1b\\",
             b"",
         ] {
-            assert!(!bytes_carry_typed_input(untyped), "{untyped:?}");
+            assert!(!bytes_carry_typed_input(untyped).0, "{untyped:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_plain_enter_submits() {
+        for submit in [&b"\r"[..], b"answer\r", b"\x1b[13u"] {
+            assert_eq!(bytes_carry_typed_input(submit), (true, true), "{submit:?}");
+        }
+        // Typing, a paste carrying a newline, Shift+Enter and Alt+Enter add to the reply
+        // without sending it.
+        for typing in [
+            &b"answer"[..],
+            b"\x1b[200~line one\rline two\r\x1b[201~",
+            b"\x1b[13;2u",
+            b"\x1b\r",
+        ] {
+            assert_eq!(bytes_carry_typed_input(typing), (true, false), "{typing:?}");
         }
     }
 

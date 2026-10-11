@@ -98,6 +98,8 @@ const HEADER_INDICATORS: [super::sidebar::HeaderIndicator; 4] = [
 pub(super) enum AskRow {
     /// An agent waiting on the user.
     Agent,
+    /// An agent's open question, listed while the agent works on.
+    Question,
     /// A headless worker's question for the user, or one its coordinator
     /// escalated.
     WorkerQuestion,
@@ -105,7 +107,12 @@ pub(super) enum AskRow {
     Quiet,
 }
 
-const ASK_ROWS: [AskRow; 3] = [AskRow::Agent, AskRow::WorkerQuestion, AskRow::Quiet];
+const ASK_ROWS: [AskRow; 4] = [
+    AskRow::Agent,
+    AskRow::Question,
+    AskRow::WorkerQuestion,
+    AskRow::Quiet,
+];
 
 /// What a count of the Items button counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,7 +183,7 @@ pub(super) fn worker_entry(state: &str) -> LegendEntry {
 /// `agent_icon`.
 pub(super) fn agent_state_label(status: AgentStatus, mark: AgentMark) -> &'static str {
     match mark {
-        AgentMark::AwaitsReply => "turn ended with a question for you",
+        AgentMark::AwaitsReply => "a question for you; clears when you submit a reply",
         AgentMark::WaitsOnJob => "turn ended; a job it started still runs",
         AgentMark::WaitsOnIdleJob => "turn ended; its running jobs are silent",
         AgentMark::BackgroundWork => "finished, background work running (its bg token names it)",
@@ -212,6 +219,7 @@ fn worker_state_label(state: &str) -> String {
 fn ask_label(row: AskRow) -> &'static str {
     match row {
         AskRow::Agent => "an agent waits on you; the line under says for what",
+        AskRow::Question => "an open question; clears when you submit a reply",
         AskRow::WorkerQuestion => "a worker asks you (or was escalated)",
         AskRow::Quiet => "its coordinator's; uncounted",
     }
@@ -519,6 +527,10 @@ pub(super) fn legend_lines(
                     Span::styled(" fix login", Style::default().fg(palette.text)),
                 ]
             }
+            AskRow::Question => vec![Span::styled(
+                "? Install now?",
+                Style::default().fg(palette.text),
+            )],
             AskRow::WorkerQuestion => vec![Span::styled(
                 format!(
                     "? {}",

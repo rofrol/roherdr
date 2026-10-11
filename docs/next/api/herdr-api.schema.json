@@ -3328,7 +3328,7 @@
           "type": "object"
         },
         "PaneClearAwaitingReplyParams": {
-          "description": "The user dismisses the agents' questions in these panes without typing into them: their\nawaiting-reply reports are forgotten as if the user had typed. A later report shows the\nquestion again.",
+          "description": "The user dismisses the agents' questions in these panes without replying: their open\nquestions and limit reports are forgotten as if the user had answered. A later report\nshows a question again.",
           "properties": {
             "pane_ids": {
               "items": {
@@ -3958,7 +3958,7 @@
           "type": "object"
         },
         "PaneReportAwaitingReplyParams": {
-          "description": "The agent in the pane ends its current turn by asking the user something: a question or a\ndecision the user must make. Shown until the agent starts working again.",
+          "description": "The agent in the pane asks the user something: a question or a decision the user must\nmake. The question stays open, listed whatever the agent does, until the user submits a\nreply, the agent withdraws it (`pane.withdraw_awaiting_reply`) or its session ends; a\ndifferent question opens another entry, the same one again keeps its entry.",
           "properties": {
             "pane_id": {
               "type": "string"
@@ -4452,6 +4452,24 @@
             "pane_id",
             "source",
             "match"
+          ],
+          "type": "object"
+        },
+        "PaneWithdrawAwaitingReplyParams": {
+          "description": "The agent in the pane withdraws its open question `question` (as it reported it), or all\nof its open questions without one: it no longer waits for that answer.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "question": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
           ],
           "type": "object"
         },
@@ -10373,6 +10391,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.withdraw_awaiting_reply",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneWithdrawAwaitingReplyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_task",
               "type": "string"
             },
@@ -11115,7 +11149,7 @@
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
             "awaiting_reply": {
-              "description": "The agent's last turn ended by asking the user something (reported through\n`pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.",
+              "description": "The agent asked the user something (reported through `pane.report_awaiting_reply`)\nthat is still open, and it is idle: the pane's `?` mark.",
               "type": "boolean"
             },
             "background_tasks": {
@@ -11179,6 +11213,13 @@
                 "string",
                 "null"
               ]
+            },
+            "open_questions": {
+              "description": "The agent's open questions, oldest first, whatever its state: each stays until the\nuser submits a reply, the agent withdraws it or its session ends.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentOpenQuestion"
+              },
+              "type": "array"
             },
             "pane_id": {
               "type": "string"
@@ -11381,6 +11422,35 @@
             "source",
             "source_kind",
             "local_override_shadowing_remote"
+          ],
+          "type": "object"
+        },
+        "AgentOpenQuestion": {
+          "description": "A question an agent asked the user that is still open.",
+          "properties": {
+            "id": {
+              "description": "Unique within the agent's terminal.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "question": {
+              "description": "The question in a few words; absent when the agent gave none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "since_ms": {
+              "description": "Unix milliseconds when it was asked; 0 when unknown.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "since_ms"
           ],
           "type": "object"
         },

@@ -436,14 +436,25 @@ pub enum AgentTurnPhase {
     Finished,
 }
 
-/// The agent in the pane ends its current turn by asking the user something: a question or a
-/// decision the user must make. Shown until the agent starts working again.
+/// The agent in the pane asks the user something: a question or a decision the user must
+/// make. The question stays open, listed whatever the agent does, until the user submits a
+/// reply, the agent withdraws it (`pane.withdraw_awaiting_reply`) or its session ends; a
+/// different question opens another entry, the same one again keeps its entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReportAwaitingReplyParams {
     pub pane_id: String,
     /// The question in a few words (`Install now?`), shown under the agent in the list of
     /// agents waiting on the user. Cut to about 40 characters on a character boundary, control
     /// characters dropped; without it the list shows only that the agent waits for a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+/// The agent in the pane withdraws its open question `question` (as it reported it), or all
+/// of its open questions without one: it no longer waits for that answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneWithdrawAwaitingReplyParams {
+    pub pane_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
 }
@@ -470,9 +481,9 @@ pub struct PaneReportTaskParams {
     pub task: Option<String>,
 }
 
-/// The user dismisses the agents' questions in these panes without typing into them: their
-/// awaiting-reply reports are forgotten as if the user had typed. A later report shows the
-/// question again.
+/// The user dismisses the agents' questions in these panes without replying: their open
+/// questions and limit reports are forgotten as if the user had answered. A later report
+/// shows a question again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneClearAwaitingReplyParams {
     pub pane_ids: Vec<String>,

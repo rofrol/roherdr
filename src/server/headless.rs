@@ -1315,6 +1315,34 @@ impl HeadlessServer {
             && self.app.clear_awaiting_reply_on_input(&terminal_id)
     }
 
+    /// After a client's input reached the pane: a plain Enter submits the user's reply and
+    /// answers the agent's open questions (unless the agent shows a prompt of its own, which
+    /// that Enter answers instead); any other typing only clears a limit report. Returns
+    /// whether what the pane shows changed.
+    fn answer_awaiting_reply_on_submit(
+        &mut self,
+        workspace_index: usize,
+        pane_id: crate::layout::PaneId,
+        events: &[protocol::ClientPaneInputEvent],
+    ) -> bool {
+        let Some(terminal_id) = self
+            .app
+            .state
+            .terminal_id_for_pane(workspace_index, pane_id)
+        else {
+            return false;
+        };
+        if !self.app.terminal_has_awaiting_reply_report(&terminal_id) {
+            return false;
+        }
+        let events = events
+            .iter()
+            .map(|event| event.to_raw_input_event())
+            .collect::<Vec<_>>();
+        self.app
+            .apply_client_input_to_awaiting_reply(&terminal_id, &events)
+    }
+
     fn resolve_terminal_session_target(
         &mut self,
         client_id: u64,
@@ -2173,10 +2201,16 @@ impl HeadlessServer {
                 };
                 // Classified before the bytes move into the runtime, and only while a
                 // report could be cleared.
-                let typed = self.app.terminal_has_awaiting_reply_report(&terminal_id)
-                    && crate::raw_input::bytes_carry_typed_input(&data);
+                let (typed, submitted) =
+                    if self.app.terminal_has_awaiting_reply_report(&terminal_id) {
+                        crate::raw_input::bytes_carry_typed_input(&data)
+                    } else {
+                        (false, false)
+                    };
                 if let Err(err) = apply_terminal_attach_input(runtime, data) {
                     warn!(client_id, terminal_id = %terminal_id, err = %err);
+                } else if submitted && self.app.terminal_accepts_reply(&terminal_id) {
+                    self.app.answer_awaiting_reply_on_submit(&terminal_id);
                 } else if typed {
                     self.app.clear_awaiting_reply_on_input(&terminal_id);
                 }
@@ -2520,14 +2554,10 @@ impl HeadlessServer {
                 let applied = apply_client_pane_input_events(runtime, &events);
                 let scrolled = runtime.scroll_metrics() != scroll_before;
                 let answered = match applied {
-                    Ok(()) => self.clear_awaiting_reply_on_typing(
+                    Ok(()) => self.answer_awaiting_reply_on_submit(
                         workspace_index,
                         runtime_pane_id,
-                        || {
-                            events.iter().any(|event| {
-                                crate::raw_input::is_typed_input(&event.to_raw_input_event())
-                            })
-                        },
+                        &events,
                     ),
                     Err(err) => {
                         warn!(client_id, pane_id, err = %err, "targeted client shell input failed");

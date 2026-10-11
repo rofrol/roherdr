@@ -8508,7 +8508,7 @@ fn no_handle_internal_event_bypass_in_module() {
 }
 
 #[tokio::test]
-async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
+async fn client_typing_keeps_an_open_question_and_enter_answers_it() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("awaiting-reply");
     let pane = workspace.tabs[0].root_pane;
@@ -8534,10 +8534,12 @@ async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
     let (control, _render) = connect_test_shell(&mut server, 31, 100, 30);
     let _ = control.recv().expect("snapshot");
 
+    // The return value asks for a redraw. The client is already in the foreground and
+    // typing the answer changes nothing listed or shown, so it asks for none.
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 31,
-            pane_id,
+            pane_id: pane_id.clone(),
             events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
                 "yes".into()
             )],
@@ -8547,7 +8549,46 @@ async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
         input.try_recv().expect("typed input"),
         Bytes::from_static(b"yes")
     );
-    assert!(!server.app.state.terminals[&terminal_id].awaiting_reply());
+    assert!(
+        server.app.state.terminals[&terminal_id].awaiting_reply(),
+        "typing the answer keeps the question"
+    );
+
+    let enter = |modifiers: u8| crate::protocol::ClientPaneInputEvent::Key {
+        code: crate::protocol::ClientKeyCode::Enter,
+        modifiers,
+        kind: crate::protocol::ClientKeyKind::Press,
+        repeat_count: 1,
+        shifted_codepoint: None,
+        generated_text: None,
+        tracks_release: false,
+        physical_key_id: None,
+        windows_record: None,
+    };
+    // Shift+Enter adds a line: still no reply, and nothing to redraw.
+    assert!(
+        !server.handle_server_event(ServerEvent::ClientShellPaneInput {
+            client_id: 31,
+            pane_id: pane_id.clone(),
+            events: vec![enter(crossterm::event::KeyModifiers::SHIFT.bits())],
+        })
+    );
+    assert!(server.app.state.terminals[&terminal_id].awaiting_reply());
+    // The submitted reply answers the question: the pane changed.
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+            client_id: 31,
+            pane_id,
+            events: vec![enter(0)],
+        })
+    );
+    assert!(
+        !server.app.state.terminals[&terminal_id].awaiting_reply(),
+        "a submitted reply answers it"
+    );
+    assert!(server.app.state.terminals[&terminal_id]
+        .open_questions()
+        .is_empty());
     shutdown_test_runtimes(&mut server);
 }
 

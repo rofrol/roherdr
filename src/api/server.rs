@@ -1027,6 +1027,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneReportTurn(_) => "pane.report_turn",
         Method::PaneReportAwaitingReply(_) => "pane.report_awaiting_reply",
         Method::PaneClearAwaitingReply(_) => "pane.clear_awaiting_reply",
+        Method::PaneWithdrawAwaitingReply(_) => "pane.withdraw_awaiting_reply",
         Method::PaneReportTask(_) => "pane.report_task",
         Method::PaneReportLimit(_) => "pane.report_limit",
         Method::PaneReportMetadata(_) => "pane.report_metadata",

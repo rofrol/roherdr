@@ -407,6 +407,15 @@ impl App {
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             awaiting_reply: terminal.awaiting_reply(),
+            open_questions: terminal
+                .open_questions()
+                .iter()
+                .map(|open| crate::api::schema::AgentOpenQuestion {
+                    id: open.id,
+                    question: open.question.clone(),
+                    since_ms: open.since_ms,
+                })
+                .collect(),
             question: terminal
                 .awaiting_reply_question()
                 .map(str::to_owned)

@@ -663,6 +663,9 @@ fn agent_command() -> Command {
             Command::new("awaiting-reply")
                 .about("Report that this agent ends its turn by asking the user something")
                 .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)"))
+                .arg(flag("withdraw").help(
+                    "Withdraw the open question QUESTION, or all of them without one",
+                ))
                 .arg(
                     Arg::new("question")
                         .value_name("QUESTION")

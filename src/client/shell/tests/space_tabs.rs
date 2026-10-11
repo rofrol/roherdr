@@ -5901,7 +5901,7 @@ fn open_legend(
 fn a_click_on_a_tab_state_glyph_opens_the_legend_at_its_entry() {
     use super::super::status_legend::LegendEntry;
     let mut state = state_with_tabs(true);
-    set_agent_status(&mut state, AgentStatus::Idle, true);
+    set_agent_status(&mut state, AgentStatus::Blocked, false);
     state.compose(106, 30).unwrap();
     let (line, _) = state.hits.space_tabs[0];
     let glyph = state
@@ -5915,8 +5915,7 @@ fn a_click_on_a_tab_state_glyph_opens_the_legend_at_its_entry() {
     // The glyph explains itself instead of opening the tab.
     assert!(!focuses(&outcome, "tab_1"));
     assert!(state.tab_press.is_none());
-    // The mark's entry, which the legend lists once under the idle status.
-    let entry = LegendEntry::Agent(AgentStatus::Idle, AgentMark::AwaitsReply);
+    let entry = LegendEntry::Agent(AgentStatus::Blocked, AgentMark::None);
     assert_eq!(open_legend(&state), Some(Some(entry)));
     let scroll = match &state.overlay {
         Some(ClientShellOverlay::Help(help)) => help.scroll,
@@ -5930,13 +5929,113 @@ fn a_click_on_a_tab_state_glyph_opens_the_legend_at_its_entry() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        marked.contains("turn ended with a question for you"),
+        marked.contains("blocked: needs input, approval or a decision"),
         "{marked}"
     );
 
     // The rest of the line still opens the tab.
     state.overlay = None;
     assert!(focuses(&click_tab_line(&mut state), "tab_1"));
+}
+
+/// Opens an open question for the first agent, asked at `since_ms`.
+fn with_open_question(state: &mut ClientShellState, question: &str, since_ms: u64) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let agent = projected.agents[0].clone();
+    let id = projected.open_questions.len() as u64 + 1;
+    projected
+        .open_questions
+        .push(crate::protocol::ClientShellOpenQuestion {
+            pane_id: agent.pane_id,
+            workspace_id: agent.workspace_id,
+            tab_id: agent.tab_id,
+            id,
+            question: Some(question.to_owned()),
+            since_ms,
+        });
+    state.set_snapshot(Box::new(projected));
+}
+
+#[test]
+fn a_click_on_a_question_mark_shows_the_open_question_in_the_list() {
+    use super::super::notification_log::{NotificationLogView, RowKey};
+    let mut state = state_with_tabs(true);
+    set_agent_status(&mut state, AgentStatus::Idle, true);
+    with_open_question(&mut state, "Wiola's Google address?", 1_000);
+    state.compose(106, 30).unwrap();
+    let (line, _) = state.hits.space_tabs[0];
+    let tooltip = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-state:") && target.rect.y == line.y)
+        .expect("state glyph tooltip")
+        .clone();
+    assert!(
+        tooltip.text.contains("clears when you submit a reply")
+            && tooltip.text.ends_with("click: the question"),
+        "{}",
+        tooltip.text
+    );
+    left_click(&mut state, (tooltip.rect.x, tooltip.rect.y));
+    assert_eq!(open_legend(&state), None, "the question, not the legend");
+    assert_eq!(
+        state.open_notification_list(),
+        Some(NotificationLogView::Asking)
+    );
+    let pane_id = state.snapshot.as_deref().unwrap().agents[0].pane_id.clone();
+    assert_eq!(
+        state.notification_log_highlighted_key(),
+        Some(&RowKey::OpenQuestion { pane_id, id: 1 })
+    );
+    // Its row: the question, when it clears, and its age in the time column.
+    let rows = state.notification_log_rows();
+    let [row] = rows.as_slice() else {
+        panic!("one row for the agent's question: {rows:?}");
+    };
+    assert_eq!(row.unix_ms, 1_000);
+    assert_eq!(
+        ClientShellState::notification_row_detail(row).as_deref(),
+        Some("Wiola's Google address? · clears when you submit a reply")
+    );
+}
+
+#[test]
+fn an_open_question_stays_listed_while_its_agent_works() {
+    let mut state = state_with_tabs(true);
+    set_agent_status(&mut state, AgentStatus::Working, false);
+    with_open_question(&mut state, "Install now?", 1_000);
+    with_open_question(&mut state, "Which branch?", 2_000);
+    // Each question is a row of its own and counts; the working agent is not
+    // listed as working while a question of its waits.
+    assert_eq!(state.agent_indicator_counts(), (0, 2));
+    let mut outcome = ClientShellInput::default();
+    state.toggle_notification_view(
+        super::super::notification_log::NotificationLogView::Asking,
+        &mut outcome,
+    );
+    let details = state
+        .notification_log_rows()
+        .iter()
+        .filter_map(ClientShellState::notification_row_detail)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        details,
+        [
+            "Install now? · clears when you submit a reply",
+            "Which branch? · clears when you submit a reply"
+        ]
+    );
+    // The tab line says what it asks under its label, the oldest first.
+    state.overlay = None;
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let line = state.hits.space_tabs[0].0.y as usize;
+    assert!(
+        rows[line + 1].contains("↳ Install now?"),
+        "{}",
+        rows[line + 1]
+    );
 }
 
 #[test]

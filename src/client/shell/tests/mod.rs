@@ -97,6 +97,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         workers: Vec::new(),
         worker_items: Vec::new(),
         pty_usage: None,
+        open_questions: Vec::new(),
     }
 }
 

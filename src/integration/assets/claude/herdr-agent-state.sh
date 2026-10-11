@@ -127,6 +127,10 @@ fi
 # message of the user are blocked; the next one goes through and herdr lists the pane in the
 # user's `?` list (`pane.report_awaiting_reply`), once. Shadow mode only logs.
 # `scripts/coordinator_stall_replay.py` replays audited turn ends through it.
+# A turn the user did not start (a background task's notification or a compaction woke it) that
+# ends with an open question it did not ask or renew (one from an earlier turn the user has not
+# answered) is blocked once with a reminder to renew it with `herdr agent awaiting-reply "<question>"` or to withdraw it with
+# `herdr agent awaiting-reply --withdraw`, so the user's `?` list never keeps a stale question.
 # A stop the check blocks does not end the turn; any other stop reports the turn finished.
 stop_check() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -507,6 +511,8 @@ last_prompt_key = ""
 # made together before their results came back. A call after a result starts a new batch.
 last_batch = []
 batch_has_results = False
+# The turn started without the user: a background task's notification or a compaction summary.
+turn_woken = False
 transcript = hook_input.get("transcript_path")
 if isinstance(transcript, str) and transcript:
     try:
@@ -536,6 +542,9 @@ if isinstance(transcript, str) and transcript:
                 if not text_of(content).lstrip().startswith(("<task-notification>", HOOK_FEEDBACK)):
                     last_prompt = text_of(content).strip()
                     last_prompt_key = str(entry.get("uuid") or entry.get("promptId") or last_prompt)
+                if not text_of(content).lstrip().startswith(HOOK_FEEDBACK):
+                    turn_woken = bool(entry.get("isCompactSummary")) or text_of(
+                        content).lstrip().startswith("<task-notification>")
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
@@ -594,6 +603,22 @@ if blocked_calls and mode != "shadow" and os.environ.get("HERDR_SOCKET_PATH"):
         pass
 # Asking the agent to run a command its tools may deny again only repeats the denial.
 block = question and not reported and not blocked_calls and not stop_hook_active
+# Questions still open from an earlier turn, which this turn neither asked again nor withdrew.
+open_questions = []
+if (
+    turn_woken
+    and not reported
+    and not marked
+    and not block
+    and not stop_hook_active
+    and os.environ.get("HERDR_SOCKET_PATH")
+):
+    agent = (ask_server("agent.get", {"target": os.environ["HERDR_PANE_ID"]}) or {}).get("agent")
+    entries = agent.get("open_questions") if isinstance(agent, dict) else None
+    if isinstance(entries, list):
+        open_questions = [
+            str(entry.get("question") or "reply") for entry in entries if isinstance(entry, dict)
+        ]
 # A coordinator that waits for the user's go-ahead while nothing it started runs: the precedence
 # of scripts/coordinator_turn_audit.py (a tool-based ask, then a running background task, then
 # the go-ahead text). Any missing input or failed request leaves the stop alone.
@@ -718,6 +743,7 @@ try:
                     "stall_reason": stall_reason,
                     "stall_blocked": stall_blocked,
                     "stall_escalated": stall_escalated,
+                    "open_questions": len(open_questions),
                     "background_tasks": (
                         len(background_tasks) if isinstance(background_tasks, list) else None
                     ),
@@ -782,6 +808,24 @@ elif block and mode != "shadow":
                     "6 words>\"` now as the only command, then stop without repeating your "
                     "message. If you are not "
                     "waiting for the user, just stop."
+                ),
+            }
+        )
+    )
+elif open_questions and mode != "shadow":
+    asked = "; ".join("\u201c" + text + "\u201d" for text in open_questions[:3])
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": (
+                    "Herdr: the user's `?` list still shows your open question (" + asked + "), "
+                    "asked before this turn, which the user did not start, and not answered "
+                    "yet. If you still wait for that "
+                    "answer, renew it: run `herdr agent awaiting-reply \"<the same question>\"`. "
+                    "If you no longer do, withdraw it: run `herdr agent awaiting-reply "
+                    "--withdraw` (add the question to withdraw only that one). Then stop "
+                    "without repeating your message."
                 ),
             }
         )

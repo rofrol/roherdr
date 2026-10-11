@@ -1486,6 +1486,9 @@ impl App {
             Method::PaneReportAwaitingReply(params) => {
                 return self.handle_pane_report_awaiting_reply(request.id, params);
             }
+            Method::PaneWithdrawAwaitingReply(params) => {
+                return self.handle_pane_withdraw_awaiting_reply(request.id, params);
+            }
             Method::PaneClearAwaitingReply(params) => {
                 return self.handle_pane_clear_awaiting_reply(request.id, params);
             }

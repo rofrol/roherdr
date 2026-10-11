@@ -673,15 +673,10 @@ fn restore_tab(
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
         #[cfg(unix)]
-        let handoff_awaiting_reply = imported_runtime
+        let handoff_open_questions = imported_runtime
             .as_ref()
-            .filter(|imported| imported.state.awaiting_reply_reported)
-            .map(|imported| {
-                (
-                    imported.state.awaiting_reply_question.clone(),
-                    imported.state.awaiting_reply_since_ms,
-                )
-            });
+            .map(|imported| imported.state.carried_open_questions())
+            .unwrap_or_default();
         #[cfg(unix)]
         let handoff_limit = imported_runtime
             .as_ref()
@@ -844,9 +839,7 @@ fn restore_tab(
                     terminal.restore_handoff_agent_state(agent_state);
                 }
                 #[cfg(unix)]
-                if let Some((question, since_ms)) = handoff_awaiting_reply {
-                    terminal.restore_awaiting_reply_report(question, since_ms);
-                }
+                terminal.restore_open_questions(handoff_open_questions);
                 #[cfg(unix)]
                 terminal.restore_limit_report(handoff_limit);
                 #[cfg(unix)]

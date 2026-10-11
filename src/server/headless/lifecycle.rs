@@ -90,11 +90,22 @@ impl HeadlessServer {
                 .get(terminal_id)
                 .and_then(|terminal| terminal.handoff_agent_state());
             if let Some(terminal) = self.app.state.terminals.get(terminal_id) {
-                if let Some((question, since_ms)) = terminal.awaiting_reply_report() {
+                let open_questions = terminal.open_questions_for_handoff();
+                // The newest also goes in the single fields, for an older receiver.
+                if let Some((question, since_ms)) = open_questions.last() {
                     handoff_runtime.awaiting_reply_reported = true;
-                    handoff_runtime.awaiting_reply_question = question.map(str::to_owned);
-                    handoff_runtime.awaiting_reply_since_ms = since_ms;
+                    handoff_runtime.awaiting_reply_question = question.clone();
+                    handoff_runtime.awaiting_reply_since_ms = Some(*since_ms);
                 }
+                handoff_runtime.open_questions = open_questions
+                    .into_iter()
+                    .map(
+                        |(question, since_ms)| crate::handoff_runtime::HandoffOpenQuestion {
+                            question,
+                            since_ms,
+                        },
+                    )
+                    .collect();
                 handoff_runtime.limit_report = terminal.limit_report().cloned();
             }
             handoff_runtime.reported_task = self

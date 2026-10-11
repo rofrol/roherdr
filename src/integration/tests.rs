@@ -4913,6 +4913,20 @@ impl StopCheckServer {
     /// `mode` is the `[coordinator] allowlist` mode `coordinator.allowlist_refusal` answers;
     /// `None` answers as a server without that method.
     fn start_in_mode(role: &'static str, records: bool, mode: Option<&'static str>) -> Self {
+        Self::start_full(role, records, mode, &[])
+    }
+
+    /// `agent.get` answers an agent whose open questions are `questions`.
+    fn start_asking(questions: &'static [&'static str]) -> Self {
+        Self::start_full("worker", true, None, questions)
+    }
+
+    fn start_full(
+        role: &'static str,
+        records: bool,
+        mode: Option<&'static str>,
+        questions: &'static [&'static str],
+    ) -> Self {
         use std::io::{BufRead, BufReader, Write};
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         // Short: a Unix socket path holds at most 104 bytes on macOS.
@@ -4947,6 +4961,13 @@ impl StopCheckServer {
                     "coordinator.allowlist_refusal" if mode.is_some() => {
                         json!({"type": "coordinator_allowlist_refusal", "mode": mode})
                     }
+                    "agent.get" if !questions.is_empty() => json!({"type": "agent_info",
+                        "agent": {"pane_id": "p1", "open_questions": questions
+                            .iter()
+                            .enumerate()
+                            .map(|(id, question)| json!({"id": id, "question": question,
+                                                          "since_ms": 1}))
+                            .collect::<Vec<_>>()}}),
                     _ => json!({}),
                 };
                 let reply = if method == "coordinator.record_override" && !records {
@@ -5202,6 +5223,128 @@ fn claude_stop_check_asks_about_workers_only_in_a_coordinator_that_ran_them() {
     );
     assert_eq!((stdout.trim(), args.as_str()), ("", ""));
     assert_eq!(methods, ["pane.report_turn"]);
+}
+
+/// Runs the Claude hook's `stop-check` on a Stop after `transcript_lines`, herdr holding
+/// `questions` open for the pane. Returns the hook's stdout and the socket methods.
+#[cfg(unix)]
+fn run_stop_check_with_open_questions(
+    transcript_lines: &[Value],
+    stop_hook_active: bool,
+    questions: &'static [&'static str],
+) -> (String, Vec<String>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let base = unique_base();
+    fs::create_dir_all(&base).unwrap();
+    let transcript = base.join("t.jsonl");
+    let text: String = transcript_lines
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(&transcript, text).unwrap();
+    let server = StopCheckServer::start_asking(questions);
+    let mut child = Command::new("sh")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/integration/assets/claude/herdr-agent-state.sh"),
+        )
+        .arg("stop-check")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "p1")
+        .env("HERDR_SOCKET_PATH", &server.path)
+        .env("XDG_STATE_HOME", base.join("state"))
+        .env_remove("CURSOR_VERSION")
+        .env_remove("HERDR_AWAITING_REPLY_STOP")
+        .env_remove("HERDR_AWAITING_REPLY_INSTRUCTIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = json!({
+        "hook_event_name": "Stop",
+        "session_id": "s",
+        "transcript_path": transcript,
+        "stop_hook_active": stop_hook_active,
+        "last_assistant_message": "The build is green.",
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let methods = server.methods();
+    let _ = fs::remove_dir_all(base);
+    (String::from_utf8(output.stdout).unwrap(), methods)
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_stop_check_reminds_of_an_open_question_from_an_earlier_turn() {
+    // A turn a background task woke, which did not ask or renew the question (the hook skips
+    // the transcript's first line, which a tail read may cut).
+    let woken = vec![
+        json!({"type": "summary"}),
+        json!({"type": "user", "message": {"role": "user", "content":
+            "<task-notification>\n<tool-use-id>t0</tool-use-id>\n</task-notification>"}}),
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "The build is green."}]}}),
+    ];
+    let (stdout, methods) =
+        run_stop_check_with_open_questions(&woken, false, &["Wiola's Google address?"]);
+    let decision: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().unwrap();
+    for named in [
+        "Wiola's Google address?",
+        "herdr agent awaiting-reply \"<the same question>\"",
+        "herdr agent awaiting-reply --withdraw",
+    ] {
+        assert!(reason.contains(named), "{named} missing from {reason}");
+    }
+    assert!(
+        !methods.iter().any(|method| method == "pane.report_turn"),
+        "a blocked stop does not end the turn: {methods:?}"
+    );
+
+    // Once only: the stop after the reminder goes through.
+    let (stdout, _) =
+        run_stop_check_with_open_questions(&woken, true, &["Wiola's Google address?"]);
+    assert_eq!(stdout.trim(), "");
+
+    // A turn that renewed (or withdrew) it is not reminded, nor one with nothing open.
+    let mut renewed = woken.clone();
+    renewed.insert(
+        2,
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command":
+                "herdr agent awaiting-reply --withdraw"}}]}}),
+    );
+    let (stdout, methods) =
+        run_stop_check_with_open_questions(&renewed, false, &["Wiola's Google address?"]);
+    assert_eq!(stdout.trim(), "");
+    assert!(
+        !methods.iter().any(|method| method == "agent.get"),
+        "{methods:?}"
+    );
+    let (stdout, _) = run_stop_check_with_open_questions(&woken, false, &[]);
+    assert_eq!(stdout.trim(), "");
+
+    // A turn the user started has answered them; herdr is not asked.
+    let mut prompted = woken.clone();
+    prompted[1] = json!({"type": "user", "message": {"role": "user", "content": "go on"}});
+    let (stdout, methods) =
+        run_stop_check_with_open_questions(&prompted, false, &["Wiola's Google address?"]);
+    assert_eq!(stdout.trim(), "");
+    assert!(
+        !methods.iter().any(|method| method == "agent.get"),
+        "{methods:?}"
+    );
 }
 
 /// The `pane.report_turn` params the Claude hook's `reminder` sends for a `UserPromptSubmit`

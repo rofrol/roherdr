@@ -3069,6 +3069,18 @@ impl ClientShellState {
                     self.toggle_worker_items(button, outcome);
                     return;
                 }
+                // A `?` glyph whose question is open shows that question,
+                // with its age, in the `?` list.
+                let question = self
+                    .hits
+                    .question_glyphs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, tab_id)| tab_id.clone());
+                if let Some(tab_id) = question {
+                    self.open_tab_question(&tab_id, outcome);
+                    return;
+                }
                 // A status glyph without an action of its own explains
                 // itself: the status legend opens at its entry.
                 let legend = self

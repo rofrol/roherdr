@@ -443,8 +443,9 @@ impl ClientShellState {
             })
     }
 
-    /// Panes whose agent awaits a reply among those `select` picks, when
-    /// the server can dismiss their questions (else none).
+    /// Panes whose agent awaits a reply or has a question open (also while
+    /// it works) among those `select` picks, when the server can dismiss
+    /// their questions (else none).
     pub(super) fn awaiting_reply_panes(
         &self,
         select: impl Fn(&crate::protocol::ClientShellAgent) -> bool,
@@ -462,7 +463,14 @@ impl ClientShellState {
             snapshot
                 .agents
                 .iter()
-                .filter(|agent| agent.awaiting_reply && select(agent))
+                .filter(|agent| {
+                    (agent.awaiting_reply
+                        || snapshot
+                            .open_questions
+                            .iter()
+                            .any(|open| open.pane_id == agent.pane_id))
+                        && select(agent)
+                })
                 .map(|agent| agent.pane_id.clone())
                 .collect()
         })

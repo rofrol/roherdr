@@ -128,6 +128,9 @@ pub(super) struct ShellHitMap {
     /// role mark, a space's job counts): a click opens the status legend at
     /// their entry.
     pub(super) legend_glyphs: Vec<(Rect, super::status_legend::LegendEntry)>,
+    /// A tab line's `?` glyph while its agent's question is open, with the tab: a click
+    /// opens the `?` list at that question instead of the legend.
+    pub(super) question_glyphs: Vec<(Rect, String)>,
     /// Disclosure triangles and counts at the end of tab lines, with the
     /// tab whose squares they fold.
     pub(super) space_tab_folds: Vec<(Rect, String)>,
@@ -457,6 +460,7 @@ impl ShellHitMap {
             .into_iter()
             .filter_map(|(rect, entry)| Some((shift_rect(rect, dy, visible)?, entry)))
             .collect();
+        shift_all(&mut self.question_glyphs);
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
             .filter_map(|mut target| {
@@ -493,6 +497,7 @@ impl ShellHitMap {
             space_todo: self.space_todo.clone(),
             space_to_top: self.space_to_top.clone(),
             legend_glyphs: self.legend_glyphs.clone(),
+            question_glyphs: self.question_glyphs.clone(),
             tooltips: self.tooltips.clone(),
             space_tab_folds: self.space_tab_folds.clone(),
             space_tab_items: self.space_tab_items.clone(),
@@ -512,6 +517,7 @@ impl ShellHitMap {
         self.space_todo.extend(block.space_todo);
         self.space_to_top.extend(block.space_to_top);
         self.legend_glyphs.extend(block.legend_glyphs);
+        self.question_glyphs.extend(block.question_glyphs);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
         self.space_tab_items.extend(block.space_tab_items);

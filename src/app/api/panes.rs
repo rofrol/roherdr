@@ -1708,14 +1708,21 @@ impl App {
         let finished = params.phase == crate::api::schema::AgentTurnPhase::Finished;
         // The count belongs to the turn's end: a start leaves it unknown until that end.
         terminal.report_turn_background_tasks(params.background_tasks.filter(|_| finished));
-        let mut changed = match params.phase {
-            crate::api::schema::AgentTurnPhase::Started => terminal
-                .prompt_turns
-                .turn_started(params.prompt.as_deref(), params.continuation),
-            crate::api::schema::AgentTurnPhase::Finished => terminal
-                .prompt_turns
-                .turn_finished(params.error.as_deref(), params.interrupted),
-        };
+        // A turn the user started (not a continuation, not a prompt sent through the API) is
+        // the user's reply: it answers the open questions.
+        let answered = params.phase == crate::api::schema::AgentTurnPhase::Started
+            && !params.continuation
+            && terminal.turn_started_by_user()
+            && terminal.answer_awaiting_reply();
+        let mut changed = answered
+            | match params.phase {
+                crate::api::schema::AgentTurnPhase::Started => terminal
+                    .prompt_turns
+                    .turn_started(params.prompt.as_deref(), params.continuation),
+                crate::api::schema::AgentTurnPhase::Finished => terminal
+                    .prompt_turns
+                    .turn_finished(params.error.as_deref(), params.interrupted),
+            };
         if finished {
             changed |= self.state.release_held_completion(ws_idx, pane_id);
         }
@@ -1977,6 +1984,38 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_pane_withdraw_awaiting_reply(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneWithdrawAwaitingReplyParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        // Cut like a report, so the agent names it with the same words.
+        let question = params.question.as_deref().and_then(|question| {
+            super::super::api_helpers::one_short_line(question, AWAITING_REPLY_QUESTION_MAX)
+        });
+        let changed = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .is_some_and(|terminal| {
+                let changed = terminal.withdraw_awaiting_reply(question.as_deref());
+                if changed {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
+                changed
+            });
+        if changed {
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_report_limit(
         &mut self,
         id: String,
@@ -2078,7 +2117,11 @@ impl App {
             panes.push(pane);
         }
         for (ws_idx, pane_id) in panes {
-            self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
+            if let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) {
+                self.update_awaiting_reply(&terminal_id, |terminal| {
+                    terminal.clear_awaiting_reply()
+                });
+            }
         }
         encode_success(id, ResponseResult::Ok {})
     }
@@ -2200,19 +2243,67 @@ impl App {
             .is_some_and(crate::terminal::TerminalState::has_awaiting_reply_report)
     }
 
-    /// Forgets the awaiting-reply report of `terminal_id` because someone typed into it
-    /// (a client, the API or another agent): that is the reply, or at least the user is
-    /// looking. Publishes the change when the mark was shown. Returns whether it was.
+    /// Someone typed into `terminal_id` without submitting (a client's keys or paste): that
+    /// is done with a limit report, but never answers an open question. Publishes the change
+    /// when the limit was shown. Returns whether it was.
     pub(crate) fn clear_awaiting_reply_on_input(
         &mut self,
         terminal_id: &crate::terminal::TerminalId,
+    ) -> bool {
+        self.update_awaiting_reply(terminal_id, |terminal| terminal.clear_limit_on_input())
+    }
+
+    /// Whether an Enter into `terminal_id` goes to the agent's prompt, where it sends the
+    /// user's reply: not while the agent shows a dialog of its own (a permission or question
+    /// form), which that Enter answers instead.
+    pub(crate) fn terminal_accepts_reply(&self, terminal_id: &crate::terminal::TerminalId) -> bool {
+        self.state
+            .terminals
+            .get(terminal_id)
+            .is_some_and(|terminal| terminal.state != crate::detect::AgentState::Blocked)
+    }
+
+    /// The user submitted a reply into `terminal_id` from a client (Enter): it answers the
+    /// agent's open questions. Returns whether anything listed or shown changed.
+    pub(crate) fn answer_awaiting_reply_on_submit(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> bool {
+        self.update_awaiting_reply(terminal_id, |terminal| terminal.answer_awaiting_reply())
+    }
+
+    /// A client's input reached `terminal_id`: a plain Enter submits the user's reply and
+    /// answers the open questions (unless the agent shows a dialog of its own, which that
+    /// Enter answers instead); any other typing only clears a limit report and keeps the
+    /// questions. Returns whether anything listed or shown changed, so typing an answer
+    /// that is not sent yet changes nothing.
+    pub(crate) fn apply_client_input_to_awaiting_reply(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        events: &[crate::raw_input::RawInputEvent],
+    ) -> bool {
+        if events.iter().any(crate::raw_input::is_submit_input)
+            && self.terminal_accepts_reply(terminal_id)
+        {
+            return self.answer_awaiting_reply_on_submit(terminal_id);
+        }
+        events.iter().any(crate::raw_input::is_typed_input)
+            && self.clear_awaiting_reply_on_input(terminal_id)
+    }
+
+    /// Applies `update` to the terminal's open questions and limit report, and publishes the
+    /// pane when it says something changed.
+    fn update_awaiting_reply(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        update: impl FnOnce(&mut crate::terminal::TerminalState) -> bool,
     ) -> bool {
         let changed = self
             .state
             .terminals
             .get_mut(terminal_id)
             .is_some_and(|terminal| {
-                let changed = terminal.clear_awaiting_reply();
+                let changed = update(terminal);
                 if changed {
                     terminal.revision = terminal.revision.saturating_add(1);
                 }
@@ -2239,8 +2330,14 @@ impl App {
         changed
     }
 
+    /// Input sent into the pane through the API (`pane.send_text`, `agent.prompt`, another
+    /// agent): it is done with a limit report like typing, and the turn it may start is not
+    /// the user's reply, so the open questions stay.
     pub(super) fn clear_awaiting_reply_on_pane_input(&mut self, ws_idx: usize, pane_id: PaneId) {
         if let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) {
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.note_api_input();
+            }
             self.clear_awaiting_reply_on_input(&terminal_id);
         }
     }
@@ -3271,7 +3368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_pane_input_clears_an_awaiting_reply_report() {
+    async fn api_pane_input_keeps_an_open_question_and_clears_a_limit() {
         let methods: [fn(String) -> crate::api::schema::Method; 3] = [
             |pane_id| {
                 crate::api::schema::Method::PaneSendText(PaneSendTextParams {
@@ -3300,17 +3397,121 @@ mod tests {
             let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
             terminal.state = AgentState::Idle;
             assert!(terminal.report_awaiting_reply(None, 1));
+            assert!(terminal.report_limit(crate::api::schema::AgentLimitKind::Usage, None, 1));
 
             let response = app.handle_api_request(crate::api::schema::Request {
                 id: "req".into(),
-                method: method(pane_id),
+                method: method(pane_id.clone()),
             });
 
             let success: SuccessResponse = serde_json::from_str(&response).unwrap();
             assert_eq!(success.result, ResponseResult::Ok {});
-            assert!(!app.state.terminals[&terminal_id].awaiting_reply());
-            assert!(!app.state.terminals[&terminal_id].has_awaiting_reply_report());
+            // Input sent through the API (another agent, `agent.prompt`) is no reply of
+            // the user's, and neither is the turn it starts.
+            assert!(app.state.terminals[&terminal_id].awaiting_reply());
+            assert!(app.state.terminals[&terminal_id].limit().is_none());
+            report_turn_started(&mut app, &pane_id, false);
+            assert!(app.state.terminals[&terminal_id].awaiting_reply());
         }
+    }
+
+    fn report_turn_started(app: &mut App, pane_id: &str, continuation: bool) {
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "turn".into(),
+            method: crate::api::schema::Method::PaneReportTurn(
+                crate::api::schema::PaneReportTurnParams {
+                    pane_id: pane_id.to_owned(),
+                    source: "herdr:claude".into(),
+                    agent: "claude".into(),
+                    phase: crate::api::schema::AgentTurnPhase::Started,
+                    prompt: Some("my answer".into()),
+                    error: None,
+                    interrupted: false,
+                    continuation,
+                    background_tasks: None,
+                },
+            ),
+        });
+        assert!(response.contains("\"result\""), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_user_starts_answers_the_open_questions_a_continuation_does_not() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Working;
+        assert!(terminal.report_awaiting_reply(Some("First?".into()), 1));
+        assert!(terminal.report_awaiting_reply(Some("Second?".into()), 2));
+
+        // A background task's notification wakes the agent: the questions stay.
+        report_turn_started(&mut app, &pane_id, true);
+        assert_eq!(app.state.terminals[&terminal_id].open_questions().len(), 2);
+        // The user's own prompt (Claude's `UserPromptSubmit`) answers them.
+        report_turn_started(&mut app, &pane_id, false);
+        assert!(app.state.terminals[&terminal_id]
+            .open_questions()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_pane_withdraw_awaiting_reply_closes_one_question_or_all() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Working;
+        terminal.report_awaiting_reply(Some("First?".into()), 1);
+        terminal.report_awaiting_reply(Some("Second?".into()), 2);
+        let mut withdraw = |question: Option<&str>| {
+            app.handle_api_request(crate::api::schema::Request {
+                id: "withdraw".into(),
+                method: crate::api::schema::Method::PaneWithdrawAwaitingReply(
+                    crate::api::schema::PaneWithdrawAwaitingReplyParams {
+                        pane_id: pane_id.clone(),
+                        question: question.map(str::to_owned),
+                    },
+                ),
+            })
+        };
+        withdraw(Some("Second?"));
+        let left: Vec<_> = app.state.terminals[&terminal_id]
+            .open_questions()
+            .iter()
+            .map(|open| open.question.clone())
+            .collect();
+        assert_eq!(left, vec![Some("First?".to_owned())]);
+        let mut withdraw = |question: Option<&str>| {
+            app.handle_api_request(crate::api::schema::Request {
+                id: "withdraw".into(),
+                method: crate::api::schema::Method::PaneWithdrawAwaitingReply(
+                    crate::api::schema::PaneWithdrawAwaitingReplyParams {
+                        pane_id: pane_id.clone(),
+                        question: question.map(str::to_owned),
+                    },
+                ),
+            })
+        };
+        withdraw(None);
+        assert!(app.state.terminals[&terminal_id]
+            .open_questions()
+            .is_empty());
+
+        // The API lists them, whatever the agent's state, while they are open.
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(crate::detect::Agent::Claude);
+        terminal.report_awaiting_reply(Some("Third?".into()), 3);
+        let info = app.agent_info(0, internal_pane_id).expect("agent info");
+        assert!(!info.awaiting_reply, "working: no `?` mark on the pane");
+        assert_eq!(
+            info.open_questions,
+            vec![crate::api::schema::AgentOpenQuestion {
+                id: 3,
+                question: Some("Third?".into()),
+                since_ms: 3,
+            }]
+        );
     }
 
     #[tokio::test]
@@ -3382,6 +3583,51 @@ mod tests {
         let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
         assert!(terminal.report_awaiting_reply(None, 1));
         assert!(terminal.awaiting_reply());
+    }
+
+    #[tokio::test]
+    async fn client_typing_keeps_an_open_question_and_a_plain_enter_answers_it() {
+        use crate::raw_input::RawInputEvent;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, _pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Idle;
+        assert!(terminal.report_awaiting_reply(Some("Install now?".into()), 1));
+        let key = |modifiers: KeyModifiers| {
+            RawInputEvent::Key(crate::input::TerminalKey::new(KeyCode::Enter, modifiers))
+        };
+
+        // Typing, pasting and Shift+Enter write the answer but do not send it: nothing
+        // listed or shown changes.
+        let typing = [
+            RawInputEvent::Text(crate::input::TextCommit::new("yes")),
+            RawInputEvent::Paste("and more\n".into()),
+            key(KeyModifiers::SHIFT),
+        ];
+        assert!(!app.apply_client_input_to_awaiting_reply(&terminal_id, &typing));
+        assert_eq!(
+            app.state.terminals[&terminal_id].awaiting_reply_question(),
+            Some("Install now?")
+        );
+
+        // While the agent shows a dialog of its own, Enter answers that dialog.
+        app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Blocked;
+        assert!(!app.apply_client_input_to_awaiting_reply(&terminal_id, &[key(KeyModifiers::NONE)]));
+        assert!(!app.state.terminals[&terminal_id]
+            .open_questions()
+            .is_empty());
+
+        // A plain Enter at the agent's prompt submits the reply and answers the question.
+        app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Idle;
+        assert!(app.apply_client_input_to_awaiting_reply(&terminal_id, &[key(KeyModifiers::NONE)]));
+        assert!(app.state.terminals[&terminal_id]
+            .open_questions()
+            .is_empty());
+        assert!(!app.state.terminals[&terminal_id].awaiting_reply());
+        // Nothing is left to answer.
+        assert!(!app.apply_client_input_to_awaiting_reply(&terminal_id, &[key(KeyModifiers::NONE)]));
     }
 
     #[tokio::test]
@@ -3473,8 +3719,8 @@ mod tests {
         assert!(terminal.report_awaiting_reply(Some("Which?".into()), 10));
         terminal.state = AgentState::Blocked;
         terminal.advance_awaiting_reply(AgentState::Blocked, 20);
-        // A prompt after the report means the report was not the turn's end.
-        assert!(!terminal.has_awaiting_reply_report());
+        // A prompt after the question keeps it open, and the pane waits since the prompt.
+        assert!(terminal.has_awaiting_reply_report());
         assert_eq!(terminal.waiting_since_ms(), Some(20));
         terminal.advance_awaiting_reply(AgentState::Blocked, 30);
         assert_eq!(terminal.waiting_since_ms(), Some(20));

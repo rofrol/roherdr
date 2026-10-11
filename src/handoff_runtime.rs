@@ -51,6 +51,42 @@ pub(crate) struct HandoffRuntimeState {
     /// The limit the agent's last turn ended on (`pane.report_limit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_report: Option<crate::terminal::state::LimitReport>,
+    /// Every open question, oldest first; the `awaiting_reply_*` fields above carry the
+    /// newest one for older receivers. Absent from older senders, which carry one at most.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<HandoffOpenQuestion>,
+}
+
+/// An open question as a live handoff carries it.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HandoffOpenQuestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub since_ms: u64,
+}
+
+#[cfg(unix)]
+impl HandoffRuntimeState {
+    /// The open questions this state carries: every one from a current sender, the single
+    /// report from an older one.
+    pub(crate) fn carried_open_questions(&self) -> Vec<(Option<String>, u64)> {
+        if !self.open_questions.is_empty() {
+            return self
+                .open_questions
+                .iter()
+                .map(|open| (open.question.clone(), open.since_ms))
+                .collect();
+        }
+        if self.awaiting_reply_reported {
+            return vec![(
+                self.awaiting_reply_question.clone(),
+                self.awaiting_reply_since_ms.unwrap_or(0),
+            )];
+        }
+        Vec::new()
+    }
 }
 
 #[cfg(unix)]

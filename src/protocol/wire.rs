@@ -970,6 +970,27 @@ pub struct ClientShellSnapshot {
     /// that does not send it.
     #[serde(default)]
     pub pty_usage: Option<ClientShellPtyUsage>,
+    /// The agents' open questions, oldest first, for the `?` list: each stays listed while
+    /// its agent works on, until the user submits a reply, the agent withdraws it or its
+    /// session ends. None from a server that does not send them; the client then lists the
+    /// agents that await a reply instead.
+    #[serde(default)]
+    pub open_questions: Vec<ClientShellOpenQuestion>,
+}
+
+/// A question an agent asked the user that is still open.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellOpenQuestion {
+    /// The asking agent's pane, tab and space.
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    /// Unique within the pane's terminal.
+    pub id: u64,
+    /// The question in a few words; none when the agent gave none.
+    pub question: Option<String>,
+    /// When it was asked, Unix milliseconds; 0 when unknown.
+    pub since_ms: u64,
 }
 
 /// Pseudo-terminals in use: herdr's own and, where the platform has a fixed
@@ -3112,6 +3133,14 @@ mod tests {
                     exact: false,
                 }),
             }),
+            open_questions: vec![ClientShellOpenQuestion {
+                pane_id: "w1:p1".into(),
+                workspace_id: "w1".into(),
+                tab_id: "w1:t1".into(),
+                id: 3,
+                question: Some("Install now?".into()),
+                since_ms: 1_000,
+            }],
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

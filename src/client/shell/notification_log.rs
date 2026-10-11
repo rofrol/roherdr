@@ -19,6 +19,9 @@ use super::*;
 /// Entries the dropdown shows at most; the server keeps 100.
 const MAX_ROWS: usize = 15;
 
+/// What an open question's row says about when it goes: typing alone keeps it.
+pub(super) const OPEN_QUESTION_CLEARS: &str = "clears when you submit a reply";
+
 #[derive(Debug, Default)]
 pub(super) struct NotificationLog {
     /// Oldest first, as the server returned them when the dropdown opened.
@@ -72,6 +75,11 @@ pub(super) enum RowKey {
     WorkerQuestion {
         worker_id: String,
         request_id: String,
+    },
+    /// An agent's open question, by its pane and id: a pane may hold several.
+    OpenQuestion {
+        pane_id: String,
+        id: u64,
     },
 }
 
@@ -617,20 +625,34 @@ impl ClientShellState {
     /// Agents that wait on the user (blocked on an approval, awaiting a
     /// reply, or stopped by a limit) and agents working, one pane in at most
     /// one of them: attention wins. Counted from the snapshot the client
-    /// already has.
-    pub(super) fn agent_is_asking(agent: &crate::protocol::ClientShellAgent) -> bool {
+    /// already has. An agent's open questions have rows of their own
+    /// ([`Self::open_question_rows`]), so its reply mark counts here only
+    /// from a server that does not send them.
+    pub(super) fn agent_is_asking(
+        snapshot: &crate::protocol::ClientShellSnapshot,
+        agent: &crate::protocol::ClientShellAgent,
+    ) -> bool {
         agent.agent_status == crate::api::schema::AgentStatus::Blocked
-            || agent.awaiting_reply
+            || agent.awaiting_reply && !Self::has_open_question(snapshot, &agent.pane_id)
             || agent.limited.is_some()
     }
 
+    fn has_open_question(snapshot: &crate::protocol::ClientShellSnapshot, pane_id: &str) -> bool {
+        snapshot
+            .open_questions
+            .iter()
+            .any(|open| open.pane_id == pane_id)
+    }
+
     /// Working as the sidebar shows it: the agent works, or it waits on a
-    /// job it started (the purple icon), unless it asks for the user.
+    /// job it started (the purple icon), unless it asks for the user or
+    /// still has a question open.
     fn agent_is_working(
         snapshot: &crate::protocol::ClientShellSnapshot,
         agent: &crate::protocol::ClientShellAgent,
     ) -> bool {
-        !Self::agent_is_asking(agent)
+        !Self::agent_is_asking(snapshot, agent)
+            && !Self::has_open_question(snapshot, &agent.pane_id)
             && (agent.agent_status == crate::api::schema::AgentStatus::Working
                 || super::agent_mark(snapshot, agent).waits_on_a_job())
     }
@@ -642,8 +664,9 @@ impl ClientShellState {
         let asking = snapshot
             .agents
             .iter()
-            .filter(|agent| Self::agent_is_asking(agent))
+            .filter(|agent| Self::agent_is_asking(snapshot, agent))
             .count()
+            + snapshot.open_questions.len()
             + snapshot
                 .worker_questions
                 .iter()
@@ -665,7 +688,7 @@ impl ClientShellState {
             .agents
             .iter()
             .filter(|agent| match view {
-                NotificationLogView::Asking => Self::agent_is_asking(agent),
+                NotificationLogView::Asking => Self::agent_is_asking(snapshot, agent),
                 _ => Self::agent_is_working(snapshot, agent),
             })
             .collect::<Vec<_>>();
@@ -721,6 +744,7 @@ impl ClientShellState {
             })
             .collect();
         if view == NotificationLogView::Asking {
+            rows.extend(Self::open_question_rows(snapshot));
             rows.extend(snapshot.worker_questions.iter().map(|question| {
                 // One from an older server names no request to open.
                 let key = (!question.request_id.is_empty()).then(|| RowKey::WorkerQuestion {
@@ -740,6 +764,89 @@ impl ClientShellState {
         }
         rows.truncate(MAX_ROWS);
         rows
+    }
+
+    /// Each open question of an agent, as a row of its own: the agent and its
+    /// tab like an asking agent's row, the question and when it clears on
+    /// the second line, its age in the time column. A click opens its pane.
+    fn open_question_rows(
+        snapshot: &crate::protocol::ClientShellSnapshot,
+    ) -> Vec<(NotificationRecord, Option<RowKey>)> {
+        snapshot
+            .open_questions
+            .iter()
+            .map(|open| {
+                let agent = snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == open.pane_id);
+                let name =
+                    agent.and_then(|agent| agent.display_agent.clone().or(agent.agent.clone()));
+                let row = NotificationRecord {
+                    id: 0,
+                    unix_ms: open.since_ms,
+                    kind: "asking".into(),
+                    title: name.clone().unwrap_or_default(),
+                    body: Some(format!(
+                        "{} · {OPEN_QUESTION_CLEARS}",
+                        Self::open_question_text(open)
+                    )),
+                    agent: name,
+                    workspace_id: Some(open.workspace_id.clone()),
+                    tab_id: Some(open.tab_id.clone()),
+                    pane_id: Some(open.pane_id.clone()),
+                    task: agent.and_then(|agent| {
+                        agent
+                            .task
+                            .as_deref()
+                            .or(agent.terminal_title_stripped.as_deref())
+                            .or(agent.terminal_title.as_deref())
+                            .and_then(super::notification_policy::notification_detail_text)
+                    }),
+                    request: None,
+                    repeats: None,
+                };
+                let key = RowKey::OpenQuestion {
+                    pane_id: open.pane_id.clone(),
+                    id: open.id,
+                };
+                (row, Some(key))
+            })
+            .collect()
+    }
+
+    /// What an open question asks: its words, or that the agent waits for a
+    /// reply when it gave none.
+    pub(super) fn open_question_text(open: &crate::protocol::ClientShellOpenQuestion) -> String {
+        open.question.clone().unwrap_or_else(|| "reply".to_owned())
+    }
+
+    /// Opens the `?` list at the tab's oldest open question (a click on its
+    /// `?` glyph), or at its asking agent from a server without open
+    /// questions.
+    pub(super) fn open_tab_question(&mut self, tab_id: &str, outcome: &mut ClientShellInput) {
+        let key = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .open_questions
+                .iter()
+                .filter(|open| open.tab_id == tab_id)
+                .min_by_key(|open| open.since_ms)
+                .map(|open| RowKey::OpenQuestion {
+                    pane_id: open.pane_id.clone(),
+                    id: open.id,
+                })
+                .or_else(|| {
+                    snapshot
+                        .agents
+                        .iter()
+                        .find(|agent| agent.tab_id == tab_id && agent.awaiting_reply)
+                        .map(|agent| RowKey::Pane(agent.pane_id.clone()))
+                })
+        });
+        self.overlay = None;
+        self.toggle_notification_view(NotificationLogView::Asking, outcome);
+        self.highlight_notification_log_key(key);
+        outcome.repaint = true;
     }
 
     /// A headless worker's question: it has no pane to open; a click opens

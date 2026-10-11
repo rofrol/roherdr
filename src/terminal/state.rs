@@ -147,12 +147,27 @@ struct AgentStopReport {
     seq: u64,
 }
 
-/// The awaiting-reply report an exited session held when its process stopped.
+/// The open questions an exited session held when its process stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExitedAwaitingReply {
     session_ref: crate::agent_resume::AgentSessionRef,
-    question: Option<String>,
-    since_ms: Option<u64>,
+    questions: Vec<OpenQuestion>,
+}
+
+/// Open questions kept per terminal; a report past it drops the oldest.
+const MAX_OPEN_QUESTIONS: usize = 8;
+
+/// A question the agent asked the user (`pane.report_awaiting_reply`). It stays open while
+/// the agent works on, until the user submits a reply, the agent withdraws it
+/// (`pane.withdraw_awaiting_reply`) or its session ends; typing alone does not close it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenQuestion {
+    /// Unique within the terminal, so the `?` list keeps a row on its question.
+    pub id: u64,
+    /// The question in a few words; none when the agent gave none.
+    pub question: Option<String>,
+    /// Unix milliseconds of the report; 0 when unknown (a handoff from an older server).
+    pub since_ms: u64,
 }
 
 /// Pure state for a server-owned terminal.
@@ -214,13 +229,13 @@ pub struct TerminalState {
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     pub last_agent_completion_seq: Option<u64>,
-    /// The agent reported that its turn ends by asking the user something, and nobody
-    /// has typed into the terminal since; shown as `awaiting_reply` while the agent idles.
-    awaiting_reply_reported: bool,
-    /// The question in a few words, reported with the awaiting-reply report and dropped with it.
-    awaiting_reply_question: Option<String>,
-    /// Unix milliseconds of the awaiting-reply report.
-    awaiting_reply_since_ms: Option<u64>,
+    /// The questions the agent asked the user that are still open, oldest first; shown as
+    /// `awaiting_reply` while the agent idles and listed whatever it does.
+    open_questions: Vec<OpenQuestion>,
+    next_open_question_id: u64,
+    /// Input reached the terminal through the API (`pane.send_text`, `agent.prompt`) since
+    /// the agent's last turn started: that turn's start is not the user's reply.
+    api_input_pending: bool,
     /// Unix milliseconds of the last transition into `Blocked`, while it lasts.
     blocked_since_ms: Option<u64>,
     /// The agent's turn ended on a usage or credit limit; held like the awaiting-reply
@@ -287,9 +302,9 @@ impl TerminalState {
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             last_agent_completion_seq: None,
-            awaiting_reply_reported: false,
-            awaiting_reply_question: None,
-            awaiting_reply_since_ms: None,
+            open_questions: Vec::new(),
+            next_open_question_id: 1,
+            api_input_pending: false,
             blocked_since_ms: None,
             limit_report: None,
             reported_task: None,
@@ -1707,13 +1722,12 @@ impl TerminalState {
         let Some(session) = self.exited_agent_session.as_ref() else {
             return;
         };
-        if !self.awaiting_reply_reported {
+        if self.open_questions.is_empty() {
             return;
         }
         self.exited_awaiting_reply = Some(ExitedAwaitingReply {
             session_ref: session.session_ref.clone(),
-            question: self.awaiting_reply_question.clone(),
-            since_ms: self.awaiting_reply_since_ms,
+            questions: self.open_questions.clone(),
         });
     }
 
@@ -1739,9 +1753,10 @@ impl TerminalState {
         if !live.is_some_and(|live| live.session_ref == stash.session_ref) {
             return false;
         }
-        self.awaiting_reply_reported = true;
-        self.awaiting_reply_question = stash.question;
-        self.awaiting_reply_since_ms = stash.since_ms;
+        self.open_questions = stash.questions;
+        if let Some(last) = self.open_questions.iter().map(|open| open.id).max() {
+            self.next_open_question_id = self.next_open_question_id.max(last + 1);
+        }
         true
     }
 
@@ -2432,78 +2447,131 @@ impl TerminalState {
             })
     }
 
-    /// Whether the agent's turn ended by asking the user something and nobody has typed
-    /// into the terminal since. It only shows while the agent idles: working hides it
-    /// without losing it, so a detection flicker to idle in the middle of a turn cannot
-    /// use the report up before the turn really ends.
+    /// Whether the agent asked the user something that is still open, while the agent idles:
+    /// the pane's `?` mark. Working hides the mark without closing the question, which the
+    /// `?` list keeps showing ([`Self::open_questions`]).
     pub fn awaiting_reply(&self) -> bool {
-        self.awaiting_reply_reported && self.state == AgentState::Idle
+        !self.open_questions.is_empty() && self.state == AgentState::Idle
     }
 
-    /// Whether an awaiting-reply report is held, shown or not. Lets input handling skip
-    /// classifying input when there is nothing to clear.
+    /// Whether an open question or a limit report is held, shown or not. Lets input handling
+    /// skip classifying input when there is nothing to clear.
     pub fn has_awaiting_reply_report(&self) -> bool {
-        self.awaiting_reply_reported || self.limit_report.is_some()
+        !self.open_questions.is_empty() || self.limit_report.is_some()
     }
 
-    /// Records the agent's report that it is ending its turn with a question for the user,
-    /// with the question in a few words when it gave one. It holds until the user types into
-    /// the terminal (`clear_awaiting_reply`) or the agent shows a prompt
-    /// (`advance_awaiting_reply`). Returns whether what the pane shows changed.
+    /// Records the agent's report that it asks the user something, with the question in a few
+    /// words when it gave one. A different question opens a separate entry; the same one again
+    /// (the agent renewing it) keeps its entry and the time it was first asked, and a report
+    /// without a question adds nothing to an open one. Returns whether the open questions
+    /// changed.
     pub fn report_awaiting_reply(&mut self, question: Option<String>, now_ms: u64) -> bool {
         if self.state == AgentState::Unknown {
             return false;
         }
-        let was_awaiting = self.awaiting_reply();
-        let question_changed = self.awaiting_reply_question != question;
-        self.awaiting_reply_reported = true;
-        self.awaiting_reply_question = question;
-        // A repeated report keeps the time the agent started waiting.
-        if !was_awaiting || self.awaiting_reply_since_ms.is_none() {
-            self.awaiting_reply_since_ms = Some(now_ms);
+        if self
+            .open_questions
+            .iter()
+            .any(|open| open.question == question)
+            || question.is_none() && !self.open_questions.is_empty()
+        {
+            return false;
         }
-        self.awaiting_reply() != was_awaiting || (self.awaiting_reply() && question_changed)
+        // A report the hook made without words gets the agent's question.
+        if let Some(open) = self
+            .open_questions
+            .iter_mut()
+            .find(|open| open.question.is_none())
+        {
+            open.question = question;
+            return true;
+        }
+        if self.open_questions.len() >= MAX_OPEN_QUESTIONS {
+            self.open_questions.remove(0);
+        }
+        self.open_questions.push(OpenQuestion {
+            id: self.next_open_question_id,
+            question,
+            since_ms: now_ms,
+        });
+        self.next_open_question_id += 1;
+        true
     }
 
-    /// The question the agent reported with its awaiting-reply report, while it shows.
+    /// The questions the agent asked the user that are still open, oldest first.
+    pub fn open_questions(&self) -> &[OpenQuestion] {
+        &self.open_questions
+    }
+
+    /// The agent withdraws its open question `question`, or all of them with `None`. Returns
+    /// whether any was open.
+    pub fn withdraw_awaiting_reply(&mut self, question: Option<&str>) -> bool {
+        let before = self.open_questions.len();
+        match question {
+            Some(question) => self
+                .open_questions
+                .retain(|open| open.question.as_deref() != Some(question)),
+            None => self.open_questions.clear(),
+        }
+        self.open_questions.len() != before
+    }
+
+    /// The user submitted a reply (Enter in the pane, or a turn the user started): the open
+    /// questions are answered and a limit report is done with. Returns whether anything was
+    /// held.
+    pub fn answer_awaiting_reply(&mut self) -> bool {
+        self.api_input_pending = false;
+        self.clear_awaiting_reply()
+    }
+
+    /// Input reached the terminal through the API, not from the user's keyboard.
+    pub fn note_api_input(&mut self) {
+        self.api_input_pending = true;
+    }
+
+    /// The agent reported that a turn started that is no continuation of its work: whether
+    /// the user started it, i.e. no input came through the API since the last start. Each
+    /// start uses the API input up.
+    pub fn turn_started_by_user(&mut self) -> bool {
+        !std::mem::take(&mut self.api_input_pending)
+    }
+
+    /// The question the agent reported last, while the pane shows its `?` mark.
     pub fn awaiting_reply_question(&self) -> Option<&str> {
         self.awaiting_reply()
-            .then_some(self.awaiting_reply_question.as_deref())
+            .then(|| self.open_questions.last()?.question.as_deref())
             .flatten()
     }
 
-    /// The awaiting-reply report as a live handoff carries it: the question and the
-    /// time it was reported.
+    /// The open questions as a live handoff carries them: question and report time.
     #[cfg(unix)]
-    pub(crate) fn awaiting_reply_report(&self) -> Option<(Option<&str>, Option<u64>)> {
-        self.awaiting_reply_reported.then_some((
-            self.awaiting_reply_question.as_deref(),
-            self.awaiting_reply_since_ms,
-        ))
+    pub(crate) fn open_questions_for_handoff(&self) -> Vec<(Option<String>, u64)> {
+        self.open_questions
+            .iter()
+            .map(|open| (open.question.clone(), open.since_ms))
+            .collect()
     }
 
-    /// Puts back a report carried over a live handoff, without the state
-    /// check of `report_awaiting_reply`: the new server has not detected the
-    /// agent's state yet, and the mark shows once it is idle again.
+    /// Puts back the open questions carried over a live handoff, without the state check of
+    /// `report_awaiting_reply`: the new server has not detected the agent's state yet, and
+    /// the mark shows once it is idle again.
     #[cfg(unix)]
-    pub(crate) fn restore_awaiting_reply_report(
-        &mut self,
-        question: Option<String>,
-        since_ms: Option<u64>,
-    ) {
-        self.awaiting_reply_reported = true;
-        self.awaiting_reply_question = question;
-        self.awaiting_reply_since_ms = since_ms;
+    pub(crate) fn restore_open_questions(&mut self, questions: Vec<(Option<String>, u64)>) {
+        for (question, since_ms) in questions {
+            self.open_questions.push(OpenQuestion {
+                id: self.next_open_question_id,
+                question,
+                since_ms,
+            });
+            self.next_open_question_id += 1;
+        }
     }
 
-    /// Applies an agent state transition to the awaiting-reply report. Entering
-    /// `Blocked` drops it: a form or permission prompt after the report means the report
-    /// was not the turn's last action (e.g. an in-turn question tool that the user
-    /// answers without the turn ending), and the pane already shows as blocked. It also
-    /// keeps the time the agent became blocked.
+    /// Applies an agent state transition: it keeps the time the agent became blocked. Open
+    /// questions stay, even across a prompt or permission dialog: only a submitted reply,
+    /// the agent withdrawing them or the session's end closes them.
     pub fn advance_awaiting_reply(&mut self, state: AgentState, now_ms: u64) {
         if state == AgentState::Blocked {
-            self.forget_awaiting_reply();
             self.blocked_since_ms.get_or_insert(now_ms);
         } else {
             self.blocked_since_ms = None;
@@ -2555,15 +2623,13 @@ impl TerminalState {
             return self.blocked_since_ms;
         }
         if self.awaiting_reply() {
-            return self.awaiting_reply_since_ms;
+            return self
+                .open_questions
+                .first()
+                .map(|open| open.since_ms)
+                .filter(|since_ms| *since_ms > 0);
         }
         self.limit().map(|report| report.since_ms)
-    }
-
-    fn forget_awaiting_reply(&mut self) {
-        self.awaiting_reply_reported = false;
-        self.awaiting_reply_question = None;
-        self.awaiting_reply_since_ms = None;
     }
 
     /// What the agent reported it works on now.
@@ -2581,11 +2647,20 @@ impl TerminalState {
         true
     }
 
-    /// Forgets any awaiting-reply and limit report: the user typed into the terminal, or the
-    /// agent exited or changed session. Returns whether what the pane shows changed.
+    /// Forgets the open questions and the limit report: the user replied or dismissed them,
+    /// or the agent exited or changed session. Returns whether anything listed or shown
+    /// changed.
     pub fn clear_awaiting_reply(&mut self) -> bool {
-        let was_shown = self.awaiting_reply() || self.limit().is_some();
-        self.forget_awaiting_reply();
+        let was_shown = !self.open_questions.is_empty() || self.limit().is_some();
+        self.open_questions.clear();
+        self.limit_report = None;
+        was_shown
+    }
+
+    /// Typing into the terminal is done with a limit report, but never answers a question.
+    /// Returns whether the shown limit changed.
+    pub fn clear_limit_on_input(&mut self) -> bool {
+        let was_shown = self.limit().is_some();
         self.limit_report = None;
         was_shown
     }

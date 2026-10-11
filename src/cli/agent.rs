@@ -547,18 +547,32 @@ fn agent_focus(args: &[String], scope: NameScope) -> std::io::Result<i32> {
 }
 
 /// Run by the agent itself right before it ends a turn with a question for the user,
-/// optionally with the question in a few words.
+/// optionally with the question in a few words; with `--withdraw`, when it no longer waits
+/// for that answer (all of its open questions without one).
 fn agent_awaiting_reply(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: herdr agent awaiting-reply [--pane PANE_ID] [QUESTION]";
-    let Some((pane_id, words)) = pane_and_words(args) else {
+    const USAGE: &str =
+        "usage: herdr agent awaiting-reply [--pane PANE_ID] [--withdraw] [QUESTION]";
+    let Some((pane_id, mut words)) = pane_and_words(args) else {
         eprintln!("{USAGE}");
         return Ok(2);
     };
+    let withdraw = words.first() == Some(&"--withdraw");
+    if withdraw {
+        words.remove(0);
+    }
     let Some(pane_id) = pane_id.or_else(super::target::caller_pane_id) else {
         eprintln!("herdr agent awaiting-reply: no --pane given and HERDR_PANE_ID is not set");
         return Ok(2);
     };
     let question = words.join(" ");
+    if withdraw {
+        return super::send_ok_request(Method::PaneWithdrawAwaitingReply(
+            crate::api::schema::PaneWithdrawAwaitingReplyParams {
+                pane_id,
+                question: (!question.trim().is_empty()).then_some(question),
+            },
+        ));
+    }
     super::send_ok_request(Method::PaneReportAwaitingReply(
         crate::api::schema::PaneReportAwaitingReplyParams {
             pane_id,

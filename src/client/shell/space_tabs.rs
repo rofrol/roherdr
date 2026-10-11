@@ -137,6 +137,9 @@ pub(super) fn role_mark_color(palette: &Palette) -> Color {
 /// What a glyph's tooltip adds when a click on it opens the status legend.
 pub(super) const LEGEND_CLICK: &str = " · click: status legend";
 
+/// What a `?` glyph's tooltip adds while its question is open.
+pub(super) const QUESTION_CLICK: &str = " · click: the question";
+
 /// What the tooltip of a glyph with an action of its own adds: the legend
 /// is in the menu.
 pub(super) const LEGEND_MENU: &str = " · its marks: menu › status legend";
@@ -454,7 +457,10 @@ pub(super) fn tab_is_quiet(snapshot: &ClientShellSnapshot, tab: &ClientShellTab)
     }
     let speaks = snapshot.agents.iter().any(|agent| {
         agent.tab_id == tab.tab_id && (agent.awaiting_reply || agent.limited.is_some())
-    });
+    }) || snapshot
+        .open_questions
+        .iter()
+        .any(|open| open.tab_id == tab.tab_id);
     let group = |candidate: &&ClientShellTab| {
         candidate.tab_id == tab.tab_id
             || candidate.parent_tab_id.as_deref() == Some(tab.tab_id.as_str())
@@ -1122,16 +1128,25 @@ pub(super) fn tab_state_icon(
 
 /// What the tab's agent waits on the user for (see
 /// `ClientShellState::asking_detail`): the one that has waited longest when
-/// several do. None while no agent of the tab asks.
+/// several do; else its oldest open question, which stays while the agent
+/// works on. None while no agent of the tab asks.
 fn tab_ask(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<String> {
     snapshot
         .agents
         .iter()
         .filter(|agent| {
-            agent.tab_id == tab.tab_id && super::ClientShellState::agent_is_asking(agent)
+            agent.tab_id == tab.tab_id && super::ClientShellState::agent_is_asking(snapshot, agent)
         })
         .min_by_key(|agent| agent.waiting_since_ms.unwrap_or(u64::MAX))
         .map(super::ClientShellState::asking_detail)
+        .or_else(|| {
+            snapshot
+                .open_questions
+                .iter()
+                .filter(|open| open.tab_id == tab.tab_id)
+                .min_by_key(|open| open.since_ms)
+                .map(super::ClientShellState::open_question_text)
+        })
 }
 
 /// The `plan` token of the tab's focused agent (else its first one).
@@ -1244,6 +1259,8 @@ pub(super) struct SpaceTabHits {
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// State glyphs and role marks, with their status legend entry.
     pub(super) legend: Vec<(Rect, super::status_legend::LegendEntry)>,
+    /// `?` glyphs of tabs whose agent's question is open, with their tab.
+    pub(super) questions: Vec<(Rect, String)>,
     /// The square order of each unfolded line, to hold while the pointer
     /// stays over the sidebar.
     pub(super) order: HeldSquares,
@@ -1412,6 +1429,14 @@ pub(super) fn render_space_tab_lines(
         // the status legend there; the gap column next to it widens the
         // one-cell target.
         let glyph = Rect::new(x, y, 2, 1);
+        // A `?` whose question is open shows that question instead.
+        let opens_question = line.worker.is_none()
+            && line
+                .state
+                .is_some_and(|(_, mark)| mark == AgentMark::AwaitsReply);
+        if opens_question {
+            hits.questions.push((glyph, line.tab_id.clone()));
+        }
         hits.legend.push((
             glyph,
             match (&line.worker, line.state) {
@@ -1426,7 +1451,7 @@ pub(super) fn render_space_tab_lines(
             text: match &line.worker {
                 Some(worker) => format!("{}{LEGEND_CLICK}", worker.tooltip),
                 None => format!(
-                    "{}{}{LEGEND_CLICK}",
+                    "{}{}{}",
                     match line.state {
                         Some((status, mark)) => {
                             super::status_legend::agent_state_label(status, mark)
@@ -1436,7 +1461,12 @@ pub(super) fn render_space_tab_lines(
                     line.background
                         .as_deref()
                         .map(|detail| format!(": {detail}"))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    if opens_question {
+                        QUESTION_CLICK
+                    } else {
+                        LEGEND_CLICK
+                    }
                 ),
             },
             bg: None,

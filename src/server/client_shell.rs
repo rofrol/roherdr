@@ -187,6 +187,23 @@ pub(super) fn snapshot_with_completions(
             }
         })
         .collect();
+    let open_questions = snapshot
+        .agents
+        .iter()
+        .flat_map(|agent| {
+            agent
+                .open_questions
+                .iter()
+                .map(|open| protocol::ClientShellOpenQuestion {
+                    pane_id: agent.pane_id.clone(),
+                    workspace_id: agent.workspace_id.clone(),
+                    tab_id: agent.tab_id.clone(),
+                    id: open.id,
+                    question: open.question.clone(),
+                    since_ms: open.since_ms,
+                })
+        })
+        .collect();
     let agents = snapshot
         .agents
         .into_iter()
@@ -329,6 +346,7 @@ pub(super) fn snapshot_with_completions(
             app.terminal_runtimes.len(),
             crate::pty::usage::latest(),
         )),
+        open_questions,
     };
     (shell, completions)
 }

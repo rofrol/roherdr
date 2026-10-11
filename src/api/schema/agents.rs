@@ -418,10 +418,14 @@ pub struct AgentInfo {
     pub interactive_ready: bool,
     #[serde(default)]
     pub state_change_seq: u64,
-    /// The agent's last turn ended by asking the user something (reported through
-    /// `pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.
+    /// The agent asked the user something (reported through `pane.report_awaiting_reply`)
+    /// that is still open, and it is idle: the pane's `?` mark.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub awaiting_reply: bool,
+    /// The agent's open questions, oldest first, whatever its state: each stays until the
+    /// user submits a reply, the agent withdraws it or its session ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<AgentOpenQuestion>,
     /// What the agent asks while it waits on the user: the question it reported with
     /// `pane.report_awaiting_reply`, or while blocked its hook's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -450,6 +454,18 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+}
+
+/// A question an agent asked the user that is still open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentOpenQuestion {
+    /// Unique within the agent's terminal.
+    pub id: u64,
+    /// The question in a few words; absent when the agent gave none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// Unix milliseconds when it was asked; 0 when unknown.
+    pub since_ms: u64,
 }
 
 /// The pane metadata token in which an agent's integration reports how many background

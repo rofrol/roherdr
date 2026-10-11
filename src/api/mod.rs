@@ -93,6 +93,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneReportAgentSession(_)
             | Method::PaneReportAwaitingReply(_)
             | Method::PaneClearAwaitingReply(_)
+            | Method::PaneWithdrawAwaitingReply(_)
             | Method::PaneReportTask(_)
             | Method::PaneReportLimit(_)
             | Method::PaneReportMetadata(_)
