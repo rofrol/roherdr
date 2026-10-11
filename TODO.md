@@ -1419,16 +1419,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   words, naming the line; `herdr decision add|decide` does the same for its
   statement and answer; a test for each.
 
-- [ ] A worktree file shares its inode with the main checkout's (the guix [t-f7k7lhev]
-  coordinator, 2026-10-11): in a herdr worktree of guix-x86_64-iso-omguix
-  the gitignored `.macbook_known_hosts` has the same inode as the main
-  checkout's, so a worker's `rm` there would delete the shared file (Claude
-  Code stopped it with a permission prompt). herdr's worktree code has no
-  hard-link or clone step (checked: no `hard_link`/`clonefile` in
-  src/worktree.rs); find what created the link (the repository's own setup
-  script, a `.worktreeinclude`, Claude Code's worktree seeding) and, if it is
-  herdr's, copy instead of linking; else tell that repository's coordinator.
-
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
