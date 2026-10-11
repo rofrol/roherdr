@@ -161,6 +161,11 @@ else:
             for task in tasks
             if not isinstance(task, dict) or str(task.get("status", "")).lower() not in finished
         )
+    # The turn's last message, from which herdr reads the verdict of a prompt it typed: Claude
+    # may write it to the transcript only after this hook ran. Its end holds the WORKER line.
+    final_text = hook_input.get("last_assistant_message")
+    if isinstance(final_text, str) and final_text.strip():
+        params["final_text"] = final_text[-16000:]
 herdr_call("pane.report_turn", params, f"herdr:claude:turn:{int(time.time() * 1000)}",
            answer=False)
 PY

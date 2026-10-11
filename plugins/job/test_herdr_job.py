@@ -2052,6 +2052,43 @@ class WaitAgentTests(unittest.TestCase):
                 self.assertEqual(code, 0, text)
                 self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict", "get"])
 
+    def test_a_request_herdr_neither_follows_nor_keeps_ends_the_wait_at_once(self):
+        # After a handoff the new server neither follows the prompt nor keeps its assignment:
+        # nothing it reports would end the wait, so it ends at once with its own code.
+        code, text, calls = self.run_verdict([self.not_followed(), self.recorded("unknown_request")])
+        self.assertEqual(code, 8, text)
+        self.assertIn("tracking lost", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict"])
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_verdict_in_the_recorded_transcript_still_ends_a_lost_request(self):
+        asking = self.transcript("l", ("user", self.PROMPT), ("assistant", "Which one?"))
+        code, _, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(asking, status="blocked")])
+        self.assertEqual(code, 6)
+        (self.stub_dir / "calls").unlink()
+        _, sha = self.repo_sha()
+        with asking.open("a") as handle:
+            for record in ({"type": "user", "message": {"role": "user", "content": "the first"}},
+                           {"type": "assistant", "message": {"role": "assistant", "content": [
+                               {"type": "text", "text": f"WORKER-DONE {sha} | parser"}]}},
+                           {"type": "system", "subtype": "turn_duration", "durationMs": 5}):
+                handle.write(json.dumps(record) + "\n")
+        code, text, calls = self.run_verdict([self.not_followed(), self.recorded("unknown_request")])
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"WORKER-DONE {sha} | parser", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict"])
+
+    def test_a_pasted_prompt_starts_its_assignment(self):
+        # Claude wraps a prompt its input box took as a paste in tags naming the paste.
+        pasted = f'\n\n<pasted_content id="7bb5">\n{self.PROMPT}\n</pasted_content id="7bb5">\n'
+        done = self.transcript("p", ("user", "the previous item"), ("assistant", "WORKER-DONE {sha} | old"),
+                               ("user", pasted), ("assistant", "WORKER-BLOCKED needs a login"))
+        code, text, _ = self.run_verdict([self.prompt_status(), self.older_herdr(), self.get(done)])
+        self.assertEqual(code, 4, text)
+        self.assertIn("WORKER-BLOCKED needs a login", text)
+        self.assertEqual(JOB["normalize_prompt"](f'typed\n<pasted_content id="1">\nrest\n</pasted_content id="1">'),
+                         "typed rest")
+
     def test_an_unsupported_request_ends_the_wait_at_once(self):
         unsupported = [0, json.dumps({"result": {
             "type": "agent_prompt_status", "pane_id": "w:p5",

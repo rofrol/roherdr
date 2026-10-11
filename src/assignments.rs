@@ -15,6 +15,12 @@
 //! transcript of the work still open. The read runs on the app thread at a turn end of a pane
 //! with open assignments, not in a render or parse loop.
 //!
+//! Claude may write a turn's last assistant message to the transcript only after its `Stop`
+//! hook reported the turn end, so the hook sends that message with the report
+//! (`final_text`), and it ends the turn when the transcript does not show it yet. A prompt the
+//! user's input box took as a paste is written wrapped in `<pasted_content id="...">` tags,
+//! which matching leaves out ([`normalize`]).
+//!
 //! A newer prompt into the same pane that starts before an assignment's verdict supersedes it:
 //! the assignment closes as `superseded` (naming the newer request) and never takes the later
 //! work's verdict, which would end a wait on the wrong work. A turn end (no background task
@@ -28,7 +34,10 @@
 //! Records are JSON files in herdr's state directory (`assignments/<request_id>.json`, apart per
 //! named session), written atomically; the newest [`MAX_KEPT`] are kept. A server started by a
 //! live handoff reads them, so `agent.wait_verdict` answers at once with a verdict recorded
-//! before the handoff, and its first supervision sweep reconciles them all. `agent.wait_verdict`
+//! before the handoff, and its first supervision sweep reconciles them all ([`reconcile_once`]):
+//! it reads the transcript of each pane with open assignments again, whose turn ends
+//! (Claude's `turn_duration` records) bring the verdicts and the stops without one a turn end
+//! the old server saw missed or never got. `agent.wait_verdict`
 //! waits register here ([`wait_started`]), so the supervision sweep knows a verdict nobody
 //! received ([`undelivered_unwatched`]); a recorded verdict or a supersession wakes them at once
 //! ([`changed_since`]), whatever the pane's events, and a waiter that ends without an
@@ -37,6 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -605,9 +615,23 @@ pub(crate) fn now_ms() -> u64 {
         })
 }
 
-/// Whitespace runs collapse to one space, as herdr keeps a prompt's text.
+fn pasted_tag_pattern() -> &'static regex::Regex {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r#"</?pasted_content(?:\s[^>]*)?>"#)
+            .unwrap_or_else(|_| unreachable!("the pasted content pattern is valid"))
+    })
+}
+
+/// Whitespace runs collapse to one space, as herdr keeps a prompt's text, and the tags Claude
+/// wraps a pasted prompt in (`<pasted_content id="...">`, closed with the same id) go, so the
+/// text herdr typed matches however much of it the agent took as a paste.
 pub(crate) fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    pasted_tag_pattern()
+        .replace_all(text, " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn worker_line_pattern() -> &'static regex::Regex {
@@ -648,6 +672,9 @@ pub(crate) struct Scan {
     pub(crate) verdicts: BTreeMap<String, Verdict>,
     /// The assignments a newer prompt started before their verdict, with that prompt's request.
     pub(crate) superseded: BTreeMap<String, String>,
+    /// The started assignments still without a verdict when the transcript ends on a turn end
+    /// (Claude's `turn_duration` record): the agent stopped without one.
+    pub(crate) ended: BTreeSet<String>,
 }
 
 /// One record of a transcript that matters here.
@@ -663,6 +690,8 @@ enum Entry {
         text: String,
         calls_tool: bool,
     },
+    /// The agent's turn ended (Claude's `turn_duration` record, written after its `Stop`).
+    TurnEnd,
 }
 
 const TOOL_CALL_PARTS: [&str; 4] = ["tool_use", "toolCall", "tool_call", "server_tool_use"];
@@ -688,6 +717,9 @@ fn entry_of(line: &str, absorbed_seen: &mut BTreeSet<String>) -> Option<Entry> {
     let record: serde_json::Value = serde_json::from_str(line).ok()?;
     if record["isSidechain"] == true {
         return None;
+    }
+    if record["type"] == "system" && record["subtype"] == "turn_duration" {
+        return Some(Entry::TurnEnd);
     }
     // Claude writes a prompt it took in mid-turn twice: a `queue-operation` `remove` with the
     // reason `absorbed_mid_turn`, then a `queued_command` attachment carrying it; both name the
@@ -750,18 +782,23 @@ fn entry_of(line: &str, absorbed_seen: &mut BTreeSet<String>) -> Option<Entry> {
 /// Finds the start and the verdict of each open assignment (oldest first) in transcript
 /// `lines`, each with its byte offset. An assignment starts at the last prompt carrying its
 /// text after its anchor. Its verdict is the first `WORKER` line of an assistant text that
-/// ended a turn after its start (no tool call followed it before the next user record; the
-/// text at the end counts when `turn_over`). A record that starts a newer assignment
-/// supersedes every earlier one still without a verdict that it does not carry too.
+/// ended a turn after its start (no tool call followed it before the next user record or the
+/// turn's end record; the text at the end counts when `turn_over`, and `final_text`, the
+/// turn's last message the agent reported with its end, replaces it, since the transcript may
+/// not show that message yet). A record that starts a newer assignment supersedes every
+/// earlier one still without a verdict that it does not carry too.
 pub(crate) fn scan_lines<'a>(
     lines: impl Iterator<Item = (u64, &'a str)>,
     open: &[Assignment],
     turn_over: bool,
+    final_text: Option<&str>,
     now_ms: u64,
 ) -> Scan {
     let mut scan = Scan::default();
     let mut absorbed_seen = BTreeSet::new();
     let mut pending: Option<String> = None;
+    // The last record read was a turn's end.
+    let mut idle = false;
     // A text that ended a turn is the verdict of every started assignment still without one
     // (several when the agent took queued prompts as one).
     let settle = |scan: &mut Scan, pending: &mut Option<String>| {
@@ -782,6 +819,7 @@ pub(crate) fn scan_lines<'a>(
         let Some(entry) = entry_of(line, &mut absorbed_seen) else {
             continue;
         };
+        idle = matches!(entry, Entry::TurnEnd);
         match entry {
             Entry::Prompt { text, absorbed } => {
                 settle(&mut scan, &mut pending);
@@ -823,7 +861,7 @@ pub(crate) fn scan_lines<'a>(
                         .insert(assignment.request_id.clone(), offset);
                 }
             }
-            Entry::User => settle(&mut scan, &mut pending),
+            Entry::User | Entry::TurnEnd => settle(&mut scan, &mut pending),
             Entry::Assistant { text, calls_tool } => {
                 if !text.trim().is_empty() {
                     pending = Some(text);
@@ -835,17 +873,35 @@ pub(crate) fn scan_lines<'a>(
         }
     }
     if turn_over {
+        if let Some(text) = final_text.filter(|text| !text.trim().is_empty()) {
+            pending = Some(text.to_string());
+        }
         settle(&mut scan, &mut pending);
+    }
+    if idle {
+        scan.ended = scan
+            .started
+            .keys()
+            .filter(|id| !scan.verdicts.contains_key(*id))
+            .cloned()
+            .collect();
     }
     scan
 }
 
-/// Reads transcript `path` at a turn end for the pane's `open` assignments (oldest first) and
-/// scans it ([`scan_lines`]) from the oldest anchor among those typed into this transcript.
+/// Reads transcript `path` for the pane's `open` assignments (oldest first) and scans it
+/// ([`scan_lines`]) from the oldest anchor among those typed into this transcript: at a turn
+/// end (`turn_over`, with the turn's `final_text` when the agent reported it), or to reconcile.
 /// An assignment typed into another transcript (the agent's session changed since) or one
 /// without an anchor is matched by its text from the start of the file; so are all when the
 /// file is shorter than the anchor (it was replaced).
-pub(crate) fn scan_open(path: &Path, open: &[Assignment], now_ms: u64) -> std::io::Result<Scan> {
+pub(crate) fn scan_open(
+    path: &Path,
+    open: &[Assignment],
+    turn_over: bool,
+    final_text: Option<&str>,
+    now_ms: u64,
+) -> std::io::Result<Scan> {
     let here = path.display().to_string();
     let mut open = open.to_vec();
     for assignment in &mut open {
@@ -874,7 +930,88 @@ pub(crate) fn scan_open(path: &Path, open: &[Assignment], now_ms: u64) -> std::i
         offset += line.len() as u64 + 1;
         (at, std::str::from_utf8(line).unwrap_or(""))
     });
-    Ok(scan_lines(lines, &open, true, now_ms))
+    Ok(scan_lines(lines, &open, turn_over, final_text, now_ms))
+}
+
+/// Records what a read of transcript `path` found ([`scan_open`]): the supersessions, the
+/// starts of the assignments still without a verdict, and the verdicts (once each). Returns
+/// the requests whose verdict was recorded now.
+pub(crate) fn apply(path: &Path, scan: &Scan) -> Vec<String> {
+    for (request_id, by) in &scan.superseded {
+        supersede(request_id, by);
+    }
+    for (request_id, offset) in &scan.start_offsets {
+        if !scan.verdicts.contains_key(request_id) {
+            started_at(request_id, path, *offset);
+        }
+    }
+    scan.verdicts
+        .iter()
+        .filter(|(request_id, verdict)| record_verdict(request_id, (*verdict).clone()))
+        .map(|(request_id, _)| request_id.clone())
+        .collect()
+}
+
+/// The transcript the agent of an open assignment works in, for one registered before herdr
+/// knew it (its session was not reported yet): kept, so a reconciliation can read it.
+pub(crate) fn note_transcript(request_id: &str, transcript: &Path) {
+    update(request_id, |record| {
+        if !record.is_open() || record.transcript.is_some() {
+            return false;
+        }
+        record.transcript = Some(transcript.display().to_string());
+        true
+    });
+}
+
+/// This server reconciled the assignments it read from disk.
+static RECONCILED: AtomicBool = AtomicBool::new(false);
+
+/// Reconciles the assignments once per server ([`reconcile`]), at its first supervision sweep:
+/// a server started by a live handoff or a restart never saw the turn ends of the work typed
+/// before it, and the server before it may have missed a verdict. Whether anything changed.
+pub(crate) fn reconcile_once(now_ms: u64) -> bool {
+    if RECONCILED.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    reconcile(now_ms)
+}
+
+/// Reads the transcript of each pane with open assignments not already stopped again
+/// ([`scan_open`], no turn taken as over unless the transcript shows its end): records the
+/// verdicts and supersessions found, and marks a started assignment stopped without a verdict
+/// when the transcript ends on a turn end that brought it none. Whether anything changed.
+pub(crate) fn reconcile(now_ms: u64) -> bool {
+    let panes: BTreeSet<String> = store()
+        .records
+        .values()
+        .filter(|record| record.is_open() && record.stopped_ms.is_none())
+        .map(|record| record.pane_id.clone())
+        .collect();
+    let mut changed = false;
+    for pane in panes {
+        let open = open_for_pane(&pane);
+        let Some(path) = open
+            .iter()
+            .rev()
+            .find_map(|assignment| assignment.transcript.clone())
+            .map(PathBuf::from)
+        else {
+            continue;
+        };
+        let scan = match scan_open(&path, &open, false, None, now_ms) {
+            Ok(scan) => scan,
+            Err(error) => {
+                warn!(%error, path = %path.display(), "cannot read the agent's transcript");
+                continue;
+            }
+        };
+        changed |= !scan.superseded.is_empty() || !apply(&path, &scan).is_empty();
+        for request_id in &scan.ended {
+            changed |= stopped_without_verdict(request_id);
+        }
+    }
+    changed
 }
 
 /// An assignment as the API shows it.
@@ -1003,7 +1140,207 @@ mod tests {
                 (at, line.as_str())
             })
             .collect();
-        scan_lines(lines.into_iter(), open, turn_over, 7)
+        scan_lines(lines.into_iter(), open, turn_over, None, 7)
+    }
+
+    /// A prompt as Claude writes one its input box took as a paste: wrapped in tags with an id,
+    /// the closing tag naming it too, after whatever was typed before it.
+    fn pasted(typed: &str, prompt: &str) -> String {
+        format!(
+            "{typed}\n\n<pasted_content id=\"7bb5\">\n{prompt}\n</pasted_content id=\"7bb5\">\n"
+        )
+    }
+
+    fn turn_duration() -> String {
+        serde_json::json!({"type": "system", "subtype": "turn_duration", "durationMs": 27050})
+            .to_string()
+    }
+
+    #[test]
+    fn a_pasted_prompt_starts_its_assignment_in_every_shape_claude_writes() {
+        let task = "Title line\n\nDo the item.\nLast line: `WORKER-DONE <sha> | <summary>`";
+        let open = [assignment("p1", task, Some(0))];
+        let done = assistant("Done.\n\nWORKER-DONE 220dd3dd | the item", false);
+        for prompt in [
+            // Plain.
+            user(task),
+            // Pasted whole (the capture-doc worker's record).
+            user(&pasted("", task)),
+            // Its first line typed, the rest pasted.
+            user(&pasted(
+                "Title line",
+                "Do the item.\nLast line: `WORKER-DONE <sha> | <summary>`",
+            )),
+        ] {
+            let found = scan(&[prompt.clone(), done.clone()], &open, true);
+            assert_eq!(found.started.get("p1"), Some(&false), "{prompt}");
+            assert_eq!(
+                found.verdicts["p1"].sha.as_deref(),
+                Some("220dd3dd"),
+                "{prompt}"
+            );
+        }
+        // Taken in mid-turn as a paste.
+        let mut lines = vec![user("earlier"), assistant("working", true)];
+        lines.extend(absorbed(&pasted("", task), "c1"));
+        lines.push(tool_result());
+        lines.push(done);
+        let found = scan(&lines, &open, true);
+        assert_eq!(found.started.get("p1"), Some(&true));
+        assert_eq!(found.verdicts["p1"].sha.as_deref(), Some("220dd3dd"));
+        assert_eq!(normalize(&pasted("", "a\n b")), "a b");
+    }
+
+    #[test]
+    fn the_reported_last_message_ends_a_turn_the_transcript_does_not_show_yet() {
+        // The capture-doc worker: Claude wrote the turn's last message after its `Stop` hook
+        // reported the end, so the transcript read then ends on the last tool call's result.
+        let open = [assignment("p1", "do the item", Some(0))];
+        let lines = vec![
+            user(&pasted("", "do the item")),
+            assistant("", true),
+            tool_result(),
+        ];
+        let final_text = "Committed.\n\nWORKER-DONE 220dd3dd | the item";
+        let without = scan(&lines, &open, true);
+        assert_eq!(without.started.get("p1"), Some(&false));
+        assert!(without.verdicts.is_empty());
+        let offsets: Vec<(u64, &str)> = lines
+            .iter()
+            .scan(0, |offset, line| {
+                let at = *offset;
+                *offset += line.len() as u64 + 1;
+                Some((at, line.as_str()))
+            })
+            .collect();
+        let with = scan_lines(
+            offsets.clone().into_iter(),
+            &open,
+            true,
+            Some(final_text),
+            7,
+        );
+        assert_eq!(with.verdicts["p1"].line, "WORKER-DONE 220dd3dd | the item");
+        // Only at a turn end: a read that is no turn end takes no reported text.
+        assert!(
+            scan_lines(offsets.into_iter(), &open, false, Some(final_text), 7)
+                .verdicts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_turn_end_record_ends_the_turn_and_a_transcript_ending_on_it_is_a_stop() {
+        let open = [
+            assignment("p1", "do item one", Some(0)),
+            assignment("p2", "do item two", Some(0)),
+        ];
+        let lines = vec![
+            user("do item one"),
+            assistant("WORKER-DONE abc1234 | one", false),
+            turn_duration(),
+        ];
+        // Not taken as over, yet the turn's end record ends it.
+        let found = scan(&lines, &open, false);
+        assert_eq!(found.verdicts["p1"].sha.as_deref(), Some("abc1234"));
+        assert!(found.ended.is_empty());
+
+        let mut lines = lines;
+        lines.extend([
+            user("do item two"),
+            assistant("Which variant?", false),
+            turn_duration(),
+        ]);
+        let found = scan(&lines, &open, false);
+        assert!(!found.verdicts.contains_key("p2"));
+        assert_eq!(found.ended, BTreeSet::from(["p2".to_string()]));
+
+        // Still working: no turn end after its last text, so no stop.
+        lines.extend([user("go on"), assistant("still at it", false)]);
+        assert!(scan(&lines, &open, false).ended.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_records_the_verdicts_and_stops_a_turn_end_left() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-assignments-reconcile-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_test_dir(Some(dir.join("assignments")));
+        let write = |name: &str, lines: &[String]| {
+            let path = dir.join(name);
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            path
+        };
+        // Registered before herdr knew the transcripts (no anchor).
+        let done = dir.join("done.jsonl");
+        let stopped = dir.join("stopped.jsonl");
+        let working = dir.join("working.jsonl");
+        for (id, pane, path) in [
+            ("prompt_r_1", "w1:p1", &done),
+            ("prompt_r_2", "w1:p2", &stopped),
+            ("prompt_r_3", "w1:p3", &working),
+        ] {
+            accepted(
+                id,
+                pane,
+                Some("claude"),
+                None,
+                None,
+                "do the item",
+                Some(path),
+            );
+        }
+        write(
+            "done.jsonl",
+            &[
+                user(&pasted("", "do the item")),
+                assistant("WORKER-DONE 220dd3dd | the item", false),
+                turn_duration(),
+            ],
+        );
+        write(
+            "stopped.jsonl",
+            &[
+                user("do the item"),
+                assistant("Which variant?", false),
+                turn_duration(),
+            ],
+        );
+        write(
+            "working.jsonl",
+            &[
+                user("do the item"),
+                assistant("WORKER-DONE abc1234 | early", false),
+            ],
+        );
+
+        // A new server (a live handoff) reconciles once.
+        set_test_dir(Some(dir.join("assignments")));
+        assert!(reconcile(1));
+        assert_eq!(
+            get("prompt_r_1").unwrap().verdict.unwrap().sha.as_deref(),
+            Some("220dd3dd")
+        );
+        assert_eq!(undelivered_unwatched().len(), 1);
+        let stop = get("prompt_r_2").unwrap();
+        assert!(stop.verdict.is_none() && stop.stopped_ms.is_some());
+        assert_eq!(
+            stopped_open()
+                .iter()
+                .map(|assignment| assignment.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prompt_r_2"]
+        );
+        let running = get("prompt_r_3").unwrap();
+        assert!(running.verdict.is_none() && running.stopped_ms.is_none());
+        assert!(running.started_ms.is_some());
+        // Nothing new the second time.
+        assert!(!reconcile(2));
+        set_test_dir(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

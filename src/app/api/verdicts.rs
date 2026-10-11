@@ -59,7 +59,10 @@ impl App {
     /// The pane's agent reported a turn end: reads its transcript once for the pane's open
     /// assignments, records each verdict found (once), closes those a newer prompt superseded,
     /// and marks a prompt the agent took in mid-turn as worked on by this turn, so its end ends
-    /// it. When `turn_closed` (no background task left to resume the agent), a started open
+    /// it. `final_text` is the turn's last message the agent reported with the end, which the
+    /// transcript may not show yet; it is also the verdict of an assignment whose prompt the
+    /// agent reported starting this turn when the transcript does not show that prompt yet.
+    /// When `turn_closed` (no background task left to resume the agent), a started open
     /// assignment the turn brought no verdict is marked stopped without one. A verdict that no
     /// `agent.wait_verdict` waits for, and a stop without a verdict, ask for a supervision
     /// sweep. Returns whether a followed request changed.
@@ -68,6 +71,7 @@ impl App {
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
         turn_closed: bool,
+        final_text: Option<&str>,
     ) -> bool {
         let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
             return false;
@@ -83,7 +87,11 @@ impl App {
         }) else {
             return false;
         };
-        let scan = match crate::assignments::scan_open(&path, &open, crate::assignments::now_ms()) {
+        for assignment in &open {
+            crate::assignments::note_transcript(&assignment.request_id, &path);
+        }
+        let now_ms = crate::assignments::now_ms();
+        let mut scan = match crate::assignments::scan_open(&path, &open, true, final_text, now_ms) {
             Ok(scan) => scan,
             Err(error) => {
                 tracing::warn!(%error, path = %path.display(), "cannot read the agent's transcript");
@@ -99,19 +107,25 @@ impl App {
                     changed |= terminal.prompt_turns.absorbed(request_id);
                 }
             }
-        }
-        for (request_id, by) in &scan.superseded {
-            crate::assignments::supersede(request_id, by);
-        }
-        for (request_id, offset) in &scan.start_offsets {
-            if !scan.verdicts.contains_key(request_id) {
-                crate::assignments::started_at(request_id, &path, *offset);
+            // The agent reported starting this turn with the prompt (`UserPromptSubmit`), but
+            // the transcript does not show it yet: the turn's last message is its verdict.
+            let verdict = final_text.and_then(|text| crate::assignments::worker_line(text, now_ms));
+            for assignment in &open {
+                let id = &assignment.request_id;
+                if scan.started.contains_key(id)
+                    || scan.superseded.contains_key(id)
+                    || terminal.prompt_turns.state_of(id) != Some(PromptTurnState::Working)
+                {
+                    continue;
+                }
+                scan.started.insert(id.clone(), false);
+                if let Some(verdict) = &verdict {
+                    scan.verdicts.insert(id.clone(), verdict.clone());
+                }
             }
         }
-        for (request_id, verdict) in scan.verdicts {
-            if crate::assignments::record_verdict(&request_id, verdict)
-                && !crate::assignments::has_waiter(&request_id)
-            {
+        for request_id in crate::assignments::apply(&path, &scan) {
+            if !crate::assignments::has_waiter(&request_id) {
                 crate::workers::supervision::request_sweep(&format!(
                     "verdict of {request_id} in pane {public}"
                 ));

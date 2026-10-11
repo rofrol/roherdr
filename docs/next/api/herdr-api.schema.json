@@ -4250,6 +4250,13 @@
                 "null"
               ]
             },
+            "final_text": {
+              "description": "With `finished`: the turn's last message (Claude's `last_assistant_message`), which the\nagent's transcript may not show yet when the end is reported. Herdr reads the verdict\nof the prompts it typed from it. Absent when the agent does not say.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "interrupted": {
               "description": "With `finished`: the turn was interrupted, so the prompts it ran end as interrupted.",
               "type": "boolean"

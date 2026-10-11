@@ -172,8 +172,11 @@ herdr-job wait "$id"
   background job runs is still working. Herdr registers the assignment when
   it accepts the prompt (anchored at the end of the worker's transcript
   then) and records its verdict itself when the worker reports a turn end
-  (Claude's `Stop`), once, with the time; the record is kept on disk, so it
-  survives the waiter, a herdr restart and a live handoff. The wait first
+  (Claude's `Stop`, which carries the turn's last message, since Claude may
+  write it to the transcript only after the hook ran), once, with the time;
+  the record is kept on disk, so it survives the waiter, a herdr restart and
+  a live handoff, and the first supervision sweep of a new server reads the
+  open assignments' transcripts again for a verdict or a stop it missed. The wait first
   asks herdr for it (`herdr agent wait-verdict <id>`, which follows a live
   handoff): a verdict recorded before the wait, also while no waiter ran,
   ends it at once. That command acknowledges the verdict once it printed
@@ -187,7 +190,8 @@ herdr-job wait "$id"
   `WORKER-DONE <sha>` or `WORKER-BLOCKED <reason>` line of an assistant
   text after the record that starts the assignment, where the text ended
   its turn (no tool call followed it), so an earlier assignment's verdict
-  never counts. The start is the user message carrying the prompt, or, for
+  never counts. The start is the user message carrying the prompt (also
+  wrapped in Claude's `<pasted_content>` tags, which matching leaves out), or, for
   a prompt Claude took in while it worked, the `queued_command` attachment
   carrying it (with its `queue-operation` record, counted once); an
   `enqueue` does not start it. Each round reads the agent and its
@@ -204,9 +208,12 @@ herdr-job wait "$id"
   reported its turns, for example while it sits behind the folder-trust
   dialog), at once: wait for the worker's turn end instead (the form
   below), then prompt it. It records the assignment under
-  `~/.local/state/herdr-job/assignments/` for that fallback. For a request
-  herdr does not know that no earlier wait recorded, it says so and waits
-  as below instead.
+  `~/.local/state/herdr-job/assignments/` for that fallback. A request
+  herdr neither follows (`prompt_request_not_found`, as after a restart or a
+  live handoff) nor keeps an assignment of ends the wait at once with exit
+  8, after one read of the transcript an earlier wait recorded: nothing
+  herdr reports would end it. With an older herdr, a request it does not
+  know that no earlier wait recorded waits as below instead.
 - `wait-agent <pane> --until verdict` without `--request` ends at the pane's
   next turn end whose final message carries a WORKER line (or at a question
   or the agent's exit). A turn end is a new `completion_seq` in `herdr agent

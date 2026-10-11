@@ -5723,6 +5723,8 @@ fn claude_reports_the_stops_running_background_tasks_with_the_turn_end() {
         {"id": "b3", "type": "agent", "status": "pending"},
     ])));
     assert_eq!(params["background_tasks"], 2, "{params}");
+    // The turn's last message, which the transcript may not show yet.
+    assert_eq!(params["final_text"], "Done, the build runs.", "{params}");
 
     let params = reported_turn_finish(Some(json!([])));
     assert_eq!(params["background_tasks"], 0, "{params}");

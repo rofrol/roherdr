@@ -427,6 +427,11 @@ pub struct PaneReportTurnParams {
     /// later turn ends with none. Absent when the agent does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_tasks: Option<u32>,
+    /// With `finished`: the turn's last message (Claude's `last_assistant_message`), which the
+    /// agent's transcript may not show yet when the end is reported. Herdr reads the verdict
+    /// of the prompts it typed from it. Absent when the agent does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

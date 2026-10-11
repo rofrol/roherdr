@@ -1730,6 +1730,7 @@ impl App {
                 ws_idx,
                 pane_id,
                 params.background_tasks.unwrap_or(0) == 0,
+                params.final_text.as_deref(),
             );
         if !finished {
             self.assignments_turn_started(ws_idx, pane_id);
@@ -3471,6 +3472,7 @@ mod tests {
                     interrupted: false,
                     continuation,
                     background_tasks: None,
+                    final_text: None,
                 },
             ),
         });

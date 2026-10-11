@@ -8034,6 +8034,7 @@ fn report_turn_finished(server: &mut HeadlessServer, public_pane_id: &str, tasks
             interrupted: false,
             continuation: false,
             background_tasks: tasks,
+            final_text: None,
         }),
     );
 }

@@ -254,9 +254,9 @@ impl PromptTurns {
 }
 
 /// Whitespace runs collapse to one space: the agent may hand the prompt back with other line
-/// endings or trimmed.
+/// endings or trimmed, or wrapped as a paste (`crate::assignments::normalize`).
 fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::assignments::normalize(text)
 }
 
 #[cfg(test)]

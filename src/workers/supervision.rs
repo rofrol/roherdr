@@ -1272,6 +1272,9 @@ impl WorkerSupervisor {
         trigger: &str,
         panes: Vec<PaneFacts>,
     ) -> Result<(), WorkerError> {
+        // The first sweep of a server (its start, a live handoff) reads the transcripts of the
+        // open assignments again, so a verdict or a stop the server before it missed counts.
+        crate::assignments::reconcile_once(now_ms());
         let observed_ms = now_ms();
         let tenures = self.coordinator_status(None)?;
         let by_pane: BTreeMap<&str, &PaneFacts> = panes

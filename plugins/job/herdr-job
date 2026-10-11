@@ -2639,9 +2639,15 @@ ASSIGNMENTS = STATE / "assignments"
 TOOL_CALL_PARTS = {"tool_use", "toolCall", "tool_call", "server_tool_use"}
 
 
+# The tags Claude wraps a prompt in when its input box took it as a paste:
+# `<pasted_content id="...">` and a closing tag with the same id.
+PASTED_TAG = re.compile(r"</?pasted_content(?:\s[^>]*)?>")
+
+
 def normalize_prompt(text):
-    """Whitespace runs collapsed to one space, as herdr stores a prompt's text."""
-    return " ".join(str(text).split())
+    """Whitespace runs collapsed to one space and the paste tags left out, as
+    herdr matches a prompt's text."""
+    return " ".join(PASTED_TAG.sub(" ", str(text)).split())
 
 
 def assignment_file(request):
@@ -2687,7 +2693,8 @@ def transcript_records(path):
     """The main session's records of a JSONL transcript (subagents' skipped):
     (role, texts, calls_tool) per record, where texts are its text parts. A
     prompt Claude took in mid-turn (`absorbed_prompt`) is a user record
-    carrying it, once per command."""
+    carrying it, once per command; the end of a turn (Claude's
+    `turn_duration` record) is ("turn_end", [], False)."""
     absorbed = set()
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
@@ -2696,6 +2703,9 @@ def transcript_records(path):
             except ValueError:
                 continue
             if not isinstance(record, dict) or record.get("isSidechain"):
+                continue
+            if record.get("type") == "system" and record.get("subtype") == "turn_duration":
+                yield "turn_end", [], False
                 continue
             if taken := absorbed_prompt(record):
                 prompt, command = taken
@@ -2728,9 +2738,9 @@ def assignment_verdict(path, prompt, turn_over):
     """The WORKER line the assignment produced, as a match: the last one in an
     assistant text after the user message that carries the assignment's
     prompt, where that text ended its turn (no tool call followed it before
-    the next user message). The text at the end of the transcript counts only
-    when `turn_over` (the agent is not working), since its tool call may not
-    be written yet. None while the prompt is not in the transcript yet, so an
+    the next user message or the turn's end record). The text at the end of
+    the transcript counts only when `turn_over` (the agent is not working),
+    since its tool call may not be written yet. None while the prompt is not in the transcript yet, so an
     earlier assignment's verdict never counts."""
     prompt = normalize_prompt(prompt)
     if not prompt:
@@ -2786,9 +2796,11 @@ def unsupported_exit(say, request, result):
 def resolve_assignment(say, args):
     """The assignment's pane and prompt text: from herdr while it follows the
     request (recorded for later), else from the record of an earlier wait;
-    None when neither knows it. A request herdr reports `unsupported` ends
-    the wait at once (`unsupported_exit`)."""
+    None when neither knows it. Sets `args.followed` to whether herdr follows
+    the request. A request herdr reports `unsupported` ends the wait at once
+    (`unsupported_exit`)."""
     kind, text = call_until_answered(say, "agent", "prompt-status", args.request)
+    args.followed = kind == "ok"
     if kind == "ok":
         result = last_result(text)
         if (result.get("prompt_request") or {}).get("state") == "unsupported":
@@ -2836,6 +2848,8 @@ def recorded_verdict(say, args, record):
     result = last_result(text)
     reason = result.get("reason")
     if reason == "unknown_request":
+        if not getattr(args, "followed", True):
+            tracking_lost_exit(say, args, record)
         say(f"herdr keeps no assignment {args.request}; reading the transcript instead")
         return
     if reason == "question":
@@ -2861,6 +2875,23 @@ def recorded_verdict(say, args, record):
     agent = (last_result(text).get("agent") or {}) if kind == "ok" else {}
     verdict_exit(say, match, {"cwd": agent.get("foreground_cwd") or agent.get("cwd")
                               or (record or {}).get("cwd")})
+
+
+def tracking_lost_exit(say, args, record):
+    """Ends a wait at once on a request herdr neither follows
+    (`prompt_request_not_found`) nor keeps an assignment of: nothing herdr
+    will report ends it (its server restarted or handed off without them).
+    The transcript an earlier wait recorded is read once for a verdict whose
+    turn ended; otherwise the wait exits with EXIT_TRACKING_LOST."""
+    path = (record or {}).get("transcript")
+    if path and Path(path).is_file():
+        if match := assignment_verdict(Path(path), record["text"], False):
+            verdict_exit(say, match, {"cwd": record.get("cwd")})
+    pane = (record or {}).get("pane") or args.pane
+    say(f"tracking lost: herdr keeps neither prompt request {args.request} nor its assignment "
+        f"(did its server restart or hand off?); read the worker's last message "
+        f"(`herdr agent read {pane}`) and decide, or prompt it again")
+    sys.exit(EXIT_TRACKING_LOST)
 
 
 def wait_for_verdict(say, args):

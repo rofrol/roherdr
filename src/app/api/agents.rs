@@ -1711,6 +1711,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The capture-doc worker's turn: a pasted prompt, and a `Stop` reported before Claude wrote
+    /// the turn's last message to the transcript; `transcript_lines` is all the transcript
+    /// shows then. Returns the verdict recorded for its request.
+    fn verdict_of_a_turn_ending_before_its_last_message_is_written(
+        transcript_lines: impl Fn(&str) -> Vec<serde_json::Value>,
+    ) -> Option<String> {
+        let dir = scratch_dir();
+        let transcript = dir.join("session.jsonl");
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_reporting_turns(&mut app, &transcript);
+        let task = "AGENTS.md: capture with grim\n\nRewrite the paragraph.\n\
+                    Last line: `WORKER-DONE <sha> | <summary>`";
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params(task, false),
+        ));
+        let pasted =
+            format!("\n\n<pasted_content id=\"7bb5\">\n{task}\n</pasted_content id=\"7bb5\">\n");
+        report_turn(&mut app, &pane, "started", Some(&pasted));
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Working
+        );
+        append_lines(&transcript, &transcript_lines(&pasted));
+        report_turn_with(
+            &mut app,
+            serde_json::json!({"pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished", "background_tasks": 0,
+                "final_text": "Rewrote it.\n\nWORKER-DONE 220dd3dd | grim by default"}),
+        );
+        let _ = std::fs::remove_dir_all(dir);
+        assignment_of(&mut app, &request.request_id)
+            .verdict
+            .map(|verdict| verdict.line)
+    }
+
+    #[tokio::test]
+    async fn a_turn_end_reported_before_its_last_message_is_written_records_the_verdict() {
+        let expected = Some("WORKER-DONE 220dd3dd | grim by default".to_string());
+        // The pasted prompt and the turn's tool calls are written, its last message is not.
+        assert_eq!(
+            verdict_of_a_turn_ending_before_its_last_message_is_written(|pasted| vec![
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": pasted}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}),
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "220dd3dd"}]}}),
+            ]),
+            expected
+        );
+        // Not even the prompt is written yet: the agent reported starting the turn with it.
+        assert_eq!(
+            verdict_of_a_turn_ending_before_its_last_message_is_written(|_| vec![
+                serde_json::json!({"type": "attachment", "attachment": {"type": "hook_success"}}),
+            ]),
+            expected
+        );
+    }
+
     #[tokio::test]
     async fn an_earlier_identical_prompt_before_the_anchor_does_not_count() {
         let dir = scratch_dir();
