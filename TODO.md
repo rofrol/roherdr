@@ -533,6 +533,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     code), not `⧖`, not `○` (the idle glyph). Dimming must be carried by
     text, not colour (16-colour themes, `NO_COLOR`). Consult calls
     `557d6c84`, `56fe2bac`, `f2132f2c`, `9c834783`.
+  Landed 2026-10-11 (2df5e35c): the tab line shows `bg:N` in every state;
+  the bg hook always reports `bg_count` (0 included, with a TTL; nothing
+  when the payload has no `background_tasks`, so unknown stays apart from
+  zero); `agent.get`/`agent.list` return `background_tasks` from the
+  `bg_count` metadata. Left, decided by the coordinator: the notify rule
+  (no "done" notification while background work runs) needs the count in
+  the same Stop report as `done`, since the state and the bg hooks race;
+  `herdr-agent-state.sh` sends it (an integration asset change, version
+  bumped once from the latest release).
 
 - [ ] Consult cost per model and the coordinator's extra spend (user, [t-4hgsm43b]
   2026-10-03: "how much money/tokens a model used on a consult, and how much
