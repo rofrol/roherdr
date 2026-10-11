@@ -1686,6 +1686,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `listen`, then rename it into place, so the directory event means
   connectable; a test that connects on the event.
 
+- [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
+  them in a usage widget (the user, 2026-10-12: "so we do not lose these
+  credits", "and show it in a usage widget; spend the $200 first?"; he
+  delegated the choice to the models, d-qj22f4ck). Facts
+  (platform.claude.com/docs/en/about-claude/api-credits-for-subscribers):
+  $200 per billing cycle on Max 20x, expire at its end with no rollover;
+  they cover the Claude API, the Agent SDK and Managed Agents, not Claude
+  Code, so a `claude -p` worker cannot use them; claimed by linking a
+  Console organization (the user's step) and spent through an API key of
+  that organization (created and stored by the user, never seen by an
+  agent). Decided (round of 2026-10-12 plus the docs):
+  1. A second headless worker kind that runs on the Agent SDK with the API
+     key, in its own folder slot, for independent items; the subscription
+     worker keeps its slot; neither edits TODO.md in parallel.
+  2. When the subscription hits its limit, waiting items go to the API
+     worker while credit remains, else to pi.
+  3. A hard cap: a dedicated Console workspace with a spend limit at the
+     credit amount (Anthropic enforces it), plus herdr's own per-run
+     accounting (run, item, model, tokens, the SDK's reported cost) that
+     fails closed when the counter is unavailable.
+  4. A usage widget in the sidebar: credit spent this cycle against the
+     cap and the days to expiry (from herdr's accounting; the Console
+     Cost page remains the authority), next to the subscription's usage.
+  5. Front-load: with credits expiring per cycle, the API worker takes
+     items from the start of the cycle until the cap.
+  Needs from the user first: claim the credits (claude.ai Settings >
+  Billing, link a Console organization), create a workspace with a spend
+  limit and an API key in it, store the key where herdr reads it
+  (Keychain), and say where.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
