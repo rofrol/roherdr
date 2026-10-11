@@ -1094,3 +1094,11 @@ real swatches; a click on a state glyph, role mark or job count opens it
 at the entry; glyphs with their own action mention it in their tooltip;
 exhaustive per-variant tests; docs/next "Status legend". Queue mode
 status has no entry because the TUI draws none yet.
+
+## `herdr-bg-badge` names the worker a coordinator waits on (follows
+
+A coordinator's `◔` could name only the workers of its own space
+(2026-10-11). Now (ea25c113) `herdr-bg-badge` counts a background
+`wait-agent` once per waited pane and reports a `bg_agents` token; the
+tooltip names those panes' agents in any space. A `wait-agent` wrapped in
+`herdr-job run` counts as the coordinator's own job (shown in `$jobs`).

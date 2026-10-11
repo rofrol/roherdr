@@ -298,13 +298,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   of the user's skill, done by the coordinator's worker next);
   `--until background-drained` (optional, from the fourth report).
 
-- [ ] `herdr-bg-badge` names the worker a coordinator waits on (follows [t-amoxc5sx]
-  from 1bffc916, 2026-10-11): a background `herdr-job wait-agent <pane>`
-  counts today as an anonymous `1 bg`, so the coordinator's `◔` tooltip
-  can name only the workers of its own space. Record such waits as agent
-  edges (`kind=agent`, `target_pane`) like the job wait edges of e3228f41,
-  and let the tooltip name that pane's agent wherever it is.
-
 - [ ] `herdr-job wait-text <file> <pattern>`: an event-driven match on new [t-xphl4a6t]
   bytes, partial lines included (from the guix-x86_64-iso-omguix
   coordinator's report, 2026-10-10: `tail -F serial.log | grep -m1 login:`
