@@ -1880,6 +1880,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   AGENTS.md (a worker); a `herdr todo` close check that refuses an item
   whose numbered requirements are unmapped is a follow-up.
 
+- [ ] A click on a todo run's sidebar line always opens its run view (the [t-ewtqmtqo]
+  user, 2026-10-12, screenshot: "not clickable; ask the models"). The
+  line opened the step log only when `has_log`; during the worker step
+  (10-40 min) a click did nothing. Round of 2026-10-12 (MiMo, DeepSeek;
+  sol preferred opening the worker's live log directly), decided: the
+  click opens one run view popup, the same for every step: the item's
+  title, run id and attempt, the steps with their times, the current
+  step, the pending event and its actions; it embeds and follows the
+  current step's log, and during the worker step the worker's live log;
+  with no output yet it says so ("worker running 12m, no output yet"),
+  never blank; Enter/Space opens it too; the right-click menu mirrors its
+  actions (takeover where a worker allows it). Rule: a line that looks
+  clickable never silently does nothing.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
