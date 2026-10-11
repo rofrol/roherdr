@@ -692,39 +692,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Also open: space drag and drop in the multi-machine sidebar still works
     from the drawn spaces only.
 
-- [ ] Dragging a space does not show where it will land (screenshot [t-llnkot6j]
-  2026-09-26, dragging `herdr`). The live reorder is done (`DECISIONS.md`,
-  "Dragging spaces"). Open:
-  - A collapsed space does not show that it is the focused one (screenshot
-    2026-09-29). A collapsed space is one line: no branch line, its git
-    status on the name line without the branch (`► herdr ↑2 ⧖ 1 !3`), and
-    the focused collapsed space's name line gets the focused active tab's
-    solid accent fill. Consulted (GPT-6 Astra, DeepSeek): fill only the
-    focused collapsed space; the collapsed line gets its own configurable
-    token list (default `workspace, git_status, tab_jobs`); the triangle,
-    `+`, grip and counts need readable colours on the accent; hover must
-    differ from the focus fill; a collapsed worktree parent whose child is
-    focused gets the fill plus a "focus inside" cue, and its git status must
-    not pass off one child's as the group's. Git status before the job
-    counts; truncate the name first, then drop the git status, never the
-    counts. Worktree children keep no branch.
-  - Not done: the row-by-row slide animation, a per-job menu on a square
-    (open, close), the drag in the multi-machine sidebar (keeps the old
-    look), the priority view (no reordering, a hint to switch). A move is
-    sent by ids (`move X before Y`); if another client changed the order or
-    the anchor vanished, cancel with a notice.
-  Decided by the user 2026-10-06: the agent makes demos of the collapsed
-  one-line space and the "focus inside" cue for worktree parents, then
-  moves the item back under Needs a decision with the variants named, so
-  the user picks with a click.
-  2026-10-11 (11e9abc3): the consulted variant is built and installed as the
-  live demo: the focused collapsed space's name line gets the solid accent
-  fill, its own `collapsed_row` tokens (default workspace, git_status,
-  tab_jobs), readable glyphs on the accent, a distinct hover and a `↳`
-  "focus inside" cue for worktree parents. The user had asked for demos to
-  pick from (2026-10-06); the coordinator's task missed that, so the choice
-  is asked in "Needs a decision" against this live variant.
-
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update, [t-wbgh3nrb]
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
@@ -1517,6 +1484,41 @@ user needs to decide or do.
   lazygit falls short; the user's feedback decides.
   Does lazygit in the popup (`prefix+alt+g`) cover reviewing agent commits, or build the herdr-native list?
   Options: lazygit is enough, close the item (Recommended) | build the native "to review" list
+
+- [ ] Dragging a space does not show where it will land (screenshot [t-llnkot6j]
+  2026-09-26, dragging `herdr`). The live reorder is done (`DECISIONS.md`,
+  "Dragging spaces"). Open:
+  - A collapsed space does not show that it is the focused one (screenshot
+    2026-09-29). A collapsed space is one line: no branch line, its git
+    status on the name line without the branch (`► herdr ↑2 ⧖ 1 !3`), and
+    the focused collapsed space's name line gets the focused active tab's
+    solid accent fill. Consulted (GPT-6 Astra, DeepSeek): fill only the
+    focused collapsed space; the collapsed line gets its own configurable
+    token list (default `workspace, git_status, tab_jobs`); the triangle,
+    `+`, grip and counts need readable colours on the accent; hover must
+    differ from the focus fill; a collapsed worktree parent whose child is
+    focused gets the fill plus a "focus inside" cue, and its git status must
+    not pass off one child's as the group's. Git status before the job
+    counts; truncate the name first, then drop the git status, never the
+    counts. Worktree children keep no branch.
+  - Not done: the row-by-row slide animation, a per-job menu on a square
+    (open, close), the drag in the multi-machine sidebar (keeps the old
+    look), the priority view (no reordering, a hint to switch). A move is
+    sent by ids (`move X before Y`); if another client changed the order or
+    the anchor vanished, cancel with a notice.
+  Decided by the user 2026-10-06: the agent makes demos of the collapsed
+  one-line space and the "focus inside" cue for worktree parents, then
+  moves the item back under Needs a decision with the variants named, so
+  the user picks with a click.
+  2026-10-11 (11e9abc3): the consulted variant is built and installed as the
+  live demo: the focused collapsed space's name line gets the solid accent
+  fill, its own `collapsed_row` tokens (default workspace, git_status,
+  tab_jobs), readable glyphs on the accent, a distinct hover and a `↳`
+  "focus inside" cue for worktree parents. The user had asked for demos to
+  pick from (2026-10-06); the coordinator's task missed that, so the choice
+  is asked in "Needs a decision" against this live variant.
+  Keep the collapsed-space look now installed (11e9abc3: accent fill on the focused collapsed space, `↳` focus-inside cue), or see alternative variants first?
+  Options: keep it (Recommended) | build two alternative demos to compare | revert it
 
 ### Decide
 
