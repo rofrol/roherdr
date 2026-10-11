@@ -284,6 +284,29 @@ pub(crate) fn replace_file(
     }
 }
 
+/// `GetDiskFreeSpaceExW`'s bytes free to the caller on the volume of
+/// `path`.
+pub(super) fn disk_bytes_available(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut free: u64 = 0;
+    let read = unsafe {
+        GetDiskFreeSpaceExW(
+            path.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (read != 0).then_some(free)
+}
+
 pub(crate) fn config_file_link_count(path: &std::path::Path) -> std::io::Result<u64> {
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,

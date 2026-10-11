@@ -11,6 +11,7 @@ pub(crate) mod plugins;
 mod reports;
 pub(super) mod responses;
 mod session;
+mod supervision;
 mod tabs;
 mod usage;
 mod workers;
@@ -765,6 +766,7 @@ impl App {
             update.agent_released,
         ) {
             crate::workers::owner_event(&pane_id, event);
+            crate::workers::supervision::request_sweep_for_pane(&pane_id, "state");
             if event == crate::workers::OwnerEvent::AgentExited {
                 self.sync_coordinator_roles();
             }
@@ -1407,6 +1409,7 @@ impl App {
             | Method::HistoryOverrides(_)
             | Method::HistoryWouldDeny(_)
             | Method::ReportList(_)
+            | Method::SuperviseReport(_)
             | Method::WorkerTranscript(_)
             | Method::WorkerTranscriptWait(_) => {
                 return responses::encode_error(

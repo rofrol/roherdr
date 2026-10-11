@@ -131,6 +131,8 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         next_notification_id: 1,
         pty_alerts: Default::default(),
         pty_usage_seen: 0,
+        // Test servers never sweep on their own.
+        supervision_due: None,
         popup_owner_tab_id: None,
         client_shell_boot_id: "test-boot".into(),
         sent_window_title: None,

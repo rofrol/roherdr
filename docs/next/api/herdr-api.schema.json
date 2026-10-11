@@ -5497,6 +5497,15 @@
             }
           ]
         },
+        "SuperviseReportParams": {
+          "description": "`supervise.report`: the findings that hold (open or acknowledged), or\nevery finding with `all`, and what the latest sweep saw of each\ncoordinator.",
+          "properties": {
+            "all": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "TabActivity": {
           "description": "What a running tab's job is doing, as far as its runner can tell.",
           "oneOf": [
@@ -8795,6 +8804,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ReportCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The supervision findings over the coordinators and their workers,\nand what the latest sweep saw of each coordinator. Reads only.",
+          "properties": {
+            "method": {
+              "const": "supervise.report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SuperviseReportParams"
             }
           },
           "required": [
@@ -16056,6 +16082,23 @@
               "type": "object"
             },
             {
+              "description": "`supervise.report`'s reply.",
+              "properties": {
+                "report": {
+                  "$ref": "#/schemas/success_response/$defs/SupervisionReport"
+                },
+                "type": {
+                  "const": "supervision_report",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "report"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`report.close`'s reply.",
               "properties": {
                 "report": {
@@ -17570,6 +17613,293 @@
           "enum": [
             "right",
             "down"
+          ],
+          "type": "string"
+        },
+        "SupervisedCoordinator": {
+          "description": "What the latest sweep saw of one active coordination tenure.",
+          "properties": {
+            "active_run": {
+              "description": "The repository's run in progress.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its pane's agent status; absent for a headless tenure or a pane the\nserver does not have."
+            },
+            "coordinator_id": {
+              "type": "string"
+            },
+            "findings": {
+              "description": "The findings that hold for it.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "note": {
+              "description": "`cannot establish progress` when no finding holds: the sweep never\nclaims progress from what it saw, nor a stall from quiet output.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "type": "string"
+            },
+            "workers": {
+              "description": "The tenure's workers whose process runs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "coordinator_id",
+            "repo"
+          ],
+          "type": "object"
+        },
+        "SupervisionEvidence": {
+          "description": "What a sweep saw that makes a predicate hold.",
+          "properties": {
+            "event_ids": {
+              "description": "The events the facts come from, such as `pane w1:p1 state change 41`\nor a tenure's start.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "facts": {
+              "description": "The facts, one per line, such as `agent_status: idle`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "observed_ms": {
+              "description": "When the sweep saw it, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "observed_ms"
+          ],
+          "type": "object"
+        },
+        "SupervisionFinding": {
+          "description": "One finding: a predicate that held for one subject from `first_seen_ms`\nto `last_seen_ms`.",
+          "properties": {
+            "acknowledged_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "coordinator_id": {
+              "description": "The coordination tenure it concerns.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "evidence": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionEvidence",
+              "description": "The latest sweep's evidence."
+            },
+            "expected_event": {
+              "description": "The event whose absence the finding names.",
+              "type": "string"
+            },
+            "finding_id": {
+              "description": "`f-` and the finding's number.",
+              "type": "string"
+            },
+            "fingerprint": {
+              "description": "16 hex characters of the SHA-256 of the predicate and its subject;\none finding holds per fingerprint at a time.",
+              "type": "string"
+            },
+            "first_seen_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "job_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "last_seen_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "predicate": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionPredicate"
+            },
+            "repo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolution": {
+              "description": "Why it was resolved: what the sweep saw instead.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolved_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "severity": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionSeverity"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionStatus"
+            },
+            "summary": {
+              "description": "One line saying what holds.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "finding_id",
+            "fingerprint",
+            "predicate",
+            "severity",
+            "status",
+            "summary",
+            "expected_event",
+            "evidence",
+            "first_seen_ms",
+            "last_seen_ms"
+          ],
+          "type": "object"
+        },
+        "SupervisionPredicate": {
+          "description": "The predicate a finding names: a positive fact and the event that did\nnot follow it. Quiet output is never one: it only means progress cannot\nbe established.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "coordinator_idle",
+              "description": "A coordinator's agent is idle while its repository has runnable\nitems, no open decision and no wait the server knows of.",
+              "type": "string"
+            },
+            {
+              "const": "working_after_stop",
+              "description": "A pane's agent shows `working` after the turn end its integration\nreported (Claude's `Stop`) with no turn start since\n(`UserPromptSubmit`).",
+              "type": "string"
+            },
+            {
+              "const": "untracked_shell",
+              "description": "A coordinator's turn ended with background tasks running and no wait\nedge the server knows of (a running herdr-job job of its pane, a\nworker of its tenure, a run of its repository).",
+              "type": "string"
+            },
+            {
+              "const": "disk_low",
+              "description": "The file system of a coordinator's repository has less free space\nthan the build guard's 15 GiB.",
+              "type": "string"
+            }
+          ]
+        },
+        "SupervisionReport": {
+          "description": "`supervise.report`'s reply.",
+          "properties": {
+            "coordinators": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisedCoordinator"
+              },
+              "type": "array"
+            },
+            "findings": {
+              "description": "The latest seen first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionFinding"
+              },
+              "type": "array"
+            },
+            "swept_ms": {
+              "description": "When the latest sweep of this server ran; absent before its first.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "trigger": {
+              "description": "What started it: `timer` or the event, such as `pane w1:p1 turn`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "SupervisionSeverity": {
+          "description": "`critical` ranks above `warning`; a finding whose severity rises is\nescalated.",
+          "enum": [
+            "warning",
+            "critical",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "SupervisionStatus": {
+          "description": "`open` until the user (or anyone answering its `?` entry) acknowledges\nit; `resolved` once a sweep finds its predicate no longer holding, which\nis final: the same fingerprint later opens a new finding.",
+          "enum": [
+            "open",
+            "acknowledged",
+            "resolved",
+            "unknown"
           ],
           "type": "string"
         },

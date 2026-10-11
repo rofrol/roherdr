@@ -1732,6 +1732,10 @@ impl App {
         if finished {
             changed |= self.state.release_held_completion(ws_idx, pane_id);
         }
+        // A coordinator's turn report is a supervision sweep's event.
+        if let Some(public) = self.public_pane_id(ws_idx, pane_id) {
+            crate::workers::supervision::request_sweep_for_pane(&public, "turn");
+        }
         if changed {
             if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
                 terminal.revision = terminal.revision.saturating_add(1);

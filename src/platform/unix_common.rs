@@ -492,6 +492,25 @@ pub(crate) fn signal_process_group(
     }
 }
 
+/// `statvfs`'s blocks available to unprivileged users times its fragment
+/// size.
+pub(crate) fn available_disk_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs only writes the struct it is given; zeroed is a valid
+    // value of that plain C struct.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a valid NUL-terminated string and `stat` outlives
+    // the call.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::useless_conversion)] // the field types differ per platform
+    let (blocks, size) = (u64::from(stat.f_bavail), u64::from(stat.f_frsize));
+    Some(blocks.saturating_mul(size))
+}
+
 pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
     if leader_pid <= 1 {
         return false;

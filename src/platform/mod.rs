@@ -260,6 +260,27 @@ fn process_group_alive_platform(leader_pid: u32) -> bool {
     !session_processes(leader_pid).is_empty()
 }
 
+/// The bytes an unprivileged process may still write on the file system
+/// that holds `path`; `None` when the platform cannot say.
+pub(crate) fn available_disk_bytes(path: &std::path::Path) -> Option<u64> {
+    available_disk_bytes_platform(path)
+}
+
+#[cfg(unix)]
+fn available_disk_bytes_platform(path: &std::path::Path) -> Option<u64> {
+    unix_common::available_disk_bytes(path)
+}
+
+#[cfg(windows)]
+fn available_disk_bytes_platform(path: &std::path::Path) -> Option<u64> {
+    windows::disk_bytes_available(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn available_disk_bytes_platform(_path: &std::path::Path) -> Option<u64> {
+    None
+}
+
 /// Creates `path` as a new directory only its owner can open (0700 where
 /// the platform has modes); fails when anything already exists there.
 pub(crate) fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {

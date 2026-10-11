@@ -41,6 +41,7 @@ mod server;
 mod server_not_running;
 mod spec;
 mod status;
+mod supervise;
 mod tab;
 mod target;
 mod todo;
@@ -141,6 +142,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "history" => history::run_history_command(&args[2..])?,
         "report" => report::run_report_command(&args[2..])?,
         "reports" => report::run_reports_command(&args[2..])?,
+        "supervise" => supervise::run_supervise_command(&args[2..])?,
         "usage" => usage::run_usage_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,

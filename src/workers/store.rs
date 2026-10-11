@@ -739,6 +739,7 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 -- had such an exit acknowledged on their owner's behalf (`acked_seq`).
 ALTER TABLE workers ADD COLUMN end_by_owner INTEGER NOT NULL DEFAULT 0;
 "#,
+    super::supervision::SUPERVISION_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3330,6 +3331,7 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_findings;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3398,8 +3400,9 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_findings;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 26
+                MIGRATIONS.len() - 27
             ))
             .unwrap();
         drop(store);
@@ -3462,8 +3465,9 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_findings;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 15
+                MIGRATIONS.len() - 16
             ))
             .unwrap();
         drop(store);

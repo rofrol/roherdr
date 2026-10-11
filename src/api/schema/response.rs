@@ -24,6 +24,7 @@ use super::plugins::{
 use super::reports::ReportInfo;
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
+use super::supervision::SupervisionReport;
 use super::tabs::TabInfo;
 use super::todo::{
     TodoChainInfo, TodoGrant, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
@@ -247,6 +248,10 @@ pub enum ResponseResult {
     /// `report.list`'s reply: the reports, the latest occurrence first.
     Reports {
         reports: Vec<ReportInfo>,
+    },
+    /// `supervise.report`'s reply.
+    SupervisionReport {
+        report: SupervisionReport,
     },
     /// `report.close`'s reply.
     Report {

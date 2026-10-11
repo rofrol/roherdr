@@ -81,6 +81,7 @@ mod native_graphics;
 mod notifications;
 mod render;
 mod retained_surface;
+mod supervision;
 mod surface_interest;
 mod worker_transcripts;
 
@@ -211,6 +212,8 @@ pub struct HeadlessServer {
     pty_alerts: crate::pty::usage::PtyAlerts,
     /// The last PTY usage change the loop handled.
     pty_usage_seen: u64,
+    /// When the next timed supervision sweep is due; never without one.
+    supervision_due: Option<Instant>,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
@@ -364,6 +367,7 @@ impl HeadlessServer {
             next_notification_id: 1,
             pty_alerts: Default::default(),
             pty_usage_seen: 0,
+            supervision_due: Some(Instant::now()),
             popup_owner_tab_id: None,
             client_shell_boot_id: format!(
                 "{}-{}",
@@ -557,6 +561,7 @@ impl HeadlessServer {
             }
 
             self.forward_pty_usage_alerts();
+            self.start_supervision_sweep_if_due(now);
             self.forward_worker_notices();
 
             self.poll_pending_alt_screen_reads(now);

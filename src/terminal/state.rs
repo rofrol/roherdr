@@ -3017,6 +3017,18 @@ impl TerminalState {
                 .supported_for(self.effective_agent_label())
     }
 
+    /// Whether the agent reported its last turn's end with no background task running and no
+    /// turn started since (see `turn_closed`).
+    pub fn turn_closed(&self) -> bool {
+        self.turn_closed
+    }
+
+    /// The background tasks the agent still ran when its last reported turn ended; `None`
+    /// while unknown (see `turn_background_tasks`).
+    pub fn turn_background_tasks(&self) -> Option<u32> {
+        self.turn_background_tasks
+    }
+
     /// Whether a completion now waits for the agent's background work: its last turn ended
     /// with background tasks still running.
     pub fn completion_waits_for_background_work(&self) -> bool {

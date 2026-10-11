@@ -62,6 +62,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::HistoryOverrides(_)
             | Method::HistoryWouldDeny(_)
             | Method::ReportList(_)
+            | Method::SuperviseReport(_)
     )
 }
 
@@ -335,6 +336,11 @@ fn handle_immediate(
         Method::ReportList(params) => {
             return Ok(ResponseResult::Reports {
                 reports: supervisor.reports(params.all)?,
+            })
+        }
+        Method::SuperviseReport(params) => {
+            return Ok(ResponseResult::SupervisionReport {
+                report: supervisor.supervision_report(params.all)?,
             })
         }
         Method::WorkerDrain(params) => {

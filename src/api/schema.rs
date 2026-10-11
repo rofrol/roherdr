@@ -14,6 +14,7 @@ pub mod reports;
 pub mod response;
 pub mod server;
 pub mod session;
+pub mod supervision;
 pub mod tabs;
 pub mod todo;
 pub mod usage;
@@ -35,6 +36,7 @@ pub use reports::*;
 pub use response::*;
 pub use server::*;
 pub use session::*;
+pub use supervision::*;
 pub use tabs::*;
 pub use todo::*;
 pub use usage::*;
@@ -271,6 +273,10 @@ pub enum Method {
     /// herdr repository's coordinator pane.
     #[serde(rename = "report.close")]
     ReportClose(ReportCloseParams),
+    /// The supervision findings over the coordinators and their workers,
+    /// and what the latest sweep saw of each coordinator. Reads only.
+    #[serde(rename = "supervise.report")]
+    SuperviseReport(SuperviseReportParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

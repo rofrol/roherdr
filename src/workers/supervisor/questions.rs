@@ -55,6 +55,8 @@ impl WorkerSupervisor {
         pending.extend(runs::escalations::pending_questions());
         // The definitions waiting for the user's grant.
         pending.extend(grant_questions::pending_questions());
+        // The supervision findings nobody acknowledged yet.
+        pending.extend(supervision::pending_questions());
         pending
     }
 
@@ -112,6 +114,10 @@ impl WorkerSupervisor {
         if grant_questions::is_grant_question(request_id) {
             // So is a grant question.
             return self.grant_reply_of(worker_id);
+        }
+        if supervision::is_finding_question(request_id) {
+            // And a supervision finding.
+            return self.finding_reply_of(worker_id);
         }
         self.escalate_because(worker_id, request_id, "its coordinator escalated it")
     }
@@ -190,6 +196,9 @@ impl WorkerSupervisor {
         if grant_questions::is_grant_question(request_id) {
             return self.grant_question_detail(worker_id, request_id);
         }
+        if supervision::is_finding_question(request_id) {
+            return self.finding_question_detail(worker_id, request_id);
+        }
         let registry = lock(&self.shared.registry);
         let number = Self::entry_number(&registry, worker_id)?;
         let status = &registry.workers[&number].status;
@@ -237,6 +246,14 @@ impl WorkerSupervisor {
         // ([`Self::deny_and_stop_from_client`]).
         if grant_questions::is_grant_question(&params.request_id) {
             return Err(grant_questions::needs_user(&params.request_id));
+        }
+        // A supervision finding has no worker to stop: it is acknowledged.
+        if supervision::is_finding_question(&params.request_id) {
+            return self.answer_finding_question(
+                &params.worker_id,
+                &params.request_id,
+                Some(WorkerDecision::Deny),
+            );
         }
         // A review escalation's worker has already exited: the denial
         // leaves the review to the coordinator.
@@ -449,6 +466,13 @@ impl WorkerSupervisor {
         if let Some(request_id) = params
             .request_id
             .as_deref()
+            .filter(|request_id| supervision::is_finding_question(request_id))
+        {
+            return self.answer_finding_question(&params.worker_id, request_id, params.decision);
+        }
+        if let Some(request_id) = params
+            .request_id
+            .as_deref()
             .filter(|request_id| runs::escalations::is_escalation(request_id))
         {
             self.answer_escalation(
@@ -487,6 +511,7 @@ impl WorkerSupervisor {
         if answer.request_id.as_deref().is_some_and(|request_id| {
             runs::escalations::is_escalation(request_id)
                 || grant_questions::is_grant_question(request_id)
+                || supervision::is_finding_question(request_id)
         }) {
             return self.answer(answer);
         }

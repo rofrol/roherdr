@@ -49,6 +49,7 @@ pub(super) fn command() -> Command {
         .subcommand(history_command())
         .subcommand(report_command())
         .subcommand(reports_command())
+        .subcommand(supervise_command())
         .subcommand(usage_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
@@ -575,6 +576,14 @@ fn reports_command() -> Command {
     Command::new("reports")
         .about("List the recorded protocol problems")
         .arg(flag("open"))
+        .arg(flag("all"))
+        .arg(flag("json"))
+}
+
+fn supervise_command() -> Command {
+    Command::new("supervise")
+        .about("Show what herdr's supervision sweep sees of the coordinators")
+        .arg(flag("report"))
         .arg(flag("all"))
         .arg(flag("json"))
 }
