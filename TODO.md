@@ -11,6 +11,26 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
+  2026-10-11, looking at the herdr space during an install: "why is
+  nothing happening here? ask the models, fix the process"). The driver was
+  in `install` (~10 min) writing only to
+  ~/.local/state/herdr/workers/run-<id>-install.log; the worker had exited;
+  the coordinator pane showed only `working` and `bg:1` (its own wait).
+  Round 20261011-172445-5a66 (sol, MiMo, DeepSeek), decided:
+  - The driver publishes its run state from its own step transitions (run
+    id, item, step, the command a step runs while it runs, step start time,
+    log path, outcome) through the API; no parsing of logs.
+  - One line under the coordinator's space per active run: `run r-x ·
+    install · just clean-install · 4m`, selectable: it opens a read-only view
+    of that step's log (not a fake PTY tab, no tab per step); done or failed
+    shows until acknowledged. The Supervision tab mirrors the same rows.
+  - No staleness flag from log mtime or heartbeat (MiMo, DeepSeek proposed;
+    dismissed under Rule 10); elapsed time is shown, not judged.
+  - The coordinator's turn-end message names what runs and what wakes it
+    ("driver installing r-x; my wait on todo wait r-x"), per the
+    limited-trust rule.
+
 - [ ] One consult command, so no session runs a stale model set (the user, [t-aa3mhh4e]
   2026-10-11: "why don't the coordinators ask DeepSeek too? fix it; ask
   the models"). Checked: after the skill gained DeepSeek (e166cea7, ~13:00),
@@ -1459,6 +1479,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (macOS; found 2026-10-11 by the worker of bdd3a8f7): on EPERM check
   whether the group still has a live non-zombie process and, if none, treat
   it as ESRCH (gone); code in src/platform/macos.rs, with a test.
+
+- [ ] The preflight checks that the folder slot belongs to the run's [t-lyxua57c]
+  repository (rormpc, 2026-10-11, `herdr report` r-6): before 27f3f475 a run
+  passed preflight and then failed at the worker start with "folder slot
+  ... is not a worktree of .../rormpc", leaving only abort; the preflight
+  refuses (or the start creates the repository's slot) instead.
 
 ## Proposed
 
