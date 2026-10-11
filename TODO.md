@@ -1521,6 +1521,27 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   was rejected by all three: a space is a checkout, a coordinator a role
   with a lifecycle); the one-per-repository constraint stays the guard.
 
+- [ ] A worker's space says who opened it and why, and never takes focus [t-qf7hytjv]
+  (the user, 2026-10-11, screenshot: "why was a new space opened? ask the
+  models"). The guix coordinator started a pane worker for an item in
+  another repository (roguix): `herdr worktree create --cwd <roguix>` made a
+  child space `todo-ci-desktop` under `roguix`, far from the coordinator,
+  focused 26 s later (by whom is unknown), and the worker sat at an empty
+  prompt (the task not yet sent). Round 20261011-174125-45c5 (sol, MiMo;
+  DeepSeek refused by herdr-job's 64-tab limit), decided:
+  - The worktree space stays under its repository; it shows its owner
+    ("opened by <coordinator> for <item>", a link back), the task's first
+    line and its state (preparing, running, needs attention); the
+    coordinator's space lists the worker with its repository: two views of
+    one worker.
+  - Creating a worktree or worker never takes focus; record focus
+    provenance (who focused a tab: a click, an API call by pane X) so a
+    surprise focus can be attributed.
+  - Cross-repository work goes through that repository's per-repository
+    slot as a headless worker by default; a pane worker is a deliberate
+    choice; the task is delivered with the start (`agent start` with a
+    prompt returns its request id, see the agent-prompt item).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
