@@ -96,7 +96,43 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   job and frees its key.
 - The command must represent the work: if it only starts something elsewhere
   (a VM, `nohup`, a remote host) and returns, wait for that work inside the
-  command (e.g. poll its status file).
+  command (e.g. block on its exit, or on a line it writes with `wait-text`).
+
+## Waiting for text in a file
+
+`wait-text FILE PATTERN` ends when bytes written to FILE match PATTERN (a
+Python regular expression over bytes, multiline; `-F` for literal text, `-i`
+to ignore case). It is for a positive event that only shows as output, such
+as a VM's serial console reaching its login prompt:
+
+```sh
+id=$(herdr-job run --name "wait guix login" --why "then ssh in" -- \
+  herdr-job wait-text vm/serial.log 'login:' --pid "$qemu_pid")
+herdr-job wait "$id"
+```
+
+- It follows the file by kernel events (kqueue on macOS, inotify on Linux),
+  never by a timer. `tail -F | grep -m1` hung on a login prompt because grep
+  waits for the line's newline; `wait-text` searches the bytes as one stream
+  across writes, so text without a trailing newline matches, and a match
+  split across two writes is found (it keeps the last 64 KiB).
+- `\r` counts as a line break, so `^`/`$` match a redrawn line's text.
+- Only text written after it starts counts; `--from-start` also searches
+  what the file already holds. A file that does not exist yet is waited for,
+  and all its text counts.
+- Rotation: when another file appears at the path, the old one is read to
+  its end, then the new one from its first byte. Truncation: a file that
+  shrank is read again from its start.
+- It ends only on the match (exit 0, the match printed), a source error
+  (exit 2: the directory was removed, the file cannot be read) or, with
+  `--pid PID`, the writer's exit before the match (exit 3). No duration ends
+  it, so name the writer with `--pid` when it may die without writing the
+  text.
+- Wait for something the producer really writes (a readiness line the guest
+  prints, a verdict), not log text guessed to appear. There is no
+  `wait-for-port`: a client gets no event when a remote port starts
+  listening, so it would be polling; for "the VM is ready" use one blocking
+  `ssh host true` that exits 0, or a readiness line the guest writes.
 
 State: `~/.local/state/herdr-job/<id>/` (`meta.json`, `log`, `exit`, `lock`).
 macOS and Linux only. The state directory must be on a local filesystem:

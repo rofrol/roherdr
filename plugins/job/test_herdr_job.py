@@ -1717,3 +1717,134 @@ class InstallTests(unittest.TestCase):
     def test_the_readme_shows_the_block_the_installer_writes(self):
         here = Path(__file__).parent
         self.assertIn((here / "agent-instructions.md").read_text().strip(), (here / "README.md").read_text())
+
+
+class NoWatch:
+    def watch_file(self, _fd):
+        pass
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitTextFollowerTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "serial.log"
+
+    def follower(self, pattern, from_start=False):
+        follower = JOB["TextFollower"](self.path, re.compile(pattern, re.MULTILINE), from_start)
+        self.addCleanup(follower.close)
+        follower.open_initial(NoWatch())
+        return follower
+
+    def append(self, text, path=None):
+        with open(path or self.path, "ab") as out:
+            out.write(text)
+
+    def test_a_match_split_across_writes_is_found(self):
+        self.path.write_bytes(b"")
+        follower = self.follower(rb"login:")
+        self.append(b"booting\nlog")
+        self.assertIsNone(follower.poll(NoWatch()))
+        self.append(b"in:")
+        self.assertEqual(follower.poll(NoWatch()), b"login:")
+
+    def test_only_text_written_after_the_start_counts_unless_from_start(self):
+        self.path.write_bytes(b"login: earlier\n")
+        follower = self.follower(rb"login:")
+        self.append(b"more output\n")
+        self.assertIsNone(follower.poll(NoWatch()))
+        self.assertEqual(self.follower(rb"login:", from_start=True).poll(NoWatch()), b"login:")
+
+    def test_a_redrawn_line_matches_its_anchors(self):
+        self.path.write_bytes(b"")
+        follower = self.follower(rb"^ready$")
+        self.append(b"progress 10%\rprogress 99%\rready\r")
+        self.assertEqual(follower.poll(NoWatch()), b"ready")
+
+    def test_a_truncated_file_is_read_again_from_its_start(self):
+        self.path.write_bytes(b"x" * 100)
+        follower = self.follower(rb"login:")
+        self.assertIsNone(follower.poll(NoWatch()))
+        self.path.write_bytes(b"login:")
+        self.assertEqual(follower.poll(NoWatch()), b"login:")
+
+    def test_rotation_reads_the_old_file_to_its_end_then_the_new_one(self):
+        self.path.write_bytes(b"old\n")
+        follower = self.follower(rb"login:")
+        rotated = self.path.with_name("serial.log.1")
+        os.rename(self.path, rotated)
+        self.append(b"tail of old\n", rotated)
+        self.assertIsNone(follower.poll(NoWatch()))
+        self.path.write_bytes(b"new boot\nlogin:")
+        self.assertEqual(follower.poll(NoWatch()), b"login:")
+        follower = self.follower(rb"last words")
+        os.rename(self.path, rotated)
+        self.append(b"last words", rotated)
+        self.path.write_bytes(b"")
+        self.assertEqual(follower.poll(NoWatch()), b"last words")
+
+    def test_a_file_created_after_the_start_counts_from_its_first_byte(self):
+        follower = self.follower(rb"login:")
+        self.assertIsNone(follower.poll(NoWatch()))
+        self.path.write_bytes(b"login:")
+        self.assertEqual(follower.poll(NoWatch()), b"login:")
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitTextCommandTests(unittest.TestCase):
+    """The command end to end: it follows the file by events, so each test
+    writes only after the command says on stderr that it follows the file."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name) / "vm"
+        self.dir.mkdir()
+        self.path = self.dir / "serial.log"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+        self.env["XDG_STATE_HOME"] = str(Path(tmp.name) / "state")
+
+    def start(self, *args):
+        proc = subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("herdr-job")), "wait-text", str(self.path), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.assertIn("following", proc.stderr.readline().decode())
+        return proc
+
+    def finish(self, proc):
+        out, err = proc.communicate()
+        return proc.returncode, out.decode(), err.decode()
+
+    def test_a_prompt_without_a_trailing_newline_ends_the_wait(self):
+        self.path.write_bytes(b"login: from an earlier boot\n")
+        proc = self.start("login:")
+        with open(self.path, "ab") as out:
+            out.write(b"Welcome\r\nguix login:")
+        self.assertEqual(self.finish(proc)[:2], (0, "login:\n"))
+
+    def test_rotation_with_a_new_file_ends_the_wait(self):
+        self.path.write_bytes(b"old\n")
+        proc = self.start("-F", "ready.")
+        os.rename(self.path, self.dir / "serial.log.1")
+        self.path.write_bytes(b"ready.")
+        self.assertEqual(self.finish(proc)[:2], (0, "ready.\n"))
+
+    def test_the_writer_exiting_first_ends_the_wait(self):
+        # `cat` stands in for the writer; closing its stdin ends it.
+        writer = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        self.addCleanup(lambda: writer.poll() is None and writer.kill())
+        proc = self.start("login:", "--pid", str(writer.pid))
+        writer.stdin.close()
+        writer.wait()
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 3)
+        self.assertIn("exited before the pattern appeared", err)
+
+    def test_a_removed_directory_is_a_source_error(self):
+        proc = self.start("login:")
+        os.rmdir(self.dir)
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 2)
+        self.assertIn("directory was removed", err)

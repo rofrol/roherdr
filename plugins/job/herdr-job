@@ -9,6 +9,8 @@
   herdr-job wait-agent PANE [--until STATE | --request ID [--until verdict]]
                                  wait for an agent, its prompt's turn or a pane worker's verdict,
                                  reconnecting inside one job
+  herdr-job wait-text FILE PATTERN [--from-start] [-F] [-i] [--pid PID]
+                                 wait until text written to FILE matches PATTERN (no line splitting)
   herdr-job list                 show jobs and their state
   herdr-job log ID               print the log path
   herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
@@ -1546,6 +1548,283 @@ def watch_pid(args):
     print(f"pid {args.pid} exited; its exit status is unknown to herdr-job")
 
 
+# `wait-text` keeps this many bytes of what it read, so a match split
+# across writes is found; a longer match is not.
+WAIT_TEXT_WINDOW = 64 * 1024
+WAIT_TEXT_CHUNK = 64 * 1024
+EXIT_TEXT_SOURCE = 2
+EXIT_TEXT_WRITER = 3
+
+
+class TextSourceError(Exception):
+    """The followed file cannot be watched or read any more."""
+
+
+class WriterExited(Exception):
+    """The process named by `--pid` exited."""
+
+
+class KqueueWatch:
+    """File events from kqueue (macOS, BSD): the file's own vnode (writes,
+    truncation, rename, delete) and its directory's (an entry added or
+    removed, so a rotated file's successor is seen)."""
+
+    FILE_EVENTS = ("KQ_NOTE_WRITE", "KQ_NOTE_EXTEND", "KQ_NOTE_ATTRIB", "KQ_NOTE_DELETE", "KQ_NOTE_RENAME")
+
+    def __init__(self, directory, pid=None):
+        import select
+        self.select = select
+        self.kq = select.kqueue()
+        try:
+            self.dir_fd = os.open(directory, getattr(os, "O_EVTONLY", os.O_RDONLY) | os.O_DIRECTORY)
+        except OSError as err:
+            self.kq.close()
+            raise TextSourceError(f"cannot watch {directory}: {err.strerror}") from err
+        changes = [self._vnode(self.dir_fd, select.KQ_NOTE_WRITE | select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME)]
+        if pid is not None:
+            changes.append(select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                         select.KQ_NOTE_EXIT))
+        try:
+            self.kq.control(changes, 0)
+        except ProcessLookupError as err:
+            self.close()
+            raise WriterExited() from err
+        self.pid = pid
+
+    def _vnode(self, fd, fflags):
+        select = self.select
+        return select.kevent(fd, select.KQ_FILTER_VNODE, select.KQ_EV_ADD | select.KQ_EV_CLEAR, fflags)
+
+    def watch_file(self, fd):
+        # A closed descriptor leaves the kqueue by itself.
+        fflags = 0
+        for name in self.FILE_EVENTS:
+            fflags |= getattr(self.select, name)
+        self.kq.control([self._vnode(fd, fflags)], 0)
+
+    def wait(self):
+        select = self.select
+        for event in self.kq.control(None, 16, None):
+            if event.filter == select.KQ_FILTER_PROC:
+                raise WriterExited()
+            if event.ident == self.dir_fd and event.fflags & (select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME):
+                raise TextSourceError("the file's directory was removed or renamed")
+
+    def close(self):
+        os.close(self.dir_fd)
+        self.kq.close()
+
+
+class InotifyWatch:
+    """File events from inotify (Linux): the directory's entries named like
+    the file, the opened file itself (writes after a rename still count), and
+    the writer's exit through a pidfd."""
+
+    IN_MODIFY, IN_ATTRIB, IN_CLOSE_WRITE = 0x2, 0x4, 0x8
+    IN_MOVED_FROM, IN_MOVED_TO, IN_CREATE, IN_DELETE = 0x40, 0x80, 0x100, 0x200
+    IN_DELETE_SELF, IN_MOVE_SELF, IN_Q_OVERFLOW, IN_IGNORED = 0x400, 0x800, 0x4000, 0x8000
+
+    def __init__(self, directory, name, pid=None):
+        import ctypes
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.ctypes = ctypes
+        self.name = os.fsencode(name)
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC)
+        if self.fd < 0:
+            raise TextSourceError(f"inotify: {os.strerror(ctypes.get_errno())}")
+        self.pidfd = None
+        try:
+            self.dir_wd = self._add(directory, self.IN_MODIFY | self.IN_ATTRIB | self.IN_CLOSE_WRITE
+                                    | self.IN_MOVED_FROM | self.IN_MOVED_TO | self.IN_CREATE
+                                    | self.IN_DELETE | self.IN_DELETE_SELF | self.IN_MOVE_SELF)
+            if pid is not None:
+                if not hasattr(os, "pidfd_open"):
+                    raise TextSourceError("--pid needs pidfd_open (Linux 5.3)")
+                try:
+                    self.pidfd = os.pidfd_open(pid)
+                except ProcessLookupError as err:
+                    raise WriterExited() from err
+        except BaseException:
+            self.close()
+            raise
+        self.file_wd = None
+
+    def _add(self, path, mask):
+        wd = self.libc.inotify_add_watch(self.fd, os.fsencode(str(path)), mask)
+        if wd < 0:
+            raise TextSourceError(f"cannot watch {path}: {os.strerror(self.ctypes.get_errno())}")
+        return wd
+
+    def watch_file(self, fd):
+        if self.file_wd is not None:
+            self.libc.inotify_rm_watch(self.fd, self.file_wd)
+        # The descriptor's magic link names the opened inode even after a rename.
+        self.file_wd = self._add(f"/proc/self/fd/{fd}", self.IN_MODIFY | self.IN_ATTRIB | self.IN_CLOSE_WRITE)
+
+    def wait(self):
+        import select
+        import struct
+        while True:
+            readable = select.select([self.fd] + ([self.pidfd] if self.pidfd is not None else []), [], [])[0]
+            if self.pidfd in readable:
+                raise WriterExited()
+            data = os.read(self.fd, 64 * 1024)
+            relevant = False
+            offset = 0
+            while offset + 16 <= len(data):
+                wd, mask, _cookie, length = struct.unpack_from("iIII", data, offset)
+                name = data[offset + 16:offset + 16 + length].rstrip(b"\0")
+                offset += 16 + length
+                if wd == self.dir_wd and mask & (self.IN_DELETE_SELF | self.IN_MOVE_SELF | self.IN_IGNORED):
+                    raise TextSourceError("the file's directory was removed or renamed")
+                if mask & self.IN_Q_OVERFLOW or wd == self.file_wd or name == self.name:
+                    relevant = True
+            if relevant:
+                return
+
+    def close(self):
+        if self.pidfd is not None:
+            os.close(self.pidfd)
+        os.close(self.fd)
+
+
+class TextFollower:
+    """Follows a file's new bytes and searches them as one stream: no line
+    splitting, so a prompt without a newline matches; `\\r` counts as a line
+    break, so a redrawn line's last state matches `^`/`$`. A file replaced at
+    the path (rotation) is read to its end, then its successor from byte 0; a
+    file that shrank (truncation) is read again from byte 0."""
+
+    def __init__(self, path, regex, from_start):
+        self.path = path
+        self.regex = regex
+        self.from_start = from_start
+        self.fd = None
+        self.identity = None
+        self.offset = 0
+        self.buffer = b""
+
+    def open_initial(self, watch):
+        """Opens the file as it is now; its bytes so far count only with
+        `from_start`. A missing file is not an error: what it gets once it
+        appears is all new."""
+        if self._open(watch):
+            self.offset = 0 if self.from_start else os.fstat(self.fd).st_size
+
+    def _open(self, watch):
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return False
+        except OSError as err:
+            raise TextSourceError(f"cannot open {self.path}: {err.strerror}") from err
+        if self.fd is not None:
+            os.close(self.fd)
+        st = os.fstat(fd)
+        self.fd, self.identity, self.offset, self.buffer = fd, (st.st_dev, st.st_ino), 0, b""
+        watch.watch_file(fd)
+        return True
+
+    def poll(self, watch):
+        """Reads what is new; returns the match or None."""
+        while True:
+            if self.fd is not None:
+                match = self._drain()
+                if match is not None:
+                    return match
+            try:
+                st = os.stat(self.path)
+            except FileNotFoundError:
+                return None  # removed; its successor may come
+            except OSError as err:
+                raise TextSourceError(f"cannot stat {self.path}: {err.strerror}") from err
+            if (st.st_dev, st.st_ino) == self.identity or not self._open(watch):
+                return None
+
+    def _drain(self):
+        try:
+            if os.fstat(self.fd).st_size < self.offset:
+                self.offset, self.buffer = 0, b""
+            while True:
+                chunk = os.pread(self.fd, WAIT_TEXT_CHUNK, self.offset)
+                if not chunk:
+                    return None
+                self.offset += len(chunk)
+                self.buffer += chunk
+                match = self.regex.search(self.buffer.replace(b"\r", b"\n"))
+                if match is not None:
+                    return self.buffer[match.start():match.end()]
+                self.buffer = self.buffer[-WAIT_TEXT_WINDOW:]
+        except OSError as err:
+            raise TextSourceError(f"cannot read {self.path}: {err.strerror}") from err
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def make_text_watch(path, pid):
+    import select
+    if hasattr(select, "kqueue"):
+        return KqueueWatch(path.parent, pid)
+    if sys.platform.startswith("linux"):
+        return InotifyWatch(path.parent, path.name, pid)
+    raise TextSourceError("no kqueue or inotify on this system")
+
+
+def wait_text(path, regex, from_start=False, pid=None, announce=None):
+    """Blocks until `regex` matches bytes written to `path`; returns the match.
+    Raises TextSourceError or WriterExited; no duration ends it."""
+    watch = make_text_watch(path, pid)
+    follower = TextFollower(path, regex, from_start)
+    try:
+        # The watch is armed before the file is read, so a write in between
+        # is either read now or wakes the loop.
+        follower.open_initial(watch)
+        if announce:
+            announce(follower)
+        while True:
+            match = follower.poll(watch)
+            if match is not None:
+                return match
+            try:
+                watch.wait()
+            except WriterExited:
+                # Its last bytes may have landed with its exit.
+                match = follower.poll(watch)
+                if match is not None:
+                    return match
+                raise
+    finally:
+        follower.close()
+        watch.close()
+
+
+def cmd_wait_text(args):
+    pattern = re.escape(args.pattern) if args.fixed_strings else args.pattern
+    try:
+        regex = re.compile(os.fsencode(pattern), re.MULTILINE | (re.IGNORECASE if args.ignore_case else 0))
+    except re.error as err:
+        raise SystemExit(f"herdr-job wait-text: bad pattern: {err}")
+    path = Path(args.file).absolute()
+
+    def announce(follower):
+        where = f"byte {follower.offset}" if follower.fd is not None else "its creation"
+        print(f"herdr-job wait-text: following {path} from {where}", file=sys.stderr, flush=True)
+
+    try:
+        with wait_edge("text", target_path=str(path), pattern=args.pattern):
+            match = wait_text(path, regex, args.from_start, args.pid, announce)
+    except TextSourceError as err:
+        print(f"herdr-job wait-text: {err}", file=sys.stderr)
+        sys.exit(EXIT_TEXT_SOURCE)
+    except WriterExited:
+        print(f"herdr-job wait-text: pid {args.pid} exited before the pattern appeared", file=sys.stderr)
+        sys.exit(EXIT_TEXT_WRITER)
+    print(match.decode(errors="replace"), flush=True)
+
+
 def cmd_watch(args):
     identity = process_identity(args.pid)
     if identity is None:
@@ -2274,6 +2553,22 @@ def main():
     wait.add_argument("--quiet", action="store_true")
     wait.add_argument("--stream", action="store_true", help="follow the whole log as it grows")
     wait.set_defaults(func=cmd_wait)
+    wait_text = sub.add_parser(
+        "wait-text", help="wait until a file gets text that matches a pattern",
+        description="Follows FILE with kqueue (macOS) or inotify (Linux) and ends when bytes written to it "
+                    "match PATTERN (a Python regular expression over bytes, multiline). Bytes are searched "
+                    "as one stream, so a prompt without a newline matches; \\r counts as a line break. "
+                    "Rotation and truncation are followed. Exit 0: matched (the match is printed); "
+                    "2: the file or its directory cannot be watched or read, or a bad pattern; "
+                    "3: the --pid process exited first. No duration ends it.")
+    wait_text.add_argument("file")
+    wait_text.add_argument("pattern")
+    wait_text.add_argument("--from-start", action="store_true",
+                           help="also search what the file holds already (default: only text written after the start)")
+    wait_text.add_argument("-F", "--fixed-strings", action="store_true", help="PATTERN is literal text")
+    wait_text.add_argument("-i", "--ignore-case", action="store_true")
+    wait_text.add_argument("--pid", type=int, help="end (exit 3) when this process, the file's writer, exits")
+    wait_text.set_defaults(func=cmd_wait_text)
     waits = sub.add_parser("_waits", help=argparse.SUPPRESS)
     waits.add_argument("--pane", required=True)
     waits.set_defaults(func=cmd_waits)
