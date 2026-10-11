@@ -1661,6 +1661,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   profile picker, sign-in and enabling the extension are the user's. The
   todo skill names the doctor step. Verify the per-session binding
   question with two sessions.
+  Checked 2026-10-11 20:55 by the herdr coordinator: its own session lists
+  one connected browser (macOS, local, in use, connected 17:54 CEST through
+  the single native host) while roguix-vps's lists none: the list is per
+  account, so the browser was connected and free; roguix-vps's MCP
+  connection was stale (set up before Chrome restarted, never reconnected).
+  So the doctor's failing step is "this session's MCP link", fixed by
+  `/mcp` reconnect or a resumed session (the user's action), not Chrome.
 
 - [ ] Scheduled repository work triggered by a macOS launchd service [t-qybebntk]
   (the user via job-seeker, 2026-10-11: "it is to be a macOS service, so
