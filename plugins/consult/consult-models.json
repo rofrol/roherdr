@@ -1,0 +1,21 @@
+{
+  "default": ["sol", "mimo", "deepseek"],
+  "models": {
+    "sol": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "sol"]},
+    "astra": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "astra"]},
+    "luna": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "luna", "-e", "medium"]},
+    "terra": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "terra"]},
+    "mimo": {"family": "mimo", "command": ["openrouter/ask_openrouter.sh"]},
+    "deepseek": {"family": "deepseek", "command": ["deepseek/ask_deepseek.py"]},
+    "sonnet": {"family": "claude", "command": ["claude/ask_claude.py"]},
+    "opus": {"family": "claude", "command": ["claude/ask_claude.py", "-m", "claude-opus-5-5"]},
+    "gemini": {"family": "gemini", "command": ["gemini/ask_gemini.sh"]}
+  },
+  "families": {
+    "deepseek": "deepseek",
+    "mimo": "mimo|xiaomi",
+    "claude": "claude|sonnet|opus|haiku|fable",
+    "gemini": "gemini",
+    "gpt": "gpt|codex|(^|/)o[0-9]"
+  }
+}

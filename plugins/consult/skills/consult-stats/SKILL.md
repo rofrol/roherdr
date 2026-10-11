@@ -15,7 +15,10 @@ stderr. Usefulness comes from ratings:
 O="$D/consult.py"
 $O rate <id> useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note "..."]
         [--act N --consider N --noted N --dismissed N]   # what you decided per finding; all four, adding up to --findings
-$O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models
+$O round --brief FILE --caller-model ID [--models a,b]
+                        # one round: the default set from consult-models.json (or --models), in parallel, under one
+                        # new round id; prints each answer with its status and call id, and the skipped and failed models
+$O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models by hand
 $O self --round <round> --model <your model id> --findings N --accepted N --refuted N --unique N --missed N [--note "..."]
 $O stats [--days 30]     # per skill/model: call dates, unique per rated call, wrong (rejected findings), rated/calls, err
 $O stats --all           # + score, acc/find, latency (n, p50, p90), tokens, errors by kind, rounds table, @high history,
@@ -68,8 +71,8 @@ read its errors in the error table.
 
 Never consult the model you are running on (`$PI_MODEL`): answers from the same model are not an independent second
 opinion, and their `--unique` count is not meaningful (rate such a call with `--unique 0` and say so in the note).
-Check the acting model before choosing the round's models. The default set is
-listed in the `consult` skill's `SKILL.md`.
+`consult.py round` leaves your model's family out of the default set (pass `--caller-model`); the set is in
+`consult-models.json` in the plugin, and the `consult` skill says how to run a round.
 
 The agent that asks (Claude Code, pi) is scored too, once per round (all consult calls on the same question), with `self`:
 - **Before reading any model's answer**, write down your own findings/hypotheses (in the conversation or a scratchpad

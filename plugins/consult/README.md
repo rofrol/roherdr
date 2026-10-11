@@ -3,8 +3,10 @@
 Skills that let a coding agent ask another model for a second opinion, and
 statistics on which of those models actually helped.
 
-- `consult`: the round itself: who joins by default when asked to consult the models, the
-  no-self-consultation rule, the running trial, and how to rate and score.
+- `consult`: the round itself: `consult.py round` asks the default set, which
+  lives only in `consult-models.json` (read at every invocation, so no
+  session runs a stale set), leaves out the caller's own model family, and
+  the skill says how to rate and score.
 - `gpt`: GPT via Codex CLI on the ChatGPT subscription (credentials from pi).
 - `gemini`: Gemini via Antigravity CLI (`agy`) on the Google AI subscription.
 - `deepseek`: DeepSeek API (key from pi).
@@ -23,6 +25,31 @@ statistics on which of those models actually helped.
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`
   compares the models.
+
+## The default set
+
+`consult-models.json` holds the default set (`default`), every model `round`
+can ask (`models`: its family and the `ask_*` command, relative to `skills/`)
+and the patterns that map a caller's model id to a family (`families`). Edit
+only this file to change who joins a round; the skills name no models.
+
+History of the set:
+
+- 2026-10-11, the user: sol 6.1 (effort medium, the gpt script's default),
+  MiMo and DeepSeek ("add deepseek to the default set"; asked first on
+  2026-10-07: it is fast, and on Claude Max 20 the tokens spent reading its
+  answer matter less).
+- 2026-10-03: DeepSeek left the set. In shared rounds it was the weakest of
+  the three (sol +0.67 accepted unique findings per call over 161 rounds, MiMo
+  +0.48 over 58 rounds and +0.45 in its 20-round trial), and its speed bought
+  nothing because a round waits for sol anyway. Not dropped for cost (about a
+  cent a call). Space Bunny was removed the same day (failed its trial).
+- Astra is off by default, available on request. The 2026-09-27 astra/luna
+  trial is the only paired evidence: luna@medium was clearly behind astra
+  (0.58 vs 1.43 accepted unique findings per rated call, 22% vs 35% rejected
+  findings; astra 69, luna@medium 33 rated calls), and gpt-6-sol never beat
+  astra over ~12 paired rounds. Luna (`-e medium`) is only a fallback when a
+  sol call fails or hits the Plus limit; Terra only on request.
 
 ## Quotas are per vendor
 

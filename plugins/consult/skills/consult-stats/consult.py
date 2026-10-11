@@ -5,6 +5,7 @@
                 [--answer-chars N] [--usage JSON] [--usage-raw JSON]
                 [--model-version V] [--fingerprint F]                      (round id from $CONSULT_ROUND)
                 [--error-kind K | --error-text-file PATH|-]                (errors only; the text is classified, never stored)
+  consult.py round --brief FILE|- [--models a,b] [--caller-model ID]      # ask the default set (or --models) in parallel
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
                 [--act N --consider N --noted N --dismissed N]            # what was done with each finding
@@ -19,11 +20,14 @@ repeat the name column, prose is reflowed. Without it the output is unchanged, o
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
 Usage is normalized by the ask_* scripts: input includes cached, output includes reasoning (both are subsets).
 """
-import argparse, json, math, os, random, re, statistics, sys, textwrap, time, uuid
+import argparse, json, math, os, random, re, statistics, subprocess, sys, tempfile, textwrap, time, uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 
 LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log.jsonl"))
+SKILLS = Path(__file__).resolve().parent.parent  # the ask_* skills are this skill's siblings
+# The one place that names the default model set (plugins/consult/consult-models.json); `round` reads it each time.
+MODELS = Path(os.environ.get("CONSULT_MODELS", SKILLS.parent / "consult-models.json"))
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
 # What the coordinator decided about each finding of a call (pstack's $interrogate buckets): act on it, consider it
 # (valid, cost unclear), noted (valid, not actionable now), dismissed (wrong, nitpicky or missing context). They are
@@ -252,7 +256,122 @@ def cmd_log(a):
 
 
 def cmd_new_round(a):
-    print(time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4])
+    print(new_round_id())
+
+
+def new_round_id():
+    return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+
+
+def load_models():
+    """The model set, read at every invocation so a long-running session never runs a stale one: `default` (the
+    names asked when --models is not given), `models` (name -> family and command, the command's first element
+    relative to the skills directory when it holds a `/`) and `families` (family -> regex on a caller's model id)."""
+    try:
+        cfg = json.loads(MODELS.read_text())
+        assert all(n in cfg["models"] for n in cfg["default"]), "default names a model not under models"
+        assert all(m["family"] in cfg["families"] for m in cfg["models"].values()), "a model's family has no pattern"
+    except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
+        sys.exit(f"Cannot read the model set {MODELS}: {e}")
+    return cfg
+
+
+def family_of(model_id, cfg):
+    """The family of a caller's model id: a model name of the set (`sol`), a family name (`claude`), else the first
+    family whose pattern the id matches (`openai-codex/gpt-6.1-sol` -> gpt). None when nothing matches."""
+    mid = model_id.strip().casefold()
+    if mid in cfg["models"]:
+        return cfg["models"][mid]["family"]
+    if mid in cfg["families"]:
+        return mid
+    return next((f for f, pattern in cfg["families"].items() if re.search(pattern, mid, re.IGNORECASE)), None)
+
+
+def round_plan(cfg, models=None, caller=None):
+    """(names to ask, [(name, why skipped)], warnings). Without `models` the default set is asked minus the caller's
+    family, and an unknown caller is refused (SystemExit): its family might be in the set, and asking it would be a
+    self-consultation. Explicit `models` are the user's choice and run as named; a caller of the same family only
+    gets a warning."""
+    family = family_of(caller, cfg) if caller else None
+    if models:
+        names = list(dict.fromkeys(n.strip().casefold() for n in models.split(",") if n.strip()))
+        unknown = [n for n in names if n not in cfg["models"]]
+        if not names or unknown:
+            sys.exit(f"Unknown model: {', '.join(unknown) or '(none)'}; known: {', '.join(cfg['models'])}")
+        warn = [f"{n} is the caller's own family ({family}); asked anyway because --models names it"
+                for n in names if family and cfg["models"][n]["family"] == family]
+        return names, [], warn
+    if not family:
+        families = sorted({cfg["models"][n]["family"] for n in cfg["default"]})
+        sys.exit(f"Unknown caller model {caller or '(none given)'}: the default set has the families "
+                 f"{', '.join(families)}, so pass --caller-model <your model id or family> (Claude: claude); "
+                 f"--models names the models explicitly")
+    asked = [n for n in cfg["default"] if cfg["models"][n]["family"] != family]
+    skipped = [(n, f"the caller's own family ({family})") for n in cfg["default"] if n not in asked]
+    return asked, skipped, []
+
+
+def model_command(spec):
+    cmd = list(spec["command"])
+    if "/" in cmd[0] and not os.path.isabs(cmd[0]):
+        cmd[0] = str(SKILLS / cmd[0])
+    return cmd
+
+
+def cmd_round(a):
+    cfg = load_models()
+    try:
+        brief = sys.stdin.read() if a.brief == "-" else Path(a.brief).read_text()
+    except OSError as e:
+        sys.exit(f"Cannot read the brief: {e}")
+    if not brief.strip():
+        sys.exit("The brief is empty")
+    names, skipped, warnings = round_plan(cfg, a.models, a.caller_model or os.environ.get("PI_MODEL"))
+    if not names:
+        sys.exit("No model left to ask: " + "; ".join(f"{n} skipped, {why}" for n, why in skipped))
+    rid = new_round_id()
+    env = {**os.environ, "CONSULT_ROUND": rid}
+    for w in warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    print(f"round {rid}: asking {', '.join(names)}", file=sys.stderr, flush=True)
+    runs = []
+    with tempfile.TemporaryDirectory(prefix="consult-round-") as tmp:
+        # All in parallel; the brief goes as the prompt argument, the same text to every model. stdin stays closed:
+        # a wrapper must not wait on an inherited stdin.
+        for n in names:
+            out, err = (open(Path(tmp) / f"{n}.{k}", "w+") for k in ("out", "err"))
+            try:
+                proc = subprocess.Popen([*model_command(cfg["models"][n]), brief], stdin=subprocess.DEVNULL,
+                                        stdout=out, stderr=err, env=env)
+            except OSError as e:
+                proc = None
+                err.write(f"cannot start: {e}\n")
+            runs.append((n, proc, out, err, time.monotonic()))
+        results = []
+        for n, proc, out, err, start in runs:
+            rc = proc.wait() if proc else 127
+            seconds = time.monotonic() - start
+            out.seek(0); err.seek(0)
+            answer, errtext = out.read(), err.read()
+            out.close(); err.close()
+            ids = re.findall(r"\[consult id: ([\w-]+)\]", errtext)
+            status = "ok" if rc == 0 and answer.strip() else f"failed (exit {rc})" if rc else "failed (empty answer)"
+            print(f"{n}: {status} after {seconds:.0f} s", file=sys.stderr, flush=True)
+            results.append((n, status, ids[-1] if ids else None, answer, errtext))
+    print(f"round: {rid}")
+    for n, status, cid, answer, errtext in results:
+        print(f"\n=== {n}: {status}, call id {cid or 'none'} ===")
+        if status == "ok":
+            print(answer.rstrip())
+        else:
+            tail = "\n".join(errtext.strip().splitlines()[-20:])
+            print(tail or "(no error output)")
+    failed = [n for n, status, *_ in results if status != "ok"]
+    print(f"\nasked: {', '.join(names)}")
+    print("skipped: " + ("; ".join(f"{n} ({why})" for n, why in skipped) or "none"))
+    print("failed: " + (", ".join(failed) or "none"))
+    if len(failed) == len(results):
+        sys.exit(1)
 
 
 def check_counts(a, keys):
@@ -689,6 +808,11 @@ def main():
     e.add_argument("--error-text-file", help="the wrapper's error text (- = stdin), classified into an error kind; "
                                             "the text is not stored")
     sub.add_parser("new-round")
+    rd = sub.add_parser("round", help="ask a round of models in parallel, under one new round id")
+    rd.add_argument("--brief", required=True, help="the prompt every model gets (- = stdin)")
+    rd.add_argument("--models", help="comma-separated names from consult-models.json; replaces the default set")
+    rd.add_argument("--caller-model", help="your model id or family, whose family is left out of the default set "
+                    "(default: $PI_MODEL; Claude callers pass claude)")
     r = sub.add_parser("rate")
     r.add_argument("id"); r.add_argument("verdict", choices=list(VERDICTS))
     for k in ("--findings", "--accepted", "--unique"):
@@ -721,7 +845,7 @@ def main():
         p.error(f"--width must be at least {MIN_WIDTH}")
     if a.cmd == "log" and a.status == "ok" and (a.error_kind or a.error_text_file):
         p.error("--error-kind/--error-text-file only go with --status error")
-    {"log": cmd_log, "new-round": cmd_new_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,
+    {"log": cmd_log, "new-round": cmd_new_round, "round": cmd_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,
      "recent": cmd_recent}[a.cmd](a)
 
 
