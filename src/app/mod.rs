@@ -931,6 +931,7 @@ impl App {
         self.endpoint_commands =
             custom_commands::EndpointCommandRegistry::new(&self.state.keybinds.custom_commands);
         self.sync_toast_deadline(previous_toast);
+        crate::workers::coordinators::republish_allowlist_mode();
         report
     }
 

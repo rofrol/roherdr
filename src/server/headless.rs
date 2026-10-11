@@ -346,6 +346,7 @@ impl HeadlessServer {
         let headless_size = app.state.headless_size;
         let (server_config_diagnostic, server_config_diagnostic_without_keybindings) =
             server_config_diagnostic_summaries(config_diagnostics);
+        crate::workers::coordinators::republish_allowlist_mode();
         #[cfg(not(unix))]
         let _ = api_tx;
         Ok(Self {

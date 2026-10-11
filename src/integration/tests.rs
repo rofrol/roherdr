@@ -4913,12 +4913,12 @@ impl StopCheckServer {
     /// `mode` is the `[coordinator] allowlist` mode `coordinator.allowlist_refusal` answers;
     /// `None` answers as a server without that method.
     fn start_in_mode(role: &'static str, records: bool, mode: Option<&'static str>) -> Self {
-        Self::start_full(role, records, mode, &[])
+        Self::start_full(role, records, mode, &[], RefusalAnswer::AtOnce)
     }
 
     /// `agent.get` answers an agent whose open questions are `questions`.
     fn start_asking(questions: &'static [&'static str]) -> Self {
-        Self::start_full("worker", true, None, questions)
+        Self::start_full("worker", true, None, questions, RefusalAnswer::AtOnce)
     }
 
     fn start_full(
@@ -4926,6 +4926,7 @@ impl StopCheckServer {
         records: bool,
         mode: Option<&'static str>,
         questions: &'static [&'static str],
+        refusal: RefusalAnswer,
     ) -> Self {
         use std::io::{BufRead, BufReader, Write};
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -4949,6 +4950,16 @@ impl StopCheckServer {
                 let method = request["method"].as_str().unwrap_or_default().to_owned();
                 if method == "quit" {
                     return requests;
+                }
+                if method == "coordinator.allowlist_refusal" {
+                    match refusal {
+                        RefusalAnswer::AtOnce => {}
+                        RefusalAnswer::After(delay) => std::thread::sleep(delay),
+                        RefusalAnswer::HangUp => {
+                            requests.push(request);
+                            continue;
+                        }
+                    }
                 }
                 let result = match method.as_str() {
                     "pane.get" => json!({"type": "pane_info", "pane": {"tab_id": "w1:t1"}}),
@@ -5008,6 +5019,17 @@ impl StopCheckServer {
             .map(|request| request["method"].as_str().unwrap_or_default().to_owned())
             .collect()
     }
+}
+
+/// How [`StopCheckServer`] answers `coordinator.allowlist_refusal`.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum RefusalAnswer {
+    AtOnce,
+    /// After a delay: a server slow to answer.
+    After(std::time::Duration),
+    /// Not at all: it closes the connection, as a herdr that went away.
+    HangUp,
 }
 
 /// The decision ledger [`StopCheckServer`] answers `decision.get` from: one open, one decided
@@ -5364,6 +5386,7 @@ fn reported_turn_start(prompt: &str) -> Value {
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "p1")
         .env("HERDR_SOCKET_PATH", &server.path)
+        .env("XDG_STATE_HOME", server.path.with_extension("state"))
         .env_remove("CURSOR_VERSION")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5378,6 +5401,7 @@ fn reported_turn_start(prompt: &str) -> Value {
         .write_all(input.to_string().as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
+    let _ = fs::remove_dir_all(server.path.with_extension("state"));
     assert!(output.status.success(), "{output:?}");
     let requests = server.requests();
     let [request] = requests.as_slice() else {
@@ -5493,15 +5517,42 @@ fn run_pre_tool_in_mode(
     tool: &str,
     input: Value,
 ) -> (String, Vec<Value>) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
     let server = StopCheckServer::start_in_mode(role.unwrap_or("none"), records, mode);
     let socket = if role.is_some() {
         server.path.clone()
     } else {
         server.path.with_extension("missing")
     };
+    run_pre_tool_against(server, &socket, tool, input)
+}
+
+/// Runs the Claude hook's `pre-tool` against `server` at `socket`, with herdr's state directory
+/// in a temporary directory. Returns the hook's stdout and the requests herdr got.
+#[cfg(unix)]
+fn run_pre_tool_against(
+    server: StopCheckServer,
+    socket: &Path,
+    tool: &str,
+    input: Value,
+) -> (String, Vec<Value>) {
+    let state = server.path.with_extension("state");
+    let ran = run_pre_tool_with_state(server, socket, &state, tool, input);
+    let _ = fs::remove_dir_all(&state);
+    ran
+}
+
+/// [`run_pre_tool_against`] with herdr's state directory in `state`, left in place.
+#[cfg(unix)]
+fn run_pre_tool_with_state(
+    server: StopCheckServer,
+    socket: &Path,
+    state: &Path,
+    tool: &str,
+    input: Value,
+) -> (String, Vec<Value>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
     let mut child = Command::new("sh")
         .arg(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -5510,7 +5561,8 @@ fn run_pre_tool_in_mode(
         .arg("pre-tool")
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "p1")
-        .env("HERDR_SOCKET_PATH", &socket)
+        .env("HERDR_SOCKET_PATH", socket)
+        .env("XDG_STATE_HOME", state)
         .env_remove("CURSOR_VERSION")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -6034,6 +6086,120 @@ fn claude_pre_tool_in_enforce_mode_or_without_an_answer_denies_as_before() {
             requests_of(&requests, "coordinator.record_override").len(),
             1,
             "{mode:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_in_shadow_mode_never_denies_when_herdr_answers_slowly() {
+    // Slower than the 0.5 s the hook used to wait, which denied this call.
+    let slow = RefusalAnswer::After(std::time::Duration::from_millis(1500));
+    let server = StopCheckServer::start_full("coordinator", true, Some("shadow"), &[], slow);
+    let socket = server.path.clone();
+    let (stdout, requests) = run_pre_tool_against(
+        server,
+        &socket,
+        "Bash",
+        json!({"command": "X=1; cargo build"}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    assert_eq!(
+        requests_of(&requests, "coordinator.allowlist_refusal").len(),
+        1,
+        "{requests:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_without_herdr_takes_the_published_mode_and_says_herdr_is_unavailable() {
+    for (published, denied) in [
+        (Some("shadow"), false),
+        (Some("off"), false),
+        (Some("enforce"), true),
+        (None, true),
+    ] {
+        let server = StopCheckServer::start_full(
+            "coordinator",
+            true,
+            Some("enforce"),
+            &[],
+            RefusalAnswer::HangUp,
+        );
+        let socket = server.path.clone();
+        let mode_file = crate::workers::coordinators::allowlist_mode_path(&socket);
+        let mode = match published {
+            Some("shadow") => Some(crate::api::schema::CoordinatorAllowlistMode::Shadow),
+            Some("off") => Some(crate::api::schema::CoordinatorAllowlistMode::Off),
+            Some(_) => Some(crate::api::schema::CoordinatorAllowlistMode::Enforce),
+            None => None,
+        };
+        if let Some(mode) = mode {
+            crate::workers::coordinators::write_allowlist_mode(&mode_file, mode).unwrap();
+        }
+        let (stdout, requests) = run_pre_tool_against(
+            server,
+            &socket,
+            "Bash",
+            json!({"command": "git push # herdr-override: the user asked"}),
+        );
+        let _ = fs::remove_file(&mode_file);
+        let denial = pre_tool_denial(&stdout);
+        assert_eq!(denial.is_some(), denied, "{published:?}: {denial:?}");
+        if let Some(reason) = denial {
+            assert!(
+                reason.starts_with("Herdr unavailable: ")
+                    && reason.contains("without an answer")
+                    && !reason.contains("herdr-override"),
+                "{published:?}: {reason}"
+            );
+        }
+        // Herdr was asked, and with no herdr to record it no override runs.
+        assert_eq!(
+            requests_of(&requests, "coordinator.allowlist_refusal").len(),
+            1,
+            "{requests:?}"
+        );
+        assert!(requests_of(&requests, "coordinator.record_override").is_empty());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_logs_how_long_herdr_took_to_answer() {
+    let server = StopCheckServer::start_in_mode("coordinator", true, Some("shadow"));
+    let socket = server.path.clone();
+    let state = server.path.with_extension("state");
+    let (stdout, _) = run_pre_tool_with_state(
+        server,
+        &socket,
+        &state,
+        "Bash",
+        json!({"command": "cargo build"}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    let log = fs::read_to_string(state.join("herdr/claude-hook-calls.jsonl")).unwrap();
+    let _ = fs::remove_dir_all(&state);
+    let entries: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let methods: Vec<&str> = entries
+        .iter()
+        .map(|e| e["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        ["pane.get", "tab.get", "coordinator.allowlist_refusal"],
+        "{log}"
+    );
+    for entry in &entries {
+        assert_eq!(entry["outcome"], "answered", "{entry}");
+        assert!(entry["connect_ms"].as_f64().is_some(), "{entry}");
+        assert!(
+            entry["answer_ms"].as_f64().unwrap() >= entry["connect_ms"].as_f64().unwrap(),
+            "{entry}"
         );
     }
 }

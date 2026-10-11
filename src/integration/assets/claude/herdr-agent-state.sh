@@ -12,6 +12,100 @@ action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
 trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
+export HERDR_HOOK_INPUT_FILE="$hook_input_file"
+
+# The Python every branch below starts with: `herdr_call` sends one request to the herdr server.
+# It has no timeout of its own. A decision (the allowlist, the stop check, the question gate)
+# ends on the answer, on the server closing the connection, or on a failed connect (immediate for
+# a missing socket or a server that is not listening), and Claude Code's own hook deadline is the
+# only outer bound (a hook past it does not block the call). A report (`answer=False`) ends once
+# the request is written: the server handles it whether or not the hook still listens. Each
+# call's connect and answer latency goes to `claude-hook-calls.jsonl` in herdr's state directory
+# (about 1 MB, plus the previous generation as `.1`), so bounds are measured, not guessed.
+hook_python_lib=$(cat <<'PY'
+import json as _json
+import os as _os
+import socket as _socket
+import time as _time
+
+
+def herdr_log(entry):
+    """Appends one entry to the hook's log of herdr calls; a log it cannot write is skipped."""
+    try:
+        state_dir = _os.path.join(
+            _os.environ.get("XDG_STATE_HOME") or _os.path.expanduser("~/.local/state"), "herdr"
+        )
+        _os.makedirs(state_dir, exist_ok=True)
+        path = _os.path.join(state_dir, "claude-hook-calls.jsonl")
+        try:
+            if _os.path.getsize(path) > 1_000_000:
+                _os.replace(path, path + ".1")
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as log:
+            log.write(_json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def herdr_call(method, params, request_id=None, answer=True):
+    """One request to the herdr server: (reply, None) with its decoded reply, or (None, why)
+    when herdr is unavailable (the connect failed, the connection ended without an answer, or the
+    answer is unreadable). Without `answer`, (None, None) once the request is written."""
+    request = {"id": request_id or f"herdr:claude:{method}:{int(_time.time() * 1000)}",
+               "method": method, "params": params}
+    started = _time.monotonic()
+    entry = {"time": _time.time(), "pane": _os.environ.get("HERDR_PANE_ID"), "method": method}
+    reply = None
+    why = None
+    try:
+        client = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            client.connect(_os.environ["HERDR_SOCKET_PATH"])
+            entry["connect_ms"] = round((_time.monotonic() - started) * 1000, 1)
+            client.sendall((_json.dumps(request) + "\n").encode())
+            data = b""
+            while answer and not data.endswith(b"\n") and len(data) < 1_000_000:
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            entry["answer_ms" if answer else "sent_ms"] = round(
+                (_time.monotonic() - started) * 1000, 1)
+        finally:
+            client.close()
+        if not answer:
+            pass
+        elif not data:
+            why = "herdr closed the connection without an answer"
+        else:
+            try:
+                reply = _json.loads(data.decode("utf-8", "replace"))
+            except ValueError:
+                reply = None
+            if not isinstance(reply, dict):
+                reply = None
+                why = "herdr's answer is unreadable"
+    except (OSError, KeyError) as error:
+        why = ("cannot connect to herdr: " if "connect_ms" not in entry else "herdr: ") + (
+            str(error) or type(error).__name__)
+    entry["outcome"] = why or ("answered" if answer else "sent")
+    herdr_log(entry)
+    return reply, why
+
+
+def ask_server(method, params):
+    """The result of one request to the herdr server, or None when herdr does not give one."""
+    reply, _ = herdr_call(method, params)
+    result = reply.get("result") if reply else None
+    return result if isinstance(result, dict) else None
+PY
+)
+
+# Runs the Python script on stdin after `hook_python_lib`.
+hook_python() {
+  { printf '%s\n' "$hook_python_lib"; cat; } | python3 -
+}
 
 # Reports that the main agent's turn started (`UserPromptSubmit`, with the submitted prompt) or
 # ended (`Stop` that the stop check let through, `StopFailure` with its error), so herdr can tell a caller of
@@ -24,10 +118,11 @@ report_turn() {
   [ -n "${HERDR_PANE_ID:-}" ] || return 0
   [ -z "${CURSOR_VERSION:-}" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  HERDR_TURN_PHASE="$1" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY' || true
+  HERDR_TURN_PHASE="$1"
+  export HERDR_TURN_PHASE
+  hook_python <<'PY' || true
 import json
 import os
-import socket
 import time
 
 try:
@@ -66,23 +161,8 @@ else:
             for task in tasks
             if not isinstance(task, dict) or str(task.get("status", "")).lower() not in finished
         )
-request = {
-    "id": f"herdr:claude:turn:{int(time.time() * 1000)}",
-    "method": "pane.report_turn",
-    "params": params,
-}
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(os.environ["HERDR_SOCKET_PATH"])
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+herdr_call("pane.report_turn", params, f"herdr:claude:turn:{int(time.time() * 1000)}",
+           answer=False)
 PY
 }
 
@@ -139,11 +219,10 @@ stop_check() {
   [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || return 0
   [ "${HERDR_AWAITING_REPLY_STOP:-block}" != "0" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+  hook_python <<'PY'
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -355,28 +434,6 @@ def pending_background(lines):
     return len(background - finished)
 
 
-def ask_server(method, params):
-    """The result of one request to the herdr server, or None on any failure."""
-    request = {"id": f"herdr:claude:{method}:{int(time.time() * 1000)}", "method": method,
-               "params": params}
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(0.5)
-        client.connect(os.environ["HERDR_SOCKET_PATH"])
-        client.sendall((json.dumps(request) + "\n").encode())
-        reply = b""
-        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            reply += chunk
-        client.close()
-        result = json.loads(reply.decode("utf-8", "replace")).get("result")
-        return result if isinstance(result, dict) else None
-    except Exception:
-        return None
-
-
 def tab_role():
     """The role of the pane's tab (`tab.set_role`), or None when it is unknown."""
     if not os.environ.get("HERDR_SOCKET_PATH"):
@@ -583,24 +640,13 @@ blocked_calls = bool(last_batch) and all(last_batch)
 # only the stall check, bounded by its streak, looks at it again.
 marked = False
 if blocked_calls and mode != "shadow" and os.environ.get("HERDR_SOCKET_PATH"):
-    request = {
-        "id": f"herdr:claude:blocked:{int(time.time() * 1000)}",
-        "method": "pane.report_awaiting_reply",
-        "params": {"pane_id": os.environ["HERDR_PANE_ID"], "question": BLOCKED_QUESTION},
-    }
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(0.5)
-        client.connect(os.environ["HERDR_SOCKET_PATH"])
-        client.sendall((json.dumps(request) + "\n").encode())
-        try:
-            client.recv(4096)
-        except Exception:
-            pass
-        client.close()
-        marked = True
-    except Exception:
-        pass
+    _, unavailable = herdr_call(
+        "pane.report_awaiting_reply",
+        {"pane_id": os.environ["HERDR_PANE_ID"], "question": BLOCKED_QUESTION},
+        f"herdr:claude:blocked:{int(time.time() * 1000)}",
+        answer=False,
+    )
+    marked = unavailable is None
 # Asking the agent to run a command its tools may deny again only repeats the denial.
 block = question and not reported and not blocked_calls and not stop_hook_active
 # Questions still open from an earlier turn, which this turn neither asked again nor withdrew.
@@ -851,9 +897,12 @@ fi
 # is denied. An allowed call asks herdr nothing; a refused one asks the tab's role, and outside a
 # coordinator tab, or when herdr cannot tell, the hook does nothing. In a coordinator tab it then
 # asks herdr what to do (`coordinator.allowlist_refusal`, which answers `[coordinator]
-# allowlist`): "shadow" (the default) lets the call run and herdr records it as a would-deny
-# (`herdr history overrides --would-deny`), "off" lets it run unrecorded, and "enforce", or a
-# herdr that cannot say, denies it. When enforced, one Bash command that carries
+# allowlist`) and waits for the answer: "shadow" (the default) lets the call run and herdr records
+# it as a would-deny (`herdr history overrides --would-deny`), "off" lets it run unrecorded, and
+# "enforce" denies it. When herdr gives no mode, the hook takes the one herdr publishes in
+# `<HERDR_SOCKET_PATH>.allowlist-mode`: shadow and off never deny, and a herdr that is unavailable
+# while the mode is enforce or unknown denies as "Herdr unavailable", not as a policy refusal.
+# When enforced, one Bash command that carries
 # `# herdr-override: <reason>` runs anyway, recorded by herdr (`coordinator.record_override`,
 # which notifies the user and lists it in `herdr history overrides`); when herdr cannot record
 # it, it is denied. Herdr also runs this branch as the first pre-tool check of a
@@ -876,11 +925,10 @@ if [ "$action" = "pre-tool" ]; then
     [ -z "${CURSOR_VERSION:-}" ] || exit 0
   fi
   command -v python3 >/dev/null 2>&1 || exit 0
-  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+  hook_python <<'PY'
 import json
 import os
 import re
-import socket
 import time
 
 COORDINATOR_ROLE = "coordinator"
@@ -1533,28 +1581,6 @@ def check_call(tool, tool_input, cwd, session):
     return f"the {tool} tool is not allowed: {ALLOWED}"
 
 
-def ask_server(method, params):
-    """The result of one request to the herdr server, or None on any failure."""
-    request = {"id": f"herdr:claude:{method}:{int(time.time() * 1000)}", "method": method,
-               "params": params}
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(0.5)
-        client.connect(os.environ["HERDR_SOCKET_PATH"])
-        client.sendall((json.dumps(request) + "\n").encode())
-        reply = b""
-        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            reply += chunk
-        client.close()
-        result = json.loads(reply.decode("utf-8", "replace")).get("result")
-        return result if isinstance(result, dict) else None
-    except Exception:
-        return None
-
-
 def tab_role():
     """The role of the pane's tab (`tab.set_role`), or None when it is unknown."""
     pane = (ask_server("pane.get", {"pane_id": os.environ["HERDR_PANE_ID"]}) or {}).get("pane")
@@ -1564,6 +1590,20 @@ def tab_role():
     tab = (ask_server("tab.get", {"tab_id": tab_id}) or {}).get("tab")
     role = tab.get("role") if isinstance(tab, dict) else None
     return role if isinstance(role, str) else None
+
+
+MODES = ("shadow", "enforce", "off")
+
+
+def published_mode():
+    """`[coordinator] allowlist` as herdr last published it beside its socket (whenever it starts,
+    reloads its config or reads a changed mode), or None when there is no such file."""
+    try:
+        with open(os.environ["HERDR_SOCKET_PATH"] + ".allowlist-mode", encoding="utf-8") as handle:
+            mode = handle.read().strip()
+    except (OSError, KeyError, ValueError):
+        return None
+    return mode if mode in MODES else None
 
 
 def deny(reason, gate="Herdr coordinator allowlist: "):
@@ -1577,27 +1617,13 @@ def deny(reason, gate="Herdr coordinator allowlist: "):
 
 def lookup_decision(decision_id):
     """`decision.get` of one record: ("found", record), ("missing", message) or ("failed", why)."""
-    request = {"id": f"herdr:claude:decision.get:{int(time.time() * 1000)}",
-               "method": "decision.get", "params": {"id": decision_id}}
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(0.5)
-        client.connect(os.environ["HERDR_SOCKET_PATH"])
-        client.sendall((json.dumps(request) + "\n").encode())
-        reply = b""
-        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            reply += chunk
-        client.close()
-        reply = json.loads(reply.decode("utf-8", "replace"))
-    except Exception as error:
-        return "failed", str(error) or type(error).__name__
-    result = reply.get("result") if isinstance(reply, dict) else None
+    reply, unavailable = herdr_call("decision.get", {"id": decision_id})
+    if unavailable:
+        return "failed", unavailable
+    result = reply.get("result")
     if isinstance(result, dict) and isinstance(result.get("decision"), dict):
         return "found", result["decision"]
-    error = reply.get("error") if isinstance(reply, dict) else None
+    error = reply.get("error")
     if isinstance(error, dict) and error.get("code") == "worker_not_found":
         return "missing", str(error.get("message") or "")
     if isinstance(error, dict):
@@ -1646,9 +1672,18 @@ if cwd:
     params["cwd"] = cwd
 if session:
     params["session_id"] = session
-answer = ask_server("coordinator.allowlist_refusal", params) or {}
-if answer.get("type") == "coordinator_allowlist_refusal" and answer.get("mode") in ("shadow", "off"):
+reply, unavailable = herdr_call("coordinator.allowlist_refusal", params)
+answer = (reply or {}).get("result")
+answer = answer if isinstance(answer, dict) else {}
+mode = answer.get("mode") if answer.get("type") == "coordinator_allowlist_refusal" else None
+if mode not in MODES:
+    mode = published_mode()
+if mode in ("shadow", "off"):
     raise SystemExit(0)
+if unavailable:
+    deny(f"{unavailable}, so this refused call does not run while the allowlist is "
+         f"{'enforced' if mode == 'enforce' else 'of unknown mode'} ({reason})",
+         "Herdr unavailable: ")
 if overrides:
     why = overrides[-1].strip()
     if not why:
@@ -1677,10 +1712,9 @@ if [ "$action" = "plan" ]; then
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
   [ "${HERDR_AGENT_PLAN:-1}" != "0" ] || exit 0
   command -v python3 >/dev/null 2>&1 || exit 0
-  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+  hook_python <<'PY'
 import json
 import os
-import socket
 import time
 
 try:
@@ -1711,18 +1745,7 @@ request = {
         "ttl_ms": 21_600_000,
     },
 }
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(os.environ["HERDR_SOCKET_PATH"])
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+herdr_call(request["method"], request["params"], request["id"], answer=False)
 PY
   exit 0
 fi
@@ -1736,10 +1759,9 @@ if [ "$action" = "stop-failure" ]; then
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
   command -v python3 >/dev/null 2>&1 || exit 0
-  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+  hook_python <<'PY'
 import json
 import os
-import socket
 import time
 
 try:
@@ -1763,18 +1785,7 @@ request = {
     "method": "pane.report_limit",
     "params": params,
 }
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(os.environ["HERDR_SOCKET_PATH"])
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+herdr_call(request["method"], request["params"], request["id"], answer=False)
 PY
   exit 0
 fi
@@ -1789,11 +1800,10 @@ if [ "$action" = "session-end" ]; then
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
   command -v python3 >/dev/null 2>&1 || exit 0
-  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+  hook_python <<'PY'
 import json
 import os
 import random
-import socket
 import time
 
 try:
@@ -1826,18 +1836,7 @@ request = {
     "method": method,
     "params": params,
 }
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(os.environ["HERDR_SOCKET_PATH"])
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+herdr_call(request["method"], request["params"], request["id"], answer=False)
 PY
   exit 0
 fi
@@ -1852,11 +1851,12 @@ esac
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+HERDR_ACTION="$action"
+export HERDR_ACTION
+hook_python <<'PY'
 import json
 import os
 import random
-import socket
 import time
 
 source = "herdr:claude"
@@ -1958,16 +1958,5 @@ if agent_session_id:
 else:
     raise SystemExit(0)
 
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(socket_path)
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+herdr_call(request["method"], request["params"], request["id"], answer=False)
 PY

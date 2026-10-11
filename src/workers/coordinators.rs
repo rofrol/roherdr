@@ -62,7 +62,8 @@ pub(crate) fn set_test_allowlist_mode(mode: CoordinatorAllowlistMode) {
 
 /// `[coordinator] allowlist`, read from the config file at each call, so a
 /// change applies to the next refused call. A config that cannot be read
-/// gives the default, shadow, which never denies.
+/// gives the default, shadow, which never denies. A mode that differs from
+/// the one last published is published again ([`publish_allowlist_mode`]).
 pub(crate) fn configured_allowlist_mode() -> CoordinatorAllowlistMode {
     #[cfg(test)]
     {
@@ -71,7 +72,7 @@ pub(crate) fn configured_allowlist_mode() -> CoordinatorAllowlistMode {
     #[cfg(not(test))]
     {
         use crate::config::CoordinatorAllowlistConfig;
-        match crate::config::load_live_config() {
+        let mode = match crate::config::load_live_config() {
             Ok(loaded) => match loaded.config.coordinator.allowlist {
                 CoordinatorAllowlistConfig::Shadow => CoordinatorAllowlistMode::Shadow,
                 CoordinatorAllowlistConfig::Enforce => CoordinatorAllowlistMode::Enforce,
@@ -85,8 +86,80 @@ pub(crate) fn configured_allowlist_mode() -> CoordinatorAllowlistMode {
                 );
                 CoordinatorAllowlistMode::Shadow
             }
-        }
+        };
+        #[cfg(unix)]
+        publish_allowlist_mode(mode);
+        mode
     }
+}
+
+/// The mode this server last wrote to its [`allowlist_mode_path`].
+#[cfg(all(unix, not(test)))]
+static PUBLISHED_ALLOWLIST_MODE: std::sync::Mutex<Option<CoordinatorAllowlistMode>> =
+    std::sync::Mutex::new(None);
+
+/// Publishes `[coordinator] allowlist` again, as the server starts and
+/// after it reloads its config, so the Claude hook has the current mode
+/// when herdr cannot answer it.
+pub(crate) fn republish_allowlist_mode() {
+    #[cfg(all(unix, not(test)))]
+    {
+        *lock(&PUBLISHED_ALLOWLIST_MODE) = None;
+        configured_allowlist_mode();
+    }
+}
+
+/// Writes `mode` to the [`allowlist_mode_path`] of this server's API socket
+/// when it differs from the mode last written.
+#[cfg(all(unix, not(test)))]
+fn publish_allowlist_mode(mode: CoordinatorAllowlistMode) {
+    let mut published = lock(&PUBLISHED_ALLOWLIST_MODE);
+    if *published == Some(mode) {
+        return;
+    }
+    let path = allowlist_mode_path(&crate::api::socket_path());
+    match write_allowlist_mode(&path, mode) {
+        Ok(()) => *published = Some(mode),
+        Err(error) => warn!(
+            "cannot publish the coordinator allowlist mode to {}: {error}",
+            path.display()
+        ),
+    }
+}
+
+/// Where a server publishes `[coordinator] allowlist` for the Claude hook:
+/// beside its API socket, so a hook finds it from `HERDR_SOCKET_PATH` and
+/// knows the mode without a round trip when herdr cannot answer (shadow and
+/// off never deny then).
+#[cfg(unix)]
+pub(crate) fn allowlist_mode_path(socket: &std::path::Path) -> std::path::PathBuf {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".allowlist-mode");
+    path.into()
+}
+
+/// Writes `mode` (`shadow`, `enforce` or `off`) to `path` atomically: to a
+/// temporary file of this process beside it, renamed over it.
+#[cfg(unix)]
+pub(crate) fn write_allowlist_mode(
+    path: &std::path::Path,
+    mode: CoordinatorAllowlistMode,
+) -> std::io::Result<()> {
+    let name = match mode {
+        CoordinatorAllowlistMode::Shadow => "shadow",
+        CoordinatorAllowlistMode::Enforce => "enforce",
+        CoordinatorAllowlistMode::Off => "off",
+        // Never configured; a hook reads an unknown mode as no file.
+        CoordinatorAllowlistMode::Unknown => "unknown",
+    };
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, format!("{name}\n"))
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
 }
 
 /// The shape a would-deny is counted under: the tool, and for Bash the
@@ -808,6 +881,38 @@ impl WorkerSupervisor {
 mod tests {
     use super::*;
     use crate::workers::OwnerEvent;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_allowlist_mode_is_published_beside_the_socket_and_replaced_whole() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-allowlist-mode-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let socket = root.join("herdr.sock");
+        let path = allowlist_mode_path(&socket);
+        assert_eq!(path, root.join("herdr.sock.allowlist-mode"));
+        for (mode, text) in [
+            (CoordinatorAllowlistMode::Enforce, "enforce\n"),
+            (CoordinatorAllowlistMode::Shadow, "shadow\n"),
+            (CoordinatorAllowlistMode::Off, "off\n"),
+        ] {
+            write_allowlist_mode(&path, mode).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+        // No temporary file is left beside it.
+        let names: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [std::ffi::OsString::from("herdr.sock.allowlist-mode")]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn scratch(name: &str) -> (std::path::PathBuf, WorkerSupervisor) {
         let root = std::env::temp_dir().join(format!(
