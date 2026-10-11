@@ -1521,6 +1521,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and stop with WORKER-BLOCKED when the task and the repository disagree.
   The todo skill's matching rule is the coordinator's text edit.
 
+- [ ] The space row's crown starts a coordinator only where it makes sense [t-nrkjbc4r]
+  (the user, 2026-10-11: "why is there a button to start a coordinator on a
+  worker's card? is the change that the herdr space is always a coordinator
+  deployed? ask the models"; round 20261011-173950-bc35, sol + MiMo +
+  DeepSeek agreeing). Checked: no such "always a coordinator" change was
+  decided or deployed; 140fa8cd only replaced the ` T ` chip with the crown,
+  shown on every local space and still labelled "Start a worker on this
+  space's TODO". Decided: the chip shows only on a repository's main
+  checkout space, never on a worktree or worker space; with an active
+  coordinator tenure for the repository it focuses that coordinator's tab
+  (resolved at click time, a missing tab falls back to start), otherwise it
+  starts one; distinct glyph states (outline = start, solid = active);
+  tooltips "Start TODO coordinator for <repo>" / "Focus active TODO
+  coordinator for <repo>"; no auto-start ("the space is the coordinator"
+  was rejected by all three: a space is a checkout, a coordinator a role
+  with a lifecycle); the one-per-repository constraint stays the guard.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
