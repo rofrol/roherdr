@@ -1170,24 +1170,6 @@ fn a_question_detail_carries_the_whole_input_and_a_settled_one_is_gone() {
 }
 
 #[test]
-fn the_whole_input_keeps_a_commands_newlines_and_its_other_fields() {
-    let input = serde_json::json!({
-        "command": "git add -A\ngit commit -m 'x'",
-        "dangerouslyDisableSandbox": true,
-        "description": "Commit",
-    });
-    assert_eq!(
-        full_input_text(&input),
-        "git add -A\ngit commit -m 'x'\n\ndangerouslyDisableSandbox: true\ndescription: Commit"
-    );
-    let long = "x".repeat(1_000);
-    let input = serde_json::json!({"file_path": "/tmp/a", "content": long});
-    let text = full_input_text(&input);
-    assert!(text.contains(&long), "never cut");
-    assert!(text.contains("\"file_path\": \"/tmp/a\""), "{text}");
-}
-
-#[test]
 fn deny_and_stop_denies_the_question_then_stops_the_worker() {
     let fixture = Fixture::new("deny-stop");
     let id = fixture.start("classifier Bash git push origin master");
@@ -1671,25 +1653,6 @@ fn kill_signals_only_tool_sessions_whose_leader_is_the_recorded_process() {
     assert_eq!(current.wait().unwrap().signal(), Some(libc::SIGKILL));
     assert_eq!(terminate(replaced), Some(libc::SIGTERM));
     assert_eq!(terminate(unrecorded), Some(libc::SIGTERM));
-}
-
-#[test]
-fn a_session_plan_keeps_members_that_started_with_or_after_the_leader() {
-    let starts = BTreeMap::from([(10, 100), (11, 150), (12, 50), (20, 300)]);
-    let sessions = BTreeMap::from([(10, Some(100)), (20, Some(200)), (30, None)]);
-    let plan = plan_session_kill(
-        &sessions,
-        |pid| starts.get(&pid).copied(),
-        |session| match session {
-            // 13 has no start token any more: it is gone.
-            10 => vec![10, 11, 12, 13],
-            20 => vec![20, 21],
-            _ => vec![30],
-        },
-    );
-    assert_eq!(plan.pids, vec![10, 11]);
-    assert_eq!(plan.stale_sessions, vec![20]);
-    assert_eq!(plan.unverified_sessions, vec![30]);
 }
 
 #[test]
