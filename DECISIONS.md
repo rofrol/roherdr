@@ -1114,3 +1114,13 @@ new text unless `--from-start`, and ends on the match, a source error or a
 limits: the inotify path is untested on macOS; a truncate immediately
 overwritten past the old length before the read is not seen as a
 truncation. The `todo` skill line is the coordinator's text edit.
+
+## While coordinating, "ask the models" versus "everything goes to a worker"
+
+Asked by the email-assistant and herdr coordinators (2026-10-07): may a
+coordinator run a consult itself when the user says "ask the models",
+or is it work for a worker? Decided by the coordinator 2026-10-11 (the
+user had said "choose with the models"; MiMo: a one-line policy): the
+coordinator queues the request first, then runs the round itself in the
+same turn, since a consult is a decision step, not implementation, and
+records the outcome in the item; global rule in the dotfiles (98a6921).

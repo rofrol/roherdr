@@ -338,16 +338,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   All three: `t-khw7lira` is superseded by `herdr todo wait`; decided by the
   coordinator: it is done together with `t-cguvhgwu`, then closed.
 
-- [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
-  turn) or "a new request is queued, everything else goes to a worker"?
-  Report from the email-assistant coordinator (2026-10-07): the user said
-  "do todo: ... ask the models", it ran the consult at once before writing
-  the TODO entry; the user asked why the coordinator works itself. The herdr
-  coordinator ran its consults itself all day too. The rules do not say.
-  Promoted 2026-10-10 (the user: "choose with the models"; sol and
-  DeepSeek: settle it before the decision menus item; MiMo: a one-line
-  policy decision).
-
 - [ ] Coordinators present "Needs a decision" questions as clickable [t-vs3664vc]
   options (user via the try-roguix coordinator, 2026-10-07: it moved four
   items there and only mentioned them; "fix the process so a coordinator
