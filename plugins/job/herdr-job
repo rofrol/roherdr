@@ -59,15 +59,20 @@ TRANSPORT_BACKOFF_S = (0, 1, 2, 4, 8, 15, 30)
 # Keeps the typed `_exec` line out of zsh's history file; the leading space
 # keeps it out of atuin. zsh imports it from the environment.
 HISTORY_IGNORE = "*herdr-job _exec *"
+# delay: a bound on a hung call, not a wait for an event. A herdr CLI call
+# answers in milliseconds; one that has not answered after this long hangs
+# (a live handoff can leave the socket unanswered), and the caller gives up
+# on it loudly instead of hanging with it.
+HERDR_CALL_BOUND_S = 10
 
 
 def herdr(*args, check=True):
     try:
-        out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=10)
+        out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=HERDR_CALL_BOUND_S)
     except (OSError, subprocess.TimeoutExpired) as err:
-        # A live handoff can leave the socket unanswered for a while.
         if check:
             raise SystemExit(f"herdr {' '.join(args)} failed: {err}") from err
+        print(f"herdr-job: gave up on `herdr {' '.join(args)}`: {short(err, 200)}", file=sys.stderr, flush=True)
         return ""
     if check and out.returncode != 0:
         raise SystemExit(f"herdr {' '.join(args)} failed: {out.stderr.strip() or out.stdout.strip()}")
@@ -75,10 +80,13 @@ def herdr(*args, check=True):
 
 
 def herdr_ok(*args):
-    """Runs a herdr command that older herdr builds may not have."""
+    """Runs a herdr command that older herdr builds may not have. A refusal
+    returns False quietly (the caller decides what it means); a call that
+    could not run or hung returns False with a line on stderr naming it."""
     try:
-        out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
+        out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=HERDR_CALL_BOUND_S)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        print(f"herdr-job: gave up on `herdr {' '.join(args)}`: {short(err, 200)}", file=sys.stderr, flush=True)
         return False
     return out.returncode == 0
 
@@ -387,7 +395,7 @@ class TabEvents:
         self.stream = stream
 
     @classmethod
-    def subscribe(cls):
+    def subscribe(cls, kinds=TAB_EVENTS):
         path = os.environ.get("HERDR_SOCKET_PATH")
         if not path:
             raise OSError("HERDR_SOCKET_PATH is not set, so herdr's events cannot be followed")
@@ -402,7 +410,7 @@ class TabEvents:
         events = cls(stream)
         try:
             request = {"id": "herdr-job:tab-events", "method": "events.subscribe",
-                       "params": {"subscriptions": [{"type": kind} for kind in TAB_EVENTS]}}
+                       "params": {"subscriptions": [{"type": kind} for kind in kinds]}}
             stream.write(json.dumps(request).encode() + b"\n")
             stream.flush()
             line = stream.readline()
@@ -2319,6 +2327,7 @@ class JobWatch:
         self.wake = Wake()
         self.armed = set()
         self.log_fd = None
+        self.stop_following = None
         try:
             self.watch = make_dir_watch(path, wake_fd=self.wake.fd, entries_only=True)
         except TextSourceError as err:
@@ -2343,6 +2352,12 @@ class JobWatch:
         if launching(self.path, meta) and "launch" not in self.armed:
             self.armed.add("launch")
             wake_when_released(self.path / LAUNCH_HOLD, self.wake)
+        # Until the executor starts, the job ends with its tab, and a server
+        # that starts cold, or takes over in a handoff, may come up without
+        # it and never runs the `tab.closed` hook for it.
+        if "started" not in meta and "server" not in self.armed:
+            self.armed.add("server")
+            self.stop_following = follow_server_tabs(self.wake)
 
     def wait(self):
         try:
@@ -2351,6 +2366,8 @@ class JobWatch:
             raise SystemExit(f"herdr-job wait: the job's directory {self.path}: {err}") from err
 
     def close(self):
+        if self.stop_following is not None:
+            self.stop_following.set()
         self.watch.close()
         self.wake.close()
         if self.log_fd is not None:
@@ -2359,6 +2376,59 @@ class JobWatch:
 
 def job_watch(path, stream):
     return JobWatch(path, stream)
+
+
+def follow_server_tabs(wake):
+    """Fires `wake` whenever the server's tabs may have lost the job's: each
+    time a subscription to its `tab.closed` events starts (the server it
+    reaches may have started cold or taken over in a handoff, so the wait
+    looks at its tab list again) and on each `tab.closed`. A thread follows
+    the subscription and subscribes again when the server closes it. While
+    no server answers it waits for the next change in the socket's
+    directory: a server binds its API socket and then its client socket
+    there, so one reached between a bind and its listen is tried again at
+    the next bind. It gives up loudly on stderr only when it cannot follow
+    at all, and the wait goes on with the `tab.closed` hook alone. Returns
+    an Event that, once set, ends the thread quietly at its next event."""
+    stop = threading.Event()
+
+    def give_up(why):
+        if stop.is_set():
+            return
+        print(f"herdr-job wait: not following herdr's tabs: {why}; a tab a server restart drops "
+              "ends this wait only through the `tab.closed` hook", file=sys.stderr, flush=True)
+
+    def run():
+        socket_path = os.environ.get("HERDR_SOCKET_PATH")
+        if not socket_path:
+            return give_up("HERDR_SOCKET_PATH is not set")
+        while not stop.is_set():
+            # Armed before the attempt, so a server that binds meanwhile wakes it.
+            try:
+                socket_dir = make_dir_watch(Path(socket_path).parent, entries_only=True)
+            except TextSourceError as err:
+                return give_up(f"its socket's directory cannot be watched ({err})")
+            try:
+                try:
+                    events = TabEvents.subscribe(("tab.closed",))
+                except OSError:
+                    socket_dir.wait()
+                    continue
+            except TextSourceError as err:
+                return give_up(f"its socket's directory: {err}")
+            finally:
+                socket_dir.close()
+            # The server acknowledged the subscription: its tab list is the
+            # one to reconcile against.
+            try:
+                wake.fire()
+                while events.next():
+                    wake.fire()
+            finally:
+                events.close()
+
+    threading.Thread(target=run, daemon=True).start()
+    return stop
 
 
 # `wait-agent`: one job that waits for an agent and reconnects inside, so a

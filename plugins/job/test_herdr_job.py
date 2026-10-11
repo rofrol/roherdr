@@ -690,19 +690,22 @@ class WaitEventTests(unittest.TestCase):
         self.path.mkdir()
         self.tabs = [{"tab_id": "w:t1", "label": "build"}]
         self.waiting = threading.Event()
+        self.blocks = threading.Semaphore(0)  # one release per time the wait blocks
         real = JOB["JobWatch"]
         waiting = self.waiting
+        blocks = self.blocks
 
         class SignallingWatch(real):
             def wait(self):
                 waiting.set()
+                blocks.release()
                 super().wait()
 
         globs = JOB["cmd_wait"].__globals__
         patcher = patch.dict(globs, {
             "STATE": self.state, "WAITS": self.state / "waits", "reconcile_tabs": lambda: None,
             "update_owner_token": lambda _pane: None, "list_tabs": lambda: self.tabs,
-            "job_watch": SignallingWatch})
+            "job_watch": SignallingWatch, "follow_server_tabs": lambda _wake: None})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.sleep = patch.object(time, "sleep", Mock(side_effect=AssertionError("paused")))
@@ -780,6 +783,59 @@ class WaitEventTests(unittest.TestCase):
             JOB["cmd_tab_closed"](None)
         code, text = self.finish(thread, result, out)
         self.assertEqual(code, JOB["EXIT_LOST"])
+
+    def test_a_job_that_never_started_is_lost_when_a_restarted_server_comes_up_without_its_tab(self):
+        """No `tab.closed` hook runs for a tab a cold start or a handoff
+        drops: the wait looks at the tabs whenever its subscription starts."""
+        self.write_meta()
+        socket_dir = self.state / "run"
+        socket_dir.mkdir()
+        servers = []  # our ends of each acknowledged subscription
+        refused = threading.Event()
+        attempts = iter(["first server", "down", "second server"])
+
+        def subscribe(kinds):
+            self.assertEqual(kinds, ("tab.closed",))
+            attempt = next(attempts)
+            if attempt == "down":
+                refused.set()
+                raise ConnectionRefusedError("no server")
+            ours, theirs = socket.socketpair()
+            self.addCleanup(theirs.close)
+            servers.append(theirs)
+            stream = ours.makefile("rwb")
+            ours.close()
+            return JOB["TabEvents"](stream)
+
+        globs = JOB["cmd_wait"].__globals__
+        with patch.dict(globs, {"follow_server_tabs": JOB["follow_server_tabs"],
+                                "TabEvents": SimpleNamespace(subscribe=subscribe)}), \
+                patch.dict(os.environ, {"HERDR_SOCKET_PATH": str(socket_dir / "herdr.sock")}):
+            thread, result, out = self.start_wait()
+            # It blocked, and blocked again after the first subscription woke it.
+            for _ in range(2):
+                # delay: test harness bound on a hung test; the wake comes at once.
+                self.assertTrue(self.blocks.acquire(timeout=30), "the subscription did not wake the wait")
+            self.assertEqual(len(servers), 1)
+            self.assertTrue(thread.is_alive())
+            self.tabs = []  # the server is gone, and the next one has no such tab
+            servers[0].close()
+            self.assertTrue(refused.wait(30), "the closed subscription was not followed by a new one")
+            self.assertTrue(thread.is_alive(), "the wait ended before a server answered")
+            (socket_dir / "herdr.sock").write_text("")  # the new server binds its socket
+            code, _ = self.finish(thread, result, out)
+        self.assertEqual(code, JOB["EXIT_LOST"])
+        self.assertEqual(len(servers), 2)
+
+    def test_without_herdrs_socket_the_tab_follower_gives_up_loudly(self):
+        err = io.StringIO()
+        wake = JOB["Wake"]()
+        self.addCleanup(wake.close)
+        follow = JOB["follow_server_tabs"]
+        with patch.dict(os.environ, {"HERDR_SOCKET_PATH": ""}), contextlib.redirect_stderr(err), \
+                patch.object(threading, "Thread", lambda target, daemon: SimpleNamespace(start=target)):
+            follow(wake)
+        self.assertIn("not following herdr's tabs: HERDR_SOCKET_PATH is not set", err.getvalue())
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
@@ -880,6 +936,28 @@ class CloseTabTests(unittest.TestCase):
         self.assertEqual(closed, [])
         self.assertIn("tab w:t1 stays open", err)
 
+    def test_a_herdr_call_that_hangs_is_bounded_and_given_up_loudly(self):
+        bounds = []
+
+        def hung(cmd, **kwargs):
+            bounds.append(kwargs["timeout"])
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        err = io.StringIO()
+        with patch.object(subprocess, "run", hung), contextlib.redirect_stderr(err):
+            self.assertFalse(JOB["herdr_ok"]("tab", "close", "w:t1"))
+            self.assertEqual(JOB["herdr"]("tab", "list", check=False), "")
+        self.assertEqual(bounds, [JOB["HERDR_CALL_BOUND_S"]] * 2)
+        self.assertIn("gave up on `herdr tab close w:t1`", err.getvalue())
+        self.assertIn("gave up on `herdr tab list`", err.getvalue())
+
+    def test_a_refused_herdr_call_stays_quiet(self):
+        err = io.StringIO()
+        refused = lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 2, "", "unknown command")
+        with patch.object(subprocess, "run", refused), contextlib.redirect_stderr(err):
+            self.assertFalse(JOB["herdr_ok"]("tab", "parent", "w:t1", "w:t0"))
+        self.assertEqual(err.getvalue(), "")
+
     def test_the_final_status_is_retried_with_the_designed_backoff_then_given_up_loudly(self):
         sleeps = []
         err = io.StringIO()
@@ -914,8 +992,9 @@ class PeerTokenTests(unittest.TestCase):
         stub = Path(self.tmp.name) / "herdr"
         stub.write_text(f"#!/bin/sh\necho \"$@\" >> {self.calls}\n")
         stub.chmod(0o755)
+        self.give_ups = Path(self.tmp.name) / "state" / "herdr-job" / "peer-token.log"
         patcher = patch.dict(self.peer["wait_and_report"].__globals__,
-                             {"SESSIONS": self.sessions, "HERDR": str(stub)})
+                             {"SESSIONS": self.sessions, "HERDR": str(stub), "GIVE_UPS": self.give_ups})
         patcher.start()
         self.addCleanup(patcher.stop)
         env = patch.dict(os.environ, {"HERDR_PANE_ID": "w:p1"})
@@ -957,6 +1036,16 @@ class PeerTokenTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "Claude's exit did not end the wait")
         self.assertEqual(result, [1])
         self.assertIn("exited before it named session s1", err.getvalue())
+        # The detached child's stderr goes nowhere: the give-up is in the log.
+        self.assertIn("exited before it named session s1", self.give_ups.read_text())
+
+    def test_a_report_that_hangs_is_given_up_in_the_log(self):
+        (self.sessions / f"{self.claude.pid}.json").write_text(json.dumps({"sessionId": "s1", "name": "herdr-ef"}))
+        hung = Mock(side_effect=subprocess.TimeoutExpired("herdr", self.peer["REPORT_BOUND_S"]))
+        with patch.object(subprocess, "run", hung), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.peer["wait_and_report"]("s1", self.claude.pid), 1)
+        self.assertEqual(hung.call_args.kwargs["timeout"], self.peer["REPORT_BOUND_S"])
+        self.assertIn("stopped before it reported session s1's name", self.give_ups.read_text())
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class WatchPidTests(unittest.TestCase):

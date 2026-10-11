@@ -5,18 +5,24 @@ Other sessions address this one by the name in ~/.claude/sessions/<pid>.json (e.
 so the pane reports it as the `$peer` token. SessionStart runs before Claude writes the name, so
 a detached child waits for Claude to write it (file events on the sessions directory) and ends
 when it reports it or when that Claude process exits; Stop refreshes the token's TTL and picks
-up a later /rename. Never fails the hook: all errors are swallowed.
+up a later /rename. Never fails the hook. The detached child has no terminal, so it writes why it
+gave up to GIVE_UPS (under herdr-job's state directory) as well as to stderr.
 """
 import json
 import os
 import runpy
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SESSIONS = Path.home() / ".claude/sessions"
 SHELLS = {"sh", "bash", "dash", "zsh"}
 TTL_MS = 12 * 60 * 60 * 1000
+# delay: a bound on a hung call, not a wait for an event: `report-metadata`
+# answers in milliseconds, so one that has not after this long hangs.
+REPORT_BOUND_S = 5
+GIVE_UPS = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "herdr-job" / "peer-token.log"
 HERDR = os.environ.get("HERDR_BIN_PATH", "")
 if not os.access(HERDR, os.X_OK):
     HERDR = "herdr"
@@ -40,7 +46,7 @@ def report(session_id):
         return False
     subprocess.run([HERDR, "pane", "report-metadata", os.environ["HERDR_PANE_ID"], "--source", "claude-peer",
                     "--token", f"peer={name}", "--ttl-ms", str(TTL_MS)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=REPORT_BOUND_S)
     return True
 
 
@@ -59,19 +65,32 @@ def claude_pid():
     return None
 
 
+def give_up(message):
+    """Says why the child ends without the name: on stderr, and as a line in
+    GIVE_UPS, since the detached child's stderr goes nowhere."""
+    line = f"herdr-peer-token: {message}"
+    print(line, file=sys.stderr, flush=True)
+    try:
+        GIVE_UPS.parent.mkdir(parents=True, exist_ok=True)
+        with open(GIVE_UPS, "a") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {line}\n")
+    except OSError as err:
+        print(f"herdr-peer-token: cannot write {GIVE_UPS}: {err}", file=sys.stderr, flush=True)
+    return 1
+
+
 def wait_and_report(session_id, pid):
     """Reports the name once Claude writes it. Waits on file events in the
-    sessions directory, no pause; ends without the name, loudly (stderr,
-    status 1), when Claude process `pid` exits first or the directory cannot
-    be watched. Returns the exit status."""
+    sessions directory, no pause; ends without the name, loudly (`give_up`,
+    status 1), when Claude process `pid` exits first, the directory cannot
+    be watched or reporting the name fails. Returns the exit status."""
     job = runpy.run_path(str(Path(os.path.realpath(__file__)).with_name("herdr-job")))
     try:
         watch = job["make_dir_watch"](SESSIONS, pid=pid)
     except job["WriterExited"]:
         watch = None
     except job["TextSourceError"] as err:
-        print(f"herdr-peer-token: cannot watch {SESSIONS}: {err}", file=sys.stderr)
-        return 1
+        return give_up(f"cannot watch {SESSIONS}: {err}")
     session_file = SESSIONS / f"{pid}.json"
     watched = None  # (fd, inode) of Claude's session file, whose writes wake the wait too
 
@@ -102,12 +121,11 @@ def wait_and_report(session_id, pid):
                 break
             watch.wait()
     except job["WriterExited"]:
-        print(f"herdr-peer-token: Claude (pid {pid}) exited before it named session {session_id}",
-              file=sys.stderr)
-        return 1
+        return give_up(f"Claude (pid {pid}) exited before it named session {session_id}")
     except job["TextSourceError"] as err:
-        print(f"herdr-peer-token: {err}", file=sys.stderr)
-        return 1
+        return give_up(str(err))
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return give_up(f"stopped before it reported session {session_id}'s name: {err}")
     finally:
         if watch is not None:
             watch.close()

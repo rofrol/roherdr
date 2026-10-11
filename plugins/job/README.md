@@ -408,7 +408,9 @@ pane a cross-session message came from. `Stop` refreshes it and picks up a
 later `/rename`. At `SessionStart` Claude has not written the name yet, so a
 detached child waits for it on file events in `~/.claude/sessions/` and ends
 when it reports the name, or with exit status 1 when that Claude process exits
-first.
+first. The child has no terminal, so why it gave up also goes to
+`~/.local/state/herdr-job/peer-token.log` (under `$XDG_STATE_HOME` when set),
+one timestamped line each.
 
 ```json
 "SessionStart": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-peer-token", "timeout": 10}]}],
@@ -524,8 +526,18 @@ herdr-job slots                           # who holds them: job, name, pid, sinc
   `meta.json` when the executor starts, the job's lock going free (a lost
   job), its launcher's death, the `tab.closed` hook's `tab-closed` mark for a
   job whose executor never started, and with `--stream` the log growing
-  (kqueue or inotify). `watch` waits for the process's exit event (a pidfd
-  or kqueue) and fails on a system without one instead of polling.
+  (kqueue or inotify). For a job whose executor never started it also
+  subscribes to the server's `tab.closed` events and looks at the tab list
+  again each time a subscription starts: a server that starts cold, or takes
+  over in a live handoff, may come up without the job's tab and runs no hook
+  for it. While no server answers it waits for the next change in the
+  socket's directory (a new server binds there); when it cannot follow at
+  all it says so on stderr. `watch` waits for the process's exit event (a
+  pidfd or kqueue) and fails on a system without one instead of polling.
+- A herdr call that has not answered after 10 s is a hung call: herdr-job
+  gives up on it with a stderr line naming the command, never silently. A
+  refusal (an older herdr without the command) stays quiet; the caller
+  decides what it means.
 - Inside a slot (`HERDR_JOB_SLOT` is set), a shared request takes nothing, so
   `just check` under `herdr-job run --slot` does not wait for itself, and a
   `herdr-job run --slot` started from inside a slot shares its parent's
