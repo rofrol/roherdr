@@ -2755,7 +2755,7 @@ impl WorkerSupervisor {
     }
 
     fn ack_quietly(&self, worker_id: &str, seq: i64) {
-        if let Err(error) = self.ack(worker_id, seq) {
+        if let Err(error) = self.acknowledge(worker_id, seq, false) {
             warn!(%error, worker_id, seq, "cannot acknowledge the todo run's worker");
         }
     }

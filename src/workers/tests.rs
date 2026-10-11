@@ -2078,6 +2078,18 @@ fn a_later_exit_replaces_lost_and_a_finished_worker_keeps_its_state() {
         .unwrap();
     let journal = std::fs::read_to_string(dir.join("w2.jsonl")).unwrap();
     assert_eq!(journal.matches("\"lost\"").count(), 1);
+    // The sidebar shows it as finished, ended by the restart, not lost.
+    let summaries = supervisor.summaries();
+    let summary = summaries
+        .iter()
+        .find(|summary| summary.worker_id == "w2")
+        .unwrap();
+    assert_eq!(summary.state, WorkerState::Finished);
+    assert!(summary.gone);
+    assert_eq!(
+        summary.end_note.as_deref(),
+        Some("ended by a server restart")
+    );
     // Its process is gone, so its session can be taken over.
     supervisor.begin_takeover("w2", false).unwrap();
 }
@@ -3888,15 +3900,17 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
     assert_eq!(turn_end.seq, ended.seq);
     assert_eq!(turn_end.owner_pane_id, "p1");
 
-    let worker = fixture.supervisor.ack(&id, turn_end.seq).unwrap();
-    assert_eq!(worker.acked_seq, Some(turn_end.seq));
-    assert!(obligation_of(&fixture, "p1", &id).is_none());
-
-    // A newer event, a question, brings it back.
+    // The owner wants another turn: it prompts before it acknowledges the
+    // turn's end, so the ack does not stop the worker.
     fixture
         .supervisor
         .prompt(&id, "classifier Bash git push origin master")
         .unwrap();
+    let worker = fixture.supervisor.ack(&id, turn_end.seq).unwrap();
+    assert_eq!(worker.acked_seq, Some(turn_end.seq));
+    assert_eq!(worker.state, WorkerState::Working);
+
+    // A newer event, a question, is owed again.
     let (asked, _) = fixture.attention(&id, Some(ended.seq), || {});
     assert_eq!(asked.reason, WorkerAttentionReason::Question);
     let question = obligation_of(&fixture, "p1", &id).unwrap();
@@ -3913,9 +3927,9 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
     let next = obligation_of(&fixture, "p1", &id).unwrap();
     assert_eq!(next.reason, WorkerAttentionReason::TurnEnd);
     assert!(next.seq > question.seq);
-    fixture.supervisor.ack(&id, next.seq).unwrap();
 
-    // The worker's end is one too, until acknowledged.
+    // The worker's end is one too, until acknowledged: here someone else
+    // stopped it before its owner handled the turn's end.
     fixture.supervisor.stop(&id).unwrap();
     fixture.wait(&id, WorkerWaitUntil::Exit);
     let gone = obligation_of(&fixture, "p1", &id).unwrap();
@@ -3924,37 +3938,121 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
     assert!(obligation_of(&fixture, "p1", &id).is_none());
 }
 
+fn summary_of(fixture: &Fixture, worker_id: &str) -> WorkerSummary {
+    fixture
+        .supervisor
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.worker_id == worker_id)
+        .unwrap()
+}
+
 #[test]
-fn the_owners_wait_without_a_cursor_starts_after_what_it_acked() {
-    let fixture = Fixture::new("owner-cursor");
+fn acking_a_finished_turn_stops_the_worker_and_its_line_leaves() {
+    let fixture = Fixture::new("ack-stops");
     let id = start_owned(&fixture, "p1", "finish");
     let (ended, _) = fixture.attention(&id, None, || {});
     assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
+    // Its turn's end waits for the owner: the line stays.
+    let waiting = summary_of(&fixture, &id);
+    assert!(waiting.listed && !waiting.quiet && !waiting.gone);
+    assert_eq!(waiting.owner_pane.as_deref(), Some("p1"));
+
+    fixture.supervisor.ack(&id, ended.seq).unwrap();
+    // Handled: the line leaves at once, before the process is gone.
+    assert!(!summary_of(&fixture, &id).listed);
+    let exited = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(exited.state, WorkerState::Exited);
+    // The owner asked for that exit with its ack: nothing more is owed.
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+    let gone = summary_of(&fixture, &id);
+    assert!(!gone.listed && gone.quiet && gone.gone);
+    // Its log stays reachable.
+    assert!(fixture
+        .supervisor
+        .list()
+        .iter()
+        .any(|worker| worker.worker_id == id));
+}
+
+#[test]
+fn a_drivers_ack_of_a_finished_turn_leaves_the_worker_running_but_unlisted() {
+    let fixture = Fixture::new("ack-driver");
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    fixture
+        .supervisor
+        .acknowledge(&id, ended.seq, false)
+        .unwrap();
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert!(worker.stop_requested_ms.is_none());
+    let summary = summary_of(&fixture, &id);
+    assert!(!summary.listed && summary.quiet);
+    // A new turn brings the line back.
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    assert!(summary_of(&fixture, &id).listed);
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
+fn a_question_keeps_the_line_and_the_ack_does_not_stop_the_worker() {
+    let fixture = Fixture::new("ack-question");
+    let id = start_owned(&fixture, "p1", "classifier Bash git push origin master");
+    let (asked, _) = fixture.attention(&id, None, || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    fixture.supervisor.ack(&id, asked.seq).unwrap();
+    let summary = summary_of(&fixture, &id);
+    assert!(summary.listed && !summary.quiet);
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert!(worker.stop_requested_ms.is_none());
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
+fn a_finished_worker_without_an_owner_stays_listed_and_quiet() {
+    let fixture = Fixture::new("unowned-quiet");
+    let id = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap()
+        .worker_id;
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let summary = summary_of(&fixture, &id);
+    assert!(summary.listed && summary.quiet && !summary.gone);
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
+fn the_owners_wait_without_a_cursor_starts_after_what_it_acked() {
+    let fixture = Fixture::new("owner-cursor");
+    let id = start_owned(&fixture, "p1", "classifier Bash git push origin master");
+    let (asked, _) = fixture.attention(&id, None, || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
     // Nothing acknowledged yet: the owner starts from the snapshot, too.
     assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), None);
-    fixture.supervisor.ack(&id, ended.seq).unwrap();
-    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(ended.seq));
+    fixture.supervisor.ack(&id, asked.seq).unwrap();
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(asked.seq));
     // Not the owner: no cursor of the owner's.
     assert_eq!(fixture.supervisor.owner_cursor(&id, "p2"), None);
     assert_eq!(fixture.supervisor.owner_cursor("w-none", "p1"), None);
 
-    // The handled turn end does not wake the owner's next wait; the next
+    // The handled question does not wake the owner's next wait; the next
     // event does.
     let cursor = fixture.supervisor.owner_cursor(&id, "p1");
     let waited = fixture
         .supervisor
         .wait_attention(&id, cursor, HANG_GUARD, || false)
         .unwrap();
-    assert!(waited.is_none(), "woken by the acknowledged turn end");
+    assert!(waited.is_none(), "woken by the acknowledged question");
     fixture
-        .supervisor
-        .prompt(&id, "classifier Bash git push origin master")
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
         .unwrap();
-    let (asked, _) = fixture.attention(&id, cursor, || {});
-    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    let (ended, _) = fixture.attention(&id, cursor, || {});
+    assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
     // Unacknowledged, it wakes the same wait again.
     let (again, _) = fixture.attention(&id, fixture.supervisor.owner_cursor(&id, "p1"), || {});
-    assert_eq!(again.reason, WorkerAttentionReason::Question);
+    assert_eq!(again.reason, WorkerAttentionReason::TurnEnd);
     fixture.supervisor.kill(&id, false).unwrap();
 }
 
@@ -3965,10 +4063,10 @@ fn a_tenure_owned_workers_cursor_follows_the_tenure() {
         .supervisor
         .coordinator_start("/repo", "p1", Some("p1-session"))
         .unwrap();
-    let id = start_owned(&fixture, "p1", "finish");
-    let (ended, _) = fixture.attention(&id, None, || {});
-    fixture.supervisor.ack(&id, ended.seq).unwrap();
-    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(ended.seq));
+    let id = start_owned(&fixture, "p1", "classifier Bash git push origin master");
+    let (asked, _) = fixture.attention(&id, None, || {});
+    fixture.supervisor.ack(&id, asked.seq).unwrap();
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(asked.seq));
     // Once the tenure has ended, the pane no longer owns the worker.
     fixture
         .supervisor

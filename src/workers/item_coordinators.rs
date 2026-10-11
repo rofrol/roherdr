@@ -634,7 +634,7 @@ impl WorkerSupervisor {
         if advance {
             // The chain goes on: the owner owes nothing for this end.
             if let Some(seq) = worker.seq {
-                if let Err(error) = self.ack(&worker_id, seq) {
+                if let Err(error) = self.acknowledge(&worker_id, seq, false) {
                     warn!(%error, worker_id, "cannot acknowledge the item coordinator's end");
                 }
             }

@@ -713,8 +713,9 @@ fn client_shell_workers(
 ) -> Vec<protocol::ClientShellWorker> {
     workers
         .into_iter()
-        // An ended worker leaves once its owner acknowledged its end; its
-        // run stays reachable through its item (`worker.runs`).
+        // A worker leaves once its turn or its process ended and its owner
+        // acknowledged it; its log stays reachable (`worker.log`,
+        // `worker.list`) and its run through its item (`worker.runs`).
         .filter(|worker| worker.listed)
         .map(|worker| protocol::ClientShellWorker {
             worker_id: worker.worker_id,
@@ -735,6 +736,10 @@ fn client_shell_workers(
             started_ms: worker.started_ms,
             turn_started_ms: worker.turn_started_ms,
             last_event_ms: worker.last_event_ms,
+            gone: worker.gone,
+            end_note: worker.end_note,
+            quiet: worker.quiet,
+            owner_pane_id: worker.owner_pane,
         })
         .collect()
 }
@@ -847,6 +852,10 @@ mod tests {
             turn_started_ms: None,
             last_event_ms: None,
             listed,
+            gone: true,
+            end_note: None,
+            quiet: false,
+            owner_pane: None,
         };
         let workers = client_shell_workers(vec![worker("w1", false), worker("w2", true)]);
         assert_eq!(
@@ -877,6 +886,10 @@ mod tests {
             turn_started_ms: Some(5_000),
             last_event_ms: Some(6_000),
             listed: true,
+            gone: false,
+            end_note: None,
+            quiet: false,
+            owner_pane: Some("p1".into()),
         }]);
         assert_eq!(
             workers,
@@ -896,6 +909,10 @@ mod tests {
                 started_ms: Some(1_000),
                 turn_started_ms: Some(5_000),
                 last_event_ms: Some(6_000),
+                gone: false,
+                end_note: None,
+                quiet: false,
+                owner_pane_id: Some("p1".into()),
             }]
         );
     }

@@ -423,7 +423,8 @@ pub(super) fn legend_lines(
     lines.push(blank());
     lines.push(heading("headless workers"));
     for state in WORKER_STATES {
-        let (icon, color) = agent_glyph(super::space_tabs::worker_state(state).0);
+        let icon = super::space_tabs::worker_icon(state, style);
+        let (_, color) = agent_glyph(super::space_tabs::worker_state(state).0);
         lines.push(row(
             icon,
             color,
@@ -814,12 +815,11 @@ mod tests {
             format!("{BACKGROUND_TOKEN_EXAMPLE}  {BACKGROUND_TOKEN_LABEL}"),
         ));
         for state in WORKER_STATES {
-            let status = super::super::space_tabs::worker_state(state).0;
             expected.push((
                 LegendEntry::Worker(state),
                 format!(
                     "{}    {}",
-                    agent_icon(status, AgentMark::None, style),
+                    super::super::space_tabs::worker_icon(state, style),
                     worker_state_label(state)
                 ),
             ));

@@ -617,3 +617,166 @@ fn the_tabs_header_names_the_item_and_details_and_offers_a_takeover() {
     assert_eq!(state.hits.worker_view_take_over, Rect::default());
     assert!(!frame_rows(&frame)[top].contains("take over"));
 }
+
+#[test]
+fn a_worker_lost_between_turns_reads_finished_ended_by_the_restart() {
+    let now = 100 * 60 * 60_000;
+    let mut projected = snapshot();
+    projected.workers = vec![crate::protocol::ClientShellWorker {
+        state: "finished".into(),
+        gone: true,
+        end_note: Some("ended by a server restart".into()),
+        ..timed_worker(now)
+    }];
+    let lines = super::super::space_tabs::worker_lines_at(
+        &projected,
+        &projected.workspaces[0],
+        now + 60 * 60_000,
+    );
+    let [line] = lines.as_slice() else {
+        panic!("one line: {lines:?}");
+    };
+    // Its age stopped at its last event, and it says it ended.
+    assert_eq!(line.plan.as_deref(), Some("ended 11m"));
+    let worker = line.worker.as_ref().expect("a worker line");
+    assert!(
+        worker
+            .tooltip
+            .contains("· finished, ended by a server restart ·"),
+        "{}",
+        worker.tooltip
+    );
+    assert!(!worker.tooltip.contains("lost"), "{}", worker.tooltip);
+    assert!(!worker.tooltip.contains("this turn"), "{}", worker.tooltip);
+    assert_eq!(worker.state, "finished");
+}
+
+#[test]
+fn each_worker_state_draws_its_own_glyph() {
+    use crate::config::StatusIndicatorStyle;
+    for style in [
+        StatusIndicatorStyle::Dots,
+        StatusIndicatorStyle::Symbols,
+        StatusIndicatorStyle::Shapes,
+    ] {
+        let glyphs = super::super::status_legend::WORKER_STATES
+            .iter()
+            // Starting is working that has not begun yet: the same glyph.
+            .filter(|state| **state != "starting")
+            .map(|state| super::super::space_tabs::worker_icon(state, style))
+            .collect::<Vec<_>>();
+        let distinct = glyphs.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(distinct.len(), glyphs.len(), "{style:?}: {glyphs:?}");
+    }
+
+    // Drawn on the line: a finished worker's check mark.
+    let mut state = state_with_worker();
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers[0].state = "finished".into();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    let line = worker_line(&state, "w1");
+    let row = &frame_rows(&frame)[usize::from(line.y)];
+    let sidebar: String = row.chars().take(usize::from(line.right())).collect();
+    assert!(sidebar.contains('✓'), "{sidebar}");
+}
+
+/// The ids of the fold hits drawn now.
+fn fold_hits(state: &ClientShellState) -> Vec<String> {
+    state
+        .hits
+        .space_tab_folds
+        .iter()
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
+fn has_worker_line(state: &ClientShellState, worker_id: &str) -> bool {
+    state
+        .hits
+        .space_tabs
+        .iter()
+        .any(|(_, id)| super::super::space_tabs::worker_line_worker(id) == Some(worker_id))
+}
+
+#[test]
+fn an_owners_ended_workers_collapse_into_one_line_that_a_click_unfolds() {
+    let mut state = state_with_worker();
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    let ended = |worker_id: &str| crate::protocol::ClientShellWorker {
+        state: "exited".into(),
+        gone: true,
+        owner_pane_id: Some("pane_1".into()),
+        ..worker(worker_id)
+    };
+    projected.workers = vec![ended("w1"), worker("w2"), ended("w3")];
+    state.set_snapshot(Box::new(projected));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    let fold = super::super::space_tabs::ended_fold_id("ws_1", Some("tab_1"));
+    assert!(fold_hits(&state).contains(&fold), "{:?}", fold_hits(&state));
+    assert!(!has_worker_line(&state, "w1"));
+    assert!(!has_worker_line(&state, "w3"));
+    assert!(has_worker_line(&state, "w2"));
+    let rect = state
+        .hits
+        .space_tab_folds
+        .iter()
+        .find(|(_, id)| *id == fold)
+        .map(|(rect, _)| *rect)
+        .unwrap();
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    let row = &frame_rows(&frame)[usize::from(rect.y)];
+    assert!(row.contains("2 ended workers"), "{row}");
+
+    // A click unfolds them under the line, which stays to fold them again.
+    left_click(&mut state, (rect.x + 4, rect.y));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(has_worker_line(&state, "w1"));
+    assert!(has_worker_line(&state, "w3"));
+    assert!(fold_hits(&state).contains(&fold));
+    left_click(&mut state, (rect.x + 4, rect.y));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(!has_worker_line(&state, "w1"));
+    // Unfolded or not, it is not saved with the unfolded tab lines.
+    assert!(!state.saved_job_folds().0.contains(&fold));
+
+    // A single ended worker keeps its own line.
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers.retain(|worker| worker.worker_id != "w3");
+    state.set_snapshot(Box::new(projected));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(has_worker_line(&state, "w1"));
+    assert!(!fold_hits(&state).contains(&fold));
+}
+
+#[test]
+fn the_fold_button_puts_quiet_worker_lines_away_but_not_busy_ones() {
+    let mut state = state_with_worker();
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers = vec![
+        crate::protocol::ClientShellWorker {
+            state: "finished".into(),
+            quiet: true,
+            ..worker("w1")
+        },
+        worker("w2"),
+    ];
+    state.set_snapshot(Box::new(projected));
+    let quiet = super::super::space_tabs::quiet_tab_ids(state.snapshot.as_deref().unwrap());
+    assert!(quiet.contains(&super::super::space_tabs::worker_line_id("w1")));
+    assert!(!quiet.contains(&super::super::space_tabs::worker_line_id("w2")));
+
+    state.toggle_quiet_folds();
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(!has_worker_line(&state, "w1"));
+    assert!(has_worker_line(&state, "w2"));
+    assert!(fold_hits(&state).contains(&super::super::space_tabs::quiet_fold_id("ws_1")));
+
+    // Once it has something to say again, its line is back.
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers[0].state = "working".into();
+    projected.workers[0].quiet = false;
+    state.set_snapshot(Box::new(projected));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(has_worker_line(&state, "w1"));
+}

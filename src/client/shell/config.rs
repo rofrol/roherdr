@@ -33,7 +33,13 @@ impl ClientShellState {
         let mut unfolded = self
             .unfolded_squares
             .get(&ClientEndpointId::Local)
-            .map(|tabs| tabs.iter().cloned().collect::<Vec<_>>())
+            .map(|tabs| {
+                tabs.iter()
+                    // An unfolded `N ended workers` line lasts the session.
+                    .filter(|key| !super::space_tabs::is_ended_fold(key))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         unfolded.sort();
         let mut kept = self

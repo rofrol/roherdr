@@ -150,9 +150,10 @@ pub(super) fn age_text_changes_at(since_ms: u64, now_ms: u64) -> u64 {
     since_ms.saturating_add((elapsed / step + 1).saturating_mul(step))
 }
 
-/// Whether the worker's process is gone: its times stop then.
-fn worker_gone(worker: &crate::protocol::ClientShellWorker) -> bool {
-    matches!(worker.state.as_str(), "exited" | "lost")
+/// Whether the worker's process is gone: its times stop then. A server
+/// that does not send `gone` says it only as `exited` or `lost`.
+pub(super) fn worker_gone(worker: &crate::protocol::ClientShellWorker) -> bool {
+    worker.gone || matches!(worker.state.as_str(), "exited" | "lost")
 }
 
 /// What a worker's line is named by: its TODO item's title, else its task

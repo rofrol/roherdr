@@ -176,6 +176,17 @@ impl ClientShellState {
                 self.unfold_quiet_tabs(workspace_id);
                 return Some(None);
             }
+            let unfolded = self
+                .unfolded_squares
+                .entry(self.active_endpoint_id.clone())
+                .or_default();
+            // An `N ended workers` line unfolds and folds its workers.
+            if super::space_tabs::is_ended_fold(&tab_id) {
+                if !unfolded.remove(&tab_id) {
+                    unfolded.insert(tab_id);
+                }
+                return Some(None);
+            }
             // Tab ids can be reused: forget tabs that are gone.
             let live = self
                 .snapshot
@@ -192,7 +203,7 @@ impl ClientShellState {
                 .unfolded_squares
                 .entry(self.active_endpoint_id.clone())
                 .or_default();
-            unfolded.retain(|key| live.contains(key));
+            unfolded.retain(|key| live.contains(key) || super::space_tabs::is_ended_fold(key));
             if !unfolded.remove(&tab_id) {
                 // Unfolding scrolls the list to show the squares.
                 self.reveal_unfolded_tab = Some(tab_id.clone());

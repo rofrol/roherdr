@@ -1427,7 +1427,8 @@ pub(crate) struct ClientShellState {
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     /// Tabs whose nested tabs are unfolded as squares under their tab line,
-    /// by endpoint; folded by default and not saved.
+    /// and unfolded `N ended workers` lines (`space_tabs::ended_fold_id`),
+    /// by endpoint; folded by default.
     pub(super) unfolded_squares: HashMap<ClientEndpointId, HashSet<String>>,
     /// The squares' order as last drawn; held while the pointer is over the
     /// spaces list, so a job tab that closes leaves a blank slot instead of

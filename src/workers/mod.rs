@@ -946,6 +946,36 @@ impl Status {
         !self.is_gone() || self.end_unacked()
     }
 
+    /// Whether its owner has nothing left to do for it: its turn or its
+    /// process ended, no question is open and every event is acknowledged.
+    /// A worker without an owner is settled once its turn ended with no
+    /// question, as nobody acknowledges it.
+    fn settled(&self) -> bool {
+        self.turn_ended()
+            && self.questions.is_empty()
+            && (self.owner_pane.is_none() || self.obligation().is_none())
+    }
+
+    /// Whether the sidebar shows its line: while [`Self::listed`], except
+    /// an owned worker that finished its turn and is [`Self::settled`]
+    /// (its acknowledgement stops it, see [`WorkerSupervisor::ack`]). Its
+    /// log stays reachable (`worker.log`, `worker.list`, `worker.runs`).
+    fn in_sidebar(&self) -> bool {
+        self.listed() && !(self.owner_pane.is_some() && self.settled())
+    }
+
+    /// Whether an acknowledgement just handled everything of a live owned
+    /// worker between turns, so it is to be stopped: an ack means handled,
+    /// and its process and folder slot are not kept for nothing. Not while
+    /// a stop or a takeover is under way.
+    fn handled_between_turns(&self) -> bool {
+        !self.is_gone()
+            && self.owner_pane.is_some()
+            && self.settled()
+            && self.stop_requested_ms.is_none()
+            && self.takeover_ms.is_none()
+    }
+
     /// Whether the worker's process is known to be gone: its exit is
     /// recorded, or it was lost and its process group no longer exists.
     fn process_gone(&self) -> bool {
@@ -2469,9 +2499,21 @@ pub(crate) struct WorkerSummary {
     pub(crate) turn_started_ms: Option<u64>,
     /// When its latest event was recorded.
     pub(crate) last_event_ms: Option<u64>,
-    /// Whether the sidebar lists it ([`Status::listed`]): while it runs,
-    /// and after its end until its owner acknowledges that end.
+    /// Whether the sidebar lists it ([`Status::in_sidebar`]): while it
+    /// works or asks, and after its turn or its end until its owner
+    /// acknowledges it.
     pub(crate) listed: bool,
+    /// Its process is gone (exited, or lost with a server).
+    pub(crate) gone: bool,
+    /// What ended it beyond its state, e.g. `ended by a server restart`
+    /// for one lost between turns, which keeps its last turn's state.
+    pub(crate) end_note: Option<String>,
+    /// Nothing waits on anyone: its turn or process ended, no question is
+    /// open and its owner, if any, acknowledged every event
+    /// ([`Status::settled`]).
+    pub(crate) quiet: bool,
+    /// The pane of the coordinator that owns it.
+    pub(crate) owner_pane: Option<String>,
 }
 
 /// How many TODO items of one repository have workers on them, for the
@@ -4349,7 +4391,7 @@ impl WorkerSupervisor {
         (
             status.state,
             status.is_gone(),
-            status.listed(),
+            status.in_sidebar(),
             status.questions.len(),
             status
                 .questions
@@ -4386,7 +4428,11 @@ impl WorkerSupervisor {
                     .turn_started_ms
                     .filter(|_| !entry.status.turn_ended()),
                 last_event_ms: entry.status.last_event_ms,
-                listed: entry.status.listed(),
+                listed: entry.status.in_sidebar(),
+                gone: entry.status.is_gone(),
+                end_note: entry.status.end_note.clone(),
+                quiet: entry.status.settled(),
+                owner_pane: entry.status.owner_pane.clone(),
             })
             .collect()
     }
@@ -4719,8 +4765,26 @@ impl WorkerSupervisor {
     /// (an `acked` event). Idempotent and monotonic: an ack at or below the
     /// acknowledged `seq` records nothing. A `seq` past the worker's latest
     /// event is refused, since it would hide events that have not happened.
+    ///
+    /// An ack that leaves a live owned worker between turns with nothing
+    /// to handle ([`Status::handled_between_turns`]) stops it as its owner:
+    /// an ack means handled, so its process and its folder slot go, and
+    /// its exit counts as acknowledged. An owner that wants another turn
+    /// prompts before it acknowledges the turn's end.
     pub(crate) fn ack(&self, worker_id: &str, seq: i64) -> Result<WorkerInfo, WorkerError> {
-        let committed = {
+        self.acknowledge(worker_id, seq, true)
+    }
+
+    /// [`Self::ack`] for herdr's own drivers (a todo run, an item
+    /// coordinator's chain), which stop the worker themselves at their own
+    /// step: with `stop_handled` false the ack never stops it.
+    pub(crate) fn acknowledge(
+        &self,
+        worker_id: &str,
+        seq: i64,
+        stop_handled: bool,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let (committed, stop_as) = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let status = &registry.workers[&number].status;
@@ -4734,7 +4798,7 @@ impl WorkerSupervisor {
                 registry.owner_seen_ms.insert(pane, now_ms());
             }
             let status = &registry.workers[&number].status;
-            if seq <= status.acked_seq {
+            let committed = if seq <= status.acked_seq {
                 None
             } else {
                 Some(self.commit_locked(
@@ -4743,12 +4807,24 @@ impl WorkerSupervisor {
                     Direction::Herdr,
                     store::Recorded::Event(&json!({"type": "acked", "seq": seq})),
                 ))
-            }
+            };
+            let status = &registry.workers[&number].status;
+            let stop_as = (stop_handled && committed.is_some())
+                .then_some(status)
+                .filter(|status| status.handled_between_turns())
+                .and_then(|status| status.owner_pane.clone());
+            (committed, stop_as)
         };
         if let Some(committed) = committed {
             self.shared.changed.notify_all();
             if committed.shown_changed {
                 notify_clients();
+            }
+        }
+        if let Some(owner) = stop_as {
+            match self.stop_once(worker_id, Some(&owner), None) {
+                Ok(_) | Err(WorkerError::NotRunning(_)) => {}
+                Err(error) => warn!(%error, worker_id, "cannot stop the acknowledged worker"),
             }
         }
         self.status(worker_id)

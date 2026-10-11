@@ -50,9 +50,12 @@ pub(super) struct SpaceTabLine {
     /// The open job while the squares are folded: it takes a row of its own
     /// under the line, so the sidebar says where the focus is.
     pub(super) hidden_focus: Option<TabSquare>,
-    /// Set on the `N idle` line that stands for the space's quiet tabs the
-    /// header's fold button put away (see [`quiet_tab_ids`]): their ids.
-    /// Its `tab_id` is [`quiet_fold_id`], never a real tab's.
+    /// Set on the `N idle` line that stands for the space's quiet tabs and
+    /// worker lines the header's fold button put away (see
+    /// [`quiet_tab_ids`]): their ids. Its `tab_id` is [`quiet_fold_id`],
+    /// never a real tab's. Also set on the `N ended workers` line that
+    /// stands for one owner's ended workers ([`ended_fold_id`]), unfolded
+    /// or not.
     pub(super) quiet: Vec<String>,
     /// Whoever opened the tab gave its agent a role (`tab.set_role`): its
     /// mark in the marker column before the state glyph.
@@ -77,6 +80,9 @@ pub(super) struct SpaceTabLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkerLine {
     pub(super) worker_id: String,
+    /// Its state as the snapshot names it, which picks its glyph
+    /// ([`worker_icon`]).
+    pub(super) state: String,
     /// What its glyph and label say on hover.
     pub(super) tooltip: String,
     /// Its state's entry in the status legend, which a click on its glyph
@@ -195,6 +201,24 @@ pub(super) fn quiet_fold_workspace(id: &str) -> Option<&str> {
 
 const QUIET_FOLD_PREFIX: &str = "quiet:";
 
+/// The `tab_id` of the `N ended workers` line of the ended workers in
+/// `workspace_id` that the coordinator in `owner_tab` started (none for
+/// those of no tab), which its fold hit carries too, and the key that
+/// keeps it unfolded among the unfolded lines.
+pub(super) fn ended_fold_id(workspace_id: &str, owner_tab: Option<&str>) -> String {
+    format!(
+        "{ENDED_FOLD_PREFIX}{workspace_id}:{}",
+        owner_tab.unwrap_or_default()
+    )
+}
+
+/// Whether a fold hit's id names an `N ended workers` line.
+pub(super) fn is_ended_fold(id: &str) -> bool {
+    id.starts_with(ENDED_FOLD_PREFIX)
+}
+
+const ENDED_FOLD_PREFIX: &str = "ended:";
+
 /// The `tab_id` of a headless worker's line, which its line hit carries:
 /// the worker's tab id, as the server names it.
 pub(super) fn worker_line_id(worker_id: &str) -> String {
@@ -238,14 +262,59 @@ pub(super) fn worker_state(
         "finished" => (AgentStatus::Done, "finished", None),
         "interrupted" => (AgentStatus::Done, "interrupted", Some("interrupted")),
         "failed" => (AgentStatus::Blocked, "failed", Some("failed")),
-        "exited" => (AgentStatus::Idle, "exited", Some("exited")),
+        // Dim: nothing is left to do with it.
+        "exited" => (AgentStatus::Unknown, "exited", Some("exited")),
         "lost" => (
-            AgentStatus::Idle,
-            "lost: the server restarted",
+            AgentStatus::Blocked,
+            "lost: the server restarted mid-turn",
             Some("lost"),
         ),
         _ => (AgentStatus::Idle, "unknown state", None),
     }
+}
+
+/// A worker's glyph in `state`, one per state as tab lines have one per
+/// agent state: the agent's working glyph while it works, `?` while it
+/// waits for you, `✓` finished, `~` interrupted, `!` failed, `○` exited,
+/// `×` lost and `·` for a state this client does not know. Its colour is
+/// [`worker_state`]'s agent state's.
+pub(super) fn worker_icon(state: &str, style: crate::config::StatusIndicatorStyle) -> &'static str {
+    match state {
+        "starting" | "working" => {
+            super::status_icon(crate::api::schema::AgentStatus::Working, style)
+        }
+        "waiting_approval" => "?",
+        "finished" => "✓",
+        "interrupted" => "~",
+        "failed" => "!",
+        "exited" => "○",
+        "lost" => "×",
+        _ => "·",
+    }
+}
+
+/// The tab of the coordinator that started the worker, from its owner's
+/// pane; none for a worker without an owner, or whose owner's pane is gone.
+fn worker_owner_tab<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    worker: &crate::protocol::ClientShellWorker,
+) -> Option<&'a str> {
+    let owner = worker.owner_pane_id.as_deref()?;
+    snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == owner)
+        .map(|pane| pane.tab_id.as_str())
+}
+
+/// Whether the fold button may put the worker's line away: nothing waits on
+/// anyone (the server's `quiet`: its turn or process ended, no question,
+/// every event acknowledged).
+fn worker_is_quiet(snapshot: &ClientShellSnapshot, worker_id: &str) -> bool {
+    snapshot
+        .workers
+        .iter()
+        .any(|worker| worker.worker_id == worker_id && worker.quiet)
 }
 
 /// The space a worker's line goes under: the one it was started from, else
@@ -296,9 +365,16 @@ pub(super) fn worker_lines_at(
         .filter(|worker| worker_space(snapshot, worker) == Some(workspace.workspace_id.as_str()))
         .map(|worker| {
             let (status, said, word) = worker_state(&worker.state);
-            let running = !matches!(worker.state.as_str(), "exited" | "lost");
+            let running = !super::workers::worker_gone(worker);
+            // One that kept its last turn's state when its process ended (a
+            // server restart between turns) says it ended.
+            let word = word.or((!running).then_some("ended"));
             let title = super::workers::worker_title(worker);
             let age = super::workers::worker_age_ms(worker, now_ms).map(super::workers::age_text);
+            let said = match &worker.end_note {
+                Some(note) => format!("{said}, {note}"),
+                None => said.to_owned(),
+            };
             let mut tooltip = std::iter::once(format!("{title} · {said}"))
                 .chain(super::workers::worker_details(worker, now_ms))
                 .collect::<Vec<_>>()
@@ -337,6 +413,7 @@ pub(super) fn worker_lines_at(
                     .map(|question| format!("{}: {}", question.tool_name, question.text)),
                 worker: Some(WorkerLine {
                     worker_id: worker.worker_id.clone(),
+                    state: worker.state.clone(),
                     tooltip,
                     legend: super::status_legend::worker_entry(&worker.state),
                 }),
@@ -378,14 +455,35 @@ pub(super) fn tab_is_quiet(snapshot: &ClientShellSnapshot, tab: &ClientShellTab)
     !speaks && !busy_job && !focused
 }
 
-/// The tabs the fold button puts away now, in every space.
+/// The tabs and worker lines the fold button puts away now, in every
+/// space: worker lines by their line id ([`worker_line_id`]).
 pub(super) fn quiet_tab_ids(snapshot: &ClientShellSnapshot) -> HashSet<String> {
     snapshot
         .tabs
         .iter()
         .filter(|tab| tab_is_quiet(snapshot, tab))
         .map(|tab| tab.tab_id.clone())
+        .chain(
+            snapshot
+                .workers
+                .iter()
+                .filter(|worker| worker.quiet)
+                .map(|worker| worker_line_id(&worker.worker_id)),
+        )
         .collect()
+}
+
+/// Whether a put-away id still stands for something quiet: a quiet tab, or
+/// the line of a quiet worker.
+fn still_quiet(snapshot: &ClientShellSnapshot, id: &str) -> bool {
+    match worker_line_worker(id) {
+        Some(worker_id) => worker_is_quiet(snapshot, worker_id),
+        None => snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == id)
+            .is_some_and(|tab| tab_is_quiet(snapshot, tab)),
+    }
 }
 
 /// Squares that fit on a row of a space block `width` columns wide, from the
@@ -547,17 +645,20 @@ pub(super) fn space_tab_lines_filtered(
             line.agent = None;
         }
     }
+    let mut workers = worker_lines(snapshot, workspace)
+        .into_iter()
+        .filter(|line| filter.is_none_or(|view| view.shows_tab(workspace, &line.tab_id)))
+        .collect::<Vec<_>>();
     if filter.is_none() && !quiet_folded.is_empty() {
         let folds = |line: &SpaceTabLine| {
-            quiet_folded.contains(&line.tab_id)
-                && snapshot
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.tab_id == line.tab_id)
-                    .is_some_and(|tab| tab_is_quiet(snapshot, tab))
+            quiet_folded.contains(&line.tab_id) && still_quiet(snapshot, &line.tab_id)
         };
-        let (folded, shown): (Vec<_>, Vec<_>) = lines.into_iter().partition(folds);
+        let (mut folded, shown): (Vec<_>, Vec<_>) = lines.into_iter().partition(folds);
         lines = shown;
+        let (folded_workers, shown_workers): (Vec<_>, Vec<_>) =
+            workers.into_iter().partition(folds);
+        workers = shown_workers;
+        folded.extend(folded_workers);
         if !folded.is_empty() {
             lines.push(SpaceTabLine {
                 tab_id: quiet_fold_id(&workspace.workspace_id),
@@ -579,12 +680,78 @@ pub(super) fn space_tab_lines_filtered(
             });
         }
     }
-    lines.extend(
-        worker_lines(snapshot, workspace)
-            .into_iter()
-            .filter(|line| filter.is_none_or(|view| view.shows_tab(workspace, &line.tab_id))),
-    );
+    if filter.is_none() {
+        workers = collapse_ended_workers(snapshot, workspace, workers, unfolded_squares);
+    }
+    lines.extend(workers);
     lines
+}
+
+/// Each owner's tab's ended workers, when there are two or more, give way to
+/// one `N ended workers` line where the first of them was; while that line
+/// is unfolded (its [`ended_fold_id`] in `unfolded`) they follow it.
+fn collapse_ended_workers(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    workers: Vec<SpaceTabLine>,
+    unfolded: &HashSet<String>,
+) -> Vec<SpaceTabLine> {
+    let fold_of = |line: &SpaceTabLine| {
+        let worker = snapshot.workers.iter().find(|worker| {
+            line.worker
+                .as_ref()
+                .is_some_and(|shown| shown.worker_id == worker.worker_id)
+        })?;
+        super::workers::worker_gone(worker)
+            .then(|| ended_fold_id(&workspace.workspace_id, worker_owner_tab(snapshot, worker)))
+    };
+    let folds = workers.iter().map(fold_of).collect::<Vec<_>>();
+    let mut groups = std::collections::HashMap::<&str, Vec<String>>::new();
+    for (line, fold) in workers.iter().zip(&folds) {
+        if let Some(fold) = fold {
+            groups
+                .entry(fold.as_str())
+                .or_default()
+                .push(line.tab_id.clone());
+        }
+    }
+    let mut placed = HashSet::new();
+    let mut collapsed = Vec::with_capacity(workers.len());
+    for (line, fold) in workers.iter().zip(&folds) {
+        let Some((fold, members)) = fold
+            .as_deref()
+            .and_then(|fold| groups.get(fold).map(|members| (fold, members)))
+            .filter(|(_, members)| members.len() > 1)
+        else {
+            collapsed.push(line.clone());
+            continue;
+        };
+        let open = unfolded.contains(fold);
+        if placed.insert(fold) {
+            collapsed.push(SpaceTabLine {
+                tab_id: fold.to_owned(),
+                state: None,
+                label: format!("{} ended workers", members.len()),
+                agent: None,
+                active: false,
+                jobs: Vec::new(),
+                plan: None,
+                squares: Vec::new(),
+                unfolded: open,
+                hidden_focus: None,
+                quiet: members.clone(),
+                role: None,
+                ask: None,
+                worker: None,
+                items: None,
+                background: None,
+            });
+        }
+        if open {
+            collapsed.push(line.clone());
+        }
+    }
+    collapsed
 }
 
 /// The header text while a tab line is dragged: which tab moves and where it
@@ -707,11 +874,15 @@ impl super::ClientShellState {
             return;
         };
         if let Some(folds) = self.quiet_folds.get_mut(&self.active_endpoint_id) {
-            folds.retain(|tab_id| {
-                !snapshot
+            folds.retain(|tab_id| match worker_line_worker(tab_id) {
+                Some(worker_id) => !snapshot.workers.iter().any(|worker| {
+                    worker.worker_id == worker_id
+                        && worker_space(snapshot, worker) == Some(workspace_id)
+                }),
+                None => !snapshot
                     .tabs
                     .iter()
-                    .any(|tab| tab.tab_id == *tab_id && tab.workspace_id == workspace_id)
+                    .any(|tab| tab.tab_id == *tab_id && tab.workspace_id == workspace_id),
             });
         }
     }
@@ -728,13 +899,7 @@ impl super::ClientShellState {
             return;
         }
         if let Some(folds) = self.quiet_folds.get_mut(&self.active_endpoint_id) {
-            folds.retain(|tab_id| {
-                snapshot
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.tab_id == *tab_id)
-                    .is_some_and(|tab| tab_is_quiet(snapshot, tab))
-            });
+            folds.retain(|tab_id| still_quiet(snapshot, tab_id));
         }
     }
 
@@ -1176,7 +1341,10 @@ pub(super) fn render_space_tab_lines(
         // mark, a square so it cannot pass for an agent state's circle.
         let (icon, icon_style) = match line.state {
             Some((status, mark)) => (
-                agent_icon(status, mark, config.status_indicators),
+                match &line.worker {
+                    Some(worker) => worker_icon(&worker.state, config.status_indicators),
+                    None => agent_icon(status, mark, config.status_indicators),
+                },
                 Style::default().fg(agent_color(status, mark, palette)),
             ),
             None => (PROGRAM_ICON, Style::default().fg(palette.overlay0)),
@@ -1611,7 +1779,8 @@ fn render_quiet_fold(
         );
     }
     let style = Style::default().fg(palette.overlay1);
-    super::render::put_text(buffer, x, y, 1, "►", style);
+    let triangle = if line.unfolded { "▼" } else { "►" };
+    super::render::put_text(buffer, x, y, 1, triangle, style);
     super::render::put_text(
         buffer,
         x.saturating_add(3),
@@ -1623,7 +1792,12 @@ fn render_quiet_fold(
     hits.tooltips.push(super::tooltip::TooltipTarget {
         rect: Rect::new(x, y, 2, 1),
         id: format!("tab-state:{}", line.tab_id),
-        text: "idle agents folded · click shows them".into(),
+        text: match (is_ended_fold(&line.tab_id), line.unfolded) {
+            (false, _) => "idle agents folded · click shows them",
+            (true, false) => "ended workers folded · click shows them",
+            (true, true) => "ended workers · click folds them",
+        }
+        .into(),
         bg: None,
         starts_at_target: false,
     });

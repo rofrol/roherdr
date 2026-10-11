@@ -1052,6 +1052,23 @@ pub struct ClientShellWorker {
     /// When its latest event was recorded.
     #[serde(default)]
     pub last_event_ms: Option<u64>,
+    /// Its process is gone. A worker lost between turns keeps its last
+    /// turn's state (`finished`) with this set and `end_note` saying why.
+    /// False from a server that does not send it, which says `exited` or
+    /// `lost` instead.
+    #[serde(default)]
+    pub gone: bool,
+    #[serde(default)]
+    pub end_note: Option<String>,
+    /// Nothing waits on anyone: its turn or process ended, no question is
+    /// open and its owner acknowledged every event. The fold button may
+    /// put such a line away. False from a server that does not send it.
+    #[serde(default)]
+    pub quiet: bool,
+    /// The pane of the coordinator that started it; its ended lines
+    /// collapse into one per owner's tab.
+    #[serde(default)]
+    pub owner_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3069,6 +3086,10 @@ mod tests {
                 started_ms: Some(1_000),
                 turn_started_ms: Some(2_000),
                 last_event_ms: Some(3_000),
+                gone: true,
+                end_note: Some("ended by a server restart".into()),
+                quiet: true,
+                owner_pane_id: Some("p1".into()),
             }],
             worker_items: vec![ClientShellWorkerItems {
                 tab_id: "t1".into(),

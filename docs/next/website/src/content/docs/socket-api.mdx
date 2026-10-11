@@ -1052,6 +1052,11 @@ wait too; `worker.events` never returns them. Without `after`, a request whose
 started it) waits after the `seq` that owner acknowledged with `worker.ack`,
 so an owner's loop (wait, handle, ack, wait) keeps no cursor; anyone else,
 and an owner that has acknowledged nothing, gets the snapshot.
+A `worker.ack` that leaves a live owned worker between turns with no open
+question and nothing unacknowledged stops it as its owner (SIGTERM, as
+`worker.stop`), so its process and folder slot go; its exit then counts as
+acknowledged. An owner that wants another turn sends `worker.prompt` before
+it acknowledges the turn's end.
 `worker.answer_as` (`coordinator_id`, the answering tenure, and the fields of
 `worker.answer`) answers as that tenure: applied only while it owns the
 worker. Once the worker belongs to another tenure (a handoff or a resume
