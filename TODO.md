@@ -1924,6 +1924,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   actions (takeover where a worker allows it). Rule: a line that looks
   clickable never silently does nothing.
 
+- [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
+  (the user via the chat-hosted coordinator, 2026-10-12: "the process is
+  failing here; ask the models"): a TUI worker refused an approved
+  production deploy because the approval came only in the coordinator's
+  task text; earlier workers accepted similar tasks (inconsistent). Round
+  20261012-013415-4126 (sol, MiMo, DeepSeek agreeing), decided:
+  1. Citing a TODO.md entry or a `herdr decision` id is not approval: both
+     are agent-writable (`decision decide --source menu` is written by the
+     coordinator itself, and so is "Next, in order"). The worker that
+     refused was right.
+  2. herdr captures the owner's AskUserQuestion answer itself (a hook
+     records the exact question, options, the selected option, session,
+     repository and time; append-only, not writable through agent
+     commands) as `source: owner-click`; records written by agents are
+     marked `agent-asserted` and never bear authority.
+  3. `herdr agent prompt` / `worker start` attach a grant id minted only
+     from an owner-click record, scoped to the repository, item, intended
+     worker, target and the operations named in the clicked option's own
+     words (never the coordinator's paraphrase); the worker checks it with
+     `herdr grant show` (server state) and refuses a wider action.
+  4. Still the owner's own word (in the worker's pane, or a herdr prompt
+     to the owner showing the exact action): no or unverifiable grant;
+     changed scope, target or consequences; irreversible steps outside
+     the grant (image prune, data deletion, secrets, permissions); anything
+     touching the trust machinery (grants, hooks, ledger, prompts).
+  5. The todo skill and global rule say this; until grants exist, a
+     coordinator tells the owner which worker pane waits for his yes.
+  Open: whether the hook can tell a real click from a forged answer
+  (state the threat model's floor).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
