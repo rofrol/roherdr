@@ -1145,3 +1145,15 @@ at render from the server's timestamps (the client schedules one redraw
 at the next visible change, no per-row timer); the tooltip and the worker
 tab's header carry the details, and the header has a take-over button
 (hidden while the worker asks).
+
+## Headless worker lines in the sidebar after their work is done
+
+Ended worker lines stayed for ever, all with one green circle (user,
+2026-10-08, 19 lines). Now (a4d17c2b, as round 20261008-120458-71a7
+chose): a line leaves once the worker is ended or finished, acked by its
+owner, with no open question or unacked event; acking a finished turn
+stops the worker and frees its slot (todo-run and item-coordinator drivers
+excluded, they stop workers themselves); a worker lost between turns shows
+"finished, ended by a server restart"; per-state glyphs; the fold button
+folds quiet worker lines; 2+ ended workers per owner tab collapse into an
+"N ended workers" line that unfolds on click.
