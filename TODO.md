@@ -11,6 +11,14 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Bump PROTOCOL_VERSION to 23 once (follows from 3f1a4f38, 2026-10-11): [t-vfznp3lo]
+  version 22 shipped in roherdr-v0.9.3.1, and since then several commits
+  changed the private client snapshot's bincode shape (67d6ab03, ce9d68c0,
+  6c16408b, f2c56a2e, 6156fe99, 3f1a4f38) without a bump; AGENTS.md asks
+  for one bump before the next release. Update the hardcoded protocol
+  expectations and fixtures in tests; do not touch the generation-1
+  endpoint contract.
+
 - [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
   2026-10-11, looking at the herdr space during an install: "why is
   nothing happening here? ask the models, fix the process"). The driver was
