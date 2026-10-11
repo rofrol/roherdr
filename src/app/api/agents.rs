@@ -1494,6 +1494,162 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_done_is_held_while_the_turn_leaves_background_work_running() {
+        let mut app = app_with_agent();
+        app.state.workspaces.push(Workspace::test_new("other"));
+        app.state.ensure_test_terminals();
+        app.state.active = Some(1);
+        app.state.toast_config.delay_seconds = 0;
+        app.state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let pane = app.public_pane_id(0, pane_id).unwrap();
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let set_state = |app: &mut App, state: AgentState| {
+            app.state
+                .handle_app_event(crate::events::AppEvent::StateChanged {
+                    pane_id,
+                    agent: Some(Agent::Claude),
+                    state,
+                    visible_blocker: false,
+                    visible_working: state == AgentState::Working,
+                    process_exited: false,
+                    observed_at: std::time::Instant::now(),
+                });
+        };
+        let finish = |app: &mut App, tasks: Option<u32>| {
+            let mut params = serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished",
+            });
+            if let Some(tasks) = tasks {
+                params["background_tasks"] = tasks.into();
+            }
+            let response =
+                app.handle_pane_report_turn("turn".into(), serde_json::from_value(params).unwrap());
+            assert!(
+                serde_json::from_str::<SuccessResponse>(&response).is_ok(),
+                "{response}"
+            );
+        };
+        let finished_toast = |app: &mut App| {
+            let deliveries = app
+                .state
+                .drain_due_agent_notifications(std::time::Instant::now());
+            let toast = app.state.toast.take();
+            assert!(deliveries.len() <= 1, "{deliveries:?}");
+            toast.is_some_and(|toast| toast.kind == crate::app::state::ToastKind::Finished)
+        };
+
+        // The Stop reports two tasks still running before the screen idles: no done yet.
+        set_state(&mut app, AgentState::Working);
+        report_turn(&mut app, &pane, "started", Some("run the build"));
+        finish(&mut app, Some(2));
+        set_state(&mut app, AgentState::Idle);
+        assert!(!finished_toast(&mut app));
+        assert_eq!(
+            app.state.terminals[&terminal_id].last_agent_completion_seq,
+            None
+        );
+        assert!(app.state.workspaces[0].tabs[0].panes[&pane_id].seen);
+
+        // A later report of none releases it, once.
+        finish(&mut app, Some(0));
+        assert!(finished_toast(&mut app));
+        assert!(app.state.terminals[&terminal_id]
+            .last_agent_completion_seq
+            .is_some());
+        assert!(!app.state.workspaces[0].tabs[0].panes[&pane_id].seen);
+        finish(&mut app, Some(0));
+        assert!(!finished_toast(&mut app));
+
+        // A turn start forgets the last count: a turn ending without one notifies as before.
+        set_state(&mut app, AgentState::Working);
+        report_turn(&mut app, &pane, "started", Some("<task-notification>"));
+        set_state(&mut app, AgentState::Idle);
+        assert!(finished_toast(&mut app));
+    }
+
+    #[test]
+    fn a_done_after_held_turns_is_delivered_once() {
+        let mut app = app_with_agent();
+        app.state.workspaces.push(Workspace::test_new("other"));
+        app.state.ensure_test_terminals();
+        app.state.active = Some(1);
+        app.state.toast_config.delay_seconds = 0;
+        app.state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let pane = app.public_pane_id(0, pane_id).unwrap();
+        let set_state = |app: &mut App, state: AgentState| {
+            app.state
+                .handle_app_event(crate::events::AppEvent::StateChanged {
+                    pane_id,
+                    agent: Some(Agent::Claude),
+                    state,
+                    visible_blocker: false,
+                    visible_working: state == AgentState::Working,
+                    process_exited: false,
+                    observed_at: std::time::Instant::now(),
+                });
+        };
+        let finish = |app: &mut App, tasks: Option<u32>| {
+            let mut params = serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished",
+            });
+            if let Some(tasks) = tasks {
+                params["background_tasks"] = tasks.into();
+            }
+            let response =
+                app.handle_pane_report_turn("turn".into(), serde_json::from_value(params).unwrap());
+            assert!(
+                serde_json::from_str::<SuccessResponse>(&response).is_ok(),
+                "{response}"
+            );
+        };
+        // Each done shown, at once (a plain turn with no toast delay) or from the due queue
+        // the server drains in the same loop pass (a released one), is one notification the
+        // server records in its history.
+        let mut delivered = 0;
+        let mut deliver = |app: &mut App| {
+            let deliveries = app
+                .state
+                .drain_due_agent_notifications(std::time::Instant::now());
+            assert!(deliveries.len() <= 1, "{deliveries:?}");
+            if let Some(toast) = app.state.toast.take() {
+                assert_eq!(toast.kind, crate::app::state::ToastKind::Finished);
+                delivered += 1;
+            }
+            delivered
+        };
+        let turn = |app: &mut App, tasks: Option<u32>| {
+            set_state(app, AgentState::Working);
+            report_turn(app, &pane, "started", Some("run the build"));
+            finish(app, tasks);
+            set_state(app, AgentState::Idle);
+        };
+
+        // Plain turns: one done each.
+        turn(&mut app, None);
+        assert_eq!(deliver(&mut app), 1);
+        turn(&mut app, Some(0));
+        assert_eq!(deliver(&mut app), 2);
+
+        // Turns that leave background work running: none.
+        turn(&mut app, Some(2));
+        assert_eq!(deliver(&mut app), 2);
+        turn(&mut app, Some(1));
+        assert_eq!(deliver(&mut app), 2);
+
+        // The final turn end reports none: one done, and a repeat of it adds nothing.
+        finish(&mut app, Some(0));
+        assert_eq!(deliver(&mut app), 3);
+        finish(&mut app, Some(0));
+        assert_eq!(deliver(&mut app), 3);
+    }
+
     #[tokio::test]
     async fn a_background_task_notification_turn_finishes_with_the_prompts_stop() {
         let mut app = app_with_agent();

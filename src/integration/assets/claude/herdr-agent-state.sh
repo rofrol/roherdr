@@ -15,7 +15,8 @@ cat >"$hook_input_file" 2>/dev/null || true
 
 # Reports that the main agent's turn started (`UserPromptSubmit`, with the submitted prompt) or
 # ended (`Stop` that the stop check let through, `StopFailure` with its error), so herdr can tell a caller of
-# `herdr agent prompt --wait` when the turn its prompt started ends. Not instructions: it runs
+# `herdr agent prompt --wait` when the turn its prompt started ends; a Stop also reports how many
+# of its background tasks still run. Not instructions: it runs
 # whatever HERDR_AWAITING_REPLY_* say.
 report_turn() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -53,6 +54,18 @@ elif hook_input.get("hook_event_name") == "StopFailure":
     details = hook_input.get("error_details")
     parts = [part for part in (error, details) if isinstance(part, str) and part.strip()]
     params["error"] = (": ".join(parts) or "unknown error")[:1000]
+else:
+    # The Stop's background tasks (shells, dev servers, waits) still running, so herdr holds
+    # the turn's done notification until a later turn ends with none. Absent when the payload
+    # has none (an older Claude Code): unknown, not zero.
+    tasks = hook_input.get("background_tasks")
+    if isinstance(tasks, list):
+        finished = {"completed", "failed", "killed", "stopped", "cancelled", "canceled", "error"}
+        params["background_tasks"] = sum(
+            1
+            for task in tasks
+            if not isinstance(task, dict) or str(task.get("status", "")).lower() not in finished
+        )
 request = {
     "id": f"herdr:claude:turn:{int(time.time() * 1000)}",
     "method": "pane.report_turn",

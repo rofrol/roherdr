@@ -1843,6 +1843,19 @@ impl AppState {
                 terminal.advance_awaiting_reply(change.state, super::api_helpers::unix_ms_now());
             }
         }
+        // Work done while the turn left background tasks running is not done yet: the
+        // completion waits for a turn end that reports none (`release_held_completion`).
+        let mut hold_completion = false;
+        if change.previous_state != change.state {
+            if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+                hold_completion = !suppress_completion
+                    && !agent_released
+                    && is_completion_transition(&change)
+                    && terminal.completion_waits_for_background_work();
+                terminal.set_held_completion(hold_completion);
+            }
+        }
+        let suppress_completion = suppress_completion || hold_completion;
         if change.previous_state != change.state {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
@@ -2098,6 +2111,61 @@ impl AppState {
                 self.toast = Some(toast);
             }
         }
+    }
+
+    /// The agent's turn ended with no background work (or an unknown amount) after its idle
+    /// transition held the completion: the work is done now. Marks the completion and queues
+    /// its done notification, which the next scheduler pass delivers (after the toast delay)
+    /// if the pane still idles. Returns whether it released one.
+    pub(crate) fn release_held_completion(&mut self, ws_idx: usize, pane_id: PaneId) -> bool {
+        let Some(terminal_id) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .map(|pane| pane.attached_terminal_id.clone())
+        else {
+            return false;
+        };
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        if !terminal.take_released_completion() {
+            return false;
+        }
+        terminal.last_agent_completion_seq = terminal.last_agent_state_change_seq;
+        terminal.revision = terminal.revision.saturating_add(1);
+        let agent_label = terminal.effective_agent_label().map(str::to_owned);
+        let known_agent = terminal.effective_known_agent();
+
+        let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
+        let suppress_active_tab_notifications =
+            active_tab_suppresses_notifications(is_active_tab, self.outer_terminal_focus);
+        if let Some(pane) = self.workspaces[ws_idx].pane_state_mut(pane_id) {
+            pane.seen = suppress_active_tab_notifications;
+        }
+        let Some(agent_label) = agent_label else {
+            return true;
+        };
+        let now = std::time::Instant::now();
+        let delay_seconds = self
+            .toast_config
+            .delay_seconds
+            .min(crate::config::MAX_TOAST_DELAY_SECONDS);
+        self.pending_agent_notifications.insert(
+            pane_id,
+            PendingAgentNotification {
+                pane_id,
+                workspace_id: self.workspaces[ws_idx].id.clone(),
+                agent_label,
+                known_agent,
+                kind: ToastKind::Finished,
+                state: AgentState::Idle,
+                deadline: now
+                    .checked_add(std::time::Duration::from_secs(delay_seconds))
+                    .unwrap_or(now),
+            },
+        );
+        true
     }
 
     pub fn next_pending_agent_notification_deadline(&self) -> Option<std::time::Instant> {

@@ -422,6 +422,11 @@ pub struct PaneReportTurnParams {
     /// notification) instead of starting a new prompt, so it ends no prompt's turn.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub continuation: bool,
+    /// With `finished`: how many background tasks (shells, dev servers, waits) the agent still
+    /// ran when the turn ended. Above zero, herdr holds the turn's done notification until a
+    /// later turn ends with none. Absent when the agent does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_tasks: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

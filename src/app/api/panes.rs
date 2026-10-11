@@ -1705,7 +1705,10 @@ impl App {
             return pane_not_found(id, &params.pane_id);
         };
         terminal.prompt_turns.mark_reporting(&agent_label);
-        let changed = match params.phase {
+        let finished = params.phase == crate::api::schema::AgentTurnPhase::Finished;
+        // The count belongs to the turn's end: a start leaves it unknown until that end.
+        terminal.report_turn_background_tasks(params.background_tasks.filter(|_| finished));
+        let mut changed = match params.phase {
             crate::api::schema::AgentTurnPhase::Started => terminal
                 .prompt_turns
                 .turn_started(params.prompt.as_deref(), params.continuation),
@@ -1713,8 +1716,13 @@ impl App {
                 .prompt_turns
                 .turn_finished(params.error.as_deref(), params.interrupted),
         };
+        if finished {
+            changed |= self.state.release_held_completion(ws_idx, pane_id);
+        }
         if changed {
-            terminal.revision = terminal.revision.saturating_add(1);
+            if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
+                terminal.revision = terminal.revision.saturating_add(1);
+            }
             self.emit_pane_updated(ws_idx, pane_id);
         }
         encode_success(id, ResponseResult::Ok {})

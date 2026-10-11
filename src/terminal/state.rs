@@ -232,6 +232,13 @@ pub struct TerminalState {
     reported_task: Option<String>,
     /// Prompts herdr typed, followed through the agent's turn reports.
     pub prompt_turns: super::prompt_turns::PromptTurns,
+    /// How many background tasks the agent still ran when its last turn ended, reported with
+    /// that turn's end (`pane.report_turn`); `None` while unknown: no end reported since the
+    /// turn started, or one without a count.
+    turn_background_tasks: Option<u32>,
+    /// The agent turned idle with work done while `turn_background_tasks` was above zero, so
+    /// that completion and its done notification wait for a turn end that reports none.
+    held_completion: bool,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
@@ -287,6 +294,8 @@ impl TerminalState {
             limit_report: None,
             reported_task: None,
             prompt_turns: Default::default(),
+            turn_background_tasks: None,
+            held_completion: false,
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
@@ -2871,12 +2880,44 @@ impl TerminalState {
         self.state = AgentState::Unknown;
         self.last_agent_state_change_seq = None;
         self.last_agent_completion_seq = None;
+        self.turn_background_tasks = None;
+        self.held_completion = false;
         self.launch_argv = None;
         self.respawn_shell_on_exit = false;
         self.recent_agent_process_exit = None;
         self.agent_process_acquisition_pending = false;
         self.pending_agent_resume_plan = None;
         self.clear_agent_name();
+    }
+
+    /// A turn of the agent started (`None`) or ended with this many background tasks still
+    /// running (`None` when its report had no count).
+    pub fn report_turn_background_tasks(&mut self, count: Option<u32>) {
+        self.turn_background_tasks = count;
+    }
+
+    /// Whether a completion now waits for the agent's background work: its last turn ended
+    /// with background tasks still running.
+    pub fn completion_waits_for_background_work(&self) -> bool {
+        self.turn_background_tasks.is_some_and(|count| count > 0)
+    }
+
+    /// Records whether the idle transition that just happened holds its completion back.
+    pub fn set_held_completion(&mut self, held: bool) {
+        self.held_completion = held;
+    }
+
+    /// Takes the held completion once the agent idles and its last turn ended with no
+    /// background work, or an unknown amount of it.
+    pub fn take_released_completion(&mut self) -> bool {
+        if !self.held_completion
+            || self.state != AgentState::Idle
+            || self.completion_waits_for_background_work()
+        {
+            return false;
+        }
+        self.held_completion = false;
+        true
     }
 
     pub fn is_agent_terminal(&self) -> bool {

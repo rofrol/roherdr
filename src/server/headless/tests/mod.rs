@@ -8014,6 +8014,125 @@ fn a_notification_the_agent_undoes_within_the_delay_reaches_nobody_and_the_histo
     assert_eq!(server.notification_history[0].kind, "needs_attention");
 }
 
+/// Reports the end of the pane's agent turn with `background_tasks` still running, as
+/// Claude's Stop hook does.
+fn report_turn_finished(server: &mut HeadlessServer, public_pane_id: &str, tasks: Option<u32>) {
+    completion_guard_api_report(
+        server,
+        api::schema::Method::PaneReportTurn(api::schema::PaneReportTurnParams {
+            pane_id: public_pane_id.to_owned(),
+            source: "custom:pi".into(),
+            agent: "pi".into(),
+            phase: api::schema::AgentTurnPhase::Finished,
+            prompt: None,
+            error: None,
+            interrupted: false,
+            continuation: false,
+            background_tasks: tasks,
+        }),
+    );
+}
+
+/// How many notifications the history recorded for the pane: a pane's repeats of one kind
+/// merge into one entry that counts them.
+fn recorded_notifications(server: &HeadlessServer, public_pane_id: &str) -> u32 {
+    server
+        .notification_history
+        .iter()
+        .filter(|record| record.pane_id.as_deref() == Some(public_pane_id))
+        .map(|record| record.repeats.unwrap_or(1))
+        .sum()
+}
+
+#[test]
+fn a_done_waits_for_the_turn_that_reports_no_background_work() {
+    use protocol::SemanticNotificationKind::Finished;
+
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let (mut server, pane_id) = completion_guard_server(writer);
+    server.handle_internal_event_with_forwarding(AppEvent::AgentProcessDetected {
+        pane_id,
+        agent: crate::detect::Agent::Pi,
+        observed_at: Instant::now(),
+    });
+    let public = server.app.public_pane_id(0, pane_id).unwrap();
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(pane_id)
+        .unwrap()
+        .clone();
+    let mut seq = 0;
+    let mut turn = |server: &mut HeadlessServer, tasks: Option<u32>| {
+        seq += 1;
+        report_pane_state(server, &public, api::schema::PaneAgentState::Working, seq);
+        report_turn_finished(server, &public, tasks);
+        seq += 1;
+        report_pane_state(server, &public, api::schema::PaneAgentState::Idle, seq);
+        deliver_due_notifications(server, Instant::now());
+    };
+
+    // No count, or none running: the done goes out as before.
+    for tasks in [None, Some(0)] {
+        turn(&mut server, tasks);
+        assert_eq!(
+            completion_guard_notifications(&mut server, &control_rx),
+            [Finished],
+            "{tasks:?}"
+        );
+    }
+    let history = recorded_notifications(&server, &public);
+    assert_eq!(history, 2);
+
+    // A turn that leaves a background task running is not done: no notification, no history,
+    // no completion and the tab not marked unseen.
+    turn(&mut server, Some(2));
+    assert!(completion_guard_notifications(&mut server, &control_rx).is_empty());
+    assert_eq!(recorded_notifications(&server, &public), history);
+    assert_eq!(
+        server.app.state.terminals[&terminal_id].last_agent_completion_seq,
+        None
+    );
+    assert!(server.app.state.workspaces[0].tabs[0].panes[&pane_id].seen);
+
+    // The background task's own turn ends with one still running: still held.
+    turn(&mut server, Some(1));
+    assert!(completion_guard_notifications(&mut server, &control_rx).is_empty());
+
+    // The final turn reports none after the pane already idles: that done goes out, once.
+    turn(&mut server, Some(1));
+    report_turn_finished(&mut server, &public, Some(0));
+    deliver_due_notifications(&mut server, Instant::now());
+    assert_eq!(
+        completion_guard_notifications(&mut server, &control_rx),
+        [Finished]
+    );
+    assert_eq!(recorded_notifications(&server, &public), history + 1);
+    let terminal = &server.app.state.terminals[&terminal_id];
+    assert_eq!(
+        terminal.last_agent_completion_seq,
+        terminal.last_agent_state_change_seq
+    );
+    assert!(terminal.last_agent_completion_seq.is_some());
+    assert!(!server.app.state.workspaces[0].tabs[0].panes[&pane_id].seen);
+    report_turn_finished(&mut server, &public, Some(0));
+    deliver_due_notifications(&mut server, Instant::now());
+    assert!(completion_guard_notifications(&mut server, &control_rx).is_empty());
+    assert_eq!(recorded_notifications(&server, &public), history + 1);
+
+    // A held done the agent works past is dropped: its new turn decides.
+    turn(&mut server, Some(1));
+    seq += 1;
+    report_pane_state(
+        &mut server,
+        &public,
+        api::schema::PaneAgentState::Working,
+        seq,
+    );
+    report_turn_finished(&mut server, &public, Some(0));
+    deliver_due_notifications(&mut server, Instant::now());
+    assert!(completion_guard_notifications(&mut server, &control_rx).is_empty());
+    assert_eq!(recorded_notifications(&server, &public), history + 1);
+}
+
 #[test]
 fn completion_guard_api_startup_blocker_respects_suppression() {
     use protocol::SemanticNotificationKind::{Finished, NeedsAttention};

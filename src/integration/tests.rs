@@ -5260,6 +5260,74 @@ fn claude_reports_a_background_task_notification_as_a_continuation() {
     assert_eq!(params["continuation"], true);
 }
 
+/// The `pane.report_turn` params the Claude hook's `stop-check` sends for a Stop whose payload
+/// carries `background_tasks` (left out when `None`).
+#[cfg(unix)]
+fn reported_turn_finish(background_tasks: Option<Value>) -> Value {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let base = unique_base();
+    fs::create_dir_all(&base).unwrap();
+    let server = StopCheckServer::start("worker");
+    let mut child = Command::new("sh")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/integration/assets/claude/herdr-agent-state.sh"),
+        )
+        .arg("stop-check")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "p1")
+        .env("HERDR_SOCKET_PATH", &server.path)
+        .env("XDG_STATE_HOME", base.join("state"))
+        .env("HERDR_AWAITING_REPLY_STOP", "0")
+        .env_remove("CURSOR_VERSION")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = json!({"hook_event_name": "Stop", "session_id": "s",
+        "last_assistant_message": "Done, the build runs."});
+    if let Some(tasks) = background_tasks {
+        input["background_tasks"] = tasks;
+    }
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.requests();
+    let _ = fs::remove_dir_all(base);
+    let [request] = requests.as_slice() else {
+        panic!("expected one request: {requests:?}");
+    };
+    assert_eq!(request["method"], "pane.report_turn");
+    assert_eq!(request["params"]["phase"], "finished");
+    request["params"].clone()
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_reports_the_stops_running_background_tasks_with_the_turn_end() {
+    let params = reported_turn_finish(Some(json!([
+        {"id": "b1", "type": "shell", "status": "running"},
+        {"id": "b2", "type": "shell", "status": "completed"},
+        {"id": "b3", "type": "agent", "status": "pending"},
+    ])));
+    assert_eq!(params["background_tasks"], 2, "{params}");
+
+    let params = reported_turn_finish(Some(json!([])));
+    assert_eq!(params["background_tasks"], 0, "{params}");
+
+    // An older Claude Code sends none: unknown, not zero.
+    let params = reported_turn_finish(None);
+    assert!(params.get("background_tasks").is_none(), "{params}");
+}
+
 /// Runs the Claude hook's `pre-tool` on a `PreToolUse` of `tool` with `input`, in a tab whose role
 /// is `role` (`None`: herdr cannot be asked). Returns the hook's stdout and the requests herdr got.
 #[cfg(unix)]

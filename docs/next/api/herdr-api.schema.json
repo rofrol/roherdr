@@ -4110,6 +4110,15 @@
             "agent": {
               "type": "string"
             },
+            "background_tasks": {
+              "description": "With `finished`: how many background tasks (shells, dev servers, waits) the agent still\nran when the turn ended. Above zero, herdr holds the turn's done notification until a\nlater turn ends with none. Absent when the agent does not say.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "continuation": {
               "description": "With `started`: the turn continues the running prompt's work (a background task's\nnotification) instead of starting a new prompt, so it ends no prompt's turn.",
               "type": "boolean"
