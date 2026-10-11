@@ -11,6 +11,14 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] `todo resume --note` takes `--next`/`--stop-reason` like `--close` [t-dgtlrinl]
+  (points 4-5 of the closed t-pku6dsb6, 2026-10-10/11: approving a run
+  with a note cannot chain the next item, so the coordinator starts it by
+  hand, the stall the bridge removed for `--close`; it happened four times
+  on 2026-10-11). Point 4 stays: queue mode (`herdr todo queue on`) once
+  the question gate and the enforced stop check ran clean for a week
+  (from 2026-10-11).
+
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
