@@ -1247,3 +1247,14 @@ repository (`../herdr-worktrees/<repo>/<name>`; herdr's existing
 refusal names the holder's repository. rormpc's "blocked worker start" was
 the hook's 0.5 s timeout denying in shadow mode (would-deny 1067 in the
 same second), handled by t-5sazb4ty.
+
+## One consult command, so no session runs a stale model set (the user,
+
+Sessions started before a consult skill change kept running the old model
+set (2026-10-11). Now (531760bb) `consult.py round --brief <file>` reads the
+default set from plugins/consult/consult-models.json per call, mints one
+round id, runs the models in parallel, excludes the caller's family (fails
+closed when unknown), lets an explicit --models win, prints each answer,
+call id and status and names skipped and failed models; the consult
+SKILL.md names no models. The brief is passed as an argument (about 1 MB
+limit).

@@ -56,23 +56,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   proves output, not progress; one log watcher per job shared by every
   waiter, coalesced into the existing redraw; Supervision aggregates.
 
-- [ ] One consult command, so no session runs a stale model set (the user, [t-aa3mhh4e]
-  2026-10-11: "why don't the coordinators ask DeepSeek too? fix it; ask
-  the models"). Checked: after the skill gained DeepSeek (e166cea7, ~13:00),
-  sessions started earlier (guix, violai, roguix-vps) kept running sol +
-  MiMo rounds until 15:45 from the skill text they had loaded; a later
-  session (odherdr) used all three. Round 20261011-155922-ac21 (sol, MiMo,
-  DeepSeek), decided: `consult.py round --brief <file> [--models a,b]
-  [--caller-model <id>]` reads the default set from one config file at
-  invocation, mints one round id, runs the models in parallel, excludes the
-  caller's model (fails closed when the caller is unknown and the set
-  contains its family), lets the user's explicit `--models` win, prints each
-  model's answer, call id and status and names every skipped or failed
-  model; the consult SKILL.md names no models any more and says to call only
-  that command. Verify with a running and a fresh session. Running
-  coordinators were told on 2026-10-11 to reload the skill (a one-off
-  nudge, not a mechanism).
-
 - [ ] The coordinator allowlist denies in shadow mode when the server [t-5sazb4ty]
   answers slowly (found 2026-10-11: a plain `VAR=...; cmd` was denied in
   the herdr coordinator's tab although the mode is shadow). The Claude
