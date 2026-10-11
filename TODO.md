@@ -1081,16 +1081,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   "popup". Chosen by the coordinator from the agreement: sol's and
   DeepSeek's rule.
 
-- [ ] DeepSeek joins the default consult round as a third model (user, [t-evfsfkkc]
-  2026-10-09, relayed by the try-roguix coordinator: "add deepseek as an
-  additional one to those two models" ... "in the skill"). In
-  `plugins/consult/skills/consult/SKILL.md`, the default set becomes sol +
-  MiMo + DeepSeek (`python3 "$D/../deepseek/ask_deepseek.py"`), replacing
-  "DeepSeek left the default set on 2026-10-03"; keep the history line and
-  the self-consultation pairs consistent (a MiMo or GPT coordinator still
-  never asks itself). Check the installed copy under `~/.claude/skills`
-  follows the plugin.
-
 - [ ] Draft an upstream issue on Claude Code's shared sandbox `$TMPDIR` [t-uilmqtpb]
   (decided by the user 2026-10-09: "prepare a draft"): a worker writes the
   issue text to `docs/upstream/claude-code-sandbox-tmpdir.md` (current vs

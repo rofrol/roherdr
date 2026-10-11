@@ -1219,3 +1219,8 @@ self-consultation pairs updated (DeepSeek: sol + MiMo; MiMo: sol +
 DeepSeek; GPT: MiMo + DeepSeek; Claude: all three), and `ask_gpt.sh` runs
 sol at reasoning effort medium unless `-e` overrides (the user,
 2026-10-11); `~/.codex/config.toml` stays at low for interactive Codex.
+
+## DeepSeek joins the default consult round (relayed duplicate)
+
+Duplicate of t-sjngd5gy (the try-roguix relay, 2026-10-09), closed with it
+2026-10-11 (e166cea7): DeepSeek is in the default consult set.
