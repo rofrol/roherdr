@@ -1237,3 +1237,13 @@ event; a turn closed by a Stop with no background work shows screen
 (subagent events are skipped); the screen rule that fired is unknown (the
 screen was gone). The typed bytes reached the pane's PTY but never reached
 Claude (no transcript entry); where they went cannot be checked any more.
+
+## A folder slot per repository (the rormpc coordinator, 2026-10-11, at
+
+Every repository under ~/personal_projects shared one folder slot, so rormpc
+waited on herdr's run (2026-10-11). Now (ee7f5840) a slot resolves per
+repository (`../herdr-worktrees/<repo>/<name>`; herdr's existing
+`../herdr-worktrees/worker` is kept while it is herdr's worktree), and a busy
+refusal names the holder's repository. rormpc's "blocked worker start" was
+the hook's 0.5 s timeout denying in shadow mode (would-deny 1067 in the
+same second), handled by t-5sazb4ty.
