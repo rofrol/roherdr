@@ -29,6 +29,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   "--next names the item this run closes", but a note keeps the item
   open, so a multi-step item (the mod.rs split) cannot chain its own next
   step; allow the same item after `--note` (never after `--close`).
+  Gap fixed 2026-10-11 (1617a59e): `--note --next` may name the run's
+  own item; `--close` still refuses it. Left: queue mode after a clean week.
 
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
