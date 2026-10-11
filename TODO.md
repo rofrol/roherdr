@@ -298,33 +298,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   of the user's skill, done by the coordinator's worker next);
   `--until background-drained` (optional, from the fourth report).
 
-- [ ] A "finished" dot on an agent whose own background work still runs [t-i5ez4yft]
-  (user, 2026-10-10, about the guix-x86_64-iso-omguix pane worker: "the
-  worker had a blue ring as if it only waited for me to read its output").
-  The blue dot means "finished, not looked at yet" (status legend), but the
-  worker's turn ended while its own background shell (a herdr-job wait on
-  its build) ran and would wake it again. Decided by the coordinator from
-  round 20261010-152938-328c (do not redefine `done` from the stale `bg:N`
-  count): keep the status `done`, but draw it as "finished, background work
-  running" (a distinct shape or mark next to the dot, and the `bg` token
-  naming the job, from the Stop payload's background tasks and the wait
-  edges of e3228f41) while the last Stop of that session lists running
-  tasks or a wait edge from that pane points at a running job; it turns
-  into the plain blue dot when they end. The status legend explains it.
-  Not a new agent status variant (frozen codecs).
-  Violai coordinator, 2026-10-10: (1) its pane showed the green done dot
-  while its own background `herdr-job wait-agent w8B:p1` ran on a working
-  worker; the user read "nothing is happening"; the coordinator pane should
-  show it waits on that worker. (2) `herdr-job wait-agent w8B:p1` (no
-  `--request`, matching idle/done/blocked) returned "reached" with
-  `agent_status` idle while the worker kept working for minutes, twice
-  (evidence:
-  /private/tmp/claude-501/-Users-romanfrolow-personal-projects-violai/0e64470d-6ecd-46e1-9344-58e6f09129fd/tasks/b173r5ghf.output):
-  a state wait without the prompt's request id matches a transient idle;
-  the verdict wait in "Waiting for a pane worker's final report" (request
-  id, WORKER-DONE) is the fix, and `wait-agent` without `--request` should
-  refuse or warn for workers.
-
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
   states, sort buttons, the grip, footer provider codes). A status legend

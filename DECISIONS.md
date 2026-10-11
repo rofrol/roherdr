@@ -1072,3 +1072,14 @@ inbox; a failed store write gives `resync_required` once (a cursor suffix
 counts losses). Accepted limitation: a loss not read before a handoff or
 restart is not reported (the counter lives in memory; the new server
 rebuilds from the store).
+
+## A "finished" dot on an agent whose own background work still runs
+
+A blue "finished" dot looked like "waiting for me" while the worker's own
+background job ran (user, 2026-10-10). Now (1bffc916, client only, no
+wire change) a finished agent with a live `bg` token draws `◔` in its
+status colour, the tooltip names the token, a coordinator's tooltip lists
+the running workers of its space; the status legend explains it.
+Follow-up, decided by the coordinator 2026-10-11: `herdr-bg-badge` records
+`wait-agent` waits as agent edges with the target pane, so the
+coordinator's mark names the exact worker even in another space.
