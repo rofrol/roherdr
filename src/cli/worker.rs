@@ -121,6 +121,10 @@ const USAGE: &str =
   command is refused (worker_command_conflict).";
 
 pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
+    if let Some(help) = subcommand_help(args) {
+        println!("{help}");
+        return Ok(0);
+    }
     match args.first().map(String::as_str) {
         Some("log") => return run_log(&args[1..]),
         Some("wait-drained") => return run_wait_drained(&args[1..]),
@@ -185,6 +189,41 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
             _ => 3,
         },
     )
+}
+
+/// The usage of `herdr worker <subcommand> --help` (or `-h`): that subcommand's part of
+/// [`USAGE`], or all of it for a subcommand it does not describe.
+fn subcommand_help(args: &[String]) -> Option<String> {
+    let (subcommand, rest) = args.split_first()?;
+    if !rest.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return None;
+    }
+    let heading = format!("  herdr worker {subcommand}");
+    let mut section = Vec::new();
+    for line in USAGE.lines().skip(1) {
+        let starts_entry = line.starts_with("  herdr worker ");
+        if starts_entry && !section.is_empty() {
+            break;
+        }
+        if !section.is_empty()
+            || starts_entry
+                && line
+                    .strip_prefix(&heading)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))
+        {
+            section.push(line);
+        }
+    }
+    // The closing paragraph on --command-id is not part of the last entry.
+    let section: Vec<&str> = section
+        .into_iter()
+        .take_while(|line| !line.starts_with("  start, prompt"))
+        .collect();
+    Some(if section.is_empty() {
+        USAGE.to_string()
+    } else {
+        format!("usage:\n{}", section.join("\n"))
+    })
 }
 
 /// `Ok(None)` asks for help.
@@ -916,6 +955,35 @@ mod tests {
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn every_subcommand_answers_help() {
+        let first = USAGE.lines().next().unwrap_or_default();
+        let list = first
+            .split_once('<')
+            .and_then(|(_, rest)| rest.split_once('>'))
+            .map(|(list, _)| list)
+            .unwrap_or_default();
+        assert!(list.contains("verify"));
+        for subcommand in list.split('|') {
+            for flag in ["--help", "-h"] {
+                let help = subcommand_help(&args(&[subcommand, flag]))
+                    .unwrap_or_else(|| panic!("{subcommand} {flag} shows no help"));
+                let heading = format!("  herdr worker {subcommand}");
+                assert!(
+                    help.lines().nth(1).is_some_and(|line| line
+                        .strip_prefix(&heading)
+                        .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))),
+                    "{subcommand}: {help}"
+                );
+                assert!(!help.contains("  start, prompt"), "{subcommand}: {help}");
+            }
+        }
+        let verify = subcommand_help(&args(&["verify", "w1", "--help"])).unwrap_or_default();
+        assert!(verify.contains("--generated PATH=COMMAND"));
+        assert!(!verify.contains("herdr worker prompt"));
+        assert_eq!(subcommand_help(&args(&["status", "w1"])), None);
     }
 
     #[test]

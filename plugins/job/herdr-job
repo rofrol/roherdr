@@ -6,7 +6,7 @@
   herdr-job watch --pid PID [--name NAME] [--why TEXT]
                                  a job that waits for a process you did not start; print job id
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
-  herdr-job wait-agent PANE [--until STATE | --request ID [--until verdict]]
+  herdr-job wait-agent PANE [--until STATE | [--request ID] [--until verdict]]
                                  wait for an agent, its prompt's turn or a pane worker's verdict,
                                  reconnecting inside one job
   herdr-job wait-text FILE PATTERN [--from-start] [-F] [-i] [--pid PID]
@@ -2318,8 +2318,9 @@ def resolve_assignment(say, args):
         say(f"herdr no longer follows request {args.request} (did it restart?); going on from the transcript")
         return record
     if "prompt_request_not_found" in text:
-        say(f"tracking lost: herdr does not know request {args.request} and no earlier wait recorded it")
-        sys.exit(EXIT_TRACKING_LOST)
+        say(f"herdr does not know request {args.request} and no earlier wait recorded it; "
+            "waiting for the pane's next turn end with a WORKER line instead")
+        return None
     say(f"reading request {args.request} failed: {short(text, 200)}")
     sys.exit(2)
 
@@ -2332,7 +2333,9 @@ def wait_for_verdict(say, args):
     an event, no timer), so a change between the read and the wait is never
     missed and a verdict already written ends the wait at once. When herdr
     restarts or hands off, the next round reads everything again."""
-    record = resolve_assignment(say, args)
+    record = resolve_assignment(say, args) if args.request else None
+    if record is None:
+        wait_for_pane_verdict(say, args.pane)
     pane = record["pane"]
     say(f"waiting for the verdict of prompt request {args.request}")
     while True:
@@ -2368,6 +2371,52 @@ def wait_for_verdict(say, args):
             sys.exit(2)
 
 
+def wait_for_pane_verdict(say, pane):
+    """Waits for the pane's next turn end whose final message carries a WORKER
+    line, for a worker whose prompt herdr does not follow (no --request, or a
+    request herdr does not know). A turn end is a new `completion_seq` (herdr
+    sets it when the agent finishes work, after its background tasks), so a
+    turn that ended before the wait started never counts. That turn's WORKER
+    line ends the wait, as does a question or a dialog; a turn end without
+    either waits for the next one. Each round reads the agent, then waits for
+    its next state change after the `state_change_seq` it read (`agent
+    wait-change`, an event, no timer)."""
+    say("waiting for the pane's next turn end with a WORKER line")
+    baseline = None
+    first = True
+    while True:
+        kind, text = call_until_answered(say, "agent", "get", pane)
+        if kind == "gone":
+            say(f"the agent exited without a verdict: {short(text, 200)}")
+            sys.exit(EXIT_VERDICT_AGENT_EXITED)
+        if kind != "ok":
+            say(f"reading the agent failed: {short(text, 200)}")
+            sys.exit(2)
+        agent = last_result(text).get("agent") or {}
+        completion = agent.get("completion_seq")
+        if first:
+            baseline, first = completion, False
+        elif completion is not None and completion != baseline:
+            baseline = completion
+            path = transcript_path(agent.get("agent_session"), agent.get("agent"))
+            message = last_assistant_text(path) if path is not None and path.is_file() else None
+            if match := worker_line(message):
+                verdict_exit(say, match, agent)
+            lines = [line.rstrip() for line in (message or "").splitlines() if line.strip()]
+            if lines and lines[-1].endswith("?") and not agent.get("awaiting_reply"):
+                say(f"the worker asks: {short(lines[-1], 300)}")
+                sys.exit(EXIT_VERDICT_QUESTION)
+            say("a turn ended without a WORKER line; waiting for the next one")
+        if agent.get("agent_status") == "blocked" or agent.get("awaiting_reply"):
+            say(f"the worker asks: {short(agent.get('question') or 'a dialog (read the pane)', 300)}")
+            sys.exit(EXIT_VERDICT_QUESTION)
+        seq = str(agent.get("state_change_seq", 0))
+        kind, text = call_until_answered(say, "agent", "wait-change", pane, "--after", seq)
+        if kind not in ("ok", "gone"):
+            say(f"waiting for the agent failed: {short(text, 200)}")
+            sys.exit(2)
+
+
 def worker_tab(pane):
     """Whether the pane's tab has the worker role; False when herdr cannot tell."""
     try:
@@ -2387,12 +2436,13 @@ def cmd_wait_agent(args):
     Transport errors are retried here with backoff; an agent that is gone
     ends the wait."""
     verdict = "verdict" in args.until
-    if verdict and (not args.request or len(args.until) > 1):
-        raise SystemExit("herdr-job wait-agent: --until verdict needs --request ID and no other --until")
-    if not args.request and worker_tab(args.pane):
+    if verdict and len(args.until) > 1:
+        raise SystemExit("herdr-job wait-agent: --until verdict takes no other --until")
+    if not args.request and not verdict and worker_tab(args.pane):
         raise SystemExit(
             f"herdr-job wait-agent: {args.pane} is a worker's pane; a state or a turn end is not its verdict. "
-            f"Wait with `herdr-job wait-agent {args.pane} --request <the prompt's request_id> --until verdict`.")
+            f"Wait with `herdr-job wait-agent {args.pane} --request <the prompt's request_id> --until verdict`, "
+            f"or `--until verdict` alone for its next turn end with a WORKER line.")
     with wait_edge("agent", target_pane=args.pane, request=args.request):
         if verdict:
             wait_for_verdict(lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True), args)
@@ -2579,15 +2629,17 @@ def main():
                     "4: WORKER-BLOCKED; 5: gave up after 15 minutes without herdr; 6: the worker asks "
                     "something (a question or a dialog); 7: needs attention (the turn failed, was "
                     "interrupted, finished without a WORKER line, or WORKER-DONE names no commit); "
-                    "8: herdr lost track of the request (with --until verdict: only when no earlier "
-                    "wait recorded it); 2: another error. With --until verdict nothing but a WORKER "
-                    "line, a question or the agent's exit ends the wait.")
+                    "8: herdr lost track of the request (not with --until verdict, which then waits "
+                    "for the pane's next turn end with a WORKER line); 2: another error. With --until "
+                    "verdict nothing but a WORKER line, a question or the agent's exit ends the wait.")
     wait_agent.add_argument("pane")
     wait_agent.add_argument("--until", action="append", default=[],
                             choices=["idle", "working", "blocked", "done", "unknown", "verdict"],
                             help="state to wait for; repeat for more (default: idle, done or blocked); "
                                  "`verdict` with --request: until that assignment's WORKER-DONE/WORKER-BLOCKED "
-                                 "line or the worker's question, for pane workers")
+                                 "line or the worker's question, for pane workers; without --request (or "
+                                 "for a request herdr does not know): until the pane's next turn end "
+                                 "whose final message has a WORKER line")
     wait_agent.add_argument("--request", metavar="ID",
                             help="end when the turn of this prompt request ends (the request_id that "
                                  "`herdr agent prompt` prints), then report the worker's verdict "

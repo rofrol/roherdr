@@ -837,9 +837,17 @@ fn wait_for_named_agent(
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
-            // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, scope, "cli:agent:start:timeout");
-            return Ok(Err(agent_wait_timeout()));
+            // returning: a launch whose agent never appeared frees its name for
+            // reuse, and one whose agent runs keeps it.
+            let reconciled = resolve_agent_target_unchecked(name, scope, "cli:agent:start:timeout");
+            let agent = reconciled
+                .ok()
+                .map(|response| response["result"]["agent"].clone())
+                .filter(|agent| {
+                    agent["terminal_id"].as_str() == Some(expected_terminal_id)
+                        && agent["name"].as_str() == Some(name)
+                });
+            return Ok(Err(agent_wait_timeout(name, agent.as_ref())));
         }
         let poll_id = "cli:agent:start";
         let mut response = if first_poll {
@@ -866,6 +874,16 @@ fn wait_for_named_agent(
                 "cli:agent:start",
                 "agent_kind_mismatch",
                 format!("expected {expected_kind}, detected {actual}"),
+            )))
+        } else if agent["name"].is_null() {
+            // The agent appeared only after the startup deadline released its name.
+            Some(Err(cli_agent_error(
+                "cli:agent:start",
+                "agent_name_not_found",
+                format!(
+                    "{expected_kind} started in pane {pane} only after its startup deadline released the name {name}; name it with `herdr agent rename {pane} {name}`",
+                    pane = agent["pane_id"].as_str().unwrap_or(fallback_pane_id),
+                ),
             )))
         } else if agent["name"].as_str() != Some(name) {
             Some(Err(agent_name_lost_error("cli:agent:start", name)))
@@ -1017,12 +1035,17 @@ fn print_agent_transport_error(
     super::print_response(&cli_agent_error(request_id, code, err.to_string()))
 }
 
-fn agent_wait_timeout() -> serde_json::Value {
-    cli_agent_error(
-        "cli:agent:start",
-        "timeout",
-        "timed out waiting for agent startup",
-    )
+/// The startup wait ran out. An agent that runs but is not ready yet keeps its name (the
+/// server releases it only when the agent never appeared), so the message says where it is.
+fn agent_wait_timeout(name: &str, still_named: Option<&serde_json::Value>) -> serde_json::Value {
+    let message = match still_named {
+        Some(agent) => format!(
+            "timed out waiting for agent startup: agent {name} runs in pane {} but is not ready for prompts yet; it keeps its name and becomes ready when it idles (read the pane: it may show a dialog, such as the folder-trust prompt)",
+            agent["pane_id"].as_str().unwrap_or("?"),
+        ),
+        None => "timed out waiting for agent startup".to_string(),
+    };
+    cli_agent_error("cli:agent:start", "timeout", message)
 }
 
 fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_json::Value {
@@ -1155,6 +1178,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
             }),
         })?;
         if !method_unknown(&response, "agent.prompt_confirmed") {
+            note_unsupported_request(&response);
             return super::print_response(&response);
         }
         // An older server refused the method before typing anything.
@@ -1176,7 +1200,30 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
             }),
         }),
     })?;
+    note_unsupported_request(&response);
     super::print_response(&response)
+}
+
+/// Says on stderr why herdr cannot follow a prompt it typed (`unsupported`), so a caller
+/// does not take the request for a followed one.
+fn note_unsupported_request(response: &serde_json::Value) {
+    if let Some(note) = unsupported_request_note(response) {
+        eprintln!("{note}");
+    }
+}
+
+fn unsupported_request_note(response: &serde_json::Value) -> Option<String> {
+    let request = &response["result"]["prompt_request"];
+    if request["state"] != "unsupported" {
+        return None;
+    }
+    let reason = request["error"]
+        .as_str()
+        .unwrap_or("the agent does not report its turns");
+    Some(format!(
+        "herdr: prompt request {} is not followed yet: {reason}",
+        request["request_id"].as_str().unwrap_or("?")
+    ))
 }
 
 enum TurnWait {
@@ -1404,7 +1451,8 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        blocking_rule_dialog, method_unknown, prompt_turn_unavailable, split_global_flag, NameScope,
+        blocking_rule_dialog, method_unknown, prompt_turn_unavailable, split_global_flag,
+        unsupported_request_note, NameScope,
     };
 
     #[test]
@@ -1466,6 +1514,21 @@ mod tests {
             assert!(!prompt_turn_unavailable(&error), "{code}");
         }
         assert!(!prompt_turn_unavailable(&serde_json::json!({"result": {}})));
+    }
+
+    #[test]
+    fn an_unsupported_request_says_why() {
+        let response = serde_json::json!({"result": {"prompt_request": {
+            "request_id": "prompt_1", "state": "unsupported", "error": "claude has not reported",
+        }}});
+        assert_eq!(
+            unsupported_request_note(&response).as_deref(),
+            Some("herdr: prompt request prompt_1 is not followed yet: claude has not reported")
+        );
+        let followed = serde_json::json!({"result": {"prompt_request": {
+            "request_id": "prompt_2", "state": "accepted",
+        }}});
+        assert_eq!(unsupported_request_note(&followed), None);
     }
 
     fn args(values: &[&str]) -> Vec<String> {

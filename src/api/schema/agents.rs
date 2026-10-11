@@ -347,7 +347,7 @@ pub enum AgentTurnEndReason {
 pub struct AgentPromptRequest {
     pub request_id: String,
     pub state: AgentPromptRequestState,
-    /// The error a `failed` turn ended on.
+    /// The error a `failed` turn ended on; for `unsupported`, why herdr cannot follow it yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -361,7 +361,8 @@ pub enum AgentPromptRequestState {
     Working,
     /// That turn ended.
     Finished,
-    /// The agent does not report its turns, so herdr cannot follow this prompt.
+    /// The agent has not reported its turns (see `error`), so herdr cannot follow this prompt
+    /// yet; it follows it once the agent's integration reports the turn.
     Unsupported,
     /// That turn ended on an error the agent reported; see `error`.
     Failed,

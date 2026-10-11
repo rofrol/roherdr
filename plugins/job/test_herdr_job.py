@@ -1504,10 +1504,15 @@ class WaitAgentTests(unittest.TestCase):
         self.assertIn("going on from the transcript", text)
         self.assertNotIn("tracking lost", text)
 
-    def test_a_request_nobody_recorded_is_tracking_lost(self):
-        code, text, calls = self.run_verdict([self.not_followed()])
-        self.assertEqual((code, len(calls)), (8, 1), text)
-        self.assertIn("tracking lost", text)
+    def test_a_request_nobody_recorded_waits_for_the_panes_next_worker_line(self):
+        working = self.transcript("u", ("user", "the task"), ("assistant", "Working."))
+        done = self.transcript("v", ("user", "the task"), ("assistant", "WORKER-DONE {sha} | parser"))
+        code, text, calls = self.run_verdict([self.not_followed(), self.get(working, status="working"),
+                                              self.changed(), self.get(done, seq=9, completion_seq=9)])
+        self.assertEqual(code, 0, text)
+        self.assertIn("does not know request prompt_1", text)
+        self.assertIn("WORKER-DONE", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "get", "wait-change", "get"])
 
     def test_a_worker_pane_without_a_request_is_refused(self):
         (self.stub_dir / "tabs.json").write_text(json.dumps([{"tab_id": "w:t0", "role": "worker"}]))
@@ -1517,9 +1522,31 @@ class WaitAgentTests(unittest.TestCase):
                 self.assertIn("--until verdict", str(code))
                 self.assertEqual(calls, [])
 
-    def test_until_verdict_needs_a_request(self):
-        code, _, calls = self.run_wait([self.not_followed()], until=["verdict"])
-        self.assertIn("needs --request", str(code))
+    def test_until_verdict_without_a_request_takes_the_panes_next_turn_end_with_a_worker_line(self):
+        (self.stub_dir / "tabs.json").write_text(json.dumps([{"tab_id": "w:t0", "role": "worker"}]))
+        # The turn that ended before the wait started does not count, nor does a later one
+        # without a WORKER line.
+        old = self.transcript("o", ("user", "the old item"), ("assistant", "WORKER-DONE {sha} | old"))
+        later = self.transcript("l", ("user", "the item"), ("assistant", "Tests run in the background."))
+        done = self.transcript("d", ("user", "the item"), ("assistant", "Tests run in the background."),
+                               ("user", "<task-notification>done</task-notification>"),
+                               ("assistant", "I cannot push.\nWORKER-BLOCKED needs a login"))
+        code, text, calls = self.run_wait(
+            [self.get(old, status="idle", seq=5, completion_seq=5), self.changed(6),
+             self.get(later, status="working", seq=6), self.changed(7),
+             self.get(later, status="done", seq=7, completion_seq=7), self.changed(8),
+             self.get(done, status="done", seq=9, completion_seq=9)],
+            until=["verdict"])
+        self.assertEqual(code, 4, text)
+        self.assertIn("WORKER-BLOCKED needs a login", text)
+        self.assertNotIn("| old", text)
+        self.assertIn("without a WORKER line", text)
+        self.assertEqual([call[1] for call in calls], ["get", "wait-change"] * 3 + ["get"])
+        self.assertEqual(calls[1], ["agent", "wait-change", "w:p5", "--after", "5"])
+
+    def test_until_verdict_takes_no_other_until(self):
+        code, _, calls = self.run_wait([self.not_followed()], until=["verdict", "done"])
+        self.assertIn("no other --until", str(code))
         self.assertEqual(calls, [])
 
 

@@ -11539,7 +11539,7 @@
           "description": "A prompt herdr typed into an agent and how far the turn it started got.",
           "properties": {
             "error": {
-              "description": "The error a `failed` turn ended on.",
+              "description": "The error a `failed` turn ended on; for `unsupported`, why herdr cannot follow it yet.",
               "type": [
                 "string",
                 "null"
@@ -11577,7 +11577,7 @@
             },
             {
               "const": "unsupported",
-              "description": "The agent does not report its turns, so herdr cannot follow this prompt.",
+              "description": "The agent has not reported its turns (see `error`), so herdr cannot follow this prompt\nyet; it follows it once the agent's integration reports the turn.",
               "type": "string"
             },
             {

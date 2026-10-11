@@ -540,21 +540,20 @@ impl App {
             .map(|terminal| {
                 let request_id = next_prompt_request_id();
                 let label = terminal.effective_agent_label().map(str::to_string);
-                if terminal.prompt_turns.supported_for(label.as_deref()) {
-                    terminal
-                        .prompt_turns
-                        .accept(request_id.clone(), &params.text);
-                    crate::api::schema::AgentPromptRequest {
-                        request_id,
-                        state: crate::api::schema::AgentPromptRequestState::Accepted,
-                        error: None,
-                    }
-                } else {
-                    crate::api::schema::AgentPromptRequest {
-                        request_id,
-                        state: crate::api::schema::AgentPromptRequestState::Unsupported,
-                        error: None,
-                    }
+                let unsupported = terminal.prompt_turns.unsupported_reason(label.as_deref());
+                // Followed either way: an agent whose integration reports its first turn only
+                // now (one that started behind a dialog) follows this request from that report.
+                terminal
+                    .prompt_turns
+                    .accept(request_id.clone(), &params.text);
+                crate::api::schema::AgentPromptRequest {
+                    request_id,
+                    state: if unsupported.is_some() {
+                        crate::api::schema::AgentPromptRequestState::Unsupported
+                    } else {
+                        crate::api::schema::AgentPromptRequestState::Accepted
+                    },
+                    error: unsupported,
                 }
             })
             .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
@@ -1316,6 +1315,10 @@ mod tests {
             prompt_params("review the diff", false),
         ));
         assert_eq!(request.state, AgentPromptRequestState::Unsupported);
+        assert!(request
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("has not reported a turn")));
         assert!(!request.request_id.is_empty());
         while rx.try_recv().is_ok() {}
 
@@ -1324,6 +1327,38 @@ mod tests {
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&refused).unwrap();
         assert_eq!(error.error.code, "turn_tracking_unsupported");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_prompt_follows_the_turn_its_first_report_starts() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        // An unnamed Claude pane, targeted by its pane id, whose integration has not reported
+        // anything yet (it started behind the folder-trust dialog).
+        app.state
+            .terminals
+            .values_mut()
+            .for_each(|terminal| terminal.clear_agent_name());
+        let mut params = prompt_params("do the item", false);
+        params.target = pane.clone();
+
+        let request = prompt_request_of(&run_deferred_agent_prompt(&mut app, "req", params));
+        assert_eq!(request.state, AgentPromptRequestState::Unsupported);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Accepted
+        );
+
+        report_turn(&mut app, &pane, "started", Some("do the item"));
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Working
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Finished
+        );
     }
 
     #[tokio::test]

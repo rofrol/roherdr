@@ -2878,7 +2878,18 @@ impl TerminalState {
                 return true;
             }
             if now >= deadline {
-                self.clear_agent_name();
+                // The expected agent runs but is not ready yet (a folder-trust dialog, a slow
+                // start): it keeps its name, the only handle its owner has on the pane, and
+                // becomes ready once it idles. Only a launch whose agent never appeared frees
+                // the name for reuse.
+                if known_agent == Some(managed.kind) {
+                    self.managed_agent = Some(ManagedAgent {
+                        kind: managed.kind,
+                        phase: ManagedAgentPhase::Blocked,
+                    });
+                } else {
+                    self.clear_agent_name();
+                }
                 return true;
             }
             if ready_after.is_none_or(|ready_after| now >= ready_after) {
@@ -3424,6 +3435,29 @@ mod tests {
         assert_eq!(timed_out.agent_name, None);
         assert_eq!(timed_out.managed_agent_kind(), None);
         assert!(timed_out.persisted_agent_session.is_none());
+    }
+
+    #[test]
+    fn a_detected_agent_keeps_its_name_past_the_startup_deadline() {
+        let now = Instant::now();
+        // delay: not a wait, virtual instants handed to the reconcile; nothing sleeps.
+        let settle = Duration::from_millis(10);
+        let deadline = Duration::from_millis(20);
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent("worker".into(), Agent::Claude, now, settle, deadline);
+        // Claude runs behind its folder-trust dialog, which screen detection does not read
+        // as blocked, so it neither idles nor blocks before the deadline.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Unknown);
+        terminal.reconcile_managed_agent_at(now, false);
+        assert!(terminal.reconcile_managed_agent_at(now + deadline, false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        assert!(terminal.managed_agent_launch_pending());
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal.reconcile_managed_agent_at(now + deadline + settle, false));
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
     }
 
     #[test]

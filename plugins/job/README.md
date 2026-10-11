@@ -182,9 +182,16 @@ herdr-job wait "$id"
   exited without a verdict; 7: `WORKER-DONE` names no commit. It records the
   assignment under `~/.local/state/herdr-job/assignments/`, so after a herdr
   restart or live handoff, which forget the request, it reads the transcript
-  again and goes on; exit 8 only for a request herdr does not know that no
-  earlier wait recorded. `wait-agent` without `--request` on a pane whose
-  tab has the worker role refuses and names this form.
+  again and goes on. For a request herdr does not know that no earlier wait
+  recorded (an `unsupported` prompt herdr typed before the agent reported
+  its turns, on an older herdr), it says so and waits as below instead.
+- `wait-agent <pane> --until verdict` without `--request` ends at the pane's
+  next turn end whose final message carries a WORKER line (or at a question
+  or the agent's exit). A turn end is a new `completion_seq` in `herdr agent
+  get`, so a turn that ended before the wait started never counts; a turn
+  end without a WORKER line waits for the next one. Same exits as above.
+  `wait-agent` without `--request` or `--until verdict` on a pane whose tab
+  has the worker role refuses and names both forms.
 - `wait-agent <pane> --request <id>` blocks on `herdr agent wait-turn`: the
   turn's end is an event (the agent's turn report, its process exiting, the
   pane closing), never a timer, a screen read or a debounce. Then it reads

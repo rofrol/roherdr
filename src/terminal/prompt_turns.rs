@@ -62,10 +62,13 @@ pub struct PromptTurns {
 
 impl PromptTurns {
     /// Records that `agent`'s integration reports turns here. Another agent's reports end the
-    /// open requests of the agent before it.
+    /// open requests of the agent before it; the first report keeps the requests typed before
+    /// it, which its turns follow from now on (an agent that started behind a dialog reports
+    /// its session only once the dialog is answered).
     pub fn mark_reporting(&mut self, agent: &str) {
-        if self.reporting_agent.as_deref() != Some(agent) {
-            self.reporting_agent = Some(agent.to_string());
+        if self.reporting_agent.as_deref() != Some(agent)
+            && self.reporting_agent.replace(agent.to_string()).is_some()
+        {
             self.agent_exited();
         }
     }
@@ -73,6 +76,23 @@ impl PromptTurns {
     /// Whether the agent running now (`agent`, its effective label) reports its turns.
     pub fn supported_for(&self, agent: Option<&str>) -> bool {
         agent.is_some() && self.reporting_agent.as_deref() == agent
+    }
+
+    /// Why the agent running now (`agent`, its effective label) is not known to report its
+    /// turns, or `None` when it is.
+    pub fn unsupported_reason(&self, agent: Option<&str>) -> Option<String> {
+        if self.supported_for(agent) {
+            return None;
+        }
+        let agent = agent.unwrap_or("the agent");
+        Some(match self.reporting_agent.as_deref() {
+            Some(reporting) => format!(
+                "turn reports in this pane come from {reporting}, not {agent}; its integration may be missing or older"
+            ),
+            None => format!(
+                "{agent} has not reported a turn or a session with turn reports in this pane yet (its integration may be missing or older, or it started behind a dialog such as the folder-trust prompt); herdr follows this request once its integration reports the turn"
+            ),
+        })
     }
 
     /// Starts following a prompt herdr is about to type.
@@ -227,6 +247,26 @@ mod tests {
         assert!(!turns.supported_for(Some("codex")));
         assert!(!turns.supported_for(None));
         assert!(!PromptTurns::default().supported_for(Some("claude")));
+    }
+
+    #[test]
+    fn the_first_report_follows_requests_typed_before_it() {
+        let mut turns = PromptTurns::default();
+        assert!(turns.unsupported_reason(Some("claude")).is_some());
+        turns.accept("p1".into(), "do the item");
+        turns.mark_reporting("claude");
+        assert!(turns.unsupported_reason(Some("claude")).is_none());
+        assert!(turns.turn_started(Some("do the item"), false));
+        assert!(turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
+
+        // Another agent's reports still end the open requests of the one before it.
+        turns.accept("p2".into(), "next item");
+        turns.mark_reporting("pi");
+        assert_eq!(turns.state_of("p2"), Some(PromptTurnState::Exited));
+        assert!(turns
+            .unsupported_reason(Some("claude"))
+            .is_some_and(|reason| reason.contains("come from pi")));
     }
 
     #[test]
