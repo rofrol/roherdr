@@ -1759,6 +1759,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   write root kept until the run ends, not the turn. Pane workers stay for
   attended interactive work only; the todo skill says so when this lands.
 
+- [ ] What to do about the auto-mode classifier's inconsistent denials (the [t-aabu5rjo]
+  user, 2026-10-11: "plan it with the models as a TODO item"; reports from
+  roguix-vps, classify-x-posts and others: plain local reads denied right
+  after another denial and allowed later; a production write allowed but its
+  read-only status and revert denied; `herdr worker ack` denied, trapping a
+  Stop hook (fixed in 03b46496); typing into a web form the user asked for
+  denied until he said "unblock"). Round 20261011-211427-bb48 (sol, MiMo,
+  DeepSeek agreeing), planned:
+  1. herdr records every denial (hook payload where Claude Code gives one,
+     else the transcript) as a deduplicated supervision finding: action,
+     category, session, cwd, time, the preceding denial, whether the same
+     action passed later; secrets redacted. A denial is evidence, not proof
+     of a misclassification.
+  2. The rule (global CLAUDE.md, the todo skill, herdr's reminder): after a
+     denial, record it once, report it once, go on with independent work or
+     mark the item blocked; never retry, rephrase, use another tool or ask
+     another session; never fish for the user's "unblock".
+  3. A grouped `?` entry proposes a narrow allow rule from the findings
+     (herdr's coordination commands, specific read-only commands scoped to
+     paths), tested against what must stay denied; applied only after the
+     user approves the patch; no blanket `grep`/`git` rules, no automatic
+     widening.
+  4. Recurring production work: reviewed scripts with bounded targets,
+     status and rollback included, plus an allow rule (as for Porkbun and
+     the VPS check).
+  5. The user's explicit word stays the one-off override.
+  6. A redacted, aggregated report of contradictory outcomes, ready for the
+     user's `/feedback` when findings accumulate (on the event, no cadence
+     timer); never sent automatically.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
