@@ -1099,7 +1099,8 @@ class WaitAgentTests(unittest.TestCase):
         self.stub_dir = root
         self.wait_agent = JOB["cmd_wait_agent"]
         self.sleeps = []
-        patcher = patch.dict(self.wait_agent.__globals__, {"HERDR": str(stub)})
+        patcher = patch.dict(self.wait_agent.__globals__, {"HERDR": str(stub), "STATE": root / "state",
+                                                            "ASSIGNMENTS": root / "state" / "assignments"})
         patcher.start()
         self.addCleanup(patcher.stop)
         env = patch.dict(os.environ, {"STUB_DIR": str(root)})
@@ -1116,8 +1117,10 @@ class WaitAgentTests(unittest.TestCase):
                 code = 0
             except SystemExit as error:
                 code = error.code
-        calls = [json.loads(line) for line in (self.stub_dir / "calls").read_text().splitlines()]
-        return code, out.getvalue(), calls
+        calls_file = self.stub_dir / "calls"
+        calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
+        # The worker-role check reads the pane and the tabs; the waits are agent calls.
+        return code, out.getvalue(), [call for call in calls if call[:1] == ["agent"]]
 
     def test_transport_errors_are_retried_with_backoff_until_the_state(self):
         empty = [1, "", "Error: empty api response\n"]
@@ -1259,6 +1262,173 @@ class WaitAgentTests(unittest.TestCase):
         self.assertEqual(code, 8, text)
         self.assertEqual(self.sleeps, [1, 2])
         self.assertEqual(len(calls), 3)
+
+    # `--request ID --until verdict`: `agent prompt-status` once, then rounds of `agent get`,
+    # a read of the transcript and `agent wait-change --after <state_change_seq>`.
+
+    PROMPT = "Do the task:\n  fix   the parser"
+
+    def prompt_status(self):
+        return [0, json.dumps({"result": {
+            "type": "agent_prompt_status", "pane_id": "w:p5",
+            "prompt_request": {"request_id": "prompt_1", "state": "working"},
+            "text": "Do the task: fix the parser"}}) + "\n", ""]
+
+    def not_followed(self):
+        return [1, "", json.dumps({"error": {"code": "prompt_request_not_found", "message": "no"}}) + "\n"]
+
+    def repo_sha(self):
+        repo = Path(self.tmp.name) / "repo"
+        if not repo.exists():
+            repo.mkdir()
+            for args in (["init", "-q"], ["config", "user.email", "t@example.com"],
+                         ["config", "user.name", "t"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+                subprocess.run(["git", "-C", str(repo), *args], check=True)
+        return repo, subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                                    capture_output=True, text=True).stdout.strip()
+
+    def transcript(self, name, *records):
+        """A Claude transcript: ("user", text), ("assistant", text) or ("tool",) records;
+        `{sha}` in a text is the test repository's commit."""
+        _, sha = self.repo_sha()
+        path = Path(self.tmp.name) / f"{name}.jsonl"
+        with path.open("w") as handle:
+            for role, *text in records:
+                if role == "tool":
+                    content = [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                    role = "assistant"
+                elif role == "result":
+                    content = [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+                    role = "user"
+                else:
+                    content = [{"type": "text", "text": text[0].format(sha=sha)}]
+                handle.write(json.dumps({"type": role, "message": {"role": role, "content": content}}) + "\n")
+        return path
+
+    def get(self, transcript, status="done", seq=7, **extra):
+        repo, _ = self.repo_sha()
+        agent = {"agent": "claude", "pane_id": "w:p5", "cwd": str(repo), "agent_status": status,
+                 "state_change_seq": seq, "agent_session": {"kind": "path", "value": str(transcript)}, **extra}
+        return [0, json.dumps({"result": {"type": "agent_info", "agent": agent}}) + "\n", ""]
+
+    def changed(self, seq=8):
+        return [0, json.dumps({"result": {"type": "agent_info", "agent": {"state_change_seq": seq}}}) + "\n", ""]
+
+    def run_verdict(self, answers):
+        return self.run_wait(answers, request="prompt_1", until=["verdict"])
+
+    def test_a_verdict_already_in_the_transcript_ends_the_wait_at_once(self):
+        _, sha = self.repo_sha()
+        done = self.transcript("s", ("user", self.PROMPT), ("assistant", "Done.\nWORKER-DONE {sha} | parser"))
+        code, text, calls = self.run_verdict([self.prompt_status(), self.get(done)])
+        self.assertEqual(code, 0, text)
+        self.assertIn(f"WORKER-DONE {sha} | parser", text)
+        self.assertEqual(calls, [["agent", "prompt-status", "prompt_1"], ["agent", "get", "w:p5"]])
+
+    def test_a_bare_turn_end_does_not_end_the_wait(self):
+        # The worker ended its turn while its own background test ran, then wrote its verdict.
+        waiting = self.transcript("a", ("user", self.PROMPT), ("assistant", "Tests run in the background."))
+        done = self.transcript("b", ("user", self.PROMPT), ("assistant", "Tests run in the background."),
+                               ("user", "<task-notification>done</task-notification>"),
+                               ("assistant", "WORKER-DONE {sha} | parser"))
+        code, text, calls = self.run_verdict([self.prompt_status(), self.get(waiting, seq=7), self.changed(),
+                                              self.get(done, seq=9)])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(calls[2], ["agent", "wait-change", "w:p5", "--after", "7"])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(self.sleeps, [])
+
+    def test_an_earlier_assignments_verdict_does_not_count(self):
+        # The prompt is typed but not in the transcript yet: the old verdict is not this one's.
+        old = self.transcript("old", ("user", "the previous item"), ("assistant", "WORKER-DONE {sha} | old"))
+        new = self.transcript("new", ("user", "the previous item"), ("assistant", "WORKER-DONE {sha} | old"),
+                              ("user", self.PROMPT), ("assistant", "WORKER-BLOCKED needs a login"))
+        code, text, calls = self.run_verdict([self.prompt_status(), self.get(old, status="idle"),
+                                              self.changed(), self.get(new)])
+        self.assertEqual(code, 4, text)
+        self.assertIn("WORKER-BLOCKED needs a login", text)
+        self.assertNotIn("| old", text)
+
+    def test_a_worker_line_before_a_tool_call_or_while_working_is_not_the_verdict(self):
+        went_on = self.transcript("on", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | early"),
+                                  ("tool",), ("result",), ("assistant", "Still checking."))
+        code, text, _ = self.run_verdict([self.prompt_status(), self.get(went_on), self.changed(),
+                                          self.get(went_on, status="blocked", question="Allow rm?")])
+        self.assertEqual(code, 6, text)
+        self.assertIn("Allow rm?", text)
+        (self.stub_dir / "calls").unlink()
+        # Its tool call may not be written yet: the last text counts once the agent stops working.
+        writing = self.transcript("w", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
+        code, text, calls = self.run_verdict([self.prompt_status(), self.get(writing, status="working"),
+                                              self.changed(), self.get(writing, status="done")])
+        self.assertEqual((code, len(calls)), (0, 4), text)
+
+    def test_a_question_ends_the_wait(self):
+        asking = self.transcript("q", ("user", self.PROMPT), ("assistant", "Which variant?"))
+        for extra in ({"status": "blocked"}, {"status": "idle", "awaiting_reply": True,
+                                               "question": "Which variant?"}):
+            with self.subTest(extra=extra):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                code, text, _ = self.run_verdict([self.prompt_status(), self.get(asking, **extra)])
+                self.assertEqual(code, 6, text)
+                self.assertIn("asks", text)
+
+    def test_an_agent_that_exits_without_a_verdict(self):
+        working = self.transcript("x", ("user", self.PROMPT), ("assistant", "Working."))
+        gone = [1, "", json.dumps({"error": {"code": "agent_not_running", "message": "gone"}}) + "\n"]
+        code, text, _ = self.run_verdict([self.prompt_status(), self.get(working, status="working"),
+                                          gone, gone])
+        self.assertEqual(code, 3, text)
+        self.assertIn("exited without a verdict", text)
+
+    def test_a_verdict_written_before_the_agent_exited_still_counts(self):
+        done = self.transcript("e", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
+        gone = [1, "", json.dumps({"error": {"code": "agent_not_running", "message": "gone"}}) + "\n"]
+        code, text, _ = self.run_verdict([self.prompt_status(), self.get(done, status="working"), gone, gone])
+        self.assertEqual(code, 0, text)
+
+    def test_a_handoff_or_restart_during_the_wait_reads_everything_again(self):
+        waiting = self.transcript("h", ("user", self.PROMPT), ("assistant", "Running."))
+        done = self.transcript("i", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
+        handed_off = [1, "", json.dumps({"error": {"code": "server_handed_off", "message": "x"}}) + "\n"]
+        empty = [1, "", "Error: empty api response\n"]
+        code, text, calls = self.run_verdict([self.prompt_status(), self.get(waiting, seq=40), handed_off,
+                                              self.changed(seq=2), empty, self.get(done, seq=3)])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.sleeps, [1, 1])
+        self.assertEqual([call[1] for call in calls],
+                         ["prompt-status", "get", "wait-change", "wait-change", "get", "get"])
+
+    def test_after_a_restart_it_goes_on_from_the_recorded_assignment(self):
+        asking = self.transcript("r", ("user", self.PROMPT), ("assistant", "Which one?"))
+        code, _, _ = self.run_verdict([self.prompt_status(), self.get(asking, status="blocked")])
+        self.assertEqual(code, 6)
+        (self.stub_dir / "calls").unlink()
+        # The coordinator answered; herdr restarted and forgot the request.
+        done = self.transcript("r", ("user", self.PROMPT), ("assistant", "Which one?"),
+                               ("user", "the first"), ("assistant", "WORKER-DONE {sha} | parser"))
+        code, text, calls = self.run_verdict([self.not_followed(), self.get(done)])
+        self.assertEqual(code, 0, text)
+        self.assertIn("going on from the transcript", text)
+        self.assertNotIn("tracking lost", text)
+
+    def test_a_request_nobody_recorded_is_tracking_lost(self):
+        code, text, calls = self.run_verdict([self.not_followed()])
+        self.assertEqual((code, len(calls)), (8, 1), text)
+        self.assertIn("tracking lost", text)
+
+    def test_a_worker_pane_without_a_request_is_refused(self):
+        (self.stub_dir / "tabs.json").write_text(json.dumps([{"tab_id": "w:t0", "role": "worker"}]))
+        for until in ([], ["done"]):
+            with self.subTest(until=until):
+                code, _, calls = self.run_wait([self.not_followed()], until=until)
+                self.assertIn("--until verdict", str(code))
+                self.assertEqual(calls, [])
+
+    def test_until_verdict_needs_a_request(self):
+        code, _, calls = self.run_wait([self.not_followed()], until=["verdict"])
+        self.assertIn("needs --request", str(code))
+        self.assertEqual(calls, [])
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

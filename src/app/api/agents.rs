@@ -584,6 +584,10 @@ impl App {
                     .prompt_turns
                     .error_of(&params.request_id)
                     .map(str::to_string);
+                let text = terminal
+                    .prompt_turns
+                    .text_of(&params.request_id)
+                    .map(str::to_string);
                 let state = match state {
                     PromptTurnState::Accepted => AgentPromptRequestState::Accepted,
                     PromptTurnState::Working => AgentPromptRequestState::Working,
@@ -602,6 +606,7 @@ impl App {
                             state,
                             error,
                         },
+                        text,
                     },
                 );
             }

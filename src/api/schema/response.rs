@@ -323,6 +323,10 @@ pub enum ResponseResult {
     AgentPromptStatus {
         pane_id: String,
         prompt_request: AgentPromptRequest,
+        /// The prompt herdr typed, whitespace runs collapsed to one space, so a caller can
+        /// find where the prompt's work starts in the agent's transcript.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     /// `agent.wait_turn`: how the followed prompt's turn ended.
     AgentTurnEnded {

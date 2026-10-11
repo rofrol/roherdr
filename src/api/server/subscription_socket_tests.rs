@@ -388,6 +388,7 @@ fn reply_prompt_state(test: &mut SocketTest, state: &str, error: Option<&str>) {
         ResponseResult::AgentPromptStatus {
             pane_id: "pane_1".into(),
             prompt_request: serde_json::from_value(prompt_request).unwrap(),
+            text: None,
         },
     );
 }
@@ -458,6 +459,7 @@ fn wait_turn_sees_a_change_made_while_its_first_read_was_answered() {
                 json!({"request_id": "prompt_1", "state": "working"}),
             )
             .unwrap(),
+            text: None,
         },
     );
     reply_prompt_state(&mut test, "finished", None);
@@ -811,4 +813,74 @@ fn prompt_wait_reports_stalled_when_the_caller_timeout_passes_first() {
         response["error"]["code"], "agent_prompt_stalled",
         "{response}"
     );
+}
+
+// `agent.wait_change`: the app answers each agent read; the wait answers once the agent's
+// `state_change_seq` differs from the one the caller read.
+
+fn wait_change(client: &mut Client, state_change_seq: u64) {
+    client.send(json!({
+        "id": "wait",
+        "method": "agent.wait_change",
+        "params": {"target": "pane_1", "state_change_seq": state_change_seq}
+    }));
+}
+
+fn assert_changed_to(client: &mut Client, state_change_seq: u64) {
+    let response = client.response();
+    assert_eq!(response["id"], "wait");
+    assert_eq!(
+        response["result"]["agent"]["state_change_seq"], state_change_seq,
+        "{response}"
+    );
+}
+
+#[test]
+fn wait_change_answers_at_once_for_a_change_made_before_it() {
+    // The caller read seq 3, the turn ended (seq 4) before its wait arrived.
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_change(&mut client, 3);
+    reply_agent(&mut test, "done", 4);
+    assert_changed_to(&mut client, 4);
+}
+
+#[test]
+fn wait_change_answers_a_lower_sequence_from_a_restarted_server() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_change(&mut client, 40);
+    reply_agent(&mut test, "working", 2);
+    assert_changed_to(&mut client, 2);
+}
+
+#[test]
+fn wait_change_answers_only_when_the_state_changes() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_change(&mut client, 3);
+    reply_agent(&mut test, "working", 3);
+    // A pane update without a state change reads the agent again and goes on waiting.
+    test.hub.push(pane_updated());
+    reply_agent(&mut test, "working", 3);
+    test.hub.push(status_changed(AgentStatus::Done));
+    reply_agent(&mut test, "done", 4);
+    assert_changed_to(&mut client, 4);
+}
+
+#[test]
+fn wait_change_reports_the_agent_not_running_when_its_pane_exits() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_change(&mut client, 3);
+    reply_agent(&mut test, "working", 3);
+    test.hub.push(EventEnvelope {
+        event: EventKind::PaneExited,
+        data: EventData::PaneExited {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    let response = client.response();
+    assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
 }

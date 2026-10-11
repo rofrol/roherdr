@@ -194,6 +194,14 @@ impl PromptTurns {
             .find(|request| request.id == id)
             .and_then(|request| request.error.as_deref())
     }
+
+    /// The prompt text of a request, whitespace runs collapsed to one space.
+    pub fn text_of(&self, id: &str) -> Option<&str> {
+        self.requests
+            .iter()
+            .find(|request| request.id == id)
+            .map(|request| request.text.as_str())
+    }
 }
 
 /// Whitespace runs collapse to one space: the agent may hand the prompt back with other line
@@ -226,6 +234,8 @@ mod tests {
         let mut turns = following("claude");
         turns.accept("p1".into(), "fix the test\r\n");
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Accepted));
+        assert_eq!(turns.text_of("p1"), Some("fix the test"));
+        assert_eq!(turns.text_of("p2"), None);
         assert!(turns.turn_started(Some("  fix the\ntest"), false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Working));
         assert!(turns.turn_finished(None, false));

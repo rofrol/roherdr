@@ -15,6 +15,11 @@ for one with `herdr-job watch --pid <pid> --why "<what you do after it>"`, then
 shows in the user's sidebar; your own background shell does not. `watch` only
 sees the process end, not its exit status: check its result yourself.
 
+To wait for a worker agent in another pane, send its task with `herdr agent
+prompt` and wait with `herdr-job wait-agent <pane> --request <the prompt's
+request_id> --until verdict`: it ends on the worker's `WORKER-DONE` or
+`WORKER-BLOCKED` line or its question, not when its turn ends.
+
 When `git status` shows changes that are not yours (another session works in
 the same checkout), build and test your change in a clean tree:
 `herdr-job clean-tree <your paths> -- <build or test command>` runs it on

@@ -718,6 +718,28 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("wait-change")
+                .about("Wait until an agent's state changes after a state_change_seq you read")
+                .override_usage("herdr agent wait-change <TARGET> --after <SEQ>")
+                .arg(required("target", "TARGET"))
+                .arg(
+                    option("after", "SEQ")
+                        .required(true)
+                        .help("The agent's state_change_seq from `herdr agent get`"),
+                )
+                .arg(global_name_flag())
+                .after_help(
+                    "Prints the agent once its state_change_seq differs from SEQ, at once when it already does (a change between your read and this wait is not missed), and agent_not_running when the agent exits or its pane closes. No timeout. It does not follow a live handoff: the new server's sequence differs, so read the agent again.",
+                ),
+        )
+        .subcommand(
+            id_command(
+                "prompt-status",
+                "request_id",
+                "Show a followed prompt's state, pane and text",
+            ),
+        )
+        .subcommand(
             Command::new("attach")
                 .about("Attach directly to an agent terminal")
                 .override_usage("herdr agent attach <TARGET> [OPTIONS]")

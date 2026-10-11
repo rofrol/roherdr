@@ -114,15 +114,36 @@ check the state once and report it.
 
 To wait for a worker (an agent in another pane), start its prompt with
 `herdr agent prompt`, whose result carries `prompt_request.request_id`, and
-run one job that waits for that prompt's turn and reconnects inside:
+run one job that waits for that assignment's verdict and reconnects inside:
 
 ```sh
 request=$(herdr agent prompt "$pane" "$task" | jq -r '.result.prompt_request.request_id')
 id=$(herdr-job run --name "wait w-docs" --why "review its commit" -- \
-  herdr-job wait-agent "$pane" --request "$request")
+  herdr-job wait-agent "$pane" --request "$request" --until verdict)
 herdr-job wait "$id"
 ```
 
+- `wait-agent <pane> --request <id> --until verdict` ends only when that
+  assignment produced its verdict or the worker asks something, never on a
+  pane state or a bare turn end: a worker that ends its turn while its own
+  background job runs is still working. The assignment is the prompt of that
+  request: herdr reports its text (`herdr agent prompt-status`), and the
+  verdict is the last `WORKER-DONE <sha>` or `WORKER-BLOCKED <reason>` line
+  of an assistant text after the user message carrying that prompt, where
+  the text ended its turn (no tool call followed it), so an earlier
+  assignment's verdict never counts. Each round reads the agent and its
+  transcript, then waits for the agent's next state change after the
+  `state_change_seq` it read (`herdr agent wait-change`, an event, no
+  timer): a verdict already written ends the wait at once, and a change
+  between the read and the wait is never missed. Exit 0: `WORKER-DONE` with
+  a commit that exists in the worker's checkout; 4: `WORKER-BLOCKED`; 6: the
+  worker asks (a dialog, or a turn that ended with a question); 3: the agent
+  exited without a verdict; 7: `WORKER-DONE` names no commit. It records the
+  assignment under `~/.local/state/herdr-job/assignments/`, so after a herdr
+  restart or live handoff, which forget the request, it reads the transcript
+  again and goes on; exit 8 only for a request herdr does not know that no
+  earlier wait recorded. `wait-agent` without `--request` on a pane whose
+  tab has the worker role refuses and names this form.
 - `wait-agent <pane> --request <id>` blocks on `herdr agent wait-turn`: the
   turn's end is an event (the agent's turn report, its process exiting, the
   pane closing), never a timer, a screen read or a debounce. Then it reads
@@ -133,10 +154,12 @@ herdr-job wait "$id"
   that failed, was interrupted or finished without a WORKER line, or a sha
   that is not a commit (exit 7). An agent that exited ends it with exit 3,
   and a request herdr no longer knows (its server restarted) with exit 8.
+  A turn can end while the worker's own background job still runs, so wait
+  for workers with `--until verdict`.
 - `wait-agent <pane> [--until STATE]...` ends when the agent reaches one of
   the states (default: idle, done or blocked), as `herdr agent wait` does.
   A worker's state flickers to done or idle while it works, so use
-  `--request` for workers.
+  `--request <id> --until verdict` for workers.
 - When herdr does not answer (a server restart, `EmptyResponse`, no socket)
   it retries with backoff from 1 s to 30 s and gives up after 15 minutes of
   continuous failures (exit 5). An agent that is gone ends the wait (exit 3),
@@ -345,6 +368,11 @@ for one with `herdr-job watch --pid <pid> --why "<what you do after it>"`, then
 `herdr-job wait <id>`, not with a loop in a background shell of your own. A job
 shows in the user's sidebar; your own background shell does not. `watch` only
 sees the process end, not its exit status: check its result yourself.
+
+To wait for a worker agent in another pane, send its task with `herdr agent
+prompt` and wait with `herdr-job wait-agent <pane> --request <the prompt's
+request_id> --until verdict`: it ends on the worker's `WORKER-DONE` or
+`WORKER-BLOCKED` line or its question, not when its turn ends.
 
 When `git status` shows changes that are not yours (another session works in
 the same checkout), build and test your change in a clean tree:
