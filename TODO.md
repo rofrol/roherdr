@@ -1657,6 +1657,54 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   todo skill names the doctor step. Verify the per-session binding
   question with two sessions.
 
+- [ ] Scheduled repository work triggered by a macOS launchd service [t-qybebntk]
+  (the user via job-seeker, 2026-10-11: "it is to be a macOS service, so
+  it is independent of herdr; the coordinator works here, but gets its
+  signal from the macOS service somehow; ask the models"; job-seeker's
+  daily batch, d-mqk3ivac). Round 20261011-175313-7fd3 (sol, MiMo,
+  DeepSeek), decided:
+  - Declarations in the repository (`.herdr/schedule.toml`: task id,
+    Warsaw time of day, what to run); one installer (`herdr schedule sync`,
+    from the repository) generates one LaunchAgent plist per repository
+    and task (exact launchd calendar schedule) and deletes stale ones;
+    plists carry only repository and task, never secrets.
+  - launchd runs a tiny non-interactive dispatcher that first writes a
+    durable due record keyed (repository, task, Warsaw date) atomically in
+    a herdr-independent store, then, if herdr answers, delivers it to the
+    repository's coordinator (`herdr agent prompt` with the record id; the
+    coordinator claims it and runs the work through its workers; no second
+    driver). Herdr down or no coordinator: the record waits and is
+    delivered at coordinator start (an event).
+  - States due, claimed, done, failed, missed; one batch per (repository,
+    task, date); launchd coalesces missed firings, so only today's Warsaw
+    date is claimable, earlier dates become `missed` and are reported,
+    never backfilled; the Warsaw date is computed explicitly
+    (Europe/Warsaw), not assumed from the Mac's zone; external actions are
+    journalled so a crash mid-batch does not resend (the 15/day cap counts
+    across retries).
+  - Missed and failed records are supervision findings with a
+    notification; the coordinator writes the outcome (counts) back.
+  - Never: dialogs from the dispatcher (no osascript/open), secrets in
+    plists or logs, a backfill, a second batch the same day.
+
+- [ ] The stop check asks to renew a question raised in the same turn [t-254ex54k]
+  (classify-x-posts, 2026-10-11): in a turn started by a background-task
+  notification, `herdr agent awaiting-reply` ran as the last command; the
+  Stop hook then demanded "renew or withdraw" a question "asked before this
+  turn", forcing an extra turn. A question reported in the current turn
+  (its report's turn id or time after the turn's start) is current; only
+  older open questions get the reminder.
+
+- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
+  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
+  repository; use herdr's own copy (a `herdr todo edit` command) so any
+  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
+  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
+  in one repository and whose worker works in another, and a configurable
+  main branch per repository (`.herdr/`); items spanning both (a tools
+  commit, a release tag, a rormpc commit) need ordered steps across
+  repositories.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
