@@ -1198,3 +1198,13 @@ Decided by the coordinator: turns started through the API (`herdr agent
 prompt`) do not get the reminder (the hook cannot tell them from the
 user's), accepted; a question now survives a permission dialog in the
 same turn, the turn-end reminder clears a stale one.
+
+## Collapsed and dragged spaces
+
+Dragging and collapsed spaces (screenshots 2026-09-26/29). The live reorder
+landed earlier; the collapsed one-line space with the focused space's accent
+fill, its own `collapsed_row` tokens and the `↳` focus-inside cue for
+worktree parents landed 2026-10-11 (cf49ba40). Decided by the user
+2026-10-11 from a menu (d-fwxs4xwq): keep it. Not done, on purpose: the
+row-by-row slide animation, a per-job menu on a square, the drag in the
+multi-machine sidebar, the priority view.
