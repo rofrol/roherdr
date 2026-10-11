@@ -25,6 +25,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   report is recorded once its tool call's `tool_use` line is read (or just
   before the turn's `result` when none comes), so `tool_calls` is never
   empty by ordering; 40/40 under a stress loop.
+  Gap found 2026-10-11: `--note --next <the same item>` is refused with
+  "--next names the item this run closes", but a note keeps the item
+  open, so a multi-step item (the mod.rs split) cannot chain its own next
+  step; allow the same item after `--note` (never after `--close`).
 
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
