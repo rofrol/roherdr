@@ -1310,6 +1310,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   install of f2c56a2e, or the submit path did not clear it) and fix it;
   the line shows the newest open question.
 
+- [ ] Wake a coordinator when an external reply arrives (the owner via the [t-22gwwmer]
+  roguix-vps coordinator, 2026-10-11: "why is nothing happening here?
+  report it to the herdr coordinator"). roguix-vps waits on RackNerd
+  ticket MJ96115 answered by mail; four times in ~18 h the session sat
+  idle until the owner noticed the mail himself (one question sat 1.5 h).
+  No allowed way to wait exists: `herdr-job watch` waits on a pid,
+  `awaiting-reply` waits on the user, and a session's own poll loop is
+  forbidden. Want: a herdr-job wait on an external condition that shows in
+  the sidebar and re-invokes the session when it fires, e.g. IMAP IDLE
+  through himalaya if it supports it (a push event), else `herdr-job watch
+  --until '<command exits 0>' --every <interval>` labelled `delay: external
+  polling` (mail has no push here; Rule 10 allows external polling); and
+  a pane mark "waiting on someone outside" with the condition named, so
+  the owner sees why it is idle. Decide the shape with the models when
+  picked up.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
