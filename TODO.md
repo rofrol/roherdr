@@ -1059,6 +1059,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `-f -`) and say it in the consult and openrouter SKILL.md files.
   Approved by the user 2026-10-09 ("zgoda jest").
 
+- [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
+  2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
+  built: "but a new state is also needed: there is a question, but the
+  agent is still working or has delegated something and work goes on").
+  Since f2c56a2e an open question persists while the agent works, and the
+  `?` mark and the working/`◔` marks compete for one glyph. Want one
+  combined mark (both facts visible at once: an open question for the user
+  and the agent working, or its own background work or worker running),
+  with the status legend entry and the tooltip naming both. Same item:
+  the screenshot's tab line showed an answered question first ("Zwolnisz
+  19 GiB?", the space was freed): check why it stayed (asked before the
+  install of f2c56a2e, or the submit path did not clear it) and fix it;
+  the line shows the newest open question.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
