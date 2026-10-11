@@ -1157,3 +1157,10 @@ excluded, they stop workers themselves); a worker lost between turns shows
 "finished, ended by a server restart"; per-state glyphs; the fold button
 folds quiet worker lines; 2+ ended workers per owner tab collapse into an
 "N ended workers" line that unfolds on click.
+
+## The space row's `T` becomes the coordinator crown (user, 2026-10-09:
+
+The space row's ` T ` chip became the coordinator crown (user,
+2026-10-09; 21032101): the shared `COORDINATOR_MARK`, padded and drawn in
+one column so a wider rendering does not shift the row; click and tooltip
+unchanged.

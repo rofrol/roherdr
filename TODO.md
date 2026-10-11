@@ -348,14 +348,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     cache) depends on the repository; it belongs in each repository's
     AGENTS.md, the global rule stays language-neutral.
 
-- [ ] The space row's `T` becomes the coordinator crown (user, 2026-10-09: [t-czovnhtt]
-  "the T icon in the herdr space line should be a crown icon, like in the
-  tab"). `TODO_LABEL` (" T ", src/client/shell/sidebar.rs) starts the
-  space's `todo_command`, i.e. a coordinator; use the same crown glyph the
-  sidebar shows for a `coordinator` tab, with the same width handling as
-  the other chips (a glyph whose width differs between terminals must not
-  shift the row), and keep its click and tooltip behavior.
-
 - [ ] Compare the current headless worker implementation with T3 Code again, [t-ofobwsra]
   with the models (user, 2026-10-08: "in spare time, maybe give the models
   the current implementation to analyse again and let them compare it with
