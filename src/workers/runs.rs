@@ -68,6 +68,7 @@ use crate::api::schema::{
     WorkerVerdict, WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
 };
 
+pub(super) mod activity;
 mod auto_answer;
 mod auto_draft;
 mod auto_review;
@@ -1533,6 +1534,9 @@ impl WorkerSupervisor {
                     .iter()
                     .map(super::capabilities::PreparePlan::run_grant)
                     .collect(),
+                step_started_ms: None,
+                step_command: None,
+                step_log: None,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1818,7 +1822,8 @@ impl WorkerSupervisor {
     /// observable fact, no clock is. `todo.wait` does not raise it, so a
     /// wait right after `approve` does not report a stop still in flight.
     pub(crate) fn todo_status(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
-        self.todo_status_raw(run_id).map(decision::shown)
+        self.todo_status_raw(run_id)
+            .map(|info| activity::shown(decision::shown(info)))
     }
 
     fn todo_status_raw(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
@@ -1919,7 +1924,7 @@ impl WorkerSupervisor {
             .runs(repo.as_deref())
             .map_err(store_error)?
             .into_iter()
-            .map(|run| decision::shown(run.info))
+            .map(|run| activity::shown(decision::shown(run.info)))
             .collect();
         Ok((runs, None))
     }
@@ -1948,7 +1953,7 @@ impl WorkerSupervisor {
                 decision::failure_event(&run.info, latest.as_ref().map(|(seq, _)| *seq))
                     .filter(|event| params.after.is_none_or(|after| event.event_id > after))
             {
-                return Ok(Some((event, decision::shown(run.info))));
+                return Ok(Some((event, activity::shown(decision::shown(run.info)))));
             }
             if let Some((seq, body)) = latest {
                 let ended = matches!(
@@ -2681,6 +2686,10 @@ impl WorkerSupervisor {
                 announce();
                 return;
             }
+            // The step it enters is published before it runs.
+            if activity::observe(&run.info, None, now_ms()) {
+                announce();
+            }
             let stepped = match run.info.step {
                 TodoStep::Draft => self.step_draft(&mut run),
                 TodoStep::Preflight | TodoStep::Start => self.step_start(&mut run),
@@ -2724,6 +2733,7 @@ impl WorkerSupervisor {
         let seq = store
             .transaction(|tx| tx.run_event(run, &event, pending, now_ms()))
             .map_err(|error| format!("the worker store failed: {error}"))?;
+        activity::observe(&run.info, Some(&event), run.info.updated_ms);
         announce();
         Ok(seq)
     }

@@ -677,6 +677,9 @@ fn mobile_items(
                 "awaiting reply".to_owned()
             } else if mark == AgentMark::WaitsOnIdleJob {
                 "waiting on an idle job".to_owned()
+            } else if mark == AgentMark::Waits {
+                super::todo_runs::pane_wait(endpoint.snapshot, &agent.pane_id)
+                    .map_or_else(|| "waiting".to_owned(), super::todo_runs::waiting_text)
             } else if mark == AgentMark::WaitsOnJob {
                 "waiting on job".to_owned()
             } else if mark == AgentMark::BackgroundWork {

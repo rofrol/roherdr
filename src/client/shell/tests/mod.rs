@@ -98,6 +98,8 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         worker_items: Vec::new(),
         pty_usage: None,
         open_questions: Vec::new(),
+        todo_runs: Vec::new(),
+        waits: Vec::new(),
     }
 }
 
@@ -297,5 +299,6 @@ mod mouse_selection;
 mod popup_focus_projection;
 mod space_tabs;
 mod startup_overlays;
+mod todo_runs;
 mod worker_question;
 mod worker_view;

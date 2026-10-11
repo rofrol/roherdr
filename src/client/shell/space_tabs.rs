@@ -86,6 +86,14 @@ pub(super) struct SpaceTabLine {
     /// [`RESTART_MARK`]'s tooltip names them; none when every agent is
     /// current.
     pub(super) restart: Option<String>,
+    /// Set on a todo run's line (see [`super::todo_runs::run_lines_at`]);
+    /// its `tab_id` is [`super::todo_runs::run_line_id`], never a real
+    /// tab's.
+    pub(super) run: Option<super::todo_runs::RunLine>,
+    /// The job its waiting agent waits on, as a row of its own under the
+    /// line (`job Build · running · since 17:30 · last output 17:33`),
+    /// while no ask takes that row.
+    pub(super) wait: Option<String>,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -182,6 +190,11 @@ pub(super) fn tab_indent(indented: bool) -> u16 {
     }
 }
 impl SpaceTabLine {
+    /// The row under the line: its agent's ask, else what it waits on.
+    pub(super) fn below(&self) -> Option<&str> {
+        self.ask.as_deref().or(self.wait.as_deref())
+    }
+
     /// Rows the line takes: its own, its agent's ask and, while unfolded,
     /// its squares'. Unfolded squares are followed by an empty row, so they
     /// do not run into the next tab line.
@@ -191,15 +204,17 @@ impl SpaceTabLine {
         } else {
             0
         };
-        (1 + usize::from(self.ask.is_some()) + squares + usize::from(self.hidden_focus.is_some()))
-            .min(u16::MAX as usize) as u16
+        (1 + usize::from(self.below().is_some())
+            + squares
+            + usize::from(self.hidden_focus.is_some()))
+        .min(u16::MAX as usize) as u16
     }
 }
 
 impl SpaceTabLine {
     /// The row, among the rows under this line, of the open job's square.
     pub(super) fn focused_square_row(&self, width: u16) -> Option<usize> {
-        let ask = usize::from(self.ask.is_some());
+        let ask = usize::from(self.below().is_some());
         if self
             .hidden_focus
             .as_ref()
@@ -457,6 +472,8 @@ pub(super) fn worker_lines_at(
                 background: None,
                 background_count: 0,
                 restart: None,
+                run: None,
+                wait: None,
             }
         })
         .collect()
@@ -659,7 +676,8 @@ pub(super) fn space_tab_lines_filtered(
                 agent: super::agent_launch::tab_agent(snapshot, &tab.tab_id).map(str::to_owned),
                 active: active_group == Some(tab.tab_id.as_str()),
                 jobs: super::tab_groups::children_summary_segments(&group),
-                plan: tab_plan(snapshot, tab),
+                plan: super::todo_runs::tab_waiting_text(snapshot, tab, state)
+                    .or_else(|| tab_plan(snapshot, tab)),
                 unfolded,
                 hidden_focus,
                 squares,
@@ -677,6 +695,8 @@ pub(super) fn space_tab_lines_filtered(
                 background: tab_background(snapshot, tab, state),
                 background_count: tab_background_count(snapshot, tab),
                 restart: tab_restart(snapshot, tab),
+                run: None,
+                wait: super::todo_runs::tab_wait_row(snapshot, tab, state),
             }
         })
         .collect::<Vec<_>>();
@@ -724,6 +744,8 @@ pub(super) fn space_tab_lines_filtered(
                 background: None,
                 background_count: 0,
                 restart: None,
+                run: None,
+                wait: None,
             });
         }
     }
@@ -731,6 +753,11 @@ pub(super) fn space_tab_lines_filtered(
         workers = collapse_ended_workers(snapshot, workspace, workers, unfolded_squares);
     }
     lines.extend(workers);
+    lines.extend(
+        super::todo_runs::run_lines(snapshot, workspace)
+            .into_iter()
+            .filter(|line| filter.is_none_or(|view| view.shows_tab(workspace, &line.tab_id))),
+    );
     lines
 }
 
@@ -795,6 +822,8 @@ fn collapse_ended_workers(
                 background: None,
                 background_count: 0,
                 restart: None,
+                run: None,
+                wait: None,
             });
         }
         if open {
@@ -1123,6 +1152,10 @@ fn tab_state(
         });
     let mark = if awaits_reply {
         AgentMark::AwaitsReply
+    } else if matches!(status, AgentStatus::Idle | AgentStatus::Done)
+        && super::todo_runs::tab_wait(snapshot, &tab.tab_id).is_some()
+    {
+        AgentMark::Waits
     } else if waits_on_job(snapshot, &tab.tab_id, status) {
         if waits_on_idle_job(snapshot, &tab.tab_id) {
             AgentMark::WaitsOnIdleJob
@@ -1413,7 +1446,7 @@ pub(super) fn render_space_tab_lines(
             continue;
         }
         // The ask's row belongs to the line: one target for both.
-        let line_rows = if line.ask.is_some() && y.saturating_add(1) < area.bottom() {
+        let line_rows = if line.below().is_some() && y.saturating_add(1) < area.bottom() {
             2
         } else {
             1
@@ -1533,9 +1566,10 @@ pub(super) fn render_space_tab_lines(
         hits.tooltips.push(super::tooltip::TooltipTarget {
             rect: glyph,
             id: format!("tab-state:{}", line.tab_id),
-            text: match &line.worker {
-                Some(worker) => format!("{}{LEGEND_CLICK}", worker.tooltip),
-                None => format!(
+            text: match (&line.worker, &line.run) {
+                (Some(worker), _) => format!("{}{LEGEND_CLICK}", worker.tooltip),
+                (None, Some(run)) => format!("{}{LEGEND_CLICK}", run.tooltip),
+                (None, None) => format!(
                     "{}{}{}",
                     match line.state {
                         Some((status, mark)) => {
@@ -1769,12 +1803,18 @@ pub(super) fn render_space_tab_lines(
             );
         }
         let label = truncate(&line.label, label_width as usize);
-        if let Some(worker) = &line.worker {
-            // A worker has no tab to show what it is: the label says it.
+        if let Some(tooltip) = line
+            .worker
+            .as_ref()
+            .map(|worker| &worker.tooltip)
+            .or(line.run.as_ref().map(|run| &run.tooltip))
+        {
+            // A worker or a run has no tab to show what it is: the label
+            // says it.
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect: Rect::new(label_x, y, label_width, 1),
                 id: format!("tab:{}", line.tab_id),
-                text: worker.tooltip.clone(),
+                text: tooltip.clone(),
                 bg: Some(bg),
                 starts_at_target: true,
             });
@@ -1859,7 +1899,7 @@ pub(super) fn render_space_tab_lines(
             );
         }
         y = y.saturating_add(1);
-        if let Some(ask) = line.ask.as_deref().filter(|_| line_rows == 2) {
+        if let Some(ask) = line.below().filter(|_| line_rows == 2) {
             // Under the label, dim, on the line's fill, as the `?` list's
             // second line.
             buffer.set_style(

@@ -63,6 +63,7 @@ pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use error::WorkerError;
 pub(crate) use item_coordinators::resume_item_coordinators_at_start;
 pub(crate) use log::{entry_lines, log_lines};
+pub(crate) use runs::activity::{ActiveRun, RunWait, WaitEdge};
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
 pub(crate) use runs::{resume_runs_at_start, usage_reading_published};
@@ -485,6 +486,20 @@ pub(crate) fn take_user_notices() -> Vec<UserNotice> {
 
 /// Every pending question of the server's supervisor; empty when no
 /// supervisor was opened (it is never opened just to answer this).
+/// The todo runs in progress with what their drivers publish of their
+/// steps, for the client snapshot; none before the supervisor opened.
+pub(crate) fn active_runs() -> Vec<ActiveRun> {
+    SUPERVISOR
+        .get()
+        .map(WorkerSupervisor::active_runs)
+        .unwrap_or_default()
+}
+
+/// The `todo.wait`s that block now: who waits on which run.
+pub(crate) fn run_waits() -> Vec<RunWait> {
+    runs::activity::run_waits()
+}
+
 pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
     SUPERVISOR
         .get()

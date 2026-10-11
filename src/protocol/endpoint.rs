@@ -293,6 +293,8 @@ mod tests {
             worker_items: Vec::new(),
             pty_usage: None,
             open_questions: Vec::new(),
+            todo_runs: Vec::new(),
+            waits: Vec::new(),
         }
     }
 

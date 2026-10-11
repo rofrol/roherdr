@@ -47,6 +47,7 @@ mod status_legend;
 mod surface_patch;
 mod tab_groups;
 mod text_editor;
+mod todo_runs;
 mod tooltip;
 mod usage;
 mod word_selection;
@@ -412,6 +413,9 @@ enum AgentMark {
     /// Its own background work still runs (see `background_work`): drawn
     /// apart from a plain finished dot, in the same colour.
     BackgroundWork,
+    /// It waits on a job or a todo run: a wait edge the server reports
+    /// (`ClientShellSnapshot::waits`), the strongest sign it waits.
+    Waits,
     /// A job it started still runs (see `waits_on_job`).
     WaitsOnJob,
     /// Every job it started that still runs is idle (see `waits_on_idle_job`).
@@ -428,6 +432,10 @@ fn agent_mark(
     use crate::api::schema::AgentStatus;
     if agent.awaiting_reply && matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done) {
         AgentMark::AwaitsReply
+    } else if matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done)
+        && todo_runs::pane_wait(snapshot, &agent.pane_id).is_some()
+    {
+        AgentMark::Waits
     } else if waits_on_job(snapshot, &agent.tab_id, agent.agent_status) {
         if waits_on_idle_job(snapshot, &agent.tab_id) {
             AgentMark::WaitsOnIdleJob
@@ -442,9 +450,9 @@ fn agent_mark(
 }
 
 impl AgentMark {
-    /// Waits on a running job, idle or not.
+    /// Waits on a running job, idle or not, or on a todo run.
     fn waits_on_a_job(self) -> bool {
-        matches!(self, Self::WaitsOnJob | Self::WaitsOnIdleJob)
+        matches!(self, Self::Waits | Self::WaitsOnJob | Self::WaitsOnIdleJob)
     }
 }
 
@@ -478,6 +486,8 @@ fn agent_icon(
 ) -> &'static str {
     match (mark, style) {
         (AgentMark::AwaitsReply, _) => "?",
+        // An hourglass: it waits on something named (`waiting: <name>`).
+        (AgentMark::Waits, _) => "⧖",
         // A job that runs but does nothing: a still `z`, "asleep". A dotted
         // ring (◌) rendered as a few faint dots and was hard to see.
         (AgentMark::WaitsOnIdleJob, _) => "z",
@@ -505,7 +515,7 @@ fn agent_color(
     palette: &Palette,
 ) -> ratatui::style::Color {
     match mark {
-        AgentMark::WaitsOnJob | AgentMark::WaitsOnIdleJob => palette.mauve,
+        AgentMark::Waits | AgentMark::WaitsOnJob | AgentMark::WaitsOnIdleJob => palette.mauve,
         AgentMark::AwaitsReply => status_color(crate::api::schema::AgentStatus::Done, palette),
         AgentMark::BackgroundWork | AgentMark::None => status_color(status, palette),
     }

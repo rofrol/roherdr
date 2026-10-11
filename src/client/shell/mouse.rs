@@ -2672,6 +2672,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                // A run's line has no menu: it is no tab.
+                if self.run_line_at(point).is_some() {
+                    return;
+                }
                 if let Some(tab_id) = self.space_tab_at(point) {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -3092,6 +3096,11 @@ impl ClientShellState {
                 if let Some(entry) = legend {
                     self.open_status_legend(Some(entry));
                     outcome.repaint = true;
+                    return;
+                }
+                // A todo run's line opens its step's log.
+                if let Some(run_id) = self.run_line_at(point) {
+                    self.open_run_log(run_id, outcome);
                     return;
                 }
                 // A worker's line opens its question, else its log.

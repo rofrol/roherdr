@@ -1944,6 +1944,9 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             drafted: finish.draft,
             queued: finish.queued,
             grants: finish.run_grants(),
+            step_started_ms: None,
+            step_command: None,
+            step_log: None,
         },
         checks,
         finish,
@@ -2523,6 +2526,17 @@ impl Store {
             "WHERE ?1 IS NULL OR r.repo = ?1 ORDER BY r.created_ms, r.rowid",
         ))?;
         let runs = statement.query_map([repo], run_from_row)?;
+        runs.collect()
+    }
+
+    /// The runs in progress (running, or waiting for their coordinator),
+    /// oldest first: at most one per repository.
+    pub(super) fn runs_in_progress(&self) -> StoreResult<Vec<Run>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&run_select(
+            "WHERE r.status IN ('running', 'waiting') ORDER BY r.created_ms, r.rowid",
+        ))?;
+        let runs = statement.query_map([], run_from_row)?;
         runs.collect()
     }
 

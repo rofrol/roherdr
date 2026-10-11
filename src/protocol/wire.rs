@@ -976,6 +976,69 @@ pub struct ClientShellSnapshot {
     /// agents that await a reply instead.
     #[serde(default)]
     pub open_questions: Vec<ClientShellOpenQuestion>,
+    /// The `herdr todo run`s in progress, oldest first, for their lines
+    /// under their coordinator's space. None from a server that does not
+    /// send them.
+    #[serde(default)]
+    pub todo_runs: Vec<ClientShellTodoRun>,
+    /// What panes wait on now (a herdr-job job, a todo run), for the
+    /// waiting state of their tab. None from a server that does not send
+    /// them.
+    #[serde(default)]
+    pub waits: Vec<ClientShellWait>,
+}
+
+/// A `herdr todo run` in progress as its driver publishes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellTodoRun {
+    pub run_id: String,
+    /// Its repository and TODO item.
+    pub repo: String,
+    pub item: String,
+    /// Its step and status as `todo.status` names them (`install`,
+    /// `running`), strings so a name this client does not know cannot
+    /// break the snapshot.
+    pub step: String,
+    pub status: String,
+    pub attempt: u32,
+    /// The space and pane of the coordinator that owns it.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub owner_pane_id: Option<String>,
+    /// When its driver entered the step, Unix milliseconds.
+    #[serde(default)]
+    pub step_started_ms: Option<u64>,
+    /// The command the step runs, while it runs.
+    #[serde(default)]
+    pub step_command: Option<String>,
+    /// Whether the step has a log to show (`todo.open_log`).
+    #[serde(default)]
+    pub has_log: bool,
+}
+
+/// A wait edge: a pane waits on a job or a todo run now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellWait {
+    /// The waiting pane.
+    pub pane_id: String,
+    /// `job` (a herdr-job job) or `run` (a `herdr todo run`).
+    pub kind: String,
+    /// The job's or the run's id.
+    pub target: String,
+    /// The job's name, or the run's id.
+    pub name: String,
+    /// The job's tab, which shows its output; none for a run.
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    /// When the job started, or the wait on the run began, Unix
+    /// milliseconds.
+    #[serde(default)]
+    pub since_ms: Option<u64>,
+    /// When the job last printed, to the minute; none for a run, or a job
+    /// that printed nothing yet.
+    #[serde(default)]
+    pub last_output_ms: Option<u64>,
 }
 
 /// A question an agent asked the user that is still open.
@@ -3143,6 +3206,28 @@ mod tests {
                 id: 3,
                 question: Some("Install now?".into()),
                 since_ms: 1_000,
+            }],
+            todo_runs: vec![ClientShellTodoRun {
+                run_id: "r-abcd2345".into(),
+                repo: "/repo".into(),
+                item: "t-aaaaaaaa".into(),
+                step: "install".into(),
+                status: "running".into(),
+                attempt: 1,
+                workspace_id: Some("w1".into()),
+                owner_pane_id: Some("w1:p1".into()),
+                step_started_ms: Some(1_000),
+                step_command: Some("just clean-install TODO.md".into()),
+                has_log: true,
+            }],
+            waits: vec![ClientShellWait {
+                pane_id: "w1:p1".into(),
+                kind: "job".into(),
+                target: "20261011-173000-ab12".into(),
+                name: "Build b17".into(),
+                tab_id: Some("w1:t2".into()),
+                since_ms: Some(1_000),
+                last_output_ms: None,
             }],
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();

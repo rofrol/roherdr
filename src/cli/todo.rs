@@ -137,6 +137,12 @@ const USAGE: &str = "usage:
   herdr todo status <run-id>
       Prints the run. Asked while its worker has not exited since the stop,
       it raises a still_alive event first, which takes force-stop.
+      step_started_ms, step_command and step_log say what the driver does
+      at its step now: when it entered it, the command it runs there while
+      it runs, and that command's log.
+  herdr todo log [--follow] <run-id>
+      Prints the log of the run's current step (step_log); --follow keeps
+      printing what is appended until q, Esc or Ctrl-C. Read-only.
   herdr todo review <run-id> [--attempt N] [--diff] [--json]
       Prints in one view what you review of the run's attempt N (default:
       its current one): the task the worker got with the contract appended,
@@ -239,6 +245,10 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         let json = args.iter().any(|arg| arg == "--json");
         return super::todo_review::print_review(&super::send_request(&request)?, json);
     }
+    if args.first().map(String::as_str) == Some("log") {
+        let follow = args.iter().any(|arg| arg == "--follow");
+        return print_step_log(&super::send_request(&request)?, follow);
+    }
     let command = super::report::command_line(&["herdr", "todo"], args);
     if matches!(request.method, Method::TodoWait(_)) {
         return wait_across_handoffs(&request, &command);
@@ -253,6 +263,53 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         }
     }
     Ok(code)
+}
+
+/// Prints the log `todo.status` names for the run's current step, and
+/// with `follow` what is appended to it, its control characters shown as
+/// spaces (a log is not a terminal).
+fn print_step_log(response: &serde_json::Value, follow: bool) -> std::io::Result<i32> {
+    let run = &response["result"]["run"];
+    let Some(path) = run["step_log"].as_str() else {
+        if response.get("error").is_some() {
+            return super::print_response(response);
+        }
+        eprintln!(
+            "run {} has no log at its step ({})",
+            run["run_id"].as_str().unwrap_or("?"),
+            run["step"].as_str().unwrap_or("?")
+        );
+        return Ok(1);
+    };
+    let title = format!(
+        "run {} · {} · {}",
+        run["run_id"].as_str().unwrap_or("?"),
+        run["step"].as_str().unwrap_or("?"),
+        run["step_command"].as_str().unwrap_or(path)
+    );
+    let file = std::fs::File::open(path)?;
+    if follow {
+        return super::worker::follow_lines(&title, file, |line| vec![log_line(line)]);
+    }
+    println!("{title}");
+    for line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+        println!("{}", log_line(&line?));
+    }
+    Ok(0)
+}
+
+/// A log line as the log view shows it: control characters (escape
+/// sequences' starts, carriage returns) as spaces.
+fn log_line(line: &str) -> String {
+    line.chars()
+        .map(|character| {
+            if character.is_control() && character != '\t' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 /// The user's own confirmation of a grant, on a terminal: an agent's
@@ -535,6 +592,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             Method::TodoWait(TodoWaitParams {
                 run_id: one_run_id("wait", &rest)?,
                 after,
+                waiter_pane: super::target::caller_pane_id(),
             })
         }
         "resume" => {
@@ -645,6 +703,13 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "status" => Method::TodoStatus(TodoRunTarget {
             run_id: one_run_id("status", rest)?,
         }),
+        // The status names the step's log, which the CLI reads itself.
+        "log" => {
+            let (_, rest) = take_switch(rest, "--follow")?;
+            Method::TodoStatus(TodoRunTarget {
+                run_id: one_run_id("log", &rest)?,
+            })
+        }
         "review" => {
             let (_, rest) = take_switch(rest, "--json")?;
             let (diff, rest) = take_switch(&rest, "--diff")?;
@@ -1125,6 +1190,18 @@ mod tests {
         assert_eq!(wait.after, Some(7));
         assert!(parse(&args(&["wait"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
+    }
+
+    #[test]
+    fn log_reads_the_runs_status_and_shows_control_characters_as_spaces() {
+        let Ok(Some(Method::TodoStatus(target))) = parse(&args(&["log", "--follow", "r-abcd2345"]))
+        else {
+            panic!("log did not parse");
+        };
+        assert_eq!(target.run_id, "r-abcd2345");
+        assert!(parse(&args(&["log"])).is_err());
+        assert_eq!(log_line("\u{1b}[1mok\r"), " [1mok ");
+        assert_eq!(log_line("a\tb"), "a\tb");
     }
 
     #[test]

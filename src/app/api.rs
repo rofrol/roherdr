@@ -14,6 +14,7 @@ mod session;
 mod supervision;
 mod tabs;
 mod usage;
+mod waits;
 mod workers;
 mod workspaces;
 mod worktrees;
@@ -1435,6 +1436,7 @@ impl App {
             Method::WorkerOpenLog(target) => {
                 return self.handle_worker_open_log(request.id, target)
             }
+            Method::TodoOpenLog(target) => return self.handle_todo_open_log(request.id, target),
             // A client's answer dialog: the question when the user opens it,
             // and the answer or stop the user clicks.
             Method::WorkerQuestion(target) => {

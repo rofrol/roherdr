@@ -24,13 +24,14 @@ use crate::config::StatusIndicatorStyle;
 
 /// Every agent state the sidebar can show, in the order the legend lists
 /// them: the plain statuses, then the marks that override a finished one.
-pub(super) const AGENT_STATES: [(AgentStatus, AgentMark); 9] = [
+pub(super) const AGENT_STATES: [(AgentStatus, AgentMark); 10] = [
     (AgentStatus::Working, AgentMark::None),
     (AgentStatus::Blocked, AgentMark::None),
     (AgentStatus::Done, AgentMark::None),
     (AgentStatus::Idle, AgentMark::None),
     (AgentStatus::Unknown, AgentMark::None),
     (AgentStatus::Idle, AgentMark::AwaitsReply),
+    (AgentStatus::Idle, AgentMark::Waits),
     (AgentStatus::Idle, AgentMark::WaitsOnJob),
     (AgentStatus::Idle, AgentMark::WaitsOnIdleJob),
     // Shown in the finished colour it keeps: the dot it stands apart from.
@@ -164,9 +165,10 @@ pub(super) fn agent_entry(status: AgentStatus, mark: AgentMark) -> LegendEntry {
     let status = match mark {
         AgentMark::None => status,
         AgentMark::BackgroundWork => AgentStatus::Done,
-        AgentMark::AwaitsReply | AgentMark::WaitsOnJob | AgentMark::WaitsOnIdleJob => {
-            AgentStatus::Idle
-        }
+        AgentMark::AwaitsReply
+        | AgentMark::Waits
+        | AgentMark::WaitsOnJob
+        | AgentMark::WaitsOnIdleJob => AgentStatus::Idle,
     };
     LegendEntry::Agent(status, mark)
 }
@@ -186,6 +188,7 @@ pub(super) fn worker_entry(state: &str) -> LegendEntry {
 pub(super) fn agent_state_label(status: AgentStatus, mark: AgentMark) -> &'static str {
     match mark {
         AgentMark::AwaitsReply => "a question for you; clears when you submit a reply",
+        AgentMark::Waits => "turn ended; it waits on a job or a todo run (waiting: its name)",
         AgentMark::WaitsOnJob => "turn ended; a job it started still runs",
         AgentMark::WaitsOnIdleJob => "turn ended; its running jobs are silent",
         AgentMark::BackgroundWork => "finished, background work running (its bg token names it)",
@@ -683,6 +686,7 @@ mod tests {
         [
             AgentMark::None,
             AgentMark::AwaitsReply,
+            AgentMark::Waits,
             AgentMark::WaitsOnJob,
             AgentMark::WaitsOnIdleJob,
             AgentMark::BackgroundWork,
@@ -691,6 +695,7 @@ mod tests {
         .inspect(|mark| match mark {
             AgentMark::None
             | AgentMark::AwaitsReply
+            | AgentMark::Waits
             | AgentMark::WaitsOnJob
             | AgentMark::WaitsOnIdleJob
             | AgentMark::BackgroundWork => {}
@@ -999,6 +1004,7 @@ mod tests {
     fn a_mark_means_the_same_whatever_the_finished_status_under_it() {
         for mark in [
             AgentMark::AwaitsReply,
+            AgentMark::Waits,
             AgentMark::WaitsOnJob,
             AgentMark::WaitsOnIdleJob,
             AgentMark::BackgroundWork,

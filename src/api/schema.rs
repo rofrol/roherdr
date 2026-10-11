@@ -176,6 +176,10 @@ pub enum Method {
     TodoStatus(TodoRunTarget),
     #[serde(rename = "todo.runs")]
     TodoRuns(TodoRunsParams),
+    /// Opens a popup that shows the log of the run's current step and
+    /// follows it (`herdr todo log --follow`).
+    #[serde(rename = "todo.open_log")]
+    TodoOpenLog(TodoRunTarget),
     /// One attempt of a run as the coordinator reviews it: its task, the
     /// worker's last reply, questions and failed tool calls, the diff, the
     /// verify and the approval.

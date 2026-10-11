@@ -569,15 +569,27 @@ class BgBadgeTests(unittest.TestCase):
     def test_the_hook_reports_the_waited_panes_beside_the_count(self):
         waits = {"edges": 1, "waits": [], "agents": [{"target_pane": "p7"}]}
         ttl = ["--ttl-ms", str(BADGE["TTL_MS"])]
+        no_jobs = ["--clear-token", "bg_wait_jobs"]
         args = self.report([{"status": "running"}], waits)
         self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg_waits=1",
-                                "--token", "bg=1 bg", "--token", "bg_agents=p7", *ttl])
+                                "--token", "bg=1 bg", "--token", "bg_agents=p7", *no_jobs, *ttl])
         args = self.report([{"status": "running"}], {"edges": 0, "waits": []})
         self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg_waits=0",
-                                "--token", "bg=1 bg", "--clear-token", "bg_agents", *ttl])
+                                "--token", "bg=1 bg", "--clear-token", "bg_agents", *no_jobs, *ttl])
         args = self.report([{"status": "completed"}], waits)
         self.assertEqual(args, ["--token", "bg_count=0", "--token", "bg_waits=0",
-                                "--clear-token", "bg", "--clear-token", "bg_agents", *ttl])
+                                "--clear-token", "bg", "--clear-token", "bg_agents", *no_jobs, *ttl])
+
+    def test_the_hook_names_the_running_jobs_its_waits_wait_on_its_own_too(self):
+        waits = {"edges": 3, "waits": [self.wait("a", local=True), self.wait("a"),
+                                       self.wait("b", running=False), self.wait("c")]}
+        args = self.report([{"status": "running"}] * 3, waits)
+        self.assertIn("bg_wait_jobs=a c", args)
+        # No running task: nothing waits, whatever records are left.
+        args = self.report([{"status": "completed"}], waits)
+        self.assertIn("bg_wait_jobs", args)
+        self.assertFalse(any(arg.startswith("bg_wait_jobs=") for arg in args))
+        self.assertEqual(BADGE["waited_jobs"](None), [])
 
     def test_the_hook_reports_how_many_running_tasks_are_herdr_job_waits(self):
         # Two tasks: one waits on another tab's job, one is a plain shell.
@@ -606,6 +618,30 @@ class BgBadgeTests(unittest.TestCase):
         self.assertEqual(count(4, waits), 3)
         self.assertEqual(count(1, {"edges": 1, "waits": [self.wait("a", local=True)]}), 0)
         self.assertEqual(count(2, None), 2)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class OutputClockTests(unittest.TestCase):
+    def test_it_reports_the_start_and_the_first_output_of_each_minute(self):
+        reports = []
+        clock = JOB["OutputClock"]("p9")
+        with patch.object(clock, "report", lambda key, at: reports.append((key, at))):
+            clock.started(100.0)
+            for at in (120.0, 130.0, 179.0, 180.5, 181.0, 300.0):
+                clock.output(at)
+        self.assertEqual(reports, [("job_started_ms", 100.0), ("job_output_ms", 120.0),
+                                   ("job_output_ms", 180.5), ("job_output_ms", 300.0)])
+
+    def test_a_report_names_the_pane_and_the_time_never_the_output(self):
+        calls = []
+        clock = JOB["OutputClock"]("p9")
+        with patch.dict(JOB["OutputClock"].report.__globals__,
+                        {"herdr_ok": lambda *args: calls.append(args)}), \
+                patch.object(threading, "Thread",
+                             lambda target, args, daemon: SimpleNamespace(start=lambda: target(*args))):
+            clock.started(1.5)
+        self.assertEqual(calls, [("pane", "report-metadata", "p9", "--source", "herdr-job",
+                                  "--token", "job_started_ms=1500")])
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

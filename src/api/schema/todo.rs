@@ -214,6 +214,11 @@ pub struct TodoWaitParams {
     /// last event however old.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<i64>,
+    /// The pane the wait is sent from (the CLI sends `HERDR_PANE_ID`):
+    /// while the wait blocks, clients show that pane waiting on the run.
+    /// A server that does not know it ignores it, which only loses that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiter_pane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -496,6 +501,19 @@ pub struct TodoRunInfo {
     pub grants: Vec<TodoRunGrant>,
     pub created_ms: u64,
     pub updated_ms: u64,
+    /// When the driver of this server entered the current step, Unix
+    /// milliseconds, from its own step transitions; absent when no driver
+    /// of this server has been at the run since it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_started_ms: Option<u64>,
+    /// The command the step runs, as one line, while it runs (the install's
+    /// argv, the prepare's, the verify's checks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_command: Option<String>,
+    /// The log the step's command writes to; it stays named after the
+    /// command ended, until the run moves to another step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_log: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

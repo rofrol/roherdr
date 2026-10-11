@@ -6572,6 +6572,13 @@
             },
             "run_id": {
               "type": "string"
+            },
+            "waiter_pane": {
+              "description": "The pane the wait is sent from (the CLI sends `HERDR_PANE_ID`):\nwhile the wait blocks, clients show that pane waiting on the run.\nA server that does not know it ignores it, which only loses that.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -8372,6 +8379,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoRunsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Opens a popup that shows the log of the run's current step and\nfollows it (`herdr todo log --follow`).",
+          "properties": {
+            "method": {
+              "const": "todo.open_log",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunTarget"
             }
           },
           "required": [
@@ -19202,6 +19226,29 @@
             },
             "step": {
               "$ref": "#/schemas/success_response/$defs/TodoStep"
+            },
+            "step_command": {
+              "description": "The command the step runs, as one line, while it runs (the install's\nargv, the prepare's, the verify's checks).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "step_log": {
+              "description": "The log the step's command writes to; it stays named after the\ncommand ended, until the run moves to another step.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "step_started_ms": {
+              "description": "When the driver of this server entered the current step, Unix\nmilliseconds, from its own step transitions; absent when no driver\nof this server has been at the run since it started.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "stop_reason": {
               "description": "Why the close or note started no next item (`todo.resume`'s\n`stop_reason`).",

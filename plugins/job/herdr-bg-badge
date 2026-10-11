@@ -18,8 +18,11 @@ pane's own job counts (`$jobs`, the tab's job summary) already show that job,
 once per job, and only while that job runs; the token then names it
 (`1 bg ⧖ Build b17`). A `herdr-job wait-agent <pane>` counts once per waited
 pane, whose ids go in a second token, `bg_agents`, so the sidebar's hover
-over the background mark names that pane's agent wherever it is. Never fails
-the hook: all errors are swallowed.
+over the background mark names that pane's agent wherever it is. A last
+token, `bg_wait_jobs`, names every job whose `herdr-job wait` runs (its own
+jobs included) while that job runs: herdr shows the pane `waiting: <job>`
+while the job's tab runs and its agent sits finished. Never fails the hook:
+all errors are swallowed.
 """
 import json
 import os
@@ -114,6 +117,17 @@ def wait_count(running, waits):
     return min(running, max(0, int(waits.get("edges") or 0)))
 
 
+def waited_jobs(waits):
+    """The `$bg_wait_jobs` value: the ids of the running jobs this pane's
+    `herdr-job wait`s wait on, its own jobs too, once each, in order."""
+    jobs = []
+    for wait in (waits or {}).get("waits") or []:
+        job = " ".join(str(wait.get("job_id") or "").split())
+        if wait.get("running") and job and job not in jobs:
+            jobs.append(job)
+    return jobs
+
+
 def agent_panes(waits):
     """The panes whose agents this pane waits on, once each, in order."""
     panes = []
@@ -163,6 +177,11 @@ def main():
         cmd += ["--token", f"bg_agents={' '.join(panes)}"]
     else:
         cmd += ["--clear-token", "bg_agents"]
+    jobs = waited_jobs(waits) if running else []
+    if jobs:
+        cmd += ["--token", f"bg_wait_jobs={' '.join(jobs)}"]
+    else:
+        cmd += ["--clear-token", "bg_wait_jobs"]
     # Also an observed zero expires: after that nobody knows.
     cmd += ["--ttl-ms", str(TTL_MS)]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)

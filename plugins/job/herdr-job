@@ -1329,6 +1329,36 @@ def keep_awake():
         pass
 
 
+class OutputClock:
+    """Reports on the job's own pane when the job started and, at its first
+    output of each minute, when it last printed (`job_started_ms`,
+    `job_output_ms`, Unix milliseconds): herdr shows them to the panes that
+    wait on the job (`↳ job <name> · running · since 17:30 · last output
+    17:33`). One reporter per job, whose reports rebuild herdr's snapshot
+    like any metadata change; each runs on a thread of its own, so the
+    output never waits for herdr. The log's lines are never reported."""
+
+    def __init__(self, pane):
+        self.pane = pane
+        self.minute = None
+
+    def report(self, key, at):
+        if not self.pane:
+            return
+        threading.Thread(target=herdr_ok, args=(
+            "pane", "report-metadata", self.pane, "--source", "herdr-job",
+            "--token", f"{key}={int(at * 1000)}"), daemon=True).start()
+
+    def started(self, at):
+        self.report("job_started_ms", at)
+
+    def output(self, at):
+        minute = int(at // 60)
+        if minute != self.minute:
+            self.minute = minute
+            self.report("job_output_ms", at)
+
+
 def cmd_exec(args):
     """Runs inside the job's own pane: stream output to the terminal and the log."""
     path = job_dir(args.id)
@@ -1351,6 +1381,8 @@ def cmd_exec(args):
     meta["pid"] = os.getpid()
     meta["started"] = time.time()
     write_meta(path, meta)
+    clock = OutputClock(meta.get("pane_id"))
+    clock.started(meta["started"])
     keep_awake()
     footer = Footer(meta)
     if not meta.get("client_footer"):
@@ -1417,6 +1449,7 @@ def cmd_exec(args):
             threading.Thread(target=watch_activity, args=(proc, meta, last_output), daemon=True).start()
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):
             last_output[0] = time.monotonic()
+            clock.output(time.time())
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
             log.write(chunk)

@@ -881,12 +881,17 @@ fn run_log(args: &[String]) -> std::io::Result<i32> {
         }
         return Ok(0);
     }
-    follow_log(&title, file)
+    follow_lines(&title, file, crate::workers::log_lines)
 }
 
-/// Prints the journal and then what is appended to it, until a key closes
-/// the view. Without a terminal on stdin it follows until killed.
-fn follow_log(title: &str, file: std::fs::File) -> std::io::Result<i32> {
+/// Prints the file's lines (each as `shown` turns it into lines) and then
+/// what is appended to it, until a key closes the view. Without a terminal
+/// on stdin it follows until killed.
+pub(super) fn follow_lines(
+    title: &str,
+    file: std::fs::File,
+    shown: impl Fn(&str) -> Vec<String>,
+) -> std::io::Result<i32> {
     use std::io::{BufRead, IsTerminal, Write};
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -936,8 +941,8 @@ fn follow_log(title: &str, file: std::fs::File) -> std::io::Result<i32> {
             if !pending.ends_with('\n') {
                 break;
             }
-            for shown in crate::workers::log_lines(pending.trim_end()) {
-                write!(out, "{shown}\r\n")?;
+            for line in shown(pending.trim_end()) {
+                write!(out, "{line}\r\n")?;
             }
             pending.clear();
         }

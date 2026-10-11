@@ -348,6 +348,8 @@ pub(super) fn snapshot_with_completions(
             crate::pty::usage::latest(),
         )),
         open_questions,
+        todo_runs: app.client_shell_todo_runs(crate::workers::active_runs()),
+        waits: app.client_shell_waits(crate::workers::run_waits()),
     };
     (shell, completions)
 }

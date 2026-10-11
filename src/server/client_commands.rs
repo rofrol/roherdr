@@ -58,6 +58,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.rename",
     "tab.reopen_closed",
     "tab.set_job_metadata",
+    "todo.open_log",
     "todo.review",
     "usage.read",
     "usage.set_enabled",
@@ -412,6 +413,10 @@ mod tests {
         assert_eq!(
             actual.remove("history.list").as_deref(),
             Some("35656e568017bd1989b9885359d591c46b3c840ce4a26716320fdcd621578e76")
+        );
+        assert_eq!(
+            actual.remove("todo.open_log").as_deref(),
+            Some("7ebeaf66df6c4519c30e9b44359de290fa05ca6d4ee1007b4193eebdc97fb0bf")
         );
         assert_eq!(
             actual.remove("todo.review").as_deref(),

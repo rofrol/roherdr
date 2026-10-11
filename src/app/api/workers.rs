@@ -4,14 +4,15 @@
 //! `worker.runs`,
 //! `history.list`, `history.item` and `todo.review` for its Items popup, and
 //! `worker.question`, `worker.answer` and `worker.deny_and_stop` for its
-//! answer dialog.
+//! answer dialog, and `todo.open_log` for a todo run's line.
 //! The other `worker.*` methods, and those from the JSON API, run on the
 //! API connection's thread (`crate::api::workers`).
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    HistoryItemParams, HistoryListParams, ResponseResult, TodoReviewParams, WorkerAnswerParams,
-    WorkerDenyAndStopParams, WorkerQuestionTarget, WorkerRunsParams, WorkerTarget,
+    HistoryItemParams, HistoryListParams, ResponseResult, TodoReviewParams, TodoRunTarget,
+    WorkerAnswerParams, WorkerDenyAndStopParams, WorkerQuestionTarget, WorkerRunsParams,
+    WorkerTarget,
 };
 use crate::app::App;
 use crate::events::AppEvent;
@@ -118,6 +119,44 @@ impl App {
             target.worker_id,
         ];
         // The socket path, so the log asks this server for the journal.
+        let (env, _) = self.custom_command_env();
+        let geometry = crate::app::popup::PopupGeometry {
+            width: Some(PopupSize::Percent(90)),
+            height: Some(PopupSize::Percent(85)),
+        };
+        match self.spawn_popup_argv_command(&argv, None, env, geometry) {
+            Ok(()) => encode_success(id, ResponseResult::Ok {}),
+            Err(error) => encode_error(id, "popup_failed", error.to_string()),
+        }
+    }
+
+    /// Opens a popup that shows the log of the run's current step and
+    /// follows it, read-only (`herdr todo log --follow`); refused while
+    /// the step has no log.
+    pub(super) fn handle_todo_open_log(&mut self, id: String, target: TodoRunTarget) -> String {
+        match crate::workers::supervisor().todo_status(&target.run_id) {
+            Ok(run) if run.step_log.is_some() => {}
+            Ok(run) => {
+                return encode_error(
+                    id,
+                    "todo_run_no_log",
+                    format!("run {} has no log at step {:?}", run.run_id, run.step),
+                )
+            }
+            Err(error) => return encode_error(id, error.code(), error.to_string()),
+        }
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe.display().to_string(),
+            Err(error) => return encode_error(id, "worker_io_error", error.to_string()),
+        };
+        let argv = vec![
+            exe,
+            "todo".to_owned(),
+            "log".to_owned(),
+            "--follow".to_owned(),
+            target.run_id,
+        ];
+        // The socket path, so the log asks this server for the run.
         let (env, _) = self.custom_command_env();
         let geometry = crate::app::popup::PopupGeometry {
             width: Some(PopupSize::Percent(90)),

@@ -6335,6 +6335,7 @@ mod todo_runs {
                 &TodoWaitParams {
                     run_id: run_id.to_owned(),
                     after,
+                    waiter_pane: None,
                 },
                 Duration::from_millis(100),
                 || {

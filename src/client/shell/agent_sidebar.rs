@@ -290,6 +290,8 @@ pub(super) fn agent_row(
         "awaiting reply"
     } else if mark == AgentMark::WaitsOnIdleJob {
         "waiting on an idle job"
+    } else if mark == AgentMark::Waits {
+        "waiting"
     } else if mark == AgentMark::WaitsOnJob {
         "waiting on job"
     } else if mark == AgentMark::BackgroundWork {

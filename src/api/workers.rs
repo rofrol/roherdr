@@ -154,6 +154,12 @@ pub(super) fn handle_worker_request(
         Method::TodoWait(params) => {
             // As above: the run's events end the wait.
             let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            // The caller's pane waits on the run while this blocks.
+            let _edge = params
+                .waiter_pane
+                .clone()
+                .filter(|pane| !pane.trim().is_empty())
+                .map(|pane| crate::workers::WaitEdge::begin(pane, params.run_id.clone()));
             match supervisor.todo_wait(&params, CONNECTION_POLL_INTERVAL, keep_waiting) {
                 Ok(None) => return None,
                 Ok(Some((event, run))) => Ok(ResponseResult::TodoRunEvent { event, run }),

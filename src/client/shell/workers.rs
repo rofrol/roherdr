@@ -271,17 +271,23 @@ impl ClientShellState {
     /// The moment [`Self::tick_worker_times`] waits for: the earliest
     /// change of a worker time any connection's snapshot shows.
     pub(super) fn note_worker_times(&mut self, now_ms: u64) {
-        self.worker_times_change_at = worker_times_change_at(
-            self.snapshot
-                .iter()
-                .chain(
-                    self.endpoints
-                        .iter()
-                        .filter_map(|endpoint| endpoint.snapshot.as_ref()),
-                )
-                .flat_map(|snapshot| snapshot.workers.iter()),
+        let snapshots = || {
+            self.snapshot.iter().chain(
+                self.endpoints
+                    .iter()
+                    .filter_map(|endpoint| endpoint.snapshot.as_ref()),
+            )
+        };
+        let workers = worker_times_change_at(
+            snapshots().flat_map(|snapshot| snapshot.workers.iter()),
             now_ms,
         );
+        // A todo run's line shows its step's time too.
+        let runs = super::todo_runs::run_times_change_at(
+            snapshots().flat_map(|snapshot| snapshot.todo_runs.iter()),
+            now_ms,
+        );
+        self.worker_times_change_at = workers.into_iter().chain(runs).min();
     }
 }
 

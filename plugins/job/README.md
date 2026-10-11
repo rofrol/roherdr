@@ -358,6 +358,14 @@ is cleared when `herdr-job _waits` does not answer. Herdr's supervision sweep
 agent's turn ended with, so a coordinator waiting on a job in another pane's
 tab is not reported as waiting on an untracked shell.
 
+A `bg_wait_jobs` token names the running jobs those waits wait on, the
+pane's own jobs too, and is cleared when none runs. Herdr shows such a pane's
+tab `waiting: <job name>` with an hourglass while the job's tab runs and the
+agent sits finished, with a row `↳ job <name> · running · since 17:30 · last
+output 17:33` under it. The times come from the job's own pane: its executor
+reports `job_started_ms` when the job starts and `job_output_ms` at its first
+output of each minute (Unix milliseconds), never the output itself.
+
 ```json
 "Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}],
 "SubagentStop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}]
