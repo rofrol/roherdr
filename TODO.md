@@ -11,6 +11,33 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
+  coordinator, 2026-10-11: "nothing moved all night; report it to the
+  herdr coordinator, fix the process with the models"). The violai
+  coordinator chained cherry-pick, checks, the full suite, cleanup, the
+  TODO commit and the next item in one Bash call; it passed Claude Code's
+  Bash limit and became Claude's own background shell (no herdr-job, no
+  sidebar job); a render step hung 12 h; the turn ended waiting on it and
+  nothing woke it. Round 20261011-113649-cced (sol, MiMo), decided by the
+  coordinator:
+  1. The Stop check (coordinator tabs) blocks once when the Stop payload's
+     `background_tasks` holds a shell that is not a herdr-job wait (no wait
+     edge): the message names the shell and says to adopt it, not relaunch
+     it (wait on it with `herdr-job watch --pid <its pid>` and check its
+     result; a fresh run beside it races on the same worktree).
+  2. The `◔` tooltip and the status legend say "waits on an untracked
+     shell" for such a shell, so the user sees it while away.
+  3. The `todo` skill: checks, tests and builds run only through `herdr
+     todo run` or `herdr-job run`, each step its own call (cherry-pick,
+     check, cleanup, commit, next item), never one chained Bash call.
+  4. Onboarding a repository to `herdr todo run` refuses to start without
+     registered checks in `.herdr/checks.toml`; the violai coordinator is
+     told to register its checks (its own item, in its repository).
+  5. The coordinator allowlist stays in shadow; read its would-deny log
+     (`herdr history overrides --would-deny`) before enforcing; when
+     enforced it must judge the whole chained invocation (sol).
+  The 12 h hang itself is a violai bug queued there; no timeout here.
+
 - [ ] `todo resume --note` takes `--next`/`--stop-reason` like `--close` [t-dgtlrinl]
   (points 4-5 of the closed t-pku6dsb6, 2026-10-10/11: approving a run
   with a note cannot chain the next item, so the coordinator starts it by
