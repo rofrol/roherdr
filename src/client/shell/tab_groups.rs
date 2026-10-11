@@ -220,20 +220,27 @@ pub(super) fn children_summary_segments(
             .count()
     };
     [
-        (crate::ui::motion::job_glyph(), Some(TabStatus::Running)),
-        ("!", Some(TabStatus::Failed)),
-        ("✓", Some(TabStatus::Succeeded)),
-        (NO_STATUS_ICON, None),
+        Some(TabStatus::Running),
+        Some(TabStatus::Failed),
+        Some(TabStatus::Succeeded),
+        None,
     ]
     .into_iter()
-    .map(|(icon, status)| (icon, status, count(status)))
-    .filter(|(_, _, count)| *count > 0)
-    // The running icon is as tall as a digit and runs into it without a space.
-    .map(|(icon, status, count)| match status {
-        Some(TabStatus::Running) => (status, format!("{icon} {count}")),
-        _ => (status, format!("{icon}{count}")),
-    })
+    .map(|status| (status, count(status)))
+    .filter(|(_, count)| *count > 0)
+    .map(|(status, count)| (status, count_segment(status, count)))
     .collect()
+}
+
+/// A count of [`children_summary_segments`]: `◑ 2`, `!1`.
+pub(super) fn count_segment(status: Option<TabStatus>, count: usize) -> String {
+    let icon = status_icon(status).unwrap_or(NO_STATUS_ICON);
+    match status {
+        // The running icon is as tall as a digit and runs into it without a
+        // space.
+        Some(TabStatus::Running) => format!("{icon} {count}"),
+        _ => format!("{icon}{count}"),
+    }
 }
 
 fn focused_workspace_tabs(snapshot: &ClientShellSnapshot) -> impl Iterator<Item = &ClientShellTab> {

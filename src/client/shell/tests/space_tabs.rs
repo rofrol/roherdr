@@ -1078,7 +1078,7 @@ fn resting_on_a_tab_state_glyph_says_what_it_means() {
         .find(|target| target.id.starts_with("tab-state:") && target.rect.y == line.y)
         .expect("state glyph tooltip")
         .clone();
-    assert_eq!(target.text, "working · menu › status legend");
+    assert_eq!(target.text, "working · click: status legend");
     state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
         kind: crossterm::event::MouseEventKind::Moved,
         column: target.rect.x,
@@ -1090,7 +1090,7 @@ fn resting_on_a_tab_state_glyph_says_what_it_means() {
     state.tick_selection_autoscroll(deadline);
     let frame = state.compose(106, 30).unwrap();
     let row = frame_rows(&frame)[target.rect.y as usize].clone();
-    assert!(row.contains("working · menu › status legend"), "{row}");
+    assert!(row.contains("working · click: status legend"), "{row}");
 }
 
 /// The tab state glyph's tooltip and the glyph drawn on its line.
@@ -1128,7 +1128,7 @@ fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
     assert_eq!(
         text,
         "finished, background work running (its bg token names it): 1 bg ⧖ Build b17 \
-         · menu › status legend"
+         · click: status legend"
     );
     assert_eq!(glyph, '◔');
     // The status stays finished, and the mark keeps its colour.
@@ -1158,7 +1158,7 @@ fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
     assert_eq!(
         text,
         format!(
-            "{} · menu › status legend",
+            "{} · click: status legend",
             super::super::status_legend::agent_state_label(status, super::super::AgentMark::None)
         )
     );
@@ -1174,7 +1174,7 @@ fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
     finish_with_bg(&mut state, AgentStatus::Working, Some("2 bg"));
     assert_eq!(
         tab_state_glyph(&mut state).0,
-        "working · menu › status legend"
+        "working · click: status legend"
     );
 }
 
@@ -1200,7 +1200,7 @@ fn a_finished_coordinators_background_mark_names_the_workers_still_running() {
     assert_eq!(
         text,
         "finished, background work running (its bg token names it): 1 bg \
-         · workers running: fix login · menu › status legend"
+         · workers running: fix login · click: status legend"
     );
     assert_eq!(glyph, '◔');
 }
@@ -5748,4 +5748,173 @@ fn back_from_an_attempts_review_returns_to_its_timeline() {
         rows[0].contains("‹ The closed item · t-qrst6723") && rows[4].contains("attempt 1 · w3"),
         "{rows:#?}"
     );
+}
+
+/// The rows of the open legend popup, without the sidebar around it.
+fn legend_rows(state: &mut ClientShellState) -> Vec<String> {
+    let frame = state.compose(106, 30).unwrap();
+    let popup = state.hits.help_popup;
+    frame_rows(&frame)
+        .into_iter()
+        .skip(usize::from(popup.y))
+        .take(usize::from(popup.height))
+        .map(|row| {
+            row.chars()
+                .skip(usize::from(popup.x))
+                .take(usize::from(popup.width))
+                .collect()
+        })
+        .collect()
+}
+
+/// The status legend the overlay shows, and the entry it is marked at.
+fn open_legend(
+    state: &ClientShellState,
+) -> Option<Option<super::super::status_legend::LegendEntry>> {
+    match &state.overlay {
+        Some(ClientShellOverlay::Help(help)) if help.legend => Some(help.focus),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_click_on_a_tab_state_glyph_opens_the_legend_at_its_entry() {
+    use super::super::status_legend::LegendEntry;
+    let mut state = state_with_tabs(true);
+    set_agent_status(&mut state, AgentStatus::Idle, true);
+    state.compose(106, 30).unwrap();
+    let (line, _) = state.hits.space_tabs[0];
+    let glyph = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-state:") && target.rect.y == line.y)
+        .expect("state glyph tooltip")
+        .rect;
+    let outcome = left_click(&mut state, (glyph.x, glyph.y));
+    // The glyph explains itself instead of opening the tab.
+    assert!(!focuses(&outcome, "tab_1"));
+    assert!(state.tab_press.is_none());
+    // The mark's entry, which the legend lists once under the idle status.
+    let entry = LegendEntry::Agent(AgentStatus::Idle, AgentMark::AwaitsReply);
+    assert_eq!(open_legend(&state), Some(Some(entry)));
+    let scroll = match &state.overlay {
+        Some(ClientShellOverlay::Help(help)) => help.scroll,
+        _ => unreachable!(),
+    };
+    assert!(scroll > 0, "scrolled to the entry");
+    // The entry it opened at is on screen, marked by an accent bar.
+    let marked = legend_rows(&mut state)
+        .into_iter()
+        .filter(|row| row.contains('▍'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        marked.contains("turn ended with a question for you"),
+        "{marked}"
+    );
+
+    // The rest of the line still opens the tab.
+    state.overlay = None;
+    assert!(focuses(&click_tab_line(&mut state), "tab_1"));
+}
+
+#[test]
+fn a_click_on_a_role_mark_opens_the_legend_at_that_role() {
+    use super::super::status_legend::LegendEntry;
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let mark = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-role:"))
+        .expect("role mark tooltip")
+        .clone();
+    assert!(
+        mark.text.ends_with(super::super::space_tabs::LEGEND_CLICK),
+        "{}",
+        mark.text
+    );
+    left_click(&mut state, (mark.rect.x, mark.rect.y));
+    assert_eq!(
+        open_legend(&state),
+        Some(Some(LegendEntry::Role(
+            crate::api::schema::TabRole::Coordinator
+        )))
+    );
+}
+
+#[test]
+fn a_click_on_a_spaces_job_counts_opens_the_legend_at_them() {
+    use super::super::status_legend::LegendEntry;
+    // Without tab lines the space's name line counts its tabs' jobs.
+    let mut state = state_with_tabs(false);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    state.compose(106, 30).unwrap();
+    let (counts, _) = state
+        .hits
+        .legend_glyphs
+        .iter()
+        .find(|(_, entry)| *entry == LegendEntry::SpaceJobs)
+        .copied()
+        .expect("the space's job counts");
+    let outcome = left_click(&mut state, (counts.x, counts.y));
+    assert!(outcome.actions.is_empty());
+    assert!(state.workspace_press.is_none());
+    assert_eq!(open_legend(&state), Some(Some(LegendEntry::SpaceJobs)));
+}
+
+#[test]
+fn glyphs_with_an_action_of_their_own_offer_the_legend_in_their_tooltip() {
+    let mut state = state_with_tabs(true);
+    set_agent_status(&mut state, AgentStatus::Blocked, false);
+    with_job(&mut state, "job_1", TabStatus::Running);
+    state.compose(106, 30).unwrap();
+    let asking = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id == "header-indicator:asking")
+        .expect("the ? button's tooltip");
+    assert_eq!(asking.rect, state.hits.asking_list_button);
+    assert!(
+        asking.text.ends_with(super::super::space_tabs::LEGEND_MENU),
+        "{}",
+        asking.text
+    );
+    let (fold, _) = state.hits.space_tab_folds[0];
+    let fold = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-fold:"))
+        .filter(|target| target.rect == fold)
+        .expect("the fold counts' tooltip");
+    assert!(fold.text.ends_with(super::super::space_tabs::LEGEND_MENU));
+    // They keep their own action: a click opens the list.
+    let button = state.hits.asking_list_button;
+    left_click(&mut state, (button.x, button.y));
+    assert_eq!(open_legend(&state), None);
+}
+
+#[test]
+fn the_menu_opens_the_legend_at_its_top_and_an_entry_far_down_is_scrolled_into_view() {
+    use super::super::status_legend::LegendEntry;
+    let mut state = state_with_tabs(true);
+    state.open_status_legend(None);
+    assert_eq!(open_legend(&state), Some(None));
+    assert!(!legend_rows(&mut state).join("\n").contains('▍'));
+
+    let entry = LegendEntry::Record(crate::api::schema::HistoryEventKind::Blocked);
+    state.open_status_legend(Some(entry));
+    let rows = legend_rows(&mut state);
+    let marked = rows
+        .iter()
+        .find(|row| row.contains('▍') && row.contains("item blocked"))
+        .unwrap_or_else(|| panic!("{}", rows.join("\n")));
+    assert!(marked.contains("a decision is due"), "{marked}");
 }

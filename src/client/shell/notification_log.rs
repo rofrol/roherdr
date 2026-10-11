@@ -754,7 +754,7 @@ impl ClientShellState {
         Self::worker_question_row_at(question, crate::usage::now_unix())
     }
 
-    fn worker_question_row_at(
+    pub(super) fn worker_question_row_at(
         question: &crate::protocol::ClientShellWorkerQuestion,
         now_unix: u64,
     ) -> NotificationRecord {

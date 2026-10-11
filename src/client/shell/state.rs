@@ -124,6 +124,10 @@ pub(super) struct ShellHitMap {
     pub(super) space_to_top: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
+    /// Glyphs without an action of their own (a tab line's state glyph and
+    /// role mark, a space's job counts): a click opens the status legend at
+    /// their entry.
+    pub(super) legend_glyphs: Vec<(Rect, super::status_legend::LegendEntry)>,
     /// Disclosure triangles and counts at the end of tab lines, with the
     /// tab whose squares they fold.
     pub(super) space_tab_folds: Vec<(Rect, String)>,
@@ -447,6 +451,10 @@ impl ShellHitMap {
         shift_all(&mut self.space_launch_agent);
         shift_all(&mut self.space_todo);
         shift_all(&mut self.space_to_top);
+        self.legend_glyphs = std::mem::take(&mut self.legend_glyphs)
+            .into_iter()
+            .filter_map(|(rect, entry)| Some((shift_rect(rect, dy, visible)?, entry)))
+            .collect();
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
             .filter_map(|mut target| {
@@ -482,6 +490,7 @@ impl ShellHitMap {
             space_launch_agent: self.space_launch_agent.clone(),
             space_todo: self.space_todo.clone(),
             space_to_top: self.space_to_top.clone(),
+            legend_glyphs: self.legend_glyphs.clone(),
             tooltips: self.tooltips.clone(),
             space_tab_folds: self.space_tab_folds.clone(),
             space_tab_items: self.space_tab_items.clone(),
@@ -500,6 +509,7 @@ impl ShellHitMap {
         self.space_launch_agent.extend(block.space_launch_agent);
         self.space_todo.extend(block.space_todo);
         self.space_to_top.extend(block.space_to_top);
+        self.legend_glyphs.extend(block.legend_glyphs);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
         self.space_tab_items.extend(block.space_tab_items);
@@ -668,6 +678,8 @@ pub(super) struct ClientNavigatorOverlay {
 pub(super) struct ClientHelpOverlay {
     /// Shows the status legend instead of the keybinds; it has no search.
     pub(super) legend: bool,
+    /// The legend entry it opened at (a click on a glyph), marked.
+    pub(super) focus: Option<super::status_legend::LegendEntry>,
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) scroll: usize,

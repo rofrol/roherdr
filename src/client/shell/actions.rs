@@ -76,6 +76,7 @@ impl ClientShellState {
                 if action == crate::input::KeybindAction::Help {
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         legend: false,
+                        focus: None,
                         query: TextEditor::default(),
                         search_focused: false,
                         scroll: 0,

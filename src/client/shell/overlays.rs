@@ -1920,7 +1920,7 @@ fn render_help_overlay(
         sy,
         i.width,
         &if h.legend {
-            " hover a status glyph in the sidebar to see its meaning".to_owned()
+            " click or hover a status glyph in the sidebar to see its meaning".to_owned()
         } else if h.search_focused {
             " / ".to_owned()
         } else {
@@ -1944,6 +1944,23 @@ fn render_help_overlay(
     let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
     let lines = if h.legend {
         super::super::status_legend::legend_lines(status_style, animations, p)
+            .into_iter()
+            .map(|line| {
+                let mut text = line.line;
+                // The entry it opened at has an accent bar in its first
+                // column, found by shape, not only by colour.
+                if line.entry.is_some() && line.entry == h.focus {
+                    if let Some(first) = text.spans.first_mut() {
+                        let style = first.style;
+                        let rest = first.content.chars().skip(1).collect::<String>();
+                        *first = ratatui::text::Span::styled(rest, style);
+                        text.spans
+                            .insert(0, ratatui::text::Span::styled("▍", style.fg(p.accent)));
+                    }
+                }
+                (line.width, text)
+            })
+            .collect()
     } else {
         help_lines(k, &h.query, p)
     };

@@ -112,14 +112,7 @@ impl ClientShellState {
                 self.record_binding(crate::input::KeybindMatch::Action(binding), outcome)
             }
             ClientGlobalMenuAction::ConsultStats => self.open_consult_stats(outcome),
-            ClientGlobalMenuAction::StatusLegend => {
-                self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-                    legend: true,
-                    query: TextEditor::default(),
-                    search_focused: false,
-                    scroll: 0,
-                }));
-            }
+            ClientGlobalMenuAction::StatusLegend => self.open_status_legend(None),
             ClientGlobalMenuAction::WhatsNew => self.open_release_notes(),
         }
         outcome.repaint = true;

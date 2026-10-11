@@ -857,6 +857,7 @@ fn help_overlay_restores_released_search_scroll_and_custom_binding_behavior() {
         state.overlay,
         Some(ClientShellOverlay::Help(ClientHelpOverlay {
             legend: false,
+            focus: None,
             search_focused: false,
             ref query,
             scroll: 0,

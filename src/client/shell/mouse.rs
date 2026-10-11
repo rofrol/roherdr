@@ -3058,6 +3058,19 @@ impl ClientShellState {
                     self.toggle_worker_items(button, outcome);
                     return;
                 }
+                // A status glyph without an action of its own explains
+                // itself: the status legend opens at its entry.
+                let legend = self
+                    .hits
+                    .legend_glyphs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, entry)| *entry);
+                if let Some(entry) = legend {
+                    self.open_status_legend(Some(entry));
+                    outcome.repaint = true;
+                    return;
+                }
                 // A worker's line opens its question, else its log.
                 if let Some(worker_id) = self.worker_line_at(point) {
                     match self.worker_pending_question(&worker_id) {

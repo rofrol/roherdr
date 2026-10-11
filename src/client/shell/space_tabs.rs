@@ -79,6 +79,9 @@ pub(super) struct WorkerLine {
     pub(super) worker_id: String,
     /// What its glyph and label say on hover.
     pub(super) tooltip: String,
+    /// Its state's entry in the status legend, which a click on its glyph
+    /// opens.
+    pub(super) legend: super::status_legend::LegendEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +98,9 @@ pub(super) struct TabSquare {
 
 /// The mark of a tab's role (`tab.set_role`), before its state glyph, and
 /// what it says on hover: the user chose both glyphs from mockups.
-fn role_marker(role: crate::api::schema::TabRole) -> Option<(&'static str, &'static str)> {
+pub(super) fn role_marker(
+    role: crate::api::schema::TabRole,
+) -> Option<(&'static str, &'static str)> {
     use crate::api::schema::TabRole;
     match role {
         TabRole::Coordinator => Some(("♛", "Coordinator: hands each TODO item to a worker")),
@@ -103,6 +108,18 @@ fn role_marker(role: crate::api::schema::TabRole) -> Option<(&'static str, &'sta
         TabRole::Unknown => None,
     }
 }
+
+/// The colour a role mark is drawn in.
+pub(super) fn role_mark_color(palette: &Palette) -> Color {
+    palette.overlay1
+}
+
+/// What a glyph's tooltip adds when a click on it opens the status legend.
+pub(super) const LEGEND_CLICK: &str = " · click: status legend";
+
+/// What the tooltip of a glyph with an action of its own adds: the legend
+/// is in the menu.
+pub(super) const LEGEND_MENU: &str = " · its marks: menu › status legend";
 
 /// A square is ` ◑ `: the glyph with a column of padding on each side.
 const SQUARE_WIDTH: u16 = 3;
@@ -305,6 +322,7 @@ pub(super) fn worker_lines(
                 worker: Some(WorkerLine {
                     worker_id: worker.worker_id.clone(),
                     tooltip,
+                    legend: super::status_legend::worker_entry(&worker.state),
                 }),
                 items: None,
                 background: None,
@@ -1010,6 +1028,8 @@ pub(super) struct SpaceTabHits {
     pub(super) gone: Vec<Rect>,
     /// Lines whose label is cut, with the whole label.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
+    /// State glyphs and role marks, with their status legend entry.
+    pub(super) legend: Vec<(Rect, super::status_legend::LegendEntry)>,
     /// The square order of each unfolded line, to hold while the pointer
     /// stays over the sidebar.
     pub(super) order: HeldSquares,
@@ -1157,25 +1177,39 @@ pub(super) fn render_space_tab_lines(
                 y,
                 1,
                 glyph,
-                Style::default().fg(palette.overlay1),
+                Style::default().fg(role_mark_color(palette)),
             );
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect: marker,
                 id: format!("tab-role:{}", line.tab_id),
-                text: meaning.to_owned(),
+                text: format!("{meaning}{LEGEND_CLICK}"),
                 bg: None,
                 starts_at_target: false,
             });
+            if let Some(role) = line.role {
+                hits.legend
+                    .push((marker, super::status_legend::LegendEntry::Role(role)));
+            }
         }
-        // The glyph says what it means on hover; the gap column next to it
-        // widens the one-cell target.
+        // The glyph says what it means on hover, and a click on it opens
+        // the status legend there; the gap column next to it widens the
+        // one-cell target.
+        let glyph = Rect::new(x, y, 2, 1);
+        hits.legend.push((
+            glyph,
+            match (&line.worker, line.state) {
+                (Some(worker), _) => worker.legend,
+                (None, Some((status, mark))) => super::status_legend::agent_entry(status, mark),
+                (None, None) => super::status_legend::LegendEntry::Program,
+            },
+        ));
         hits.tooltips.push(super::tooltip::TooltipTarget {
-            rect: Rect::new(x, y, 2, 1),
+            rect: glyph,
             id: format!("tab-state:{}", line.tab_id),
             text: match &line.worker {
-                Some(worker) => worker.tooltip.clone(),
+                Some(worker) => format!("{}{LEGEND_CLICK}", worker.tooltip),
                 None => format!(
-                    "{}{} · menu › status legend",
+                    "{}{}{LEGEND_CLICK}",
                     match line.state {
                         Some((status, mark)) => {
                             super::status_legend::agent_state_label(status, mark)
@@ -1259,7 +1293,10 @@ pub(super) fn render_space_tab_lines(
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect,
                 id: format!("tab-items:{}", line.tab_id),
-                text: super::worker_items::items_tooltip(counts),
+                text: format!(
+                    "{}{LEGEND_MENU}",
+                    super::worker_items::items_tooltip(counts)
+                ),
                 bg: None,
                 starts_at_target: false,
             });
@@ -1372,6 +1409,15 @@ pub(super) fn render_space_tab_lines(
                 on_accent.unwrap_or_else(|| Style::default().fg(palette.overlay1)),
             );
             hits.folds.push((fold_rect, line.tab_id.clone()));
+            if jobs_width > 0 {
+                hits.tooltips.push(super::tooltip::TooltipTarget {
+                    rect: fold_rect,
+                    id: format!("tab-fold:{}", line.tab_id),
+                    text: format!("Fold or unfold its jobs{LEGEND_MENU}"),
+                    bg: None,
+                    starts_at_target: false,
+                });
+            }
         }
         if jobs_width > 0 {
             // Right-aligned, so the counts of all lines form a column.

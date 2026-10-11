@@ -880,7 +880,7 @@ pub(crate) fn render_sidebar(
             && wide.width >= LAUNCH_BUTTON_MIN_WIDTH;
         let todo_button =
             todo_button_shown(config, wide.width, state.active_endpoint_id.is_local());
-        let push_status = render_workspace_rows(
+        let drawn = render_workspace_rows(
             target,
             wide,
             status,
@@ -898,7 +898,23 @@ pub(crate) fn render_sidebar(
             to_top_button,
             config,
         );
-        if let Some(chip) = push_status.filter(|_| config.mouse_capture) {
+        if let Some(jobs) = drawn.jobs.filter(|_| config.mouse_capture) {
+            // The counts have no action of their own: a click explains them.
+            block_hits
+                .legend_glyphs
+                .push((jobs, super::status_legend::LegendEntry::SpaceJobs));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: jobs,
+                id: format!("space-jobs:{}", workspace.workspace_id),
+                text: format!(
+                    "Jobs of its tabs: running, failed{}",
+                    super::space_tabs::LEGEND_CLICK
+                ),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        if let Some(chip) = drawn.push_status.filter(|_| config.mouse_capture) {
             // Lit under the pointer, like the buttons after it: that it
             // opens the branch menu is shown, not told.
             if state.hovered_name_button
@@ -909,6 +925,16 @@ pub(crate) fn render_sidebar(
             block_hits
                 .space_push_status
                 .push((chip, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: chip,
+                id: format!("space-push-status:{}", workspace.workspace_id),
+                text: format!(
+                    "Branch menu · ↑ ahead, ↓ behind its upstream{}",
+                    super::space_tabs::LEGEND_MENU
+                ),
+                bg: None,
+                starts_at_target: false,
+            });
         }
         if let Some(color) = grab_color.filter(|_| !config.spaces.tabs) {
             // A grip at the name line's right edge, left of the group
@@ -1137,6 +1163,7 @@ pub(crate) fn render_sidebar(
         block_hits.space_tab_squares.extend(tab_hits.squares);
         block_hits.space_tab_gone.extend(tab_hits.gone);
         block_hits.tooltips.extend(tab_hits.tooltips);
+        block_hits.legend_glyphs.extend(tab_hits.legend);
         block_hits.space_tab_square_order.extend(tab_hits.order);
         let group_toggle = if config.spaces.tabs {
             super::space_tabs::render_space_disclosure(
@@ -1847,27 +1874,16 @@ fn render_header_indicators(
     palette: &Palette,
 ) {
     use super::notification_log::NotificationLogView as View;
-    #[derive(Clone, Copy, PartialEq)]
-    enum Indicator {
-        History,
-        Asking,
-        Working,
-        Bookmarks,
-    }
+    use HeaderIndicator as Indicator;
     let (working, asking) = state.agent_counts;
     let label = |indicator: Indicator| match indicator {
-        Indicator::History => state.notification_log_button.map(|unread| {
-            if unread > 0 {
-                format!("✉{}", unread.min(99))
-            } else {
-                "✉".to_owned()
-            }
-        }),
-        Indicator::Asking => (asking > 0).then(|| format!("?{}", asking.min(99))),
-        Indicator::Working => (working > 0)
-            .then(|| format!("{}{}", crate::ui::motion::working_glyph(), working.min(99))),
+        Indicator::History => state
+            .notification_log_button
+            .map(|unread| indicator.label(unread)),
+        Indicator::Asking => (asking > 0).then(|| indicator.label(asking)),
+        Indicator::Working => (working > 0).then(|| indicator.label(working)),
         Indicator::Bookmarks => {
-            (state.bookmark_count > 0).then(|| format!("★{}", state.bookmark_count.min(99)))
+            (state.bookmark_count > 0).then(|| indicator.label(state.bookmark_count))
         }
     };
     // Each button is its label with a cell on each side.
@@ -1893,28 +1909,14 @@ fn render_header_indicators(
         }
         shown.retain(|(indicator, _)| *indicator != dropped);
     }
-    // The colours of the tab lines: the question mark's, the working
-    // yellow; the star is neutral (mauve means waiting on a job, yellow
-    // means work).
-    let asking_style = Style::default()
-        .fg(super::agent_color(
-            crate::api::schema::AgentStatus::Done,
-            super::AgentMark::AwaitsReply,
-            palette,
-        ))
-        .add_modifier(Modifier::BOLD);
-    let working_style = Style::default().fg(super::status_color(
-        crate::api::schema::AgentStatus::Working,
-        palette,
-    ));
-    let bookmark_style = Style::default().fg(palette.subtext0);
     let mut right = area.right();
     for (indicator, label) in shown {
         let width = display_width(&label);
         if right < limit + width + 2 {
             continue;
         }
-        let (style, slot, view) = match indicator {
+        let style = indicator.style(1, palette);
+        let (slot, view) = match indicator {
             Indicator::History => {
                 hits.notification_log_button = render_notification_log_button(
                     buffer,
@@ -1925,16 +1927,19 @@ fn render_header_indicators(
                 );
                 if hits.notification_log_button.width > 0 {
                     right = hits.notification_log_button.x;
+                    hits.tooltips.push(super::tooltip::TooltipTarget {
+                        rect: hits.notification_log_button,
+                        id: format!("header-indicator:{}", indicator.name()),
+                        text: format!("{}{}", indicator.tooltip(), super::space_tabs::LEGEND_MENU),
+                        bg: None,
+                        starts_at_target: false,
+                    });
                 }
                 continue;
             }
-            Indicator::Asking => (asking_style, &mut hits.asking_list_button, View::Asking),
-            Indicator::Working => (working_style, &mut hits.working_list_button, View::Working),
-            Indicator::Bookmarks => (
-                bookmark_style,
-                &mut hits.bookmarks_list_button,
-                View::Bookmarks,
-            ),
+            Indicator::Asking => (&mut hits.asking_list_button, View::Asking),
+            Indicator::Working => (&mut hits.working_list_button, View::Working),
+            Indicator::Bookmarks => (&mut hits.bookmarks_list_button, View::Bookmarks),
         };
         let x = right - width - 1;
         // The pill, so the list opens under its left edge; an open list's
@@ -1947,7 +1952,85 @@ fn render_header_indicators(
         };
         put_text(buffer, x, area.y, width, &label, style);
         *slot = pill;
+        hits.tooltips.push(super::tooltip::TooltipTarget {
+            rect: pill,
+            id: format!("header-indicator:{}", indicator.name()),
+            text: format!("{}{}", indicator.tooltip(), super::space_tabs::LEGEND_MENU),
+            bg: None,
+            starts_at_target: false,
+        });
         right = x.saturating_sub(1);
+    }
+}
+
+/// A button of the spaces header that counts something and opens its
+/// list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::client::shell) enum HeaderIndicator {
+    /// The notification history, with its unread count.
+    History,
+    /// Agents and workers waiting on the user.
+    Asking,
+    /// Agents working or waiting on a job.
+    Working,
+    Bookmarks,
+}
+
+impl HeaderIndicator {
+    /// The button's text for `count`.
+    pub(in crate::client::shell) fn label(self, count: usize) -> String {
+        let count = count.min(99);
+        match self {
+            Self::History if count == 0 => "✉".to_owned(),
+            Self::History => format!("✉{count}"),
+            Self::Asking => format!("?{count}"),
+            Self::Working => format!("{}{count}", crate::ui::motion::working_glyph()),
+            Self::Bookmarks => format!("★{count}"),
+        }
+    }
+
+    /// The button's text style for `count`. The colours of the tab lines:
+    /// the question mark's, the working yellow; the star is neutral (mauve
+    /// means waiting on a job, yellow means work); the history is accent
+    /// while unread.
+    pub(in crate::client::shell) fn style(self, count: usize, palette: &Palette) -> Style {
+        match self {
+            Self::History if count > 0 => Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+            Self::History => Style::default().fg(palette.overlay1),
+            Self::Asking => Style::default()
+                .fg(super::agent_color(
+                    crate::api::schema::AgentStatus::Done,
+                    super::AgentMark::AwaitsReply,
+                    palette,
+                ))
+                .add_modifier(Modifier::BOLD),
+            Self::Working => Style::default().fg(super::status_color(
+                crate::api::schema::AgentStatus::Working,
+                palette,
+            )),
+            Self::Bookmarks => Style::default().fg(palette.subtext0),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::History => "history",
+            Self::Asking => "asking",
+            Self::Working => "working",
+            Self::Bookmarks => "bookmarks",
+        }
+    }
+
+    /// What its button does, on hover.
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::History => "Notification history",
+            Self::Asking => "Agents and workers waiting on you",
+            Self::Working => "Agents working or waiting on a job",
+            Self::Bookmarks => "Bookmarks",
+        }
     }
 }
 
@@ -1960,23 +2043,13 @@ fn render_notification_log_button(
     open: bool,
     palette: &Palette,
 ) -> Rect {
-    let label = if unread > 0 {
-        format!("✉{}", unread.min(99))
-    } else {
-        "✉".to_owned()
-    };
+    let label = HeaderIndicator::History.label(unread);
     let width = display_width(&label).saturating_add(1);
     if area.width < width + 8 || area.height == 0 {
         return Rect::default();
     }
     let rect = Rect::new(area.right().saturating_sub(width + 1), area.y, width + 1, 1);
-    let style = if unread > 0 {
-        Style::default()
-            .fg(palette.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(palette.overlay1)
-    };
+    let style = HeaderIndicator::History.style(unread, palette);
     let style = if open {
         open_button_style(buffer, rect, style, palette)
     } else {
@@ -2078,9 +2151,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // The name starts two columns later, after the `⤒` button.
     to_top_button: bool,
     config: &ClientShellConfig,
-) -> Option<Rect> {
+) -> WorkspaceRowsDrawn {
     // Where the push status chip was drawn, for its click and tooltip.
     let mut push_status_rect = None;
+    // Where the job counts were drawn, for the status legend.
+    let mut jobs_rect = None;
     let palette = &config.palette;
     // With vertical tabs (`spaces.tabs`): leave two columns in front of the
     // name for `render_space_disclosure`, and give a focused space no
@@ -2223,10 +2298,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
         Paragraph::new(Line::from(spans))
             .render(Rect::new(x, y, name_end.saturating_sub(x), 1), buffer);
         if jobs_width > 0 {
-            Paragraph::new(Line::from(jobs_spans)).render(
-                Rect::new(jobs_x, y, right_edge.saturating_sub(jobs_x), 1),
-                buffer,
-            );
+            let rect = Rect::new(jobs_x, y, right_edge.saturating_sub(jobs_x), 1);
+            Paragraph::new(Line::from(jobs_spans)).render(rect, buffer);
+            jobs_rect = Some(rect);
         }
     }
 
@@ -2260,7 +2334,16 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
-    push_status_rect
+    WorkspaceRowsDrawn {
+        push_status: push_status_rect,
+        jobs: jobs_rect,
+    }
+}
+
+/// Where [`render_workspace_rows`] drew a space's chip and job counts.
+pub(in crate::client::shell) struct WorkspaceRowsDrawn {
+    pub(in crate::client::shell) push_status: Option<Rect>,
+    pub(in crate::client::shell) jobs: Option<Rect>,
 }
 
 /// Where a tab line is inside its space: the rows above it (the space's own

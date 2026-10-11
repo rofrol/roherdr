@@ -169,7 +169,7 @@ pub(super) fn items_tooltip(counts: &crate::protocol::ClientShellWorkerItems) ->
 }
 
 /// How a run's outcome reads, and the agent state whose glyph it takes.
-fn outcome(outcome: WorkerRunOutcome) -> (&'static str, AgentStatus) {
+pub(super) fn outcome(outcome: WorkerRunOutcome) -> (&'static str, AgentStatus) {
     match outcome {
         WorkerRunOutcome::Running => ("running", AgentStatus::Working),
         WorkerRunOutcome::Finished => ("finished", AgentStatus::Done),
@@ -182,7 +182,7 @@ fn outcome(outcome: WorkerRunOutcome) -> (&'static str, AgentStatus) {
 }
 
 /// How the latest `worker.verify` verdict of a run reads.
-fn verdict(verdict: WorkerVerdict) -> &'static str {
+pub(super) fn verdict(verdict: WorkerVerdict) -> &'static str {
     match verdict {
         WorkerVerdict::Verified => "verified",
         WorkerVerdict::Failed => "verify failed",
@@ -192,7 +192,7 @@ fn verdict(verdict: WorkerVerdict) -> &'static str {
 }
 
 /// The agent state whose glyph a verdict takes.
-fn verdict_status(verdict: Option<WorkerVerdict>) -> AgentStatus {
+pub(super) fn verdict_status(verdict: Option<WorkerVerdict>) -> AgentStatus {
     match verdict {
         Some(WorkerVerdict::Verified) => AgentStatus::Done,
         Some(WorkerVerdict::Failed) => AgentStatus::Blocked,
@@ -201,7 +201,7 @@ fn verdict_status(verdict: Option<WorkerVerdict>) -> AgentStatus {
 }
 
 /// How a record's kind reads, and the agent state whose glyph it takes.
-fn record(kind: HistoryEventKind) -> (&'static str, Option<AgentStatus>) {
+pub(super) fn record(kind: HistoryEventKind) -> (&'static str, Option<AgentStatus>) {
     match kind {
         HistoryEventKind::Claimed => ("claimed", None),
         HistoryEventKind::Noted => ("noted", None),
