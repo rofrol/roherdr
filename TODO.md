@@ -2834,6 +2834,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-12 (d-zihxrk6h): Claude Code with a small
   role file (not a small model herdr calls directly).
 
+- [ ] Credit funding without `.herdr/checks.toml` (the roguix-vps [t-7yl4ao3x]
+  coordinator, 2026-10-12, relaying the user: "strange that every
+  repository needs checks.toml before its workers can use the credits";
+  their round 20261012-192228-5cfb, sol, MiMo, DeepSeek: the agent and
+  funding choice and verify-and-land are separate axes). Already true
+  since b124c8c55: `herdr worker start --agent pi-anthropic|pi|claude`
+  needs no checks (src/cli/worker.rs:718), but `worker start --help`
+  does not list `--agent`. Proposed: list it in the help; let `todo run`
+  run in a repository without checks under an explicit per-repository
+  policy (checks none: the run works and reports "checks skipped" but
+  never auto-lands, installs or pushes); spend and concurrency limits per
+  credit worker (see "Concurrent credit workers refuse each other").
+  Decided by the user 2026-10-12 (d-wbfmnx4c): all three parts: list
+  `--agent` in `worker start --help`; `todo run` under an explicit
+  per-repository checks-none policy that never auto-lands, installs or
+  pushes; spend and concurrency limits per credit worker (after
+  "Concurrent credit workers refuse each other").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -3057,19 +3075,6 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
-- [ ] Credit funding without `.herdr/checks.toml` (the roguix-vps [t-7yl4ao3x]
-  coordinator, 2026-10-12, relaying the user: "strange that every
-  repository needs checks.toml before its workers can use the credits";
-  their round 20261012-192228-5cfb, sol, MiMo, DeepSeek: the agent and
-  funding choice and verify-and-land are separate axes). Already true
-  since b124c8c55: `herdr worker start --agent pi-anthropic|pi|claude`
-  needs no checks (src/cli/worker.rs:718), but `worker start --help`
-  does not list `--agent`. Proposed: list it in the help; let `todo run`
-  run in a repository without checks under an explicit per-repository
-  policy (checks none: the run works and reports "checks skipped" but
-  never auto-lands, installs or pushes); spend and concurrency limits per
-  credit worker (see "Concurrent credit workers refuse each other").
-
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -3118,6 +3123,8 @@ user needs to decide or do.
   approve the ruleset change on GitHub (outward-facing); CI checks to
   require are listed by the worker that prepares it.
   Asked 2026-10-12: the user creates the credential later; the item waits.
+  Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
+  with a separate credential; still waits on the user creating it.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
@@ -3247,6 +3254,8 @@ user needs to decide or do.
   Decided 2026-10-10 (the user: "decide with the models"; round
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
+  Asked again 2026-10-12 (d-geajntlu): the user confirmed the throwaway
+  VM; still waits on the VM choice and the user's `claude login` there.
 
 ### Decide
 
