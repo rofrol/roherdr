@@ -27,6 +27,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerKill(_)
             | Method::WorkerAnswer(_)
             | Method::WorkerAnswerAs(_)
+            | Method::WorkerAnswerFromPane(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
             | Method::WorkerDrain(_)
@@ -180,23 +181,46 @@ fn handle_immediate(
     method: Method,
 ) -> Result<ResponseResult, WorkerError> {
     let worker = match method {
-        Method::WorkerStart(params) => supervisor.start(&params)?,
-        Method::WorkerStartChoice(params) => supervisor.start_choice(params)?,
+        Method::WorkerStart(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+            supervisor.start(&params)?
+        }
+        Method::WorkerStartChoice(params) => {
+            supervisor.fence_pane(params.start.owner_pane_id.as_deref())?;
+            supervisor.start_choice(params)?
+        }
         Method::WorkerStatus(target) => supervisor.status(&target.worker_id)?,
         Method::WorkerList(_) => {
             return Ok(ResponseResult::WorkerList {
                 workers: supervisor.list(),
             })
         }
-        Method::WorkerPrompt(params) => supervisor.prompt_command(&params)?,
-        Method::WorkerInterrupt(params) => supervisor.interrupt(&params)?,
-        Method::WorkerStop(target) => supervisor.stop_command(&target)?,
+        Method::WorkerPrompt(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+            supervisor.prompt_command(&params)?
+        }
+        Method::WorkerInterrupt(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+            supervisor.interrupt(&params)?
+        }
+        Method::WorkerStop(target) => {
+            supervisor.fence_pane(target.caller_pane_id.as_deref())?;
+            supervisor.stop_command(&target)?
+        }
         Method::WorkerKill(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             let (worker, killed) = supervisor.kill_command(&params)?;
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
-        Method::WorkerAnswerAs(params) => supervisor.answer_as(&params)?,
+        Method::WorkerAnswerFromPane(params) => {
+            supervisor.fence_pane(Some(&params.caller_pane_id))?;
+            supervisor.answer(&params.answer)?
+        }
+        Method::WorkerAnswerAs(params) => {
+            supervisor.fence_tenure(Some(&params.coordinator_id))?;
+            supervisor.answer_as(&params)?
+        }
         Method::WorkerTranscript(params) => {
             return Ok(ResponseResult::WorkerTranscript {
                 transcript: supervisor.transcript(&params)?,
@@ -207,9 +231,16 @@ fn handle_immediate(
                 detail: supervisor.question_detail(&target.worker_id, &target.request_id)?,
             })
         }
+        // A user's click in a client (its shape is advertised, so it carries
+        // no caller pane); the CLI has no command for it, so no coordinator
+        // sends it.
         Method::WorkerDenyAndStop(params) => supervisor.deny_and_stop(&params)?,
-        Method::WorkerAck(params) => supervisor.ack(&params.worker_id, params.seq)?,
+        Method::WorkerAck(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+            supervisor.ack(&params.worker_id, params.seq)?
+        }
         Method::WorkerEscalate(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             supervisor.escalate(&params.worker_id, &params.request_id)?
         }
         Method::WorkerRuns(params) => {
@@ -222,14 +253,16 @@ fn handle_immediate(
             })
         }
         Method::TodoRun(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_run(params)?,
-            })
+            });
         }
         Method::TodoRunAnthropic(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_run_anthropic(params)?,
-            })
+            });
         }
         Method::TodoRunWait(params) => {
             return Ok(ResponseResult::TodoRun {
@@ -237,19 +270,22 @@ fn handle_immediate(
             })
         }
         Method::TodoCancelPending(target) => {
+            supervisor.fence_pane(target.caller_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_cancel_pending_owned(&target)?,
-            })
+            });
         }
         Method::TodoDraftRun(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_draft_run(params)?,
-            })
+            });
         }
         Method::TodoResume(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_resume(params)?,
-            })
+            });
         }
         Method::TodoStatus(target) => {
             return Ok(ResponseResult::TodoRun {
@@ -271,6 +307,7 @@ fn handle_immediate(
             })
         }
         Method::TodoNext(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
             let started = supervisor.todo_next(&params)?;
             return Ok(ResponseResult::TodoNext {
                 item: started.item,
@@ -280,14 +317,16 @@ fn handle_immediate(
             });
         }
         Method::TodoStop(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoChain {
                 chain: supervisor.todo_stop(&params.cwd)?,
-            })
+            });
         }
         Method::TodoQueueSet(params) => {
+            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoQueue {
                 queue: supervisor.todo_queue_set(params)?,
-            })
+            });
         }
         Method::TodoQueueStatus(target) => {
             return Ok(ResponseResult::TodoQueue {
@@ -300,9 +339,10 @@ fn handle_immediate(
             })
         }
         Method::TodoGrant(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoGrant {
                 grant: supervisor.todo_grant(params)?,
-            })
+            });
         }
         Method::TodoGrants(params) => {
             return Ok(ResponseResult::TodoGrants {
@@ -310,9 +350,10 @@ fn handle_immediate(
             })
         }
         Method::TodoRevoke(params) => {
+            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
             return Ok(ResponseResult::TodoGrants {
                 grants: supervisor.todo_revoke(params)?,
-            })
+            });
         }
         Method::HistoryList(params) => {
             return Ok(ResponseResult::HistoryList {
@@ -393,4 +434,182 @@ fn encode(id: String, result: Result<ResponseResult, WorkerError>) -> String {
         r#"{"id":"","error":{"code":"internal_error","message":"failed to encode response"}}"#
             .to_string()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// One method of each fenced family, with the field that names its
+    /// caller's pane.
+    fn fenced_methods(pane: Option<&str>) -> Vec<(&'static str, Method)> {
+        let cwd = "/nonexistent-herdr-fence-test";
+        let run = json!({
+            "cwd": cwd, "item": "t-abcd2345", "task": "t", "message": "feat: x",
+            "paths": ["src/**"], "checks": ["lint"],
+        });
+        let with = |mut value: serde_json::Value, field: &str| {
+            if let Some(pane) = pane {
+                value[field] = json!(pane);
+            }
+            value
+        };
+        let cases = vec![
+            (
+                "worker.start",
+                with(json!({"cwd": cwd, "prompt": "p"}), "owner_pane_id"),
+            ),
+            (
+                "worker.prompt",
+                with(json!({"worker_id": "w99", "text": "t"}), "caller_pane_id"),
+            ),
+            (
+                "worker.interrupt",
+                with(json!({"worker_id": "w99"}), "caller_pane_id"),
+            ),
+            (
+                "worker.stop",
+                with(json!({"worker_id": "w99"}), "caller_pane_id"),
+            ),
+            (
+                "worker.kill",
+                with(json!({"worker_id": "w99"}), "caller_pane_id"),
+            ),
+            match pane {
+                Some(_) => (
+                    "worker.answer_from_pane",
+                    with(json!({"worker_id": "w99"}), "caller_pane_id"),
+                ),
+                None => ("worker.answer", json!({"worker_id": "w99"})),
+            },
+            (
+                "worker.ack",
+                with(json!({"worker_id": "w99", "seq": 1}), "caller_pane_id"),
+            ),
+            (
+                "worker.escalate",
+                with(
+                    json!({"worker_id": "w99", "request_id": "r"}),
+                    "caller_pane_id",
+                ),
+            ),
+            ("todo.run", with(run.clone(), "owner_pane_id")),
+            ("todo.run_anthropic", with(run, "owner_pane_id")),
+            (
+                "todo.cancel_pending",
+                with(json!({"run_id": "r-none"}), "caller_pane_id"),
+            ),
+            (
+                "todo.resume",
+                with(
+                    json!({"run_id": "r-none", "action": "retry", "event": 1}),
+                    "caller_pane_id",
+                ),
+            ),
+            ("todo.next", with(json!({"cwd": cwd}), "owner_pane_id")),
+            ("todo.stop", with(json!({"cwd": cwd}), "caller_pane_id")),
+            (
+                "todo.queue_set",
+                with(json!({"cwd": cwd, "mode": "paused"}), "owner_pane_id"),
+            ),
+            (
+                "todo.grant",
+                with(
+                    json!({"cwd": cwd, "operation": "prepare", "hash": "h"}),
+                    "caller_pane_id",
+                ),
+            ),
+            (
+                "todo.revoke",
+                with(
+                    json!({"cwd": cwd, "operation": "prepare"}),
+                    "caller_pane_id",
+                ),
+            ),
+        ];
+        cases
+            .into_iter()
+            .map(|(name, params)| {
+                let method = serde_json::from_value(json!({"method": name, "params": params}))
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+                (name, method)
+            })
+            .collect()
+    }
+
+    fn codes(supervisor: &WorkerSupervisor, pane: Option<&str>) -> Vec<(&'static str, String)> {
+        fenced_methods(pane)
+            .into_iter()
+            .map(|(name, method)| {
+                let code = match handle_immediate(supervisor, method) {
+                    Ok(_) => "ok".to_owned(),
+                    Err(error) => error.code().to_owned(),
+                };
+                (name, code)
+            })
+            .collect()
+    }
+
+    /// A frozen tenure's pane is refused by every mutation family, a pane
+    /// whose tenure was handed over is refused with its own code, and a
+    /// caller outside any pane (the user's shell) is never fenced.
+    #[test]
+    fn a_frozen_or_superseded_caller_is_refused_by_every_mutation_family() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-fence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos())
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let note = root.join("note.md");
+        std::fs::write(&note, "go on\n").unwrap();
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        supervisor.coordinator_start("/repo", "p1", None).unwrap();
+
+        // Not frozen yet: nothing is refused for being frozen.
+        for (name, code) in codes(&supervisor, Some("p1")) {
+            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
+        }
+        supervisor.handoff_ready("p1", &note).unwrap();
+        for (name, code) in codes(&supervisor, Some("p1")) {
+            assert_eq!(code, "coordinator_frozen", "{name}");
+        }
+        // The user's own shell, and another pane, are not the caller.
+        for pane in [None, Some("p9")] {
+            for (name, code) in codes(&supervisor, pane) {
+                assert!(!code.starts_with("coordinator_"), "{name} {pane:?}: {code}");
+            }
+        }
+
+        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
+        supervisor
+            .handoff_successor_started(&prepared.coordinator_id, "p2")
+            .unwrap();
+        let sha = supervisor
+            .coordinator_status(None)
+            .unwrap()
+            .remove(0)
+            .handoff
+            .unwrap()
+            .snapshot_sha256
+            .unwrap();
+        for (name, code) in codes(&supervisor, Some("p1")) {
+            assert_eq!(code, "coordinator_frozen", "{name}");
+        }
+        supervisor.handoff_ack("p2", 1, &sha, None, None).unwrap();
+        for (name, code) in codes(&supervisor, Some("p1")) {
+            assert_eq!(code, "coordinator_superseded", "{name}");
+        }
+        for (name, code) in codes(&supervisor, Some("p2")) {
+            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
+        }
+        for (name, code) in codes(&supervisor, None) {
+            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

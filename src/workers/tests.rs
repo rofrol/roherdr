@@ -1050,6 +1050,7 @@ fn an_interrupt_ends_the_turn_as_interrupted() {
     fixture
         .supervisor
         .interrupt(&WorkerInterruptParams {
+            caller_pane_id: None,
             worker_id: id.clone(),
             turn: None,
             command_id: None,
@@ -2336,6 +2337,7 @@ fn a_drain_waits_for_the_running_turn_to_end() {
             fixture
                 .supervisor
                 .interrupt(&WorkerInterruptParams {
+                    caller_pane_id: None,
                     worker_id: busy.clone(),
                     turn: None,
                     command_id: None,
@@ -3199,6 +3201,7 @@ fn a_prompt_returns_its_seq_and_an_interrupt_of_an_ended_turn_is_refused() {
     let first = started.turn_seq.unwrap();
     let interrupt = |turn: Option<i64>| {
         fixture.supervisor.interrupt(&WorkerInterruptParams {
+            caller_pane_id: None,
             worker_id: id.clone(),
             turn,
             command_id: None,
@@ -3395,6 +3398,7 @@ fn a_repeated_prompt_or_refusal_does_nothing_twice() {
     let id = fixture.start("block");
     let prompt = |text: &str, command_id: &str| {
         fixture.supervisor.prompt_command(&WorkerPromptParams {
+            caller_pane_id: None,
             worker_id: id.clone(),
             text: text.into(),
             command_id: Some(command_id.into()),
@@ -3405,6 +3409,7 @@ fn a_repeated_prompt_or_refusal_does_nothing_twice() {
     fixture
         .supervisor
         .interrupt(&WorkerInterruptParams {
+            caller_pane_id: None,
             worker_id: id.clone(),
             turn: None,
             command_id: Some("i1".into()),
@@ -3652,6 +3657,7 @@ fn a_command_a_restart_cut_off_says_so_and_a_start_returns_its_worker() {
         ..start_params(&fixture.repo, "finish", None)
     };
     let prompt = WorkerPromptParams {
+        caller_pane_id: None,
         worker_id: id.clone(),
         text: "finish".into(),
         command_id: Some("p1".into()),
@@ -5692,6 +5698,7 @@ fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches(
 
     // The turn the gone server began ends through the new one.
     next.interrupt(&WorkerInterruptParams {
+        caller_pane_id: None,
         worker_id: id.clone(),
         turn: None,
         command_id: None,
@@ -6042,6 +6049,7 @@ fn every_stdin_line_goes_through_the_broker_once_with_its_id() {
     fixture
         .supervisor
         .prompt_command(&WorkerPromptParams {
+            caller_pane_id: None,
             worker_id: id.clone(),
             text: "finish".into(),
             command_id: Some("cmd 1".into()),
@@ -8840,6 +8848,7 @@ mod todo_runs {
 
     fn grant_params(fixture: &Fixture, hash: &str) -> crate::api::schema::TodoGrantParams {
         crate::api::schema::TodoGrantParams {
+            caller_pane_id: None,
             cwd: fixture.repo.display().to_string(),
             operation: "prepare".into(),
             hash: hash.into(),
@@ -9150,6 +9159,7 @@ mod todo_runs {
             fixture
                 .supervisor
                 .todo_revoke(crate::api::schema::TodoRevokeParams {
+                    caller_pane_id: None,
                     cwd: fixture.repo.display().to_string(),
                     operation: "prepare".into(),
                     hash: hash.map(str::to_owned),

@@ -149,6 +149,8 @@ impl WorkerSupervisor {
         for (number, owner_lock) in owned_elsewhere {
             supervisor.adopt_when_released(number, owner_lock);
         }
+        // The handoffs a previous server left pending stay frozen.
+        supervisor.restore_handoffs();
         supervisor
     }
 

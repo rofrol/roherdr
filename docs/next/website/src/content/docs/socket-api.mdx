@@ -110,7 +110,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait_start`, `agent.wait`, `agent.wait_change`, `agent.verdict`, `agent.wait_verdict`, `agent.ack_verdict`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
 | Worker | `worker.start`, `worker.start_choice`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.answer_as`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
-| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
+| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.ready`, `coordinator.handoff_successor`, `coordinator.ack`, `coordinator.handoff_abort`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
 | TODO runs | `todo.run`, `todo.draft_run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.open_log`, `todo.review`, `todo.next`, `todo.stop`, `todo.queue_set`, `todo.queue_status`, `todo.runnable_state`, `todo.grant`, `todo.grants`, `todo.revoke` |
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
 | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
@@ -1026,6 +1026,40 @@ tenure. It is refused with `coordinator_not_found` without an active tenure,
 with `invalid_request` for the tenure's own pane, with `coordinator_active`
 when `to_pane_id` coordinates already, and with `pane_not_found` for an
 unknown pane. Only this explicit call hands off; no timer does.
+Self-service handoff to a fresh session of the same agent is three calls
+(`coordinator.ready` runs inside the coordinator's turn; the old session ends
+its turn afterwards):
+`coordinator.ready` (`pane_id`, `note_path`) freezes the caller's tenure and
+copies the note; `coordinator.handoff_successor` (`pane_id`) writes herdr's
+snapshot and the handoff manifest and starts the successor in a new pane of
+the same tab; `coordinator.ack` (`pane_id`, `epoch`, `snapshot_sha256`), from
+the successor's pane, moves the tenure, its workers and the tab's coordinator
+role in one step, under one lock, and closes the old pane. `coordinator.ready`
+and the others answer `coordinator`, `coordinator.ack` answers
+`coordinator_acked` (`coordinator`, `old_pane_id`, `old_pane_closed` and, when
+the pane could not be closed, `close_error`). The old pane's agent session is
+then superseded: its mutations are refused with `coordinator_superseded`, also
+when its pane could not be closed, until that pane closes. A relative
+`note_path` is refused with `invalid_request`. `coordinator.handoff_abort`
+(optional `pane_id`, the old or the successor's pane, and optional
+`coordinator_id`, needed outside a pane) cancels a pending handoff; it answers
+`coordinator_handoff_aborted` (`coordinator`, `successor_pane_id`,
+`successor_pane_closed`). The handoff also aborts, with one notice, when the
+successor exits, reports a limit or loses its pane before its ack (a blocked successor stays pending). The pending
+handoff and the superseded sessions are stored in the server's state
+directory, so they survive a restart and a live handoff. While a tenure is
+frozen or superseded, worker and todo mutations carry the sender's pane in an
+optional `caller_pane_id` (`owner_pane_id` on `worker.start`, `todo.run`,
+`todo.run_anthropic`, `todo.next`, `todo.queue_set` and `todo.draft_run`) and
+are refused for that pane; a caller without a pane, such as the user's shell,
+is never fenced. `worker.answer` and `worker.deny_and_stop` keep their
+advertised shapes and are the user's own answers, never fenced; a coordinator's
+CLI sends `worker.answer_from_pane` (`caller_pane_id` and the `worker.answer`
+parameters) instead, which is. They answer `coordinator`; its
+`handoff` object (`state`: `frozen` or `successor_started`, `epoch`,
+`successor_pane_id`, `agent_kind`, `note_sha256`, `snapshot_sha256`) is also
+in `coordinator.status` while a handoff is pending. Refusals are
+`coordinator_frozen` (a mutation of a frozen tenure) and `handoff_refused`.
 `worker.events` (`owner`, a tenure id, else `owner_pane_id`, the tenure bound
 to that pane; optional `after`, `wait`, `limit` and `snapshot`) is one
 coordinator's inbox over all of its workers, so it waits once, not once per

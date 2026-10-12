@@ -27,6 +27,7 @@
 #[cfg(unix)]
 pub(crate) mod broker;
 mod capabilities;
+pub(crate) mod coordinator_handoff;
 pub(crate) mod coordinators;
 mod decisions;
 mod error;
@@ -597,6 +598,19 @@ pub(crate) fn owner_panes() -> Vec<String> {
     coordinators::installed()
         .map(WorkerSupervisor::owner_panes)
         .unwrap_or_default()
+}
+
+/// Whether `pane_id` holds a started successor whose ack is pending.
+pub(crate) fn is_pending_successor(pane_id: &str) -> bool {
+    coordinators::installed().is_some_and(|supervisor| supervisor.is_pending_successor(pane_id))
+}
+
+/// Tells the supervisor which agent session `pane_id` runs now (`None`:
+/// none), so superseded sessions are fenced wherever they run.
+pub(crate) fn note_pane_session(pane_id: &str, session: Option<&str>) {
+    if let Some(supervisor) = coordinators::installed() {
+        supervisor.note_pane_session(pane_id, session);
+    }
 }
 
 /// Re-evaluates every owner when herdr starts: the panes and agents of a

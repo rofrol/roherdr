@@ -224,6 +224,7 @@ impl WorkerSupervisor {
         );
         if in_turn {
             let interrupt = WorkerInterruptParams {
+                caller_pane_id: None,
                 worker_id: worker_id.to_owned(),
                 turn: status.turn_seq,
                 command_id: None,

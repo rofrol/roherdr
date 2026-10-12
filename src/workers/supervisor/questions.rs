@@ -303,6 +303,7 @@ impl WorkerSupervisor {
             Vec::new()
         });
         let run_panes = self.run_owner_panes();
+        let successor_panes = self.handoff_successor_panes();
         let registry = lock(&self.shared.registry);
         let run_panes = run_panes
             .into_iter()
@@ -314,6 +315,7 @@ impl WorkerSupervisor {
             .filter_map(|entry| entry.status.owner_pane.clone())
             .chain(tenure_panes)
             .chain(run_panes)
+            .chain(successor_panes)
             .collect();
         panes.sort();
         panes.dedup();
@@ -349,6 +351,9 @@ impl WorkerSupervisor {
     /// quiet; the `?` list shows them as awaiting the coordinator with the
     /// age of the owner's last event, so the user can see it and act.
     pub(crate) fn owner_event(&self, pane_id: &str, event: OwnerEvent, cause_suffix: &str) {
+        // A successor that exits before its ack, or an old coordinator that
+        // ends, aborts a pending handoff.
+        self.handoff_owner_event(pane_id, event);
         // The pane's coordination tenure ends with its pane or agent.
         if let (OwnerEvent::PaneClosed | OwnerEvent::AgentExited, Some(cause)) =
             (event, event.cause())

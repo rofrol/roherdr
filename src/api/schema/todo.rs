@@ -769,6 +769,11 @@ pub struct TodoNextParams {
 pub struct TodoStopParams {
     /// A directory in the repository.
     pub cwd: String,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// A repository's chain of item coordinators (`todo.next` with `chain`).
@@ -914,6 +919,11 @@ pub struct TodoGrantParams {
     /// The definition's hash, as the `grant_required` refusal showed it:
     /// refused when the definition changed since.
     pub hash: String,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// `todo.grants`: the stored capability grants.
@@ -935,6 +945,11 @@ pub struct TodoRevokeParams {
     /// operation without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// A grant a run runs with, as preflight read it from its base commit.

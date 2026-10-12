@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams, WorkerAnswerParams,
-    WorkerCommandTarget, WorkerDecision, WorkerDrainAction, WorkerDrainParams,
-    WorkerEscalateParams, WorkerEventsParams, WorkerGeneratedFile, WorkerInterruptParams,
-    WorkerKillParams, WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams,
-    WorkerStartChoiceParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
-    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams,
+    WorkerAnswerFromPaneParams, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
+    WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
+    WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
+    WorkerPromptParams, WorkerRunsParams, WorkerStartChoiceParams, WorkerStartParams, WorkerTarget,
+    WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
@@ -273,6 +273,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "events" => Method::WorkerEvents(parse_events(rest)?),
         "ack" => match rest {
             [worker_id, seq] => Method::WorkerAck(WorkerAckParams {
+                caller_pane_id: super::target::caller_pane_id(),
                 worker_id: worker_id.clone(),
                 seq: seq
                     .parse()
@@ -306,6 +307,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         }
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
+                caller_pane_id: super::target::caller_pane_id(),
                 worker_id: worker_id.clone(),
                 text: text.clone(),
                 command_id,
@@ -318,6 +320,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
                 return Err("interrupt takes one worker id".into());
             };
             Method::WorkerInterrupt(WorkerInterruptParams {
+                caller_pane_id: super::target::caller_pane_id(),
                 worker_id: worker_id.clone(),
                 turn,
                 command_id,
@@ -352,7 +355,15 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
                     coordinator_id,
                     answer,
                 }),
-                None => Method::WorkerAnswer(answer),
+                None => match super::target::caller_pane_id() {
+                    Some(caller_pane_id) => {
+                        Method::WorkerAnswerFromPane(WorkerAnswerFromPaneParams {
+                            caller_pane_id,
+                            answer,
+                        })
+                    }
+                    None => Method::WorkerAnswer(answer),
+                },
             }
         }
         "take-over" => {
@@ -369,6 +380,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             let (request, rest) = take_string_option(rest, "--request")?;
             match (rest.as_slice(), request) {
                 ([worker_id], Some(request_id)) => Method::WorkerEscalate(WorkerEscalateParams {
+                    caller_pane_id: super::target::caller_pane_id(),
                     worker_id: worker_id.clone(),
                     request_id,
                 }),
@@ -1217,6 +1229,7 @@ mod tests {
         assert!(matches!(
             parse_worker_args(&args(&["interrupt", "w1", "--turn", "7"])),
             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
+                caller_pane_id: None,
                 turn: Some(7),
                 ..
             })))
@@ -1224,6 +1237,7 @@ mod tests {
         assert!(matches!(
             parse_worker_args(&args(&["interrupt", "w1"])),
             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
+                caller_pane_id: None,
                 turn: None,
                 ..
             })))
@@ -1337,6 +1351,7 @@ mod tests {
         assert_eq!(
             parse_worker_args(&args(&["ack", "w12", "40"])),
             Ok(Some(Method::WorkerAck(WorkerAckParams {
+                caller_pane_id: None,
                 worker_id: "w12".into(),
                 seq: 40,
             })))
@@ -1509,6 +1524,7 @@ mod tests {
         assert_eq!(
             parse_worker_args(&args(&["escalate", "w12", "--request", "perm-1"])),
             Ok(Some(Method::WorkerEscalate(WorkerEscalateParams {
+                caller_pane_id: None,
                 worker_id: "w12".into(),
                 request_id: "perm-1".into(),
             })))

@@ -859,6 +859,12 @@ impl App {
             self.sync_worker_owner_panes();
             self.sync_coordinator_roles();
         }
+        if let EventData::PaneUpdated { pane } = &event.data {
+            crate::workers::note_pane_session(
+                &pane.pane_id,
+                pane.agent_session.as_ref().map(|s| s.value.as_str()),
+            );
+        }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }
@@ -878,6 +884,15 @@ impl App {
     /// judged by what it shows now.
     pub(crate) fn reevaluate_worker_owners_at_start(&self) {
         use crate::workers::OwnerEvent;
+        // Which session each pane runs, for the superseded-session fence.
+        for ws_idx in 0..self.state.workspaces.len() {
+            for tab_idx in 0..self.state.workspaces[ws_idx].tabs.len() {
+                for pane in self.tab_public_pane_ids(ws_idx, tab_idx) {
+                    let session = self.pane_agent_session(&pane);
+                    crate::workers::note_pane_session(&pane, session.as_deref());
+                }
+            }
+        }
         crate::workers::owners_at_start(|pane| {
             let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
                 return Some(OwnerEvent::PaneClosed);
@@ -887,6 +902,12 @@ impl App {
                 .terminal_id_for_pane(ws_idx, pane_id)
                 .and_then(|terminal_id| self.state.terminals.get(&terminal_id));
             let Some(terminal) = terminal.filter(|t| t.effective_agent_label().is_some()) else {
+                // A started successor's agent may not be detected yet: only
+                // a pane that is gone, or an agent that was detected and
+                // then left, ends its handoff; an undetected one is pending.
+                if crate::workers::is_pending_successor(pane) {
+                    return None;
+                }
                 return Some(OwnerEvent::AgentExited);
             };
             Some(if terminal.limit().is_some() {
@@ -1302,6 +1323,18 @@ impl App {
             Method::CoordinatorHandoff(params) => {
                 return self.handle_coordinator_handoff(request.id, params);
             }
+            Method::CoordinatorReady(params) => {
+                return self.handle_coordinator_ready(request.id, params);
+            }
+            Method::CoordinatorHandoffSuccessor(params) => {
+                return self.handle_coordinator_handoff_successor(request.id, params);
+            }
+            Method::CoordinatorHandoffAbort(params) => {
+                return self.handle_coordinator_handoff_abort(request.id, params);
+            }
+            Method::CoordinatorAck(params) => {
+                return self.handle_coordinator_ack(request.id, params);
+            }
             Method::CoordinatorRecordOverride(params) => {
                 return self.handle_coordinator_record_override(request.id, params);
             }
@@ -1422,6 +1455,7 @@ impl App {
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
             | Method::WorkerAnswerAs(_)
+            | Method::WorkerAnswerFromPane(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
             | Method::WorkerDrain(_)

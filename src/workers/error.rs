@@ -71,6 +71,15 @@ pub(crate) enum WorkerError {
     /// A `worker.answer_as` from a tenure that no longer owns the worker;
     /// the message names the owner. The answer was not applied.
     OwnershipTransferred(String),
+    /// A mutation from a coordinator whose tenure is frozen for a handoff;
+    /// the message names the tenure.
+    CoordinatorFrozen(String),
+    /// A mutation from a session whose tenure was handed over to its
+    /// successor; the message names the successor's tenure.
+    CoordinatorSuperseded(String),
+    /// A self-service handoff step that is not allowed now (`coordinator.ready`,
+    /// `coordinator.handoff_successor`, `coordinator.ack`); the message says why.
+    HandoffRefused(String),
     Io(std::io::Error),
 }
 
@@ -106,6 +115,9 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "grant_needs_user",
     "finding_ack_refused",
     "ownership_transferred",
+    "coordinator_frozen",
+    "coordinator_superseded",
+    "handoff_refused",
 ];
 
 impl WorkerError {
@@ -142,6 +154,9 @@ impl WorkerError {
             Self::GrantNeedsUser(_) => "grant_needs_user",
             Self::FindingAckRefused(_) => "finding_ack_refused",
             Self::OwnershipTransferred(_) => "ownership_transferred",
+            Self::CoordinatorFrozen(_) => "coordinator_frozen",
+            Self::CoordinatorSuperseded(_) => "coordinator_superseded",
+            Self::HandoffRefused(_) => "handoff_refused",
         }
     }
 
@@ -188,6 +203,9 @@ impl std::fmt::Display for WorkerError {
             | Self::GrantRequired(message)
             | Self::GrantNeedsUser(message)
             | Self::FindingAckRefused(message)
+            | Self::CoordinatorFrozen(message)
+            | Self::CoordinatorSuperseded(message)
+            | Self::HandoffRefused(message)
             | Self::OwnershipTransferred(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }

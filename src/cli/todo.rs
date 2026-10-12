@@ -834,7 +834,10 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 .display()
                 .to_string();
             if subcommand == "stop" {
-                Method::TodoStop(TodoStopParams { cwd })
+                Method::TodoStop(TodoStopParams {
+                    caller_pane_id: super::target::caller_pane_id(),
+                    cwd,
+                })
             } else {
                 let pane = super::target::caller_pane_id();
                 Method::TodoNext(TodoNextParams {
@@ -929,6 +932,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                         return Err("grant --revoke takes --operation, --hash and --repo".into());
                     };
                     Method::TodoRevoke(TodoRevokeParams {
+                        caller_pane_id: super::target::caller_pane_id(),
                         cwd,
                         operation,
                         hash,
@@ -939,6 +943,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                         return Err("grant takes --operation, --hash and --repo".into());
                     };
                     Method::TodoGrant(TodoGrantParams {
+                        caller_pane_id: super::target::caller_pane_id(),
                         cwd,
                         operation,
                         hash,

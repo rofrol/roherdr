@@ -48,6 +48,80 @@ pub struct CoordinatorHandoffParams {
     pub pane_id: Option<String>,
 }
 
+/// Freezes the caller's tenure for a self-service handoff
+/// (`coordinator.ready`): herdr copies the agent's note and records its hash.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorReadyParams {
+    /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
+    pub pane_id: String,
+    /// The agent's note for its successor: an absolute path of a file the
+    /// server can read, copied into herdr's state directory.
+    pub note_path: String,
+}
+
+/// Starts the successor of a frozen tenure (`coordinator.handoff_successor`):
+/// a new pane in the caller's tab runs a fresh session of the same agent kind.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorHandoffSuccessorParams {
+    /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
+    pub pane_id: String,
+}
+
+/// Cancels a pending handoff (`coordinator.handoff_abort`): the tenure
+/// unfreezes and keeps its authority.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorHandoffAbortParams {
+    /// The pane sending the abort (the CLI sends its `HERDR_PANE_ID`): the
+    /// old coordinator's or the successor's; absent outside a pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// The tenure whose handoff to abort; needed outside a pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_id: Option<String>,
+}
+
+/// The successor takes the tenure over (`coordinator.ack`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorAckParams {
+    /// The successor's pane (the CLI sends its `HERDR_PANE_ID`).
+    pub pane_id: String,
+    /// The epoch of the tenure being handed over, from the manifest.
+    pub epoch: i64,
+    /// The sha256 of herdr's snapshot, from the manifest.
+    pub snapshot_sha256: String,
+}
+
+/// How far a tenure's self-service handoff has come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorHandoffState {
+    /// `coordinator.ready` froze the tenure; no successor yet.
+    Frozen,
+    /// The successor was started and has not acknowledged yet.
+    SuccessorStarted,
+    #[serde(other)]
+    Unknown,
+}
+
+/// A tenure's pending self-service handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorHandoffInfo {
+    pub state: CoordinatorHandoffState,
+    /// The epoch the successor must acknowledge.
+    pub epoch: i64,
+    /// The successor's pane once started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor_pane_id: Option<String>,
+    /// The agent kind of both sessions, once the successor started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
+    /// The sha256 of the copied note.
+    pub note_sha256: String,
+    /// The sha256 of herdr's snapshot, once the successor started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_sha256: Option<String>,
+}
+
 /// Lists the active tenures, of one repository when given.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CoordinatorStatusParams {
@@ -93,6 +167,10 @@ pub struct CoordinatorInfo {
     pub headless: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+    /// The tenure's pending self-service handoff: while it is there the
+    /// tenure is frozen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<CoordinatorHandoffInfo>,
 }
 
 /// Records an exception to a coordinator tab's command allowlist: one tool

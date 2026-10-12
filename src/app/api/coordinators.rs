@@ -7,10 +7,11 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    CoordinatorAllowlistRefusalParams, CoordinatorEndParams, CoordinatorHandoffParams,
-    CoordinatorInfo, CoordinatorRecordOverrideParams, CoordinatorStartParams,
-    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
-    TabRole,
+    CoordinatorAckParams, CoordinatorAllowlistRefusalParams, CoordinatorEndParams,
+    CoordinatorHandoffAbortParams, CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams,
+    CoordinatorInfo, CoordinatorReadyParams, CoordinatorRecordOverrideParams,
+    CoordinatorStartParams, CoordinatorStatusParams, NotificationShowParams, NotificationShowSound,
+    ResponseResult, TabRole,
 };
 use crate::app::App;
 use crate::workers::{WorkerError, WorkerSupervisor};
@@ -68,6 +69,13 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
             return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
         };
+        // A session whose tenure was handed over starts no new one.
+        if let Err(error) = coordinators.fence_pane_session(
+            Some(&self.canonical_pane_id(pane)),
+            self.pane_agent_session(pane).as_deref(),
+        ) {
+            return encode_error(id, error.code(), error.to_string());
+        }
         let started = match (&params.repo, &params.home_git_dir) {
             (None, Some(_)) => Err(WorkerError::Invalid(
                 "home_git_dir needs repo, the home directory".into(),
@@ -116,6 +124,16 @@ impl App {
                 )
             }
         };
+        // From a frozen pane the end would silently drop the pending
+        // handoff; from a superseded one it is no tenure's to end.
+        if let Some(pane) = &params.pane_id {
+            if let Err(error) = coordinators.fence_pane_session(
+                Some(&self.canonical_pane_id(pane)),
+                self.pane_agent_session(pane).as_deref(),
+            ) {
+                return encode_error(id, error.code(), error.to_string());
+            }
+        }
         let reason = params
             .reason
             .as_deref()
@@ -160,6 +178,20 @@ impl App {
             .as_deref()
             .map(|pane| self.canonical_pane_id(pane));
         let session = target.agent_session.map(|session| session.value);
+        let fenced = coordinators
+            .fence_tenure(params.coordinator_id.as_deref())
+            .and_then(|()| {
+                coordinators.fence_pane_session(
+                    from_pane.as_deref(),
+                    from_pane
+                        .as_deref()
+                        .and_then(|pane| self.pane_agent_session(pane))
+                        .as_deref(),
+                )
+            });
+        if let Err(error) = fenced {
+            return encode_error(id, error.code(), error.to_string());
+        }
         let handed = coordinators.coordinator_handoff(
             params.coordinator_id.as_deref(),
             from_pane.as_deref(),
@@ -380,6 +412,14 @@ impl App {
     /// Marks as coordinator exactly the tabs with a pane bound to an active
     /// tenure, and unmarks the others; a worker role stays. The store is the
     /// source of truth: when it cannot be read, nothing changes.
+    /// The agent session the pane `pane` runs now.
+    pub(crate) fn pane_agent_session(&self, pane: &str) -> Option<String> {
+        let (ws_idx, pane_id) = self.parse_pane_id(&self.canonical_pane_id(pane))?;
+        self.pane_metadata(ws_idx, pane_id)?
+            .agent_session
+            .map(|session| session.value)
+    }
+
     pub(crate) fn sync_coordinator_roles(&mut self) {
         let Some(coordinators) = crate::workers::coordinators() else {
             return;
@@ -414,6 +454,342 @@ impl App {
             self.schedule_session_save();
         }
     }
+}
+
+/// The name of the agent a handoff starts in the successor's pane.
+fn successor_agent_name(epoch: i64) -> String {
+    format!("successor-e{epoch}")
+}
+
+impl App {
+    /// The coordinator's pane `pane` as the handoff needs it: its position
+    /// and the label of the agent it runs.
+    fn handoff_pane(
+        &self,
+        pane: &str,
+    ) -> Result<
+        (
+            usize,
+            crate::layout::PaneId,
+            String,
+            crate::api::schema::AgentStatus,
+        ),
+        WorkerError,
+    > {
+        let (ws_idx, pane_id) = self
+            .parse_pane_id(pane)
+            .ok_or_else(|| WorkerError::Invalid(format!("pane not found: {pane}")))?;
+        let metadata = self
+            .pane_metadata(ws_idx, pane_id)
+            .ok_or_else(|| WorkerError::Invalid(format!("pane not found: {pane}")))?;
+        let kind = metadata.agent.ok_or_else(|| {
+            WorkerError::HandoffRefused(format!("pane {pane} runs no recognized agent"))
+        })?;
+        Ok((ws_idx, pane_id, kind, metadata.agent_status))
+    }
+
+    /// `coordinator.ready`: the caller's tenure freezes with the agent's note.
+    ///
+    /// The command runs from inside the agent's own turn, so its live state
+    /// is `working`; "at a turn end" is therefore enforced as: the agent is
+    /// one a handoff can start (has a launch prompt) and is not blocked on a
+    /// question or permission, and the skill ends its turn right after
+    /// `handoff --successor`. A kind without a launch prompt is refused here,
+    /// so nothing is left frozen.
+    pub(super) fn handle_coordinator_ready(
+        &mut self,
+        id: String,
+        params: CoordinatorReadyParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        let pane = self.canonical_pane_id(&params.pane_id);
+        let result = (|| {
+            coordinators
+                .fence_pane_session(Some(&pane), self.pane_agent_session(&pane).as_deref())
+                .or_else(|error| {
+                    // A frozen tenure takes a new note.
+                    if error.code() == "coordinator_frozen" {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })?;
+            let (_, _, kind, status) = self.handoff_pane(&pane)?;
+            if crate::workers::coordinator_handoff::launch_prompt(&kind, std::path::Path::new("/"))
+                .is_none()
+            {
+                return Err(WorkerError::HandoffRefused(format!(
+                    "agent kind {kind} cannot take a coordinator over by itself"
+                )));
+            }
+            if status == crate::api::schema::AgentStatus::Blocked {
+                return Err(WorkerError::HandoffRefused(
+                    "the agent is blocked on a question or a permission, not at a turn end".into(),
+                ));
+            }
+            coordinators.handoff_ready(&pane, std::path::Path::new(&params.note_path))
+        })();
+        match result {
+            Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `coordinator.handoff_successor`: writes the snapshot and manifest,
+    /// opens a pane next to the caller's without moving focus and starts one
+    /// fresh session of the same agent kind there, with its single launch
+    /// prompt. Any failure after that aborts the handoff: the pane closes
+    /// and the tenure unfreezes.
+    pub(super) fn handle_coordinator_handoff_successor(
+        &mut self,
+        id: String,
+        params: CoordinatorHandoffSuccessorParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        let pane = self.canonical_pane_id(&params.pane_id);
+        let prepared = match coordinators
+            .fence_pane_session(Some(&pane), self.pane_agent_session(&pane).as_deref())
+            .or_else(|error| {
+                // The frozen tenure is the one that starts its successor.
+                if error.code() == "coordinator_frozen" {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .and_then(|()| self.handoff_pane(&pane))
+            .and_then(|(_, _, kind, _)| {
+                coordinators
+                    .handoff_prepare(&pane, &kind)
+                    .map(|prepared| (prepared, kind))
+            }) {
+            Ok(prepared) => prepared,
+            Err(error) => return encode_error(id, error.code(), error.to_string()),
+        };
+        let (prepared, kind) = prepared;
+        match self.start_successor(&pane, &kind, &prepared) {
+            Ok(successor) => {
+                let started =
+                    coordinators.handoff_successor_started(&prepared.coordinator_id, &successor);
+                match started {
+                    Ok(coordinator) => {
+                        encode_success(id, ResponseResult::Coordinator { coordinator })
+                    }
+                    Err(error) => {
+                        self.abort_started_handoff(&prepared.coordinator_id, &successor, &error);
+                        encode_error(id, error.code(), error.to_string())
+                    }
+                }
+            }
+            Err(error) => {
+                coordinators.handoff_abort(
+                    &prepared.coordinator_id,
+                    &format!("the successor could not start ({error})"),
+                );
+                encode_error(id, error.code(), error.to_string())
+            }
+        }
+    }
+
+    fn abort_started_handoff(
+        &mut self,
+        coordinator_id: &str,
+        successor: &str,
+        error: &WorkerError,
+    ) {
+        if let Some(coordinators) = crate::workers::coordinators() {
+            coordinators.handoff_abort(coordinator_id, &format!("the handoff failed ({error})"));
+        }
+        let _ = self.close_pane(
+            String::new(),
+            &crate::api::schema::PaneTarget {
+                pane_id: successor.to_owned(),
+            },
+        );
+    }
+
+    /// Opens the successor's pane beside `old_pane` and starts the agent in
+    /// it. A pane that was opened is closed again when the start fails.
+    fn start_successor(
+        &mut self,
+        old_pane: &str,
+        kind: &str,
+        prepared: &crate::workers::coordinator_handoff::Prepared,
+    ) -> Result<String, WorkerError> {
+        let epoch = crate::workers::coordinators()
+            .and_then(|c| c.coordinator_of_pane(old_pane))
+            .map(|tenure| tenure.epoch)
+            .unwrap_or_default();
+        let split = self.handle_pane_split(
+            String::new(),
+            crate::api::schema::PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(old_pane.to_owned()),
+                direction: crate::api::schema::SplitDirection::Right,
+                ratio: None,
+                cwd: None,
+                focus: false,
+                right_click: Default::default(),
+                env: Default::default(),
+            },
+        );
+        let split: serde_json::Value = serde_json::from_str(&split)
+            .map_err(|error| WorkerError::Invalid(format!("unreadable split response: {error}")))?;
+        let Some(successor) = split["result"]["pane"]["pane_id"]
+            .as_str()
+            .map(str::to_owned)
+        else {
+            return Err(WorkerError::Invalid(format!(
+                "cannot open the successor's pane: {}",
+                split["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unknown error")
+            )));
+        };
+        let started = self.start_agent(crate::api::schema::AgentStartParams {
+            name: successor_agent_name(epoch),
+            kind: kind.to_owned(),
+            pane_id: successor.clone(),
+            args: Vec::new(),
+            timeout_ms: None,
+            prompt: Some(prepared.prompt.clone()),
+            caller_pane_id: None,
+        });
+        match started {
+            Ok(_) => Ok(successor),
+            Err(error) => {
+                let body = self.agent_start_error_body(error);
+                let _ = self.close_pane(
+                    String::new(),
+                    &crate::api::schema::PaneTarget { pane_id: successor },
+                );
+                Err(WorkerError::Invalid(format!(
+                    "cannot start the successor: {}",
+                    body.message
+                )))
+            }
+        }
+    }
+
+    /// `coordinator.ack`: the successor takes the tenure over, and in the
+    /// same step the old coordinator's pane closes (which ends its agent
+    /// session). A refused ack changes nothing.
+    pub(super) fn handle_coordinator_ack(
+        &mut self,
+        id: String,
+        params: CoordinatorAckParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        let pane = self.canonical_pane_id(&params.pane_id);
+        let target = self
+            .parse_pane_id(&pane)
+            .and_then(|(ws_idx, pane_id)| self.pane_metadata(ws_idx, pane_id));
+        let Some(target) = target else {
+            return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
+        };
+        let session = target.agent_session.map(|session| session.value);
+        let acked = coordinators.handoff_ack(
+            &target.pane_id,
+            params.epoch,
+            &params.snapshot_sha256,
+            session.as_deref(),
+            Some(&target.workspace_id),
+        );
+        self.sync_coordinator_roles();
+        match acked {
+            Ok(acked) => {
+                // The old session ends with its pane. It is fenced as
+                // superseded already, so a pane that cannot be closed is
+                // reported, not hidden.
+                let closed = self.close_pane(
+                    String::new(),
+                    &crate::api::schema::PaneTarget {
+                        pane_id: acked.old_pane.clone(),
+                    },
+                );
+                let close_error = response_error(closed);
+                if let Some(error) = &close_error {
+                    tracing::warn!(pane = %acked.old_pane, %error, "cannot close the superseded coordinator pane");
+                }
+                self.sync_coordinator_roles();
+                encode_success(
+                    id,
+                    ResponseResult::CoordinatorAcked {
+                        coordinator: acked.tenure,
+                        old_pane_id: acked.old_pane,
+                        old_pane_closed: close_error.is_none(),
+                        close_error: close_error.map(|error| {
+                            format!(
+                                "the old pane could not be closed ({error}); its session is \
+                                 fenced as superseded"
+                            )
+                        }),
+                    },
+                )
+            }
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `coordinator.handoff_abort`: the pending handoff ends and the old
+    /// tenure unfreezes. The successor's pane is closed unless the
+    /// successor itself asked.
+    pub(super) fn handle_coordinator_handoff_abort(
+        &mut self,
+        id: String,
+        params: CoordinatorHandoffAbortParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        let pane = params
+            .pane_id
+            .as_deref()
+            .map(|pane| self.canonical_pane_id(pane));
+        let aborted = match coordinators
+            .handoff_abort_request(pane.as_deref(), params.coordinator_id.as_deref())
+        {
+            Ok(aborted) => aborted,
+            Err(error) => return encode_error(id, error.code(), error.to_string()),
+        };
+        let successor_pane_closed = aborted.close_pane.as_ref().is_some_and(|successor| {
+            let closed = self.close_pane(
+                String::new(),
+                &crate::api::schema::PaneTarget {
+                    pane_id: successor.clone(),
+                },
+            );
+            response_error(closed).is_none()
+        });
+        self.sync_coordinator_roles();
+        encode_success(
+            id,
+            ResponseResult::CoordinatorHandoffAborted {
+                coordinator: aborted.tenure,
+                successor_pane_id: aborted.close_pane,
+                successor_pane_closed,
+            },
+        )
+    }
+}
+
+/// The message of a failed `close_pane` (its encoded error response), `None`
+/// for a success.
+fn response_error(closed: Result<(), String>) -> Option<String> {
+    let response = closed.err()?;
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+    Some(
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or("unknown error")
+            .to_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -720,6 +1096,105 @@ mod tests {
             },
         );
         assert!(status.contains("\"end_reason\":\"orphaned\""), "{status}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn give_agent(app: &mut App, pane: &str, agent: crate::detect::Agent) {
+        let (ws_idx, pane_id) = app.parse_pane_id(pane).unwrap();
+        let terminal_id = app.state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_agent_process_at(agent, std::time::Instant::now());
+    }
+
+    fn error_code(response: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(response).unwrap();
+        value["error"]["code"].as_str().unwrap_or("").to_owned()
+    }
+
+    /// A coordinator hands over through `ready` and `ack`: a kind with no
+    /// launch prompt is refused before anything freezes, a frozen tenure's
+    /// `handoff --to` is refused, a wrong ack changes nothing, and the right
+    /// one moves the tenure and the tab's role and closes the old pane.
+    #[test]
+    fn ready_and_ack_move_the_tenure_and_close_the_old_pane() {
+        let (mut app, root) = app("self-service");
+        let note = root.join("note.md");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&note, "carry on\n").unwrap();
+        set_role(&mut app, 1, Some(TabRole::Coordinator)).unwrap();
+        let old = pane_of(&app, 1);
+        let successor = pane_of(&app, 0);
+        let ready = |app: &mut App| {
+            app.handle_coordinator_ready(
+                "req".into(),
+                CoordinatorReadyParams {
+                    pane_id: old.clone(),
+                    note_path: note.display().to_string(),
+                },
+            )
+        };
+        // No recognized agent, then one without a launch prompt.
+        assert_eq!(error_code(&ready(&mut app)), "handoff_refused");
+        give_agent(&mut app, &old, crate::detect::Agent::Codex);
+        assert_eq!(error_code(&ready(&mut app)), "handoff_refused");
+        assert!(active(&app)[0].handoff.is_none());
+        let coordinators = crate::workers::coordinators().unwrap();
+        // The ack of a tenure that is not handing over is refused.
+        let ack = |app: &mut App, epoch: i64, sha: &str| {
+            app.handle_coordinator_ack(
+                "req".into(),
+                CoordinatorAckParams {
+                    pane_id: successor.clone(),
+                    epoch,
+                    snapshot_sha256: sha.into(),
+                },
+            )
+        };
+        assert_eq!(error_code(&ack(&mut app, 1, "ab")), "handoff_refused");
+
+        give_agent(&mut app, &old, crate::detect::Agent::Claude);
+        let response = ready(&mut app);
+        assert!(response.contains("\"state\":\"frozen\""), "{response}");
+        let handoff = app.handle_coordinator_handoff(
+            "req".into(),
+            CoordinatorHandoffParams {
+                to_pane_id: successor.clone(),
+                coordinator_id: None,
+                pane_id: Some(old.clone()),
+            },
+        );
+        assert_eq!(error_code(&handoff), "coordinator_frozen");
+        // The successor's start (the pane and agent launch need a real
+        // terminal) is stood in for by the supervisor's own steps.
+        let prepared = coordinators.handoff_prepare(&old, "claude").unwrap();
+        coordinators
+            .handoff_successor_started(&prepared.coordinator_id, &successor)
+            .unwrap();
+        let status = active(&app).remove(0);
+        let pending = status.handoff.unwrap();
+        let sha = pending.snapshot_sha256.unwrap();
+        assert_eq!(error_code(&ack(&mut app, 2, &sha)), "handoff_refused");
+        assert_eq!(
+            error_code(&ack(&mut app, 1, &"0".repeat(64))),
+            "handoff_refused"
+        );
+        assert_eq!(active(&app)[0].pane_id.as_deref(), Some(old.as_str()));
+
+        let response = ack(&mut app, 1, &sha);
+        assert!(response.contains("\"epoch\":2"), "{response}");
+        let tenure = active(&app).remove(0);
+        assert_eq!(tenure.pane_id.as_deref(), Some(successor.as_str()));
+        assert!(tenure.handoff.is_none());
+        // The old pane is closed (its tab with it), the role followed.
+        assert!(app.parse_pane_id(&old).is_none());
+        assert_eq!(roles(&app), vec![Some(TabRole::Coordinator)]);
         let _ = std::fs::remove_dir_all(root);
     }
 

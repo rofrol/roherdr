@@ -315,6 +315,7 @@ pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
         session_id: tenure.session_id,
         headless: tenure.headless,
         worker_id: tenure.worker_id,
+        handoff: None,
     }
 }
 
@@ -458,6 +459,8 @@ impl WorkerSupervisor {
         let tenure = ended.ok_or_else(|| {
             WorkerError::CoordinatorNotFound(format!("coordinator {id} not found"))
         })?;
+        // A tenure that ends has nothing left to hand over.
+        lock(&self.shared.registry).handoffs.remove(id);
         // Wakes a `worker.events` wait on the tenure, which answers once it
         // has ended: through the registry lock, which that wait holds from
         // its check to its block, so the wake cannot fall in between.
@@ -477,7 +480,7 @@ impl WorkerSupervisor {
             .active_coordinators(repo)
             .map_err(store_error)?
             .into_iter()
-            .map(info)
+            .map(|tenure| self.with_handoff(info(tenure)))
             .collect())
     }
 
@@ -704,8 +707,35 @@ impl WorkerSupervisor {
         to_session: Option<&str>,
         to_workspace: Option<&str>,
     ) -> Result<CoordinatorInfo, WorkerError> {
-        let store = self.tenure_store()?;
         let mut registry = lock(&self.shared.registry);
+        let started = self.coordinator_handoff_locked(
+            &mut registry,
+            coordinator_id,
+            from_pane,
+            to_pane,
+            to_session,
+            to_workspace,
+        );
+        drop(registry);
+        self.shared.changed.notify_all();
+        notify_clients();
+        started
+    }
+
+    /// [`Self::coordinator_handoff`] under the registry lock the caller
+    /// holds, so a caller that must change more in the same step (the ack of
+    /// a self-service handoff) leaves no window between them. The caller
+    /// wakes waiters and clients once it let go of the lock.
+    pub(super) fn coordinator_handoff_locked(
+        &self,
+        registry: &mut Registry,
+        coordinator_id: Option<&str>,
+        from_pane: Option<&str>,
+        to_pane: &str,
+        to_session: Option<&str>,
+        to_workspace: Option<&str>,
+    ) -> Result<CoordinatorInfo, WorkerError> {
+        let store = self.tenure_store()?;
         let at = now_ms();
         let outcome = store
             .transaction(|tx| {
@@ -754,16 +784,12 @@ impl WorkerSupervisor {
                     workspace: to_workspace,
                     coordinator_id: Some(&started.id),
                 };
-                let (moved, staged) =
-                    Self::move_owned(&registry, tx, &from.id, &owner, &cause, at)?;
+                let (moved, staged) = Self::move_owned(registry, tx, &from.id, &owner, &cause, at)?;
                 Ok(Ok((started, moved, staged)))
             })
             .map_err(store_error)?;
         let (started, moved, staged) = outcome?;
-        Self::settle_moves(&mut registry, staged, &moved, at);
-        drop(registry);
-        self.shared.changed.notify_all();
-        notify_clients();
+        Self::settle_moves(registry, staged, &moved, at);
         Ok(info(started))
     }
 

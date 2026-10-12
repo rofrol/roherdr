@@ -2289,6 +2289,30 @@
           ],
           "type": "object"
         },
+        "CoordinatorAckParams": {
+          "description": "The successor takes the tenure over (`coordinator.ack`).",
+          "properties": {
+            "epoch": {
+              "description": "The epoch of the tenure being handed over, from the manifest.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "pane_id": {
+              "description": "The successor's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            },
+            "snapshot_sha256": {
+              "description": "The sha256 of herdr's snapshot, from the manifest.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "epoch",
+            "snapshot_sha256"
+          ],
+          "type": "object"
+        },
         "CoordinatorAllowlistRefusalParams": {
           "description": "Asks what to do with one tool call the coordinator allowlist refused in\na coordinator tab. The server answers with `[coordinator] allowlist`;\nin shadow mode it also records the call as a would-deny.",
           "properties": {
@@ -2357,6 +2381,26 @@
           },
           "type": "object"
         },
+        "CoordinatorHandoffAbortParams": {
+          "description": "Cancels a pending handoff (`coordinator.handoff_abort`): the tenure\nunfreezes and keeps its authority.",
+          "properties": {
+            "coordinator_id": {
+              "description": "The tenure whose handoff to abort; needed outside a pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The pane sending the abort (the CLI sends its `HERDR_PANE_ID`): the\nold coordinator's or the successor's; absent outside a pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "CoordinatorHandoffParams": {
           "description": "Hands a repository's coordination to another pane: the tenure named,\nelse the one bound to `pane_id`, ends `handed_off`, and the next tenure\nstarts in `to_pane_id` with the next epoch, taking over the old one's\ncurrent item, workers and runs, in one transaction.",
           "properties": {
@@ -2380,6 +2424,37 @@
           },
           "required": [
             "to_pane_id"
+          ],
+          "type": "object"
+        },
+        "CoordinatorHandoffSuccessorParams": {
+          "description": "Starts the successor of a frozen tenure (`coordinator.handoff_successor`):\na new pane in the caller's tab runs a fresh session of the same agent kind.",
+          "properties": {
+            "pane_id": {
+              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "CoordinatorReadyParams": {
+          "description": "Freezes the caller's tenure for a self-service handoff\n(`coordinator.ready`): herdr copies the agent's note and records its hash.",
+          "properties": {
+            "note_path": {
+              "description": "The agent's note for its successor: an absolute path of a file the\nserver can read, copied into herdr's state directory.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "note_path"
           ],
           "type": "object"
         },
@@ -6334,6 +6409,13 @@
         "TodoGrantParams": {
           "description": "`todo.grant`: the user's grant of a repository's operation, for the\nexact definition `master` declares now in `.herdr/operations.toml`.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "description": "A directory in the repository.",
               "type": "string"
@@ -6695,6 +6777,13 @@
         "TodoRevokeParams": {
           "description": "`todo.revoke`: removes the stored grants of a repository's operation.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "description": "A directory in the repository.",
               "type": "string"
@@ -6847,6 +6936,13 @@
         "TodoStopParams": {
           "description": "Stops the repository's chain of item coordinators: the one that runs\nfinishes its item, and no next one starts.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "description": "A directory in the repository.",
               "type": "string"
@@ -6924,6 +7020,13 @@
         "WorkerAckParams": {
           "description": "The owner acknowledges having handled the worker's events up to `seq`.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "seq": {
               "description": "The `seq` handled: the one `worker.wait` with `until: attention` or\n`worker.obligations` returned. An ack at or below the acknowledged\none changes nothing; one past the worker's latest event is refused.",
               "format": "int64",
@@ -7026,6 +7129,62 @@
           },
           "required": [
             "coordinator_id",
+            "worker_id"
+          ],
+          "type": "object"
+        },
+        "WorkerAnswerFromPaneParams": {
+          "description": "`worker.answer` sent from a pane (`worker.answer_from_pane`): refused with\n`coordinator_frozen` while the pane's coordinator tenure is frozen for a\nhandoff, and with `coordinator_superseded` for a pane whose tenure was\nhanded over. `worker.answer` itself keeps its shape (clients advertise it)\nand is the user's answer, never fenced.",
+          "properties": {
+            "answers": {
+              "description": "`AskUserQuestion` only: one answer per question, in order. Each is an\noption's label, its 1-based number, or free text; a multi-select\nquestion takes several labels or numbers separated by commas.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "caller_pane_id": {
+              "description": "The sending pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            },
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerDecision"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`\ndeclines to answer and `allow` (or absent) sends `answers`."
+            },
+            "message": {
+              "description": "The message the model gets with a denial.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "The question to answer. When absent, the only pending question; an\nanswer without it is refused while several are pending. A question\nthat is no longer pending is refused with `worker_question_gone`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane_id",
             "worker_id"
           ],
           "type": "object"
@@ -7178,6 +7337,13 @@
         "WorkerEscalateParams": {
           "description": "The owner hands one of the worker's pending questions to the user.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "request_id": {
               "description": "The question to escalate; one that is no longer pending is refused\nwith `worker_question_gone`.",
               "type": "string"
@@ -7255,6 +7421,13 @@
         },
         "WorkerInterruptParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "command_id": {
               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
               "type": [
@@ -7322,6 +7495,13 @@
         },
         "WorkerPromptParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "command_id": {
               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
               "type": [
@@ -8417,6 +8597,23 @@
           "type": "object"
         },
         {
+          "description": "`worker.answer` from a pane, fenced while its tenure hands over.",
+          "properties": {
+            "method": {
+              "const": "worker.answer_from_pane",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerAnswerFromPaneParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "`worker.answer` from a coordination tenure, refused with\n`ownership_transferred` once the worker is another tenure's.",
           "properties": {
             "method": {
@@ -9171,6 +9368,74 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/CoordinatorHandoffParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Freezes the caller's tenure and records the agent's handoff note.",
+          "properties": {
+            "method": {
+              "const": "coordinator.ready",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorReadyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Starts a fresh session of the same agent kind to take the frozen\ntenure over.",
+          "properties": {
+            "method": {
+              "const": "coordinator.handoff_successor",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorHandoffSuccessorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cancels a pending handoff; the old tenure unfreezes.",
+          "properties": {
+            "method": {
+              "const": "coordinator.handoff_abort",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorHandoffAbortParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The successor takes the tenure over; the old session ends.",
+          "properties": {
+            "method": {
+              "const": "coordinator.ack",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorAckParams"
             }
           },
           "required": [
@@ -12456,6 +12721,71 @@
             }
           ]
         },
+        "CoordinatorHandoffInfo": {
+          "description": "A tenure's pending self-service handoff.",
+          "properties": {
+            "agent_kind": {
+              "description": "The agent kind of both sessions, once the successor started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "epoch": {
+              "description": "The epoch the successor must acknowledge.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "note_sha256": {
+              "description": "The sha256 of the copied note.",
+              "type": "string"
+            },
+            "snapshot_sha256": {
+              "description": "The sha256 of herdr's snapshot, once the successor started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/CoordinatorHandoffState"
+            },
+            "successor_pane_id": {
+              "description": "The successor's pane once started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "epoch",
+            "note_sha256"
+          ],
+          "type": "object"
+        },
+        "CoordinatorHandoffState": {
+          "description": "How far a tenure's self-service handoff has come.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "frozen",
+              "description": "`coordinator.ready` froze the tenure; no successor yet.",
+              "type": "string"
+            },
+            {
+              "const": "successor_started",
+              "description": "The successor was started and has not acknowledged yet.",
+              "type": "string"
+            }
+          ]
+        },
         "CoordinatorInfo": {
           "description": "One coordination tenure: who coordinated a repository's TODO, from when\nto when. Its id is its own, never a pane's or an agent session's: those\nare its bindings.",
           "properties": {
@@ -12483,6 +12813,17 @@
               "description": "Grows by one with each tenure of the repository.",
               "format": "int64",
               "type": "integer"
+            },
+            "handoff": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorHandoffInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tenure's pending self-service handoff: while it is there the\ntenure is frozen."
             },
             "headless": {
               "description": "A headless item coordinator's tenure (`todo.next`): no pane binds it,\nit runs as worker `worker_id`.",
@@ -16682,6 +17023,73 @@
               "required": [
                 "type",
                 "coordinator"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.ack`'s reply: the tenure the successor holds now, and\nwhether the old coordinator's pane (and with it its agent session)\nwas closed.",
+              "properties": {
+                "close_error": {
+                  "description": "Why the old pane could not be closed; its session is fenced as\nsuperseded either way.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "coordinator": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                },
+                "old_pane_closed": {
+                  "type": "boolean"
+                },
+                "old_pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "coordinator_acked",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "coordinator",
+                "old_pane_id",
+                "old_pane_closed"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.handoff_abort`'s reply.",
+              "properties": {
+                "coordinator": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The tenure that unfroze, when it is still active."
+                },
+                "successor_pane_closed": {
+                  "description": "Whether that pane was closed (not when the successor itself\naborted).",
+                  "type": "boolean"
+                },
+                "successor_pane_id": {
+                  "description": "The successor's pane, when one had been started.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "coordinator_handoff_aborted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

@@ -306,6 +306,7 @@ impl WorkerSupervisor {
     #[cfg(all(test, unix))]
     pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
         self.prompt_command(&WorkerPromptParams {
+            caller_pane_id: None,
             worker_id: worker_id.to_owned(),
             text: text.to_owned(),
             command_id: None,

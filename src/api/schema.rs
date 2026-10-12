@@ -102,6 +102,9 @@ pub enum Method {
     WorkerKill(WorkerKillParams),
     #[serde(rename = "worker.answer")]
     WorkerAnswer(WorkerAnswerParams),
+    /// `worker.answer` from a pane, fenced while its tenure hands over.
+    #[serde(rename = "worker.answer_from_pane")]
+    WorkerAnswerFromPane(WorkerAnswerFromPaneParams),
     /// `worker.answer` from a coordination tenure, refused with
     /// `ownership_transferred` once the worker is another tenure's.
     #[serde(rename = "worker.answer_as")]
@@ -263,6 +266,19 @@ pub enum Method {
     /// which takes over the workers and runs.
     #[serde(rename = "coordinator.handoff")]
     CoordinatorHandoff(CoordinatorHandoffParams),
+    /// Freezes the caller's tenure and records the agent's handoff note.
+    #[serde(rename = "coordinator.ready")]
+    CoordinatorReady(CoordinatorReadyParams),
+    /// Starts a fresh session of the same agent kind to take the frozen
+    /// tenure over.
+    #[serde(rename = "coordinator.handoff_successor")]
+    CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams),
+    /// Cancels a pending handoff; the old tenure unfreezes.
+    #[serde(rename = "coordinator.handoff_abort")]
+    CoordinatorHandoffAbort(CoordinatorHandoffAbortParams),
+    /// The successor takes the tenure over; the old session ends.
+    #[serde(rename = "coordinator.ack")]
+    CoordinatorAck(CoordinatorAckParams),
     /// Records one exception to a coordinator tab's command allowlist and
     /// notifies the user.
     #[serde(rename = "coordinator.record_override")]

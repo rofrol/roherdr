@@ -438,7 +438,20 @@ fn coordinator_command() -> Command {
             Command::new("handoff")
                 .about("Hand this pane's coordination tenure to another pane")
                 .arg(option("to", "PANE"))
-                .arg(option("id", "COORDINATOR_ID")),
+                .arg(option("id", "COORDINATOR_ID"))
+                .arg(flag("successor").help("Start a fresh session of the same agent to take over"))
+                .arg(flag("abort").help("Cancel a pending self-service handoff")),
+        )
+        .subcommand(
+            Command::new("ready")
+                .about("Freeze this pane's tenure for a handoff to a fresh session")
+                .arg(option("note", "FILE").value_hint(ValueHint::FilePath)),
+        )
+        .subcommand(
+            Command::new("ack")
+                .about("Take a pending handoff over from the successor's pane")
+                .arg(option("epoch", "N"))
+                .arg(option("snapshot", "SHA256")),
         )
 }
 

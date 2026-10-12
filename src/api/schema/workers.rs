@@ -331,6 +331,11 @@ pub struct WorkerAckParams {
     /// `worker.obligations` returned. An ack at or below the acknowledged
     /// one changes nothing; one past the worker's latest event is refused.
     pub seq: i64,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -410,6 +415,11 @@ pub struct WorkerEscalateParams {
     /// The question to escalate; one that is no longer pending is refused
     /// with `worker_question_gone`.
     pub request_id: String,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// A worker whose owner has an event of it to handle.
@@ -462,6 +472,11 @@ pub struct WorkerPromptParams {
     /// same reply, or the same refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -609,6 +624,11 @@ pub struct WorkerInterruptParams {
     /// same reply, or the same refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
+    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
+    /// handoff, and for a pane whose tenure was handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -922,6 +942,19 @@ pub struct WorkerAnswerParams {
     /// same reply, or the same refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+}
+
+/// `worker.answer` sent from a pane (`worker.answer_from_pane`): refused with
+/// `coordinator_frozen` while the pane's coordinator tenure is frozen for a
+/// handoff, and with `coordinator_superseded` for a pane whose tenure was
+/// handed over. `worker.answer` itself keeps its shape (clients advertise it)
+/// and is the user's answer, never fenced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAnswerFromPaneParams {
+    /// The sending pane (the CLI sends its `HERDR_PANE_ID`).
+    pub caller_pane_id: String,
+    #[serde(flatten)]
+    pub answer: WorkerAnswerParams,
 }
 
 /// `worker.answer` sent by a coordination tenure (`worker.answer_as`):

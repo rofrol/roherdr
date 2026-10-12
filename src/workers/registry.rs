@@ -79,6 +79,16 @@ pub(super) struct Registry {
     /// The inbox rows whose store write failed, per tenure: its next
     /// `worker.events` answers `resync_required` ([`inbox::Losses`]).
     pub(super) inbox_losses: inbox::Losses,
+    /// The tenures frozen for a self-service handoff, by tenure id. Written
+    /// to the worker directory after every change and restored when a
+    /// server opens it (a restart, a live handoff).
+    pub(super) handoffs: BTreeMap<String, super::coordinator_handoff::Handoff>,
+    /// The sessions whose tenure a successor took over: their mutations are
+    /// refused ([`WorkerSupervisor::fence_pane`]). Persisted with `handoffs`.
+    pub(super) superseded: Vec<super::coordinator_handoff::Superseded>,
+    /// The agent session each pane runs now, as the app last told
+    /// ([`WorkerSupervisor::note_pane_session`]); not persisted.
+    pub(super) pane_sessions: BTreeMap<String, String>,
 }
 
 /// What drains, and since when ([`WorkerSupervisor::drain`]).

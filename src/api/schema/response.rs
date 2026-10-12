@@ -211,6 +211,31 @@ pub enum ResponseResult {
     Coordinator {
         coordinator: CoordinatorInfo,
     },
+    /// `coordinator.ack`'s reply: the tenure the successor holds now, and
+    /// whether the old coordinator's pane (and with it its agent session)
+    /// was closed.
+    CoordinatorAcked {
+        coordinator: CoordinatorInfo,
+        old_pane_id: String,
+        old_pane_closed: bool,
+        /// Why the old pane could not be closed; its session is fenced as
+        /// superseded either way.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        close_error: Option<String>,
+    },
+    /// `coordinator.handoff_abort`'s reply.
+    CoordinatorHandoffAborted {
+        /// The tenure that unfroze, when it is still active.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coordinator: Option<CoordinatorInfo>,
+        /// The successor's pane, when one had been started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        successor_pane_id: Option<String>,
+        /// Whether that pane was closed (not when the successor itself
+        /// aborted).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        successor_pane_closed: bool,
+    },
     /// `coordinator.status`'s reply: the active tenures, oldest first.
     Coordinators {
         coordinators: Vec<CoordinatorInfo>,

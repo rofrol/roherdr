@@ -2,8 +2,9 @@
 //! active coordinator per repository).
 
 use crate::api::schema::{
-    CoordinatorEndParams, CoordinatorHandoffParams, CoordinatorStartParams,
-    CoordinatorStatusParams, Method, Request,
+    CoordinatorAckParams, CoordinatorEndParams, CoordinatorHandoffAbortParams,
+    CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams, CoordinatorReadyParams,
+    CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
 };
 
 use super::worker::take_string_option;
@@ -26,7 +27,29 @@ const USAGE: &str = "usage:
   herdr coordinator handoff --to PANE [--id COORDINATOR_ID]
       Hand this pane's tenure (or the one named) to PANE: it ends
       handed_off and the next tenure, one epoch on, starts there with its
-      workers, runs and item.";
+      workers, runs and item.
+  herdr coordinator ready --note FILE
+      Freeze this pane's tenure for a handoff to a fresh session of the same
+      agent: herdr copies FILE (the note for the successor) and records its
+      sha256. A frozen tenure refuses handoff, todo resume, worker start,
+      answer and ack until the handoff ends. Refused when the agent is not
+      a claude or pi session, or is blocked on a question.
+  herdr coordinator handoff --successor
+      After ready: write herdr's snapshot and the handoff manifest, open a
+      pane beside this one and start a fresh session of the same agent kind
+      there with one launch prompt that names the manifest. End your turn
+      afterwards; if the successor exits or reports a limit before its ack,
+      the handoff aborts and this tenure unfreezes.
+  herdr coordinator handoff --abort [--id COORDINATOR_ID]
+      Cancel a pending handoff from the old pane, the successor's pane, or
+      (with --id) from outside a pane: the tenure unfreezes and keeps its
+      authority, and the successor's pane is closed (unless the successor
+      itself aborts). Use it when the successor never starts.
+  herdr coordinator ack --epoch N --snapshot SHA256
+      From the successor's pane: take the tenure over (the epoch, workers,
+      runs and the tab's coordinator role move here in one step). The old
+      pane is then closed, which ends its agent session; when it cannot be
+      closed the reply says so and that session stays fenced as superseded.";
 
 pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -124,6 +147,59 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 pane_id,
             })
         }
+        "ready" => {
+            let (note, rest) = take_string_option(rest, "--note")?;
+            if !rest.is_empty() {
+                return Err("ready takes only --note".into());
+            }
+            let note = note.ok_or("ready needs --note FILE")?;
+            let note_path = std::path::absolute(&note)
+                .map_err(|error| format!("--note {note}: {error}"))?
+                .display()
+                .to_string();
+            let pane_id = super::target::caller_pane_id()
+                .ok_or("coordinator ready runs in a herdr pane: HERDR_PANE_ID is not set")?;
+            Method::CoordinatorReady(CoordinatorReadyParams { pane_id, note_path })
+        }
+        "ack" => {
+            let (epoch, rest) = take_string_option(rest, "--epoch")?;
+            let (snapshot, rest) = take_string_option(&rest, "--snapshot")?;
+            if !rest.is_empty() {
+                return Err("ack takes only --epoch and --snapshot".into());
+            }
+            let epoch = epoch
+                .ok_or("ack needs --epoch N")?
+                .parse::<i64>()
+                .map_err(|_| "--epoch must be a number")?;
+            let snapshot_sha256 = snapshot.ok_or("ack needs --snapshot SHA256")?;
+            let pane_id = super::target::caller_pane_id()
+                .ok_or("coordinator ack runs in a herdr pane: HERDR_PANE_ID is not set")?;
+            Method::CoordinatorAck(CoordinatorAckParams {
+                pane_id,
+                epoch,
+                snapshot_sha256,
+            })
+        }
+        "handoff" if rest.first().map(String::as_str) == Some("--abort") => {
+            let (coordinator_id, extra) = take_string_option(&rest[1..], "--id")?;
+            if !extra.is_empty() {
+                return Err("handoff --abort takes only --id".into());
+            }
+            let pane_id = super::target::caller_pane_id();
+            if coordinator_id.is_none() && pane_id.is_none() {
+                return Err("handoff --abort needs --id outside a herdr pane".into());
+            }
+            Method::CoordinatorHandoffAbort(CoordinatorHandoffAbortParams {
+                pane_id,
+                coordinator_id,
+            })
+        }
+        "handoff" if rest == ["--successor"] => {
+            let pane_id = super::target::caller_pane_id().ok_or(
+                "coordinator handoff --successor runs in a herdr pane: HERDR_PANE_ID is not set",
+            )?;
+            Method::CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams { pane_id })
+        }
         "handoff" => {
             let (to_pane_id, rest) = take_string_option(rest, "--to")?;
             let (coordinator_id, rest) = take_string_option(&rest, "--id")?;
@@ -185,7 +261,16 @@ mod tests {
         assert_eq!(params.to_pane_id, "w1-2");
         assert_eq!(params.coordinator_id.as_deref(), Some("c-abcd2345"));
         assert!(parse(&args(&["handoff", "--id", "c-abcd2345"])).is_err());
+        let Ok(Some(Method::CoordinatorHandoffAbort(params))) =
+            parse(&args(&["handoff", "--abort", "--id", "c-abcd2345"]))
+        else {
+            panic!("handoff --abort did not parse");
+        };
+        assert_eq!(params.coordinator_id.as_deref(), Some("c-abcd2345"));
+        assert!(parse(&args(&["handoff", "--abort", "--to", "w1-2"])).is_err());
         assert!(parse(&args(&["nope"])).is_err());
+        assert!(parse(&args(&["ack", "--epoch", "x", "--snapshot", "ab"])).is_err());
+        assert!(parse(&args(&["ready"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
     }
 }
