@@ -59,6 +59,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   on "that job's end, then the next turn"; job ownership is checked per
   pane, not per assignment); hold states are not in the supervision report
   or API; points 3-9.
+  Slice 2 landed (2026-10-12, run r-amtld45a): a hold counts only jobs
+  its pane started at or after the assignment's `accepted_ms`; it retracts
+  only on a resume (`resumed_ms`) or verdict after the hold opened;
+  `herdr supervise` and the report's optional `hold_counts` and
+  `pending_holds` show the holds. Gap: job start times live in memory
+  (`JOB_STARTS`, 2048 kept), so after a restart or handoff a job's start
+  is unknown and the per-pane check applies; persisting them with the
+  job's metadata is a later step.
+  Decided by the coordinator 2026-10-12 for slice 3 (point 3): herdr does
+  not edit TODO.md itself. At a configurable retraction count per
+  predicate and rule version (default 3), it raises a
+  `predicate_review_due` supervision finding to the herdr coordinator,
+  and `herdr supervise fixtures <predicate>` exports the retracted holds
+  (and delivered ones as known-true cases) as JSON fixtures; the
+  coordinator turns the finding into a TODO item.
 
 - [ ] Workers default to the API credits, coordinators stay on Claude Code [t-s6lkxb4v]
   (the user, 2026-10-12: "94% of the AN subscription used and only $0.50 of
