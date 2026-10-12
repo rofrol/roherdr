@@ -142,6 +142,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   against the reviewer. Needs a decision before the queue-mode trial.
   Decided by the user 2026-10-12 (d-elct27i5): yes, before the queue-mode
   trial.
+  Note from [t-s6lkxb4v] slice 2 (2026-10-12): a credit run's review call
+  uses `[workers] anthropic_api_model` (or the run's pinned credit model);
+  all three models in round 20261012-155246-e730 want an Opus-class model
+  for the review, so this item sets the review's model separately.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
