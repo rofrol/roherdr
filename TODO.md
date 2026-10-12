@@ -101,6 +101,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   uses `[workers] anthropic_api_model` (or the run's pinned credit model);
   all three models in round 20261012-155246-e730 want an Opus-class model
   for the review, so this item sets the review's model separately.
+  Round 20261012-183707-2629 on arXiv 2610.07782 (sol, MiMo, DeepSeek
+  agreeing; decided by the coordinator for the later slices): the paper's
+  null (recalled traces did not help) transfers only partly, since our
+  items are sequential in one codebase; recall helps for what the code
+  does not show (why an approach was rejected, cross-item constraints,
+  obligations deferred to a later item), and is noise for code facts
+  that git log and ripgrep already give. Changes: (1) golden set without
+  leakage: the checklist is distilled from catches before a cut-off date
+  and frozen, the evaluation replays only catches after it, each from its
+  pre-fix snapshot; (2) the A/B runs each arm in its own worktree from the
+  same base, records every call (failures and retries too) for both arms
+  the same way, predeclares the primary metric and a tolerated regression
+  for severe misses, and ablates the context pack and the checklist
+  separately; a non-significant difference is not equivalence; (3) each
+  finding is tagged by origin (checklist line or free) to see checklist
+  anchoring; (4) a finding's file:line is checked mechanically against the
+  diff and the repository, not only required; (5) the decision rationale
+  is written into the run history when the decision is made.
 
 - [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
   [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
