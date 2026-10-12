@@ -11,6 +11,26 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
+  user, 2026-10-12: "but it has to be on Anthropic credits already,
+  because the Anthropic subscription is 98% used"). Checked by the
+  coordinator: today `coordinator handoff --successor` starts the same
+  agent kind on its own login (Claude Code on the subscription), and the
+  credit proxy only serves headless pi workers with a per-run grant
+  (src/workers/pi.rs `anthropic_models`, `HERDR_ANTHROPIC_PROXY_TOKEN`)
+  at the standard Sonnet tariff (src/config/model.rs
+  `anthropic_api_model`). Needed: `coordinator handoff --successor
+  --funding credits` (and a `[coordinator] funding` default) starts the
+  successor Claude Code with `ANTHROPIC_BASE_URL` set to the credit proxy
+  and `ANTHROPIC_AUTH_TOKEN` set to a grant bound to the tenure (never
+  the API key itself), on the credit model; its spend is recorded in the
+  ledger under the tenure (stage `coordinator`) and counts against the
+  cap; a cap refusal shows to the coordinator and the user as such;
+  without a running proxy or with the cap reached the handoff is refused
+  before anything starts. Tests for the env (no key leaked into the
+  pane's environment or the manifest), the grant's binding and the
+  refusals. This comes before the live handoff of the herdr coordinator.
+
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
   such a handoff regular"; the herdr coordinator's own session had cost
