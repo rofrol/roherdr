@@ -2732,6 +2732,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Asked 2026-10-12 (the user: "is there no way for pi and Claude
   coordinators to pick up this handoff themselves? ask the models; or other
   agents like opencode, codex, agy").
+  Round 20261012-192328-6320 (sol, MiMo, DeepSeek agreeing): yes, for
+  every agent kind, without per-agent features: herdr owns the trigger,
+  the snapshot from its own state, starting the successor (`herdr agent
+  start --kind <same kind> --prompt "read <snapshot>, then run herdr
+  coordinator ack ..."`), the fence and ending the old session; per-agent
+  hooks (Claude's SessionStart injection, /clear) are optional
+  accelerators behind capability flags, never needed for correctness;
+  auto-compact is not a handoff. Boundary signal is a command, not prose:
+  `herdr coordinator ready --note <path>` (herdr checks the tenure, the
+  epoch, the last turn's clean end, hashes the note), then the
+  successor's `herdr coordinator ack --epoch E --snapshot <hash>`.
+  Decided by the coordinator where they split: a new pane in the old
+  pane's tab (sol, DeepSeek; MiMo preferred the same pane), focus stays
+  until the transfer succeeds; without `ready` the old session keeps
+  authority and herdr reports the stalled handoff to the user (sol, MiMo;
+  DeepSeek's forced handoff after a grace period is a timer). First slice:
+  Claude and pi, triggered manually by `herdr coordinator handoff
+  --successor` from the old pane; the automatic threshold after
+  measuring a successor's starting context.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
