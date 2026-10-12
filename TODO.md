@@ -148,6 +148,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   SDK worker. Slice 2: the full Agent SDK worker kind in `todo run`,
   fallback at the subscription limit, the usage widget. The coordinator
   itself (Claude Code) cannot use the credits.
+  Confirmed by Anthropic's email (the user pasted it, 2026-10-12): $200
+  received by <Console organization>, expiring 2026-11-09; covers the
+  Claude API, Managed Agents, the Agent SDK and the Playground, not
+  Claude Code.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
