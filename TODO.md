@@ -2729,6 +2729,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   The user, 2026-10-12, asked to analyse with the models
   https://x.com/kimmonismus/status/2109640479688335602 (DeepMind AlphaProof
   Nexus: Gemini models in a loop with Lean as the verifier).
+  Asked 2026-10-12 (the user: "is there no way for pi and Claude
+  coordinators to pick up this handoff themselves? ask the models; or other
+  agents like opencode, codex, agy").
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
