@@ -2550,6 +2550,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and review calls would run on the subscription (weekly window ~94%,
   where the usage gate refuses); the trial starts once [t-s6lkxb4v]
   lands.
+  Asked 2026-10-12 (the user: "loss of memory between items and shallower
+  review: how do others counter it? ask the models").
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
