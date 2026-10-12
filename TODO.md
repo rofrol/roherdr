@@ -304,6 +304,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   check-then-act, store reads under the registry lock, no fsync.
   The live handoff waits for "Handoff fence and persistence edge cases"
   (d-gr63towv).
+  Slice 1 of the self-service handoff landed (r-6s6uppz2, attempt 3,
+  reviewed against two earlier attempts): `coordinator ready --note`,
+  `coordinator handoff --successor|--abort`, `coordinator ack`; frozen and
+  superseded callers fenced by pane and session; pending handoff persisted
+  and restored; Blocked successor stays pending. Left for a follow-up:
+  event-driven abort and successor-started writes only log a failed persist;
+  a double failure in the ack can leave the file saying superseded; a
+  reused old pane with an unknown session is fenced; the pane-session map
+  is never pruned; raw API clients without caller_pane_id are not fenced;
+  the fence is check-then-act. Next: the todo skill's `--handoff` branch,
+  then one live handoff of this coordinator.
 
 - [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
   2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
