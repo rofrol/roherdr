@@ -2761,6 +2761,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `session_restore::server_restores_while_git_metadata_is_blocked` (a
   5-second read timeout in the test). Reproduce each with the stress loop
   in AGENTS.md and fix the asynchronous cause (Rule 10), not the timeout.
+  Third one, found by the coordinator 2026-10-12: the install of r-6s6uppz2
+  failed in `platform::remote_bridge_tests::legacy_bridge_has_no_idle_deadline`
+  ("bridge did not exit", src/platform/remote_bridge_tests.rs:90, a 3-second
+  deadline polled every 10 ms in the test harness; test unchanged since
+  c77af1892, untouched by the commit, passed in the run's verify).
 
 - [ ] The roherdr client on the owner's 2010 MacBook connects to the server [t-wtxc5taz]
   on his M1 MacBook (the user, 2026-10-12: "make the roherdr client on the
