@@ -71,6 +71,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   credit spend visible. Coordinators are not moved off Claude Code now
   (porting herdr's hooks and skills to pi is a migration, piloted later on
   one non-critical repository).
+  Gap found 2026-10-12 (the roguix-vps coordinator): only `herdr todo run`
+  has the credit path (`--agent pi-anthropic`); `herdr worker start` starts
+  Claude Code only (`--model`), and a repository without
+  `.herdr/checks.toml` (roguix-vps has none) cannot use `todo run`, so its
+  workers stay on the subscription. This item must cover `worker start`
+  (or checks.toml for every coordinated repository) too.
+
+- [ ] `herdr todo run --help` lists `--agent` (follow-up of [t-s6lkxb4v]; the [t-okqf5ugr]
+  roguix-vps coordinator, 2026-10-12, read the help, found only `--task
+  --message --paths --check` and concluded the installed build had no
+  credit path; `src/cli/todo.rs:576` parses `--agent pi|pi-anthropic|claude`).
+  List `--agent` with its values and the other undocumented `run` switches
+  in the help text; a test asserts the help names every parsed option.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
