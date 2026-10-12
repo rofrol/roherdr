@@ -476,6 +476,8 @@ pub struct KeysConfig {
     pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
+    /// Toggle notification sounds. Default: "prefix+m".
+    pub toggle_sound: BindingConfig,
     /// Open the spaces filter bar. Default: "prefix+/"
     pub filter_spaces: BindingConfig,
     /// Open the last tab this client closed again. Default: "prefix+u"
@@ -621,6 +623,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_sound: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     filter_spaces: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reopen_tab: Option<BindingConfig>,
@@ -738,6 +742,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_up);
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
+        apply_field!(toggle_sound);
         apply_field!(filter_spaces);
         apply_field!(reopen_tab);
         apply_field!(indexed);
@@ -847,6 +852,7 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
+        copy_effective_action_field!(toggle_sound, keybinds.toggle_sound);
         copy_effective_action_field!(filter_spaces, keybinds.filter_spaces);
         copy_effective_action_field!(reopen_tab, keybinds.reopen_tab);
         copy_user_field!(indexed);
@@ -1323,6 +1329,7 @@ impl Default for KeysConfig {
             resize_pane_up: BindingConfig::empty(),
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
+            toggle_sound: BindingConfig::one("prefix+m"),
             filter_spaces: BindingConfig::one("prefix+/"),
             reopen_tab: BindingConfig::one("prefix+u"),
             indexed: IndexedKeysConfig::default(),

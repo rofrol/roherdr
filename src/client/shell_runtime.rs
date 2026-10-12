@@ -889,6 +889,9 @@ pub(super) fn finish_client_shell_input(
     if outcome.query_host_theme {
         query_host_terminal_theme();
     }
+    if let Some(enabled) = outcome.sound_enabled {
+        state.sound_config.enabled = enabled;
+    }
     sync_client_shell_keyboard_report_all(state)?;
     let (replay, dispatch_repaint) = dispatch_client_shell_actions(
         outcome.actions,

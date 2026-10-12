@@ -199,6 +199,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_up = ""     # optional, e.g. "ctrl+shift+alt+up"
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
+# toggle_sound = "prefix+m"
 # filter_spaces = "prefix+/"   # open the spaces filter bar (type to narrow the list)
 # reopen_tab = "prefix+u"       # open the last closed tab again (fresh shell, same place)
 

@@ -63,6 +63,7 @@ pub(crate) enum KeybindAction {
     ResizePaneUp,
     ResizePaneRight,
     ToggleSidebar,
+    ToggleSound,
     FilterSpaces,
     ReopenTab,
     CyclePaneNext,
@@ -156,6 +157,7 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.resize_pane_up, KeybindAction::ResizePaneUp),
         (&keybinds.resize_pane_right, KeybindAction::ResizePaneRight),
         (&keybinds.toggle_sidebar, KeybindAction::ToggleSidebar),
+        (&keybinds.toggle_sound, KeybindAction::ToggleSound),
         (&keybinds.filter_spaces, KeybindAction::FilterSpaces),
         (&keybinds.reopen_tab, KeybindAction::ReopenTab),
         (&keybinds.reload_config, KeybindAction::ReloadConfig),
@@ -270,6 +272,39 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     use super::*;
+
+    #[test]
+    fn sound_toggle_has_a_noncolliding_default_and_can_be_rebound_or_disabled() {
+        let config = crate::config::Config::default();
+        assert!(config.collect_diagnostics().is_empty());
+        assert!(matches!(
+            resolve_prefix_binding(
+                &config.keybinds(),
+                &TerminalKey::new(KeyCode::Char('m'), KeyModifiers::empty())
+            ),
+            Some(KeybindMatch::Action(KeybindAction::ToggleSound))
+        ));
+        let config: crate::config::Config =
+            toml::from_str("[keys]\ntoggle_sound = 'ctrl+alt+m'").unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        assert!(matches!(
+            resolve_direct_binding(
+                &config.keybinds(),
+                &TerminalKey::new(
+                    KeyCode::Char('m'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                )
+            ),
+            Some(KeybindMatch::Action(KeybindAction::ToggleSound))
+        ));
+        assert!(resolve_prefix_binding(
+            &config.keybinds(),
+            &TerminalKey::new(KeyCode::Char('m'), KeyModifiers::empty())
+        )
+        .is_none());
+        let config: crate::config::Config = toml::from_str("[keys]\ntoggle_sound = ''").unwrap();
+        assert!(config.keybinds().toggle_sound.bindings.is_empty());
+    }
 
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {

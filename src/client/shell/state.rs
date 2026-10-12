@@ -170,6 +170,7 @@ pub(super) struct ShellHitMap {
     /// section divider maps a row to a split ratio within it.
     pub(super) sidebar_sections: Rect,
     pub(super) sidebar_toggle: Rect,
+    pub(super) sound_toggle: Rect,
     pub(super) new_workspace: Rect,
     pub(super) new_tab: Rect,
     pub(super) tab_scroll_left: Rect,
@@ -583,6 +584,8 @@ pub(crate) struct ClientShellInput {
     pub resize: bool,
     pub query_host_appearance: bool,
     pub query_host_theme: bool,
+    /// Apply a saved sound preference before processing another notification.
+    pub sound_enabled: Option<bool>,
     pub requests: Vec<ClientMessage>,
     pub actions: Vec<ClientShellAction>,
 }

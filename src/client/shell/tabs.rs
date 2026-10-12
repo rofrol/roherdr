@@ -1,7 +1,78 @@
 use super::super::tab_groups;
 use super::*;
 
+/// Reserve the button before laying out tabs so its hit area never overlaps them.
+fn render_sound_toggle(
+    buffer: &mut Buffer,
+    area: Rect,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) -> Rect {
+    if area.width < 3 || area.height == 0 {
+        hits.sound_toggle = Rect::default();
+        return area;
+    }
+    let button = Rect::new(area.right() - 3, area.y, 3, 1);
+    hits.sound_toggle = button;
+    put_text(
+        buffer,
+        button.x,
+        button.y,
+        button.width,
+        if config.sound_enabled {
+            " ♪ "
+        } else {
+            " × "
+        },
+        Style::default().fg(config.palette.overlay0),
+    );
+    hits.tooltips.push(super::tooltip::TooltipTarget {
+        rect: button,
+        id: "sound-toggle".into(),
+        text: if config.sound_enabled {
+            "Sounds on — click to mute"
+        } else {
+            "Sounds off — click to unmute"
+        }
+        .to_owned(),
+        bg: None,
+        starts_at_target: false,
+    });
+    Rect::new(area.x, area.y, area.width - 3, area.height)
+}
+
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
+#[cfg(test)]
+mod sound_tests {
+    use super::*;
+
+    #[test]
+    fn sound_button_reserves_only_its_visible_cells() {
+        let mut config = ClientShellConfig::from_config(&crate::config::Config::default());
+        for enabled in [true, false] {
+            config.sound_enabled = enabled;
+            let area = Rect::new(4, 2, 20, 1);
+            let mut buffer = Buffer::empty(area);
+            let mut hits = ShellHitMap::default();
+            let remaining = render_sound_toggle(&mut buffer, area, &config, &mut hits);
+            assert_eq!(remaining, Rect::new(4, 2, 17, 1));
+            assert_eq!(hits.sound_toggle, Rect::new(21, 2, 3, 1));
+            assert_eq!(buffer[(22, 2)].symbol(), if enabled { "♪" } else { "×" });
+            assert!(hits.tooltips[0]
+                .text
+                .contains(if enabled { "on" } else { "off" }));
+        }
+        for area in [Rect::new(0, 0, 2, 1), Rect::new(0, 0, 20, 0)] {
+            let mut hits = ShellHitMap::default();
+            assert_eq!(
+                render_sound_toggle(&mut Buffer::empty(area), area, &config, &mut hits),
+                area
+            );
+            assert!(hits.sound_toggle.is_empty());
+        }
+    }
+}
+
 const MIN_TAB_STRIP_WIDTH: u16 =
     MIN_TAB_WIDTH + NEW_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2);
 
@@ -19,6 +90,7 @@ pub(crate) fn render_tab_bar(
     let palette = &config.palette;
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
     hits.tab_bar = area;
+    let area = render_sound_toggle(buffer, area, config, hits);
     // Child tabs have their own row; a parent shows a summary of them.
     let tabs = tab_groups::main_row_tabs(snapshot);
     let active_tab_id = tab_groups::active_main_tab_id(snapshot);

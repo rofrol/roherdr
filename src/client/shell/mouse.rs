@@ -2786,6 +2786,10 @@ impl ClientShellState {
                 self.workspace_press = None;
                 self.tab_press = None;
                 self.chrome_drag = None;
+                if super::contains(self.hits.sound_toggle, point) {
+                    self.toggle_sound(outcome);
+                    return;
+                }
                 // The toggle is painted over the agent scrollbar's last cell.
                 if super::contains(self.hits.sidebar_toggle, point) {
                     self.sidebar_collapsed = !self.sidebar_collapsed;

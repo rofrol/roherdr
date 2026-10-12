@@ -35,6 +35,9 @@ impl ClientShellState {
                 self.space_filter.focused = true;
                 outcome.repaint = true;
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSound) => {
+                self.toggle_sound(outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;

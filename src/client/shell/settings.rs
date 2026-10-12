@@ -258,17 +258,32 @@ impl ClientShellState {
         self.config.palette = settings.original_palette;
     }
 
+    pub(super) fn toggle_sound(&mut self, outcome: &mut ClientShellInput) {
+        self.save_settings_edit(
+            crate::config::ConfigEdit::Sound(!self.config.sound_enabled),
+            outcome,
+        );
+    }
+
     fn save_settings_edit(
         &mut self,
         edit: crate::config::ConfigEdit<'_>,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if let Err(error) = crate::config::write_edit(edit) {
+        if let Err(error) = crate::config::update_file_at(
+            &self.config.local_config_path,
+            edit.description(),
+            |content| edit.apply(content),
+        ) {
             self.set_endpoint_error(error);
             outcome.repaint = true;
             return false;
         }
         self.reload_client_config();
+        if let crate::config::ConfigEdit::Sound(enabled) = edit {
+            self.config.sound_enabled = enabled;
+            outcome.sound_enabled = Some(enabled);
+        }
         self.push_endpoint_method_with_kind(
             crate::api::schema::Method::ServerReloadConfig(
                 crate::api::schema::EmptyParams::default(),

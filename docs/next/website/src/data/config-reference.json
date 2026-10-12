@@ -962,6 +962,12 @@
           "description": "Toggle sidebar collapse."
         },
         {
+          "key": "keys.toggle_sound",
+          "type": "keybinding",
+          "default": "\"prefix+m\"",
+          "description": "Mute or unmute Herdr sounds and persist the setting in ui.sound.enabled."
+        },
+        {
           "key": "keys.filter_spaces",
           "type": "keybinding",
           "default": "\"prefix+/\"",

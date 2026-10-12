@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+fn sound_button_and_key_toggle_persist_and_apply_immediately() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-sound-toggle-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "# keep\n[ui.sound]\nenabled = true\npath = 'custom.mp3'\n",
+    )
+    .expect("config");
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.local_config_path = path.clone();
+    config.sound_enabled = true;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("frame");
+    let button = state.hits.sound_toggle;
+    assert_eq!((button.width, button.height), (3, 1));
+    assert!(state
+        .hits
+        .tabs
+        .iter()
+        .all(|(rect, _)| rect.intersection(button).is_empty()));
+    assert!(super::super::contains(button, (button.x, button.y)));
+    assert!(!super::super::contains(button, (button.right(), button.y)));
+    assert!(!super::super::contains(button, (button.x, button.bottom())));
+    let outcome =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: button.x + 1,
+            row: button.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert_eq!(outcome.sound_enabled, Some(false));
+    assert!(!state.config.sound_enabled);
+    let content = std::fs::read_to_string(&path).expect("saved config");
+    let saved: Config = toml::from_str(&content).expect("valid config");
+    assert!(!saved.ui.sound.enabled);
+    assert!(content.contains("# keep"));
+    assert!(content.contains("path = 'custom.mp3'"));
+    state.handle_input_bytes(b"\x02");
+    let outcome = state.handle_input_bytes(b"m");
+    assert_eq!(outcome.sound_enabled, Some(true));
+    assert!(state.config.sound_enabled);
+    let saved: Config = toml::from_str(&std::fs::read_to_string(&path).expect("saved config"))
+        .expect("valid config");
+    assert!(saved.ui.sound.enabled);
+    std::fs::remove_file(path).expect("cleanup");
+}
+
+#[test]
+fn failed_sound_save_does_not_change_preference() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    // A file cannot be used as the parent directory of a config.
+    config.local_config_path = std::path::PathBuf::from(file!()).join("config.toml");
+    config.sound_enabled = true;
+    let mut state = ClientShellState::new(config);
+    let mut outcome = ClientShellInput::default();
+    state.toggle_sound(&mut outcome);
+    assert!(state.config.sound_enabled);
+    assert_eq!(outcome.sound_enabled, None);
+    assert!(outcome.repaint);
+}
+
+#[test]
 fn endpoint_product_announcement_is_client_rendered_modal_and_dismissed_by_identity() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let mut endpoint_snapshot = snapshot();

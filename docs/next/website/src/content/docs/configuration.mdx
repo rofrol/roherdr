@@ -510,7 +510,9 @@ On Windows, `system` notifications remain in Notification Center. Clicking one s
 
 ## Sound
 
-Sound notifications play through the local Herdr client. Custom sounds must be mp3 files; Herdr resolves relative paths from the config file's directory.
+Sound notifications play through the local Herdr client. Click the sound button at the right of the tab bar (`♪` on, `×` muted), or press `prefix+m`, to mute or unmute immediately. The choice saves `[ui.sound] enabled` in the client's local config and also applies when viewing remote machines. Configure the shortcut with `[keys] toggle_sound = "prefix+m"`. If the tab bar is hidden, use the shortcut or Settings → Sound. `HERDR_DISABLE_SOUND` still overrides an enabled preference.
+
+Custom sounds must be mp3 files; Herdr resolves relative paths from the config file's directory.
 
 ```toml
 [ui.sound]

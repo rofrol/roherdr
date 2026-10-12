@@ -405,6 +405,7 @@ pub struct Keybinds {
     pub resize_pane_up: ActionKeybinds,
     pub resize_pane_right: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
+    pub toggle_sound: ActionKeybinds,
     pub filter_spaces: ActionKeybinds,
     pub reopen_tab: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
@@ -592,6 +593,7 @@ impl Config {
             resize_pane_up: empty_action!(),
             resize_pane_right: empty_action!(),
             toggle_sidebar: empty_action!(),
+            toggle_sound: empty_action!(),
             filter_spaces: empty_action!(),
             reopen_tab: empty_action!(),
             custom_commands: Vec::new(),
@@ -744,6 +746,7 @@ impl Config {
             apply_action!(keybinds.resize_pane_up, resize_pane_up, source);
             apply_action!(keybinds.resize_pane_right, resize_pane_right, source);
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
+            apply_action!(keybinds.toggle_sound, toggle_sound, source);
             apply_action!(keybinds.filter_spaces, filter_spaces, source);
             apply_action!(keybinds.reopen_tab, reopen_tab, source);
 
