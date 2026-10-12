@@ -38,7 +38,7 @@ pub struct UsageConfig {
     /// `herdr todo run`'s usage gate closes when a window of the run's
     /// provider is at least this many percent used (1-100).
     pub gate_close_percent: u8,
-    /// A closed usage gate reopens once every window is below this many
+    /// A high usage latch reopens once every window is below this many
     /// percent (1-100, below `gate_close_percent`).
     pub gate_reopen_percent: u8,
 }

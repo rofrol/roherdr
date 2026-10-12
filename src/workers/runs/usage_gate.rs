@@ -3,7 +3,7 @@
 //! Claude's usage from the provider in that call and is refused while any
 //! Claude window is at least `[usage] gate_close_percent` (default 90)
 //! used, or when the read fails (unknown usage refuses). After a refusal
-//! the gate stays closed until an answer shows every Claude window below
+//! a high latch stays closed until an answer shows every Claude window below
 //! `[usage] gate_reopen_percent` (default 80). Both are read from the
 //! config at each check ([`Thresholds`]), for every provider's gate. The
 //! gate decides on that answer alone: never on the usage poller's cached
@@ -19,6 +19,17 @@
 //! at 90% leaves pi runs to OpenAI's usage.
 
 use serde_json::{json, Value};
+
+pub(in crate::workers) static CHECK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static OPENAI_CHECK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(super) fn measurement_lock(provider_id: &str) -> std::sync::MutexGuard<'static, ()> {
+    crate::workers::lock(if provider_id == "openai" {
+        &OPENAI_CHECK
+    } else {
+        &CHECK
+    })
+}
 
 use crate::api::schema::{ProviderUsage, WorkerAgent};
 pub(super) use crate::config::UsageGateThresholds as Thresholds;
@@ -60,6 +71,48 @@ impl GateProvider {
         match self {
             Self::Claude => repo.to_owned(),
             Self::OpenAi => format!("openai:{repo}"),
+        }
+    }
+}
+
+/// Durable state, independent for each repository and provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum State {
+    Open,
+    Unknown,
+    High,
+}
+
+impl State {
+    pub(super) fn from_record(closed: bool, body: &Value) -> Self {
+        if !closed {
+            Self::Open
+        } else if body["state"] == "unknown" {
+            Self::Unknown
+        } else {
+            // Older closed rows are conservatively high: their history is unknown.
+            Self::High
+        }
+    }
+
+    pub(super) fn after(self, decision: &Decision) -> Self {
+        match decision {
+            Decision::Admit { .. } => Self::Open,
+            Decision::Refuse { blockers } => {
+                if self == Self::High || blockers.iter().any(|b| b.used_percent.is_some()) {
+                    Self::High
+                } else {
+                    Self::Unknown
+                }
+            }
+        }
+    }
+
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Unknown => "unknown",
+            Self::High => "high",
         }
     }
 }
@@ -108,7 +161,11 @@ pub(super) fn decide(
     let name = provider.label();
     let usage = match answer {
         Ok(usage) => usage,
-        Err(failure) => return unknown(format!("reading {name}'s usage failed: {failure}")),
+        Err(failure) => {
+            return unknown(format!(
+                "usage read failed ({name}: {failure}), waiting for a successful measurement"
+            ))
+        }
     };
     if usage.windows.is_empty() {
         return unknown(format!("{name}'s usage answer has no window"));
@@ -164,9 +221,10 @@ pub(super) fn refusal_message(
         .join("; ");
     format!(
         "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It closes \
-         at {close}% ([usage] gate_close_percent) and admits again once {name}'s usage, read \
-         when a run is asked for, shows every window below {reopen}% ([usage] \
-         gate_reopen_percent); --ignore-usage, on the user's word, overrides",
+         at {close}% ([usage] gate_close_percent). A high latch reopens below {reopen}% ([usage] \
+         gate_reopen_percent); unknown reopens on the first successful measurement below \
+         {close}% unless high was already latched. Dispatch always reads usage again; \
+         --ignore-usage, on the user's word, overrides",
         close = thresholds.close_at,
         reopen = thresholds.reopen_below,
     )
@@ -224,6 +282,42 @@ mod tests {
                 .map(|blocker| blocker.window.clone().map(|(id, _)| id))
                 .collect(),
             Decision::Admit { .. } => panic!("admitted: {decision:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_and_high_have_distinct_recovery_for_each_provider() {
+        for provider in [GateProvider::Claude, GateProvider::OpenAi] {
+            for thresholds in [
+                Thresholds::default(),
+                Thresholds {
+                    close_at: 95,
+                    reopen_below: 70,
+                },
+            ] {
+                let failed = decide(provider, thresholds, Err("DNS lookup failed"), false);
+                assert_eq!(State::Open.after(&failed), State::Unknown);
+                assert_eq!(State::High.after(&failed), State::High);
+                let usage = answer(thresholds.close_at - 1, thresholds.close_at - 1);
+                let recovered = decide(provider, thresholds, Ok(&usage), false);
+                assert_eq!(State::Unknown.after(&recovered), State::Open);
+                let still_high = decide(provider, thresholds, Ok(&usage), true);
+                assert_eq!(State::High.after(&still_high), State::High);
+                let low = answer(thresholds.reopen_below - 1, thresholds.reopen_below - 1);
+                assert_eq!(
+                    State::High.after(&decide(provider, thresholds, Ok(&low), true)),
+                    State::Open
+                );
+                assert_eq!(
+                    State::from_record(true, &json!({"state": "unknown"})),
+                    State::Unknown
+                );
+                assert_eq!(
+                    State::from_record(true, &json!({"decision": "refuse"})),
+                    State::High
+                );
+                assert_eq!(State::from_record(false, &Value::Null), State::Open);
+            }
         }
     }
 

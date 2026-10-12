@@ -75,9 +75,10 @@ mod auto_review;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;
+pub(super) mod pending_usage;
 mod prepare;
 pub(super) mod queue;
-mod usage_gate;
+pub(super) mod usage_gate;
 
 #[cfg(all(test, unix))]
 pub(crate) use auto_answer::settle_inline;
@@ -224,6 +225,14 @@ pub(super) struct RunFinish {
     /// lands there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) landing_approved: Option<String>,
+    /// A durable start waiting for a fresh usage measurement. No worker exists yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) pending_usage: bool,
+    /// This start uses the wait-capable contract, including a dispatch-time check.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) usage_dispatch: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) ignore_usage: bool,
     /// The agent CLI the run's workers run; Claude when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent: Option<WorkerAgent>,
@@ -1500,36 +1509,85 @@ impl WorkerSupervisor {
         agent: WorkerAgent,
         ignore_usage: bool,
     ) -> Result<Value, WorkerError> {
-        let store = self.run_store()?;
+        // Serialize each provider's reads and state writes independently:
+        // a failed concurrent read must not overwrite a high latch with unknown.
         let provider = usage_gate::GateProvider::of(agent);
+        let _gate_check = usage_gate::measurement_lock(provider.id());
+        let store = self.run_store()?;
         let key = provider.store_key(repo);
         let closed = store.usage_gate_closed(&key).map_err(store_error)?;
+        let previous = store.usage_gate_body(&key).map_err(store_error)?;
+        let state = usage_gate::State::from_record(closed, &previous);
         let thresholds = self.usage_gate_thresholds();
         let answer = self.read_claude_usage(agent);
         let decision = usage_gate::decide(
             provider,
             thresholds,
             answer.as_ref().map_err(String::as_str),
-            closed,
+            state == usage_gate::State::High,
         );
         let mut recorded = usage_gate::decision_json(&decision, ignore_usage);
         recorded["provider"] = json!(provider.id());
+        recorded["state"] = json!(state.after(&decision).id());
+        if matches!(decision, usage_gate::Decision::Admit { .. }) {
+            recorded["reopened"] = json!(state != usage_gate::State::Open);
+        }
+        recorded["last_good"] = match &answer {
+            Ok(usage) if !usage.windows.is_empty() => json!(usage),
+            _ => previous["last_good"].clone(),
+        };
+        let mut refusal = None;
         match decision {
             usage_gate::Decision::Refuse { .. } if ignore_usage => {}
             usage_gate::Decision::Refuse { blockers } => {
                 store
                     .set_usage_gate(&key, true, &recorded, now_ms())
                     .map_err(store_error)?;
-                return Err(WorkerError::UsageGate(usage_gate::refusal_message(
-                    provider, thresholds, &blockers,
-                )));
+                let mut why = usage_gate::refusal_message(provider, thresholds, &blockers);
+                let threshold = if state.after(&usage_gate::Decision::Refuse {
+                    blockers: blockers.clone(),
+                }) == usage_gate::State::High
+                {
+                    thresholds.reopen_below
+                } else {
+                    thresholds.close_at
+                };
+                why.push_str(&format!(
+                    " Waiting for a successful measurement below {threshold}%."
+                ));
+                if let Some(windows) = recorded["last_good"]["windows"].as_array() {
+                    let history = windows
+                        .iter()
+                        .filter_map(|window| {
+                            Some(format!(
+                                "{} {}%",
+                                window["label"].as_str()?,
+                                window["used_percent"].as_u64()?
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    why.push_str(&format!(" Last good reading (history only): {history}."));
+                }
+                refusal = Some(why);
             }
-            usage_gate::Decision::Admit { reopened: true } => store
+            usage_gate::Decision::Admit { .. } => store
                 .set_usage_gate(&key, false, &recorded, now_ms())
                 .map_err(store_error)?,
-            usage_gate::Decision::Admit { reopened: false } => {}
         }
-        Ok(recorded)
+        self.record_usage_measurement(
+            provider.id(),
+            answer.as_ref().map_err(String::as_str),
+            Some(&key),
+        )?;
+        drop(_gate_check);
+        if let Ok(usage) = &answer {
+            self.wake_pending_after_success(provider.id(), usage);
+        }
+        match refusal {
+            Some(why) => Err(WorkerError::UsageGate(why)),
+            None => Ok(recorded),
+        }
     }
 
     pub(super) fn load_run(&self, run_id: &str) -> Result<Run, WorkerError> {
@@ -1543,6 +1601,11 @@ impl WorkerSupervisor {
     /// from the worker's start on. A refused preflight starts nothing.
     pub(crate) fn todo_run(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
         self.create_run(params, false, None)
+    }
+
+    /// Wait-capable start; the published `todo.run` contract remains unchanged.
+    pub(crate) fn todo_run_wait(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
+        self.create_run_with_wait(params, false, None, true)
     }
 
     /// Starts a run of `params.item` whose task, subject, paths and checks
@@ -1582,6 +1645,49 @@ impl WorkerSupervisor {
         draft: bool,
         queue: Option<&queue::QueueStart>,
     ) -> Result<TodoRunInfo, WorkerError> {
+        self.create_run_with_wait(params, draft, queue, false)
+    }
+
+    fn existing_wait_start(
+        &self,
+        params: &TodoRunParams,
+        active: Run,
+    ) -> Result<TodoRunInfo, WorkerError> {
+        if active.info.task != params.task
+            || active.info.message != params.message
+            || active.info.paths != params.paths
+            || active.info.checks != params.checks
+            || active.finish.agent != params.agent
+            || active.finish.auto_review != params.auto_review
+            || active.finish.auto_answer != params.auto_answer
+            || active.finish.ignore_usage != params.ignore_usage
+        {
+            return Err(WorkerError::Invalid(
+                "pending start parameters differ; cancel it first".into(),
+            ));
+        }
+        let tenure = params
+            .owner_pane_id
+            .as_deref()
+            .and_then(|pane| self.coordinator_of_pane(pane));
+        self.run_takeover(
+            &active,
+            params.owner_pane_id.as_deref(),
+            tenure.as_ref().map(|tenure| tenure.coordinator_id.as_str()),
+        )?;
+        if let Some(env) = &params.env {
+            lock(&RUN_ENV).insert(active.info.run_id.clone(), env.clone());
+        }
+        Ok(active.info)
+    }
+
+    fn create_run_with_wait(
+        &self,
+        params: TodoRunParams,
+        draft: bool,
+        queue: Option<&queue::QueueStart>,
+        wait_usage: bool,
+    ) -> Result<TodoRunInfo, WorkerError> {
         let cwd = Path::new(&params.cwd);
         if !cwd.is_absolute() {
             return Err(WorkerError::Invalid(format!(
@@ -1594,11 +1700,18 @@ impl WorkerSupervisor {
         })?;
         let store = self.run_store()?;
         if let Some(active) = store.active_run(&repo).map_err(store_error)? {
+            if wait_usage && active.finish.usage_dispatch && active.info.item == params.item {
+                return self.existing_wait_start(&params, active);
+            }
             return Err(Self::run_active(&active));
         }
         let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
         let agent = params.agent.unwrap_or_default();
-        let usage = self.usage_gate(&repo, agent, params.ignore_usage)?;
+        let (usage, pending_reason) = match self.usage_gate(&repo, agent, params.ignore_usage) {
+            Ok(usage) => (usage, None),
+            Err(WorkerError::UsageGate(why)) if wait_usage => (Value::Null, Some(why)),
+            Err(error) => return Err(error),
+        };
         // The item as the claim records it: its text and every id in TODO.md
         // now, which the close compares with to name the follow-ups.
         let todo = std::fs::read_to_string(Path::new(&repo).join(TODO_FILE)).unwrap_or_default();
@@ -1623,12 +1736,18 @@ impl WorkerSupervisor {
                 run_id: run_id.clone(),
                 repo: repo.clone(),
                 item: params.item.clone(),
-                step: if draft {
+                step: if pending_reason.is_some() {
+                    TodoStep::Preflight
+                } else if draft {
                     TodoStep::Draft
                 } else {
                     TodoStep::Start
                 },
-                status: TodoRunStatus::Running,
+                status: if pending_reason.is_some() {
+                    TodoRunStatus::Waiting
+                } else {
+                    TodoRunStatus::Running
+                },
                 attempt: 1,
                 base: Some(preflighted.base.clone()),
                 worker_id: None,
@@ -1639,7 +1758,7 @@ impl WorkerSupervisor {
                 checks: params.checks.clone(),
                 last_acked_seq: None,
                 pending_event: None,
-                error: None,
+                error: pending_reason.clone(),
                 picked: None,
                 created_ms: at,
                 updated_ms: at,
@@ -1678,6 +1797,9 @@ impl WorkerSupervisor {
                 queued: queue.is_some(),
                 prepare: preflighted.prepare.clone(),
                 agent: params.agent,
+                pending_usage: pending_reason.is_some(),
+                usage_dispatch: wait_usage,
+                ignore_usage: params.ignore_usage,
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1710,6 +1832,7 @@ impl WorkerSupervisor {
             "draft": draft,
             "queue_token": queue.map(|start| start.token + 1),
             "usage_gate": usage,
+            "pending_usage": pending_reason,
             "item_text": item_text,
             "item_ids": item_ids,
         });
@@ -1735,6 +1858,13 @@ impl WorkerSupervisor {
             // Another run of the repository committed since the check.
             Err(error) if is_unique_violation(&error) => {
                 return Err(match store.active_run(&repo) {
+                    Ok(Some(active))
+                        if wait_usage
+                            && active.finish.usage_dispatch
+                            && active.info.item == params.item =>
+                    {
+                        return self.existing_wait_start(&params, active);
+                    }
                     Ok(Some(active)) => Self::run_active(&active),
                     _ => WorkerError::RunActive(format!(
                         "repository {repo} already has a run in progress"
@@ -1752,8 +1882,11 @@ impl WorkerSupervisor {
         if let Some(env) = env {
             lock(&RUN_ENV).insert(run_id.clone(), env);
         }
+        pending_usage::observe(&run);
         announce();
-        self.spawn_driver(&run_id);
+        if !run.finish.pending_usage {
+            self.spawn_driver(&run_id);
+        }
         Ok(run.info)
     }
 
@@ -2688,7 +2821,10 @@ impl WorkerSupervisor {
         };
         self.restore_escalations(&runs);
         for run in runs {
-            if run.info.status == TodoRunStatus::Running {
+            pending_usage::observe(&run);
+            if run.finish.pending_usage {
+                self.spawn_driver(&run.info.run_id);
+            } else if run.info.status == TodoRunStatus::Running {
                 if let (Some(worker_id), Some(seq)) = (&run.info.worker_id, run.info.last_acked_seq)
                 {
                     self.ack_quietly(worker_id, seq);
@@ -2828,6 +2964,12 @@ impl WorkerSupervisor {
                 }
             };
             escalations::settle(&run);
+            if run.finish.pending_usage {
+                if let Err(why) = self.dispatch_pending_usage(&mut run) {
+                    warn!(run_id, why, "cannot dispatch pending usage start");
+                    return;
+                }
+            }
             if run.info.status != TodoRunStatus::Running {
                 // A decision the server makes itself (a review, an answer):
                 // decided (or the recorded decision taken) and applied, then
@@ -2924,6 +3066,11 @@ impl WorkerSupervisor {
                     self.block_run(&mut run, why);
                 }
             }
+            // A dispatch refusal waits for a measurement event, not an
+            // immediate second read. A concurrent measurement sets `again`.
+            if run.finish.pending_usage && driving.release() {
+                return;
+            }
         }
     }
 
@@ -2938,6 +3085,7 @@ impl WorkerSupervisor {
             .transaction(|tx| tx.run_event(run, &event, pending, now_ms()))
             .map_err(|error| format!("the worker store failed: {error}"))?;
         activity::observe(&run.info, Some(&event), run.info.updated_ms);
+        pending_usage::observe(run);
         announce();
         Ok(seq)
     }
@@ -3034,6 +3182,31 @@ impl WorkerSupervisor {
             None => None,
         };
         let command_id = format!("{}:{}:start", run.info.run_id, run.info.attempt);
+        let recovering_worker = self
+            .run_store()
+            .map_err(|error| error.to_string())?
+            .receipt(&command_id)
+            .map_err(|error| error.to_string())?
+            .is_some_and(|receipt| receipt.worker_id.is_some());
+        // Preparation may take time. Check at dispatch, but do not re-gate
+        // the recovery of a worker that the durable start receipt already names.
+        if run.finish.usage_dispatch && run.info.worker_id.is_none() && !recovering_worker {
+            match self.usage_gate(
+                &run.info.repo,
+                run.finish.agent.unwrap_or_default(),
+                run.finish.ignore_usage,
+            ) {
+                Ok(_) => {}
+                Err(WorkerError::UsageGate(why)) => {
+                    run.finish.pending_usage = true;
+                    run.info.status = TodoRunStatus::Waiting;
+                    run.info.error = Some(why);
+                    self.run_step(run, json!({"type": "run_usage_wait"}))?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
         let branch = run
             .info
             .branch
@@ -3855,15 +4028,25 @@ pub(crate) fn resume_runs_at_start() {
     }
 }
 
-/// The usage poller published a new reading: the queues the usage gate
-/// stopped look again ([`WorkerSupervisor::queues_after_usage_reading`]),
-/// from a thread so the server's loop does not wait for the store, git or
-/// the provider. Nothing without an open supervisor.
+/// An actual fetch completed on the usage poller's thread. Record the
+/// latch transition before publishing the report; cached reports never call this.
+pub(crate) fn usage_measurement(
+    provider: &str,
+    answer: Result<&crate::api::schema::ProviderUsage, &str>,
+) {
+    if let Some(supervisor) = super::coordinators::installed() {
+        supervisor.pending_after_usage_measurement(provider, answer);
+    }
+}
+
+/// The periodic usage report was published. Re-evaluate pending starts
+/// and queues off the app loop; dispatch still requires a fresh provider read.
 pub(crate) fn usage_reading_published() {
     let Some(supervisor) = super::coordinators::installed() else {
         return;
     };
     let spawned = crate::thread_spawn::spawn_named("herdr-todo-queue-usage", move || {
+        supervisor.pending_after_measurement();
         supervisor.queues_after_usage_reading();
     });
     if let Err(error) = spawned {

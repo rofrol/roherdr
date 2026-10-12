@@ -368,8 +368,10 @@ fn refresh(
     });
 
     let mut results = Vec::with_capacity(fetched.len());
+    let mut measured = Vec::with_capacity(fetched.len());
     UsageCache::update(|cache| {
         for (provider, plan, fetched) in fetched {
+            measured.push(matches!(&plan, Plan::Fetch));
             let result = match (plan, fetched) {
                 (Plan::Blocked(retry_in), _) => Err(Failure::new(
                     UsageErrorKind::RateLimited,
@@ -385,6 +387,19 @@ fn refresh(
             results.push((provider, result));
         }
     });
+    for ((provider, result), measured) in results.iter().zip(measured) {
+        if measured {
+            let id = match provider {
+                Provider::Claude => "claude",
+                Provider::Codex => "openai",
+                _ => continue,
+            };
+            crate::workers::usage_measurement(
+                id,
+                result.as_ref().map_err(|failure| failure.message.as_str()),
+            );
+        }
+    }
     results
 }
 

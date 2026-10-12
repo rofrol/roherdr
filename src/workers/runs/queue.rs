@@ -317,6 +317,16 @@ impl WorkerSupervisor {
                 };
                 super::announce();
                 self.queue_event(&repo);
+                if let Some(run) = store
+                    .active_run(&repo)
+                    .map_err(store_error)?
+                    .filter(|run| run.finish.pending_usage)
+                {
+                    if let Some(env) = lock(&QUEUE_ENV).get(&repo).cloned() {
+                        lock(&super::RUN_ENV).insert(run.info.run_id.clone(), env);
+                    }
+                    self.spawn_driver(&run.info.run_id);
+                }
             }
             TodoQueueMode::Paused => {
                 let reason = params
@@ -488,6 +498,14 @@ impl WorkerSupervisor {
     /// The queue's status while `run` is the repository's run in progress.
     fn status_of_run(&self, run: &Run) -> (TodoQueueStatus, String) {
         let info = &run.info;
+        if run.finish.pending_usage {
+            return (
+                TodoQueueStatus::UsageGate,
+                info.error
+                    .clone()
+                    .unwrap_or_else(|| "waiting for a successful usage measurement".into()),
+            );
+        }
         let at = format!(
             "run {} of {} at its {} step",
             info.run_id,
@@ -659,7 +677,7 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
         };
-        match self.create_run(params, true, Some(&start)) {
+        match self.create_run_with_wait(params, true, Some(&start), true) {
             Ok(run) => Ok(QueueStep::Started(run.run_id)),
             // Another start claimed the token, or a run started meanwhile:
             // its end is the next event.

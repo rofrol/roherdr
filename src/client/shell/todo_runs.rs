@@ -97,6 +97,13 @@ pub(super) fn run_lines_at(
     now_ms: u64,
 ) -> Vec<space_tabs::SpaceTabLine> {
     use crate::api::schema::AgentStatus;
+    // Index once outside the run-scaled loop; a run reads one presentation fact.
+    let usage_reasons = snapshot
+        .worker_questions
+        .iter()
+        .filter(|question| question.tool_name == "usage gate")
+        .map(|question| (question.worker_id.as_str(), question.text.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     snapshot
         .todo_runs
         .iter()
@@ -104,7 +111,12 @@ pub(super) fn run_lines_at(
         .map(|run| {
             let running = run.status == "running";
             let step = step_text(&run.step);
+            let usage_reason = usage_reasons.get(run.run_id.as_str()).copied();
             let mut label = format!("run {} · {step}", run.run_id);
+            if let Some(reason) = usage_reason {
+                label.push_str(" · ");
+                label.push_str(reason);
+            }
             if let Some(command) = run.step_command.as_deref().filter(|_| running) {
                 label.push_str(" · ");
                 label.push_str(command);
@@ -114,6 +126,9 @@ pub(super) fn run_lines_at(
                 .map(|since| super::workers::age_text(now_ms.saturating_sub(since)));
             let (status, said) = match run.status.as_str() {
                 "running" => (AgentStatus::Working, "running"),
+                "waiting" if usage_reason.is_some() => {
+                    (AgentStatus::Blocked, "waits for usage measurement")
+                }
                 "waiting" => (AgentStatus::Done, "waits for its coordinator"),
                 _ => (AgentStatus::Idle, "unknown status"),
             };
@@ -121,6 +136,9 @@ pub(super) fn run_lines_at(
                 "run {} · item {} · attempt {} · {step}: {said}",
                 run.run_id, run.item, run.attempt
             );
+            if let Some(reason) = usage_reason {
+                tooltip.push_str(&format!(" · {reason}"));
+            }
             if let Some(command) = run.step_command.as_deref().filter(|_| running) {
                 tooltip.push_str(&format!(" · {command}"));
             }
@@ -362,6 +380,45 @@ mod tests {
             run_times_change_at(&snapshot.todo_runs, 1_500),
             Some(61_000)
         );
+    }
+
+    #[test]
+    fn a_usage_wait_shows_its_reason_and_history_without_a_wire_change() {
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.workspaces[0].workspace_id = "w1".into();
+        let mut pending = run("r-abcd2345", "waiting");
+        pending.step = "preflight".into();
+        snapshot.todo_runs = vec![pending];
+        for reason in [
+            "usage read failed (DNS: lookup failed), waiting for a successful measurement",
+            "Claude usage 91%, resumes below 80%; last good reading (history only): 91%",
+        ] {
+            snapshot.worker_questions = vec![crate::protocol::ClientShellWorkerQuestion {
+                worker_id: "r-abcd2345".into(),
+                request_id: "herdr-usage-r-abcd2345".into(),
+                cwd: "/repo".into(),
+                tool_name: "usage gate".into(),
+                text: reason.into(),
+                choice: true,
+                since_ms: 1000,
+                quiet: false,
+                owner_seen_ms: None,
+            }];
+            let lines = run_lines_at(&snapshot, &snapshot.workspaces[0], 1000);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].label.contains(reason));
+            assert!(lines[0].run.as_ref().unwrap().tooltip.contains(reason));
+            assert!(lines[0]
+                .run
+                .as_ref()
+                .unwrap()
+                .tooltip
+                .contains("waits for usage measurement"));
+            assert_eq!(
+                lines[0].state,
+                Some((crate::api::schema::AgentStatus::Blocked, AgentMark::None))
+            );
+        }
     }
 
     #[test]

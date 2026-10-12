@@ -6552,6 +6552,294 @@ mod todo_runs {
     }
 
     #[test]
+    fn unknown_recovers_at_the_close_threshold_but_failure_never_clears_high() {
+        let fixture = todo_repo("todo-usage-unknown");
+        let repo = repository_of(&fixture.repo).unwrap();
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        assert!(usage_refusal(&fixture).contains("waiting for a successful measurement"));
+        let restarted =
+            WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+        restarted.set_usage_for_test(fresh_usage(86, 86));
+        let admitted = restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .unwrap();
+        assert_eq!(admitted["state"], "open");
+        assert_eq!(admitted["reopened"], true);
+        restarted.set_usage_for_test(fresh_usage(91, 10));
+        assert!(restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .is_err());
+        restarted.set_usage_for_test(Err("DNS lookup failed".into()));
+        let failure = restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            failure.contains("Last good reading (history only)"),
+            "{failure}"
+        );
+        assert_eq!(
+            store_of(&restarted).usage_gate_body(&repo).unwrap()["state"],
+            "high"
+        );
+        restarted.set_usage_for_test(fresh_usage(86, 10));
+        assert!(restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .is_err());
+        restarted.set_usage_for_test(fresh_usage(79, 79));
+        assert!(restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_pending_usage_start_is_durable_idempotent_and_cancelable() {
+        let fixture = todo_repo("todo-pending-usage-cancel");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let request = params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok");
+        let pending = fixture.supervisor.todo_run_wait(request.clone()).unwrap();
+        assert_eq!(pending.status, TodoRunStatus::Waiting);
+        assert_eq!(pending.step, TodoStep::Preflight);
+        assert_eq!(pending.pending_event, None);
+        assert!(fixture.supervisor.list().is_empty());
+        assert_eq!(
+            fixture
+                .supervisor
+                .todo_run_wait(request.clone())
+                .unwrap()
+                .run_id,
+            pending.run_id
+        );
+        let mut changed = request.clone();
+        changed.message = "feat: different".into();
+        assert!(fixture.supervisor.todo_run_wait(changed).is_err());
+        let restarted =
+            WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+        assert!(
+            restarted
+                .load_run(&pending.run_id)
+                .unwrap()
+                .finish
+                .pending_usage
+        );
+        assert_eq!(
+            restarted.todo_run_wait(request).unwrap().run_id,
+            pending.run_id
+        );
+        let canceled = restarted.todo_cancel_pending(&pending.run_id).unwrap();
+        assert_eq!(canceled.status, TodoRunStatus::Aborted);
+        assert_eq!(
+            restarted
+                .todo_cancel_pending(&pending.run_id)
+                .unwrap()
+                .run_id,
+            pending.run_id
+        );
+        let (event, run) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(run.status, TodoRunStatus::Aborted);
+        assert_eq!(run.pending_event, None);
+        assert_eq!(event.kind, TodoEventKind::Aborted);
+        assert_eq!(event.error.as_deref(), Some("pending start canceled"));
+        assert!(event.actions.is_empty());
+        let (persisted_event, persisted_run) = restarted
+            .todo_wait(
+                &TodoWaitParams {
+                    run_id: pending.run_id.clone(),
+                    after: None,
+                    waiter_pane: None,
+                },
+                Duration::ZERO,
+                || true,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted_event.event_id, event.event_id);
+        assert_eq!(persisted_event.kind, TodoEventKind::Aborted);
+        assert_eq!(persisted_run.status, TodoRunStatus::Aborted);
+        assert!(!runs::pending_usage::pending_questions()
+            .iter()
+            .any(|question| question.worker_id == pending.run_id));
+    }
+
+    #[test]
+    fn pending_dispatch_preflight_failure_returns_a_blocked_event() {
+        let fixture = todo_repo("todo-pending-preflight-failure");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        // The repository may change while the usage gate holds the start.
+        std::fs::remove_file(fixture.repo.join("TODO.md")).unwrap();
+        fixture.supervisor.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (event, run) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(run.status, TodoRunStatus::Blocked);
+        assert_eq!(event.kind, TodoEventKind::Blocked);
+        assert_eq!(event.error, run.error);
+        assert!(event.error.as_deref().unwrap().contains("cannot read"));
+        assert_eq!(event.actions, vec![TodoAction::Abort]);
+        assert!(
+            !fixture
+                .supervisor
+                .load_run(&pending.run_id)
+                .unwrap()
+                .finish
+                .pending_usage
+        );
+        assert!(fixture.supervisor.list().is_empty());
+    }
+
+    #[test]
+    fn measurements_reopen_a_latch_but_dispatch_requires_its_own_read() {
+        let fixture = todo_repo("todo-pending-usage-dispatch");
+        let repo = repository_of(&fixture.repo).unwrap();
+        fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        // A genuine low measurement opens the high latch. It is not authorization.
+        {
+            let _check = lock(&runs::usage_gate::CHECK);
+            fixture
+                .supervisor
+                .record_usage_measurement(
+                    "claude",
+                    fresh_usage(79, 79).as_ref().map_err(String::as_str),
+                    None,
+                )
+                .unwrap();
+        }
+        assert!(!store_of(&fixture.supervisor)
+            .usage_gate_closed(&repo)
+            .unwrap());
+        let mut stored = fixture.supervisor.load_run(&pending.run_id).unwrap();
+        fixture
+            .supervisor
+            .dispatch_pending_usage(&mut stored)
+            .unwrap();
+        assert!(stored.finish.pending_usage);
+        assert!(fixture.supervisor.list().is_empty());
+        fixture.supervisor.set_usage_for_test(fresh_usage(79, 79));
+        for _ in 0..4 {
+            fixture.supervisor.pending_after_measurement();
+        }
+        let (review, _) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review);
+        assert_eq!(fixture.supervisor.list().len(), 1);
+        assert!(fixture
+            .supervisor
+            .todo_cancel_pending(&pending.run_id)
+            .is_err());
+        assert!(
+            !fixture
+                .supervisor
+                .load_run(&pending.run_id)
+                .unwrap()
+                .finish
+                .pending_usage
+        );
+        assert!(!runs::pending_usage::pending_questions()
+            .iter()
+            .any(|question| question.worker_id == pending.run_id));
+        abort(&fixture, &pending.run_id, review.event_id);
+    }
+
+    #[test]
+    fn cancellation_during_the_usage_read_wins_before_dispatch() {
+        let fixture = todo_repo("todo-pending-cancel-race");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        runs::pending_usage::cancel_before_dispatch_for_test(&pending.run_id);
+        fixture.supervisor.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (event, _) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(event.kind, TodoEventKind::Aborted);
+        assert!(fixture.supervisor.list().is_empty());
+        assert_eq!(
+            fixture
+                .supervisor
+                .load_run(&pending.run_id)
+                .unwrap()
+                .info
+                .status,
+            TodoRunStatus::Aborted
+        );
+    }
+
+    #[test]
+    fn a_cold_restart_dispatches_the_same_pending_id_on_a_fresh_success() {
+        let mut fixture = todo_repo("todo-pending-restart");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        runs::forget_env(&pending.run_id);
+        let next = WorkerSupervisor::open(
+            fixture.root.join("workers"),
+            fixture.supervisor.shared.program.clone(),
+        );
+        next.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor = next;
+        fixture.supervisor.resume_runs();
+        let (event, _) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(event.kind, TodoEventKind::Review);
+        assert_eq!(fixture.supervisor.list().len(), 1);
+        assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
+        abort(&fixture, &pending.run_id, event.event_id);
+    }
+
+    #[test]
+    fn a_pending_start_publishes_its_reason_to_the_question_list() {
+        let fixture = todo_repo("todo-pending-usage-question");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let listed = fixture.supervisor.pending_questions();
+        let question = listed
+            .iter()
+            .find(|question| question.worker_id == pending.run_id)
+            .unwrap();
+        assert!(question.question.text.contains("DNS lookup failed"));
+        assert!(question
+            .question
+            .text
+            .contains("waiting for a successful measurement"));
+        let detail = fixture
+            .supervisor
+            .question_detail(&pending.run_id, &question.question.request_id)
+            .unwrap();
+        assert_eq!(detail.question.text, question.question.text);
+        fixture
+            .supervisor
+            .todo_cancel_pending(&pending.run_id)
+            .unwrap();
+        assert!(fixture
+            .supervisor
+            .question_detail(&pending.run_id, &question.question.request_id)
+            .is_err());
+    }
+
+    #[test]
     fn the_usage_gate_reads_its_thresholds_from_the_config_at_each_check() {
         let fixture = todo_repo("todo-usage-gate-config");
         let repo = repository_of(&fixture.repo).unwrap();
@@ -12153,11 +12441,21 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
                 let gated = set(&fixture, TodoQueueMode::On);
                 assert_eq!(gated.status, TodoQueueStatus::UsageGate, "{gated:#?}");
-                assert!(runs_of(&fixture, &repo).is_empty());
+                let pending_id = gated.run_id.clone().unwrap();
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+                assert!(fixture
+                    .supervisor
+                    .pending_questions()
+                    .iter()
+                    .any(|question| question.worker_id == pending_id));
                 // A reading while the gate still refuses starts nothing.
                 fixture.supervisor.queues_after_usage_reading();
                 assert_eq!(status(&fixture).status, TodoQueueStatus::UsageGate);
-                assert!(runs_of(&fixture, &repo).is_empty());
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+                assert_eq!(
+                    status(&fixture).run_id.as_deref(),
+                    Some(pending_id.as_str())
+                );
 
                 // Below the reopening threshold, the next reading the poller
                 // publishes (the server's event) starts the item.

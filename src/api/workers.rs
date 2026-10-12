@@ -38,6 +38,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerTranscriptWait(_)
             | Method::WorkerDenyAndStop(_)
             | Method::TodoRun(_)
+            | Method::TodoRunWait(_)
+            | Method::TodoCancelPending(_)
             | Method::TodoDraftRun(_)
             | Method::TodoResume(_)
             | Method::TodoWait(_)
@@ -219,6 +221,16 @@ fn handle_immediate(
         Method::TodoRun(params) => {
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_run(params)?,
+            })
+        }
+        Method::TodoRunWait(params) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_run_wait(params)?,
+            })
+        }
+        Method::TodoCancelPending(target) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_cancel_pending_owned(&target)?,
             })
         }
         Method::TodoDraftRun(params) => {

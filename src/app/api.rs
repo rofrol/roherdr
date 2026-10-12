@@ -1425,6 +1425,8 @@ impl App {
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
             | Method::TodoRun(_)
+            | Method::TodoRunWait(_)
+            | Method::TodoCancelPending(_)
             | Method::TodoDraftRun(_)
             | Method::TodoResume(_)
             | Method::TodoWait(_)

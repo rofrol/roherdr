@@ -53,6 +53,7 @@ impl WorkerSupervisor {
             .collect();
         // A todo run's review escalations, listed as its worker's.
         pending.extend(runs::escalations::pending_questions());
+        pending.extend(runs::pending_usage::pending_questions());
         // The definitions waiting for the user's grant.
         pending.extend(grant_questions::pending_questions());
         // The supervision findings nobody acknowledged yet.
@@ -190,6 +191,9 @@ impl WorkerSupervisor {
         worker_id: &str,
         request_id: &str,
     ) -> Result<WorkerQuestionDetail, WorkerError> {
+        if let Some(detail) = runs::pending_usage::detail(worker_id, request_id) {
+            return detail;
+        }
         if runs::escalations::is_escalation(request_id) {
             return self.escalation_detail(worker_id, request_id);
         }
@@ -242,6 +246,9 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerDenyAndStopParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        if runs::pending_usage::is_question(&params.request_id) {
+            return Err(WorkerError::Invalid("cancel usage waits from the user's client or todo cancel-pending as the run's owner".into()));
+        }
         // A grant question is answered only from the user's client
         // ([`Self::deny_and_stop_from_client`]).
         if grant_questions::is_grant_question(&params.request_id) {
@@ -452,6 +459,13 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerAnswerParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        if params
+            .request_id
+            .as_deref()
+            .is_some_and(runs::pending_usage::is_question)
+        {
+            return Err(WorkerError::Invalid("cancel usage waits from the user's client or todo cancel-pending as the run's owner".into()));
+        }
         // A grant question is answered only from the user's client
         // ([`Self::answer_from_client`]), never through the API.
         if let Some(request_id) = params

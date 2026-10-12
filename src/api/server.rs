@@ -944,6 +944,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerTranscriptWait(_) => "worker.transcript_wait",
         Method::WorkerDenyAndStop(_) => "worker.deny_and_stop",
         Method::TodoRun(_) => "todo.run",
+        Method::TodoRunWait(_) => "todo.run_wait",
+        Method::TodoCancelPending(_) => "todo.cancel_pending",
         Method::TodoDraftRun(_) => "todo.draft_run",
         Method::TodoResume(_) => "todo.resume",
         Method::TodoWait(_) => "todo.wait",

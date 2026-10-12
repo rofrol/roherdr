@@ -312,6 +312,9 @@ impl WorkerSupervisor {
         params: &WorkerAnswerParams,
     ) -> Result<WorkerInfo, WorkerError> {
         match params.request_id.as_deref() {
+            Some(request_id) if super::runs::pending_usage::is_question(request_id) => {
+                self.cancel_usage_question_from_client(params)
+            }
             Some(request_id) if is_grant_question(request_id) => self.answer_grant_question(
                 &params.worker_id,
                 request_id,
@@ -335,6 +338,10 @@ impl WorkerSupervisor {
         &self,
         params: &crate::api::schema::WorkerDenyAndStopParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        if super::runs::pending_usage::is_question(&params.request_id) {
+            self.todo_cancel_pending(&params.worker_id)?;
+            return self.escalation_reply(&params.worker_id);
+        }
         if is_grant_question(&params.request_id) {
             return self.answer_grant_question(
                 &params.worker_id,

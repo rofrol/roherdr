@@ -6180,6 +6180,23 @@
             }
           ]
         },
+        "TodoCancelPendingParams": {
+          "properties": {
+            "caller_pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
         "TodoDraftRunParams": {
           "description": "`todo.run` whose worker's task the server drafts itself: a bounded,\nstateless model call (`draft_task`) with the item's text, the\n`DECISIONS.md` sections it names, the repository's code and test rules\n(`AGENTS.md`), its registered checks, `git log -20` and the item's\nhistory returns the task text, the exact commit subject, the path globs\nand the check names, or a question for the user. The server checks the\ndraft (a lowercase conventional subject, relative globs inside the\nrepository, registered checks), records it and starts the run with it as\n`todo.run` with those parameters would; an invalid draft or a failed call\nis asked once more, then escalated. The run is reviewed and its worker's\nquestions answered by the server too (`auto_review`, `auto_answer`).",
           "properties": {
@@ -8508,6 +8525,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Wait-capable start; a refused usage gate returns a durable pending run id.",
+          "properties": {
+            "method": {
+              "const": "todo.run_wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cancel a start that still waits for usage, idempotently.",
+          "properties": {
+            "method": {
+              "const": "todo.cancel_pending",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoCancelPendingParams"
             }
           },
           "required": [

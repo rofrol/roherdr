@@ -19,9 +19,11 @@ const USAGE: &str = "usage:
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
       the verify runs them in order and every one must pass; the usage gate:
-      Claude's usage read from the provider now; refused as usage_gate while
-      any Claude window is 90% or more used or the read fails, and after such
-      a refusal until a read shows every Claude window below 80%;
+      usage is read from the worker's provider now. High usage waits until
+      every window is below [usage] gate_reopen_percent (default 80).
+      Unknown usage waits for a successful read below gate_close_percent
+      (default 90); failure never clears a high latch. A refused start prints
+      a durable run id; todo wait waits through measurements;
       --ignore-usage, on the user's word, starts anyway), then
       start a headless worker in the repository's folder slot
       ../herdr-worktrees/<repository>/worker (see `herdr worker start`) on
@@ -224,6 +226,9 @@ const USAGE: &str = "usage:
       its hash and the repository), answered only with a click in the
       user's own client, never from an agent pane; once granted, the
       coordinator starts the run again (in queue mode the queue does).
+  herdr todo cancel-pending <run-id>
+      Cancel a start still waiting for usage (also available in its ? entry).
+      Repeating cancellation is idempotent; wait observes the aborted event.
   herdr todo grant --revoke --operation prepare [--hash HASH] [--repo DIR]
       Remove the stored grant of that definition hash (every grant of the
       operation without --hash), recorded in the worker store; a run that
@@ -271,7 +276,7 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let response = super::send_request(&request)?;
     let code = super::print_response(&response)?;
     super::report::hint_reply(&response, &command);
-    if let Method::TodoRun(params) = &request.method {
+    if let Method::TodoRunWait(params) = &request.method {
         if let Some(refusal) = auto_review_ignored(params, &response) {
             eprintln!("{refusal}");
             return Ok(1);
@@ -587,7 +592,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             };
             let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
             let pane = super::target::caller_pane_id();
-            Method::TodoRun(TodoRunParams {
+            Method::TodoRunWait(TodoRunParams {
                 cwd: std::path::absolute(&cwd)
                     .map_err(|error| error.to_string())?
                     .display()
@@ -605,6 +610,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 agent,
                 auto_review,
                 auto_answer,
+            })
+        }
+        "cancel-pending" => {
+            Method::TodoCancelPending(crate::api::schema::TodoCancelPendingParams {
+                run_id: one_run_id("cancel-pending", rest)?,
+                caller_pane_id: super::target::caller_pane_id(),
             })
         }
         "wait" => {
@@ -1000,7 +1011,7 @@ mod tests {
         let task = dir.join("task.md");
         std::fs::write(&task, "Do the thing\n").unwrap();
         let task = task.display().to_string();
-        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+        let Ok(Some(Method::TodoRunWait(params))) = parse(&args(&[
             "run",
             "t-abcd2345",
             "--paths",
@@ -1021,7 +1032,7 @@ mod tests {
         assert_eq!(params.task, "Do the thing\n");
         assert_eq!(params.checks, ["workers", "windows-lint"]);
         assert!(!params.ignore_usage);
-        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+        let Ok(Some(Method::TodoRunWait(params))) = parse(&args(&[
             "run",
             "t-abcd2345",
             "--ignore-usage",
@@ -1056,12 +1067,12 @@ mod tests {
                 "workers",
             ]))
         };
-        let Ok(Some(Method::TodoRun(params))) = with_agent("pi") else {
+        let Ok(Some(Method::TodoRunWait(params))) = with_agent("pi") else {
             panic!("run --agent pi did not parse");
         };
         assert_eq!(params.agent, Some(WorkerAgent::Pi));
         assert_eq!(params.paths, ["src/**"]);
-        let Ok(Some(Method::TodoRun(params))) = with_agent("claude") else {
+        let Ok(Some(Method::TodoRunWait(params))) = with_agent("claude") else {
             panic!("run --agent claude did not parse");
         };
         assert_eq!(params.agent, Some(WorkerAgent::Claude));
@@ -1069,7 +1080,7 @@ mod tests {
             panic!("run --agent codex parsed");
         };
         assert!(error.contains("claude or pi"), "{error}");
-        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+        let Ok(Some(Method::TodoRunWait(params))) = parse(&args(&[
             "run",
             "t-abcd2345",
             "--auto-review",
@@ -1093,7 +1104,7 @@ mod tests {
         assert!(auto_review_ignored(&params, &old)
             .unwrap()
             .contains("r-abcd2345"));
-        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+        let Ok(Some(Method::TodoRunWait(params))) = parse(&args(&[
             "run",
             "t-abcd2345",
             "--auto-answer",

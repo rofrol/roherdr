@@ -845,7 +845,11 @@ impl WorkerSupervisor {
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
         };
-        let mut started = self.todo_run(params.clone());
+        let mut started = if run.finish.usage_dispatch {
+            self.todo_run_wait(params.clone())
+        } else {
+            self.todo_run(params.clone())
+        };
         // A disk the slot's own build artifacts filled: its sweep frees
         // them, then preflight looks once more.
         let mut swept = String::new();
@@ -856,7 +860,11 @@ impl WorkerSupervisor {
                 Ok(()) => " (after the folder slot's sweep)".to_owned(),
                 Err(error) => format!(" (after the folder slot's sweep: {error})"),
             };
-            started = self.todo_run(params);
+            started = if run.finish.usage_dispatch {
+                self.todo_run_wait(params)
+            } else {
+                self.todo_run(params)
+            };
         }
         match started {
             Ok(started) => self.next_started(run_id, &next.item, started.run_id, false),

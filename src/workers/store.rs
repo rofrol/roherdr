@@ -2554,6 +2554,27 @@ impl Store {
             .unwrap_or(false))
     }
 
+    pub(super) fn usage_gate_keys(&self) -> StoreResult<Vec<String>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare("SELECT repo FROM usage_gates")?;
+        let keys = statement.query_map([], |row| row.get(0))?.collect();
+        keys
+    }
+
+    /// The durable reason and last successful measurement, not authorization.
+    pub(super) fn usage_gate_body(&self, repo: &str) -> StoreResult<Value> {
+        let body = lock(&self.conn)
+            .query_row(
+                "SELECT body FROM usage_gates WHERE repo = ?1",
+                [repo],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(body
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or(Value::Null))
+    }
+
     /// Records `repo`'s usage gate and the decision that set it.
     pub(super) fn set_usage_gate(
         &self,

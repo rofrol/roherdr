@@ -161,6 +161,12 @@ pub enum Method {
     /// Drives a TODO item from preflight to a cherry-pick onto `master`.
     #[serde(rename = "todo.run")]
     TodoRun(TodoRunParams),
+    /// Wait-capable start; a refused usage gate returns a durable pending run id.
+    #[serde(rename = "todo.run_wait")]
+    TodoRunWait(TodoRunParams),
+    /// Cancel a start that still waits for usage, idempotently.
+    #[serde(rename = "todo.cancel_pending")]
+    TodoCancelPending(TodoCancelPendingParams),
     /// `todo.run` whose task, subject, paths and checks the server drafts
     /// itself with a typed model call.
     #[serde(rename = "todo.draft_run")]

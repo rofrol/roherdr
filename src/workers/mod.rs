@@ -68,7 +68,7 @@ pub(crate) use log::{entry_lines, log_lines};
 pub(crate) use runs::activity::{ActiveRun, RunWait, WaitEdge};
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
-pub(crate) use runs::{resume_runs_at_start, usage_reading_published};
+pub(crate) use runs::{resume_runs_at_start, usage_measurement, usage_reading_published};
 pub(crate) use types::{
     Attention, ItemCounts, OwnerEvent, PendingWorkerQuestion, Takeover, TakeoverFound,
     TakeoverTabCandidate, UnfinishedTakeover, UserNotice, WorkerSummary, TAKEOVER_ID_ENV,

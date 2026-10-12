@@ -581,7 +581,7 @@
           "key": "usage.gate_reopen_percent",
           "type": "integer",
           "default": "80",
-          "description": "A usage gate closed by a refusal admits again once every window of the provider is below this many percent. 1-100, below gate_close_percent; invalid values give the defaults. Read at each gate check."
+          "description": "A usage gate latched high admits again once every window of the provider is below this many percent. A failed read alone is unknown and recovers on a successful read below gate_close_percent; failure never clears a high latch. 1-100, below gate_close_percent; invalid values give the defaults. Read at each gate check."
         }
       ]
     },
