@@ -374,6 +374,50 @@ Quota verdicts do not belong in a state file:
 
 ## Fork Sync (rofrol/herdr)
 
+### Private details stay local
+
+Never put private details in tracked files of this public repository, including
+TODOs, decision records, docs, fixtures and comments: host names and IPs, account
+or workspace IDs, people's names, personal paths, and key or environment file
+locations belong only in the ignored `.local/`. Use generic descriptions in
+tracked files. Never commit local pattern configuration or real private values
+as test data.
+
+Configure the optional privacy guard in `.local/private-patterns.txt`: one
+Python regular expression per line (blank lines are ignored; no comment syntax).
+Keep the actual patterns local and escape literal punctuation. A missing file
+disables the guard; an unreadable, empty or invalid file refuses the operation.
+The guard scans added lines of every outgoing commit, including intermediate
+commits that later remove a detail, and reports only file and line, never the
+matched text or patterns. It covers configured patterns, not every possible
+secret; review outgoing changes too. For new remote refs it conservatively scans
+all reachable history. Ref deletions add nothing. Commit messages are outside
+this diff guard; keep private details out of those as well.
+
+`todo run` uses the embedded guard before landing a worker commit and again
+before its push (including retry-push). A refusal prevents the side effect;
+push refusal becomes `push_failed`. Configure the patterns in the shared
+repository's `.local/`, not just in the worker directory. Python 3 is required
+when the guard is configured. Run a manual check with:
+
+```bash
+python3 scripts/private_details_check.py --range <remote-commit> <local-commit>
+```
+
+For other pushes, optionally install a Git pre-push hook in the local Git hooks
+directory (`git rev-parse --git-path hooks/pre-push`), make it executable, and
+use the following body. Do not overwrite an existing hook: compose this check
+with it, preserve Git's stdin for both checks, and refuse if either fails.
+Repositories using `core.hooksPath` must use that configured hook directory.
+Do not bypass a refusal with `--no-verify`; remove the details from every
+outgoing commit and rerun the check.
+
+```sh
+#!/bin/sh
+root=$(git rev-parse --show-toplevel) || exit 1
+exec python3 "$root/scripts/private_details_check.py" --pre-push
+```
+
 This checkout is the `rofrol/herdr` fork (`origin`) of `herdrdev/herdr`
 (`upstream`). Sync it by rebasing, never by merging:
 

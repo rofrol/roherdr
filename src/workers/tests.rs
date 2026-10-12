@@ -9679,6 +9679,78 @@ mod todo_runs {
     }
 
     #[test]
+    fn private_details_refuse_landing_before_master_changes() {
+        let fixture = todo_repo("todo-private-land");
+        let before = rev(&fixture.repo, "master");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        std::fs::create_dir_all(fixture.repo.join(".local")).unwrap();
+        // The fake worker writes this synthetic line, not a real private value.
+        std::fs::write(
+            fixture.repo.join(".local/private-patterns.txt"),
+            "^change$\n",
+        )
+        .unwrap();
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (blocked, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        let error = blocked.error.unwrap_or_default();
+        assert!(error.contains("\"a.txt\":1"), "{error}");
+        assert!(!error.contains("^change$"), "{error}");
+        assert_eq!(rev(&fixture.repo, "master"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_cherry_pick_intent").is_empty());
+    }
+
+    #[test]
+    fn private_details_refuse_the_outgoing_push_and_its_retry() {
+        let fixture = todo_repo("todo-private-push");
+        let remote = with_finish(&fixture);
+        let before = rev(&remote, "master");
+        // Already-local history is outside the worker's diff, but is outgoing.
+        std::fs::write(
+            fixture.repo.join("private-note.txt"),
+            "SYNTHETIC-PRIVATE-42\n",
+        )
+        .unwrap();
+        git_in(&fixture.repo, &["add", "private-note.txt"]);
+        git_in(&fixture.repo, &["commit", "-qm", "synthetic local change"]);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        std::fs::create_dir_all(fixture.repo.join(".local")).unwrap();
+        std::fs::write(
+            fixture.repo.join(".local/private-patterns.txt"),
+            "SYNTHETIC-PRIVATE-[0-9]+\n",
+        )
+        .unwrap();
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (failed, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::PushFailed, "{failed:#?}");
+        let error = failed.error.clone().unwrap_or_default();
+        assert!(error.contains("\"private-note.txt\":1"), "{error}");
+        assert!(!error.contains("SYNTHETIC-PRIVATE"), "{error}");
+        assert_eq!(rev(&remote, "master"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_push_intent").is_empty());
+        resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::RetryPush,
+            None,
+        )
+        .unwrap();
+        let (again, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(again.kind, TodoEventKind::PushFailed, "{again:#?}");
+        assert_eq!(rev(&remote, "master"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_push_intent").is_empty());
+    }
+
+    #[test]
     fn a_push_that_is_not_a_fast_forward_is_refused() {
         let fixture = todo_repo("todo-push-refused");
         let remote = with_finish(&fixture);

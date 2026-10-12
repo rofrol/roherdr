@@ -957,6 +957,46 @@ fn free_gib(dir: &Path) -> Result<f64, String> {
     Ok(available / (1024.0 * 1024.0))
 }
 
+/// The privacy policy is local configuration, not a shared runtime/API field.
+/// Embed the mechanism so a worker cannot remove it from its candidate tree.
+fn check_private_details(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<(), String> {
+    if !repo
+        .join(".local/private-patterns.txt")
+        .try_exists()
+        .map_err(|_| "cannot inspect the local private patterns configuration".to_owned())?
+    {
+        return Ok(());
+    }
+    let output = command_with("python3", env)
+        .args([
+            "-c",
+            include_str!("../../scripts/private_details_check.py"),
+            "--range",
+            base,
+            head,
+        ])
+        .current_dir(repo)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "cannot run the private details check".to_owned())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "private details check refused the operation:\n{}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ))
+    }
+}
+
 pub(super) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_with(dir, args, None)
 }
@@ -3602,6 +3642,7 @@ impl WorkerSupervisor {
             return self.ask_landing_approval(run, &repo, &commit);
         }
         if !applied {
+            check_private_details(&repo, &base, &commit, None)?;
             let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
             self.run_step(
                 run,

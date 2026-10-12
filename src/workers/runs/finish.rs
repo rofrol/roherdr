@@ -641,20 +641,22 @@ impl WorkerSupervisor {
                 );
             }
         }
+        if let Err(why) = super::check_private_details(
+            &repo,
+            remote.as_deref().unwrap_or(""),
+            &master,
+            Some(&env),
+        ) {
+            return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
+        }
         self.run_step(
             run,
             json!({"type": "run_push_intent", "master": master, "origin": remote}),
         )?;
-        if let Err(why) = git_with(
-            &repo,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                "refs/heads/master:refs/heads/master",
-            ],
-            Some(&env),
-        ) {
+        // Push exactly the inspected commit, not a ref another process could
+        // advance between the privacy check and Git reading the push source.
+        let refspec = format!("{master}:refs/heads/master");
+        if let Err(why) = git_with(&repo, &["push", "--quiet", "origin", &refspec], Some(&env)) {
             return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
         }
         #[cfg(test)]

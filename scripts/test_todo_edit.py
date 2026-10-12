@@ -619,5 +619,13 @@ class TodoEditTests(unittest.TestCase):
         with mock.patch.object(todo_edit.secrets, "token_bytes", side_effect=[b"\0" * 5, b"\xff" * 5]):
             self.assertEqual(todo_edit.mint_id({"t-aaaaaaaa"}), "t-77777777")
 
+def load_tests(loader, tests, pattern):
+    # Privacy is part of the TODO landing/push contract; keep these tests in
+    # the existing maintenance recipe without requiring local hook setup.
+    from scripts import test_private_details_check
+    tests.addTests(loader.loadTestsFromModule(test_private_details_check))
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main()
