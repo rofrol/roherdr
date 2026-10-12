@@ -2617,6 +2617,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   or not at this scale (MiMo).
   The user agreed 2026-10-12 to a short-lived session per conversation
   starting from a herdr snapshot ("it can be done; ask the models").
+  The user, 2026-10-12, shared https://x.com/omarsar0/status/2109643758228869175
+  (paper arXiv 2610.07782, "Persistent Memory in Multi-Agent LLM Inference")
+  and asked to ask the models what it means for this design.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
