@@ -204,6 +204,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Slice 6 landed 2026-10-12 (5208251f, a pi worker): the proxy refused the
   thinking pi now sends ("thinking must be disabled"); it now accepts the API's
   thinking types and counts thinking in the reservation and the cost.
+  Slice 7 landed 2026-10-12 (ff247c5d, a pi worker): the proxy leaves the
+  thinking object's shape to the API, allowlists pi's `output_config`, logs
+  an offending field's JSON on refusal; the capture test runs pi with
+  `--thinking medium`.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
