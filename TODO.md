@@ -259,6 +259,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker adds the `--handoff <manifest>` first branch to the todo skill
   (dotfiles `.agents/skills/todo/SKILL.md`, using the landed command
   names), then one live handoff of this coordinator tests it.
+  Asked 2026-10-12 (the user: "does herdr have to close the tab? can it
+  not do /new in the window? and an automatic handoff? ask the models").
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
