@@ -3365,6 +3365,17 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
+- [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
+  [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
+  the successor-started write only log a failed persist (after a restart
+  the handoff returns Frozen without its successor); a double failure in
+  the ack (state written, transfer failed, restore write failed) leaves
+  the file saying the live coordinator is superseded; a reused old pane
+  id whose session is still unknown is fenced; the pane-session map is
+  never pruned on pane close; raw API clients without `caller_pane_id`
+  are never fenced; the fence is check-then-act. Cost: small src slices
+  in src/workers/coordinator_handoff.rs with tests; no guest build.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
