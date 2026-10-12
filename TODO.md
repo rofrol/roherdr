@@ -2641,6 +2641,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   The user, 2026-10-12, asked to analyse with the models
   https://x.com/ClaudeDevs/status/2108591328732856655 (Claude Managed Agents
   dynamic workflows, public beta 2026-10-09) for this design.
+  Round 20261012-183931-38d0 on Managed Agents dynamic workflows (sol,
+  MiMo, DeepSeek agreeing): herdr stays the control plane (ledger,
+  restart safety, approvals, merges, spend caps); neither Managed Agents
+  (the repository leaves the machine, server-side state beside herdr's,
+  beta guarantees unknown) nor Claude Code's local workflows own queue
+  state, commits or pushes; at most one wraps as a worker type. The 66/70
+  planted-bug claim has no cost matching and no false-positive count, so
+  it says nothing yet about review depth. Fan-out review (specialised
+  reviewers plus a verifier with repository tools) only as a risk-gated
+  stage chosen by a deterministic rule, and only if a cost-matched
+  experiment (same dollars per item, held-out catches, clean controls,
+  blind scoring, escalations counted) shows it beats one deep review. A
+  planner that splits a large item into phases may propose; herdr
+  validates and owns sequencing. First step all three name: tag every
+  credit call with item, run and stage (draft, worker, review) so the
+  experiments cost nothing extra to measure.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
@@ -2909,6 +2925,14 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
+
+- [ ] Tag every credit call with its stage (from the user's question [t-x46qpegh]
+  2026-10-12 on Managed Agents dynamic workflows; round in [t-ic5rrxn3],
+  all three models naming it the first step): the credit ledger records
+  item, run and stage (draft, worker, review, answer) per request, and
+  `herdr credits status` sums per item and stage, so the queue-mode A/B
+  and a later fan-out review experiment are measured for free. Small, no
+  build of an image, touches the ledger schema (a migration).
 
 ## Needs a decision
 
