@@ -41,6 +41,31 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      without a registered handle (a wait-text on a transcript is not a
      handle), via `unaccounted_assignment`.
 
+- [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
+  2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
+  2; ask the models"; the exact error is not known: reproduce first and
+  record it). Round 20261012-025700-fc04 (sol, MiMo, DeepSeek agreeing),
+  decided:
+  1. HOME is opt-in: `herdr coordinator start` in ~ claims the dotfiles
+     repository only explicitly (e.g. `--repo ~`); a pane's cwd in ~ is a
+     candidate, never a claim; nested repositories under ~ resolve to
+     themselves; ownership conflicts are named.
+  2. The folder slot is never beside HOME (/Users): a configurable
+     location, for HOME `~/.local/state/herdr/worktrees/home/worker`,
+     ignored by the dotfiles excludes, its worktree identity validated;
+     the slot copies tracked files (mind secrets: sandbox reads limited).
+  3. Missing `.herdr/checks.toml` or "Next, in order" is a prerequisite
+     herdr reports, not something it invents; a proposed initial
+     checks.toml for dotfiles (zsh -n/bash -n, shellcheck, jq on JSON,
+     plutil, luac -p for Hammerspoon) is reviewed by the owner.
+  4. The worker writes only the slot and its temp; live HOME and
+     ~/.claude are read-only to it. Cherry-picking into HOME already
+     changes live files, so landing and any install need the owner's
+     approval of the whole patch, with a backup and rollback note.
+  5. Owner-approved only (the worker proposes, never applies): ~/.claude
+     (settings.json, hooks, skills, CLAUDE.md), AGENTS.policy.md, .herdr,
+     git config and excludes, install scripts, anything holding tokens.
+
 - [ ] An open assignment whose transcript is missing at startup is a finding [t-tr3kuvje]
   (follows from [t-276mtaqw]: slice 2 leaves an assignment whose transcript
   is missing when the server starts, without a Stop mark, unflagged until
