@@ -30,6 +30,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   before anything starts. Tests for the env (no key leaked into the
   pane's environment or the manifest), the grant's binding and the
   refusals. This comes before the live handoff of the herdr coordinator.
+  Review 2026-10-12 (round 20261012-232614-7527, MiMo and DeepSeek;
+  decided by the coordinator): attempt 1 is not approved. A grant must
+  reach only the launched process, never a typed shell command, argv,
+  terminal scrollback or shell history. Funding is a durable fact: losing
+  a listener at restart or live server handoff must not report login or
+  silently fall back to the subscription; reconcile it or report explicit
+  credit unavailability and recovery. Verify the Claude request contract
+  offline against the existing paid-feature allowlist, including supported
+  model environment overrides; do not broaden proxy permissions merely to
+  pass requests. New accounting tests use isolated injected transport, not
+  a global fake or network binds. The coordinator stage may be represented
+  by item=coordinator in the current ledger if the consuming query is
+  documented and tested; an extra column is not required without a use.
+  Models' unverified header examples and suggested full proxy ownership
+  redesign are not adopted as facts or required implementation. The proxy
+  drop join is a blocking lifecycle risk, not evidence of a reproduced
+  deadlock; no delay or timeout is authorized as its workaround.
 
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
