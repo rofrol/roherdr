@@ -81,6 +81,7 @@ pub(super) mod pending_usage;
 mod prepare;
 pub(super) mod queue;
 mod review_diff;
+mod review_tools;
 pub(super) mod usage_gate;
 
 #[cfg(all(test, unix))]

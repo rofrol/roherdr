@@ -1390,3 +1390,43 @@ fn http_rejection_without_valid_error_json_still_releases_reservation() {
         f.proxy.available(0.0).unwrap();
     }
 }
+
+#[test]
+fn tool_use_round_trip_with_a_validated_tool_choice_reaches_upstream() {
+    let tools = serde_json::json!([{"name":"read_file", "input_schema":{"type":"object"}}]);
+    let messages = serde_json::json!([
+        {"role":"user", "content":"review"},
+        {"role":"assistant", "content":[{"type":"tool_use", "id":"t1", "name":"read_file", "input":{"path":"a"}}]},
+        {"role":"user", "content":[{"type":"tool_result", "tool_use_id":"t1", "content":"x"}]}]);
+    let admitted = [
+        serde_json::json!({"type":"auto"}),
+        serde_json::json!({"type":"none"}),
+        serde_json::json!({"type":"any", "disable_parallel_tool_use":true}),
+        serde_json::json!({"type":"tool", "name":"read_file"}),
+    ];
+    let refused = [
+        serde_json::json!("auto"),
+        serde_json::json!({"type":"bogus"}),
+        serde_json::json!({"type":"none", "name":"read_file"}),
+        serde_json::json!({"type":"tool", "name":"undeclared"}),
+        serde_json::json!({"type":"tool"}),
+        serde_json::json!({"type":"auto", "disable_parallel_tool_use":"yes"}),
+        serde_json::json!({"type":"auto", "extra":1}),
+    ];
+    for (choice, ok) in admitted
+        .into_iter()
+        .map(|c| (c, true))
+        .chain(refused.into_iter().map(|c| (c, false)))
+    {
+        let body = serde_json::json!({"model": MODEL, "max_tokens":4096, "messages":messages,
+            "tools":tools, "tool_choice":choice})
+        .to_string();
+        let raw = format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer synthetic-token\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let mut context = RequestContext::default();
+        let result = request(raw.as_bytes(), MODEL, &mut context);
+        assert_eq!(result.is_ok(), ok, "{choice}");
+        if !ok {
+            assert_eq!(context.offending_field.as_deref(), Some("tool_choice"));
+        }
+    }
+}

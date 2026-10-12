@@ -789,6 +789,46 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
                 .map_err(|_| field_denial(context, "tools", "schema references not allowlisted"))?;
         }
     }
+    // A tool-use loop (a review reading the repository) steers tool use with
+    // `tool_choice`: only the API's four documented kinds are admitted, with
+    // their documented fields, and `tool` must name a declared tool.
+    if let Some(choice) = data.get("tool_choice") {
+        let Some(choice) = choice.as_object() else {
+            return Err(field_denial(
+                context,
+                "tool_choice",
+                "tool_choice not allowlisted",
+            ));
+        };
+        let kind = choice.get("type").and_then(Value::as_str);
+        let known = |key: &str| match key {
+            "type" => true,
+            "name" => kind == Some("tool"),
+            "disable_parallel_tool_use" => matches!(kind, Some("auto" | "any" | "tool")),
+            _ => false,
+        };
+        let well_formed = matches!(kind, Some("auto" | "any" | "tool" | "none"))
+            && choice.keys().all(|key| known(key))
+            && choice
+                .get("disable_parallel_tool_use")
+                .is_none_or(Value::is_boolean)
+            && (kind != Some("tool")
+                || choice
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| {
+                        data["tools"].as_array().is_some_and(|tools| {
+                            tools.iter().any(|tool| tool["name"].as_str() == Some(name))
+                        })
+                    }));
+        if !well_formed {
+            return Err(field_denial(
+                context,
+                "tool_choice",
+                "tool_choice not allowlisted",
+            ));
+        }
+    }
     let max = if count_request {
         0
     } else {

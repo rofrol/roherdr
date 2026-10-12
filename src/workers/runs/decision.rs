@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use super::review_tools::{self, RepoTools};
 use super::{lock, CHANGES};
 use crate::api::schema::{TodoEventKind, TodoRunEvent, TodoRunInfo, TodoRunStatus};
 use crate::workers::{now_ms, WorkerSupervisor};
@@ -184,6 +185,55 @@ fn parse_message(reply: &Value) -> Result<(Value, Option<String>), String> {
     Ok((output, reply["model"].as_str().map(str::to_owned)))
 }
 
+/// A request with the read-only repository tools, sent until the model
+/// answers without calling one: each round `send` makes one API call and
+/// returns the reply and the run's spend so far. The budget is the tools':
+/// calls and result bytes, counted. Once it is spent the model is told not
+/// to call a tool (`tool_choice` none) and a call it still makes is
+/// answered with a refusal; a model that goes on after that fails the call.
+// Used by the credit path, which is Unix only.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn tool_loop(
+    mut body: Value,
+    tools: &mut RepoTools<'_>,
+    mut send: impl FnMut(&Value) -> Result<(Value, f64), String>,
+) -> Result<(Value, f64), String> {
+    body["tools"] = review_tools::definitions();
+    for _ in 0..review_tools::MAX_CALLS + 3 {
+        if tools.spent() {
+            body["tool_choice"] = json!({"type": "none"});
+        }
+        let (reply, cost) = send(&body)?;
+        if reply["stop_reason"].as_str() != Some("tool_use") {
+            return Ok((reply, cost));
+        }
+        let uses: Vec<&Value> = reply["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|block| block["type"] == "tool_use")
+            .collect();
+        let results: Vec<Value> = uses
+            .iter()
+            .map(|block| {
+                let (text, error) =
+                    tools.call(block["name"].as_str().unwrap_or_default(), &block["input"]);
+                json!({"type": "tool_result", "tool_use_id": block["id"], "content": text,
+                       "is_error": error})
+            })
+            .collect();
+        if results.is_empty() {
+            return Err("the model stopped for tool use without a tool call".into());
+        }
+        let messages = body["messages"]
+            .as_array_mut()
+            .ok_or("the request has no messages")?;
+        messages.push(json!({"role": "assistant", "content": reply["content"]}));
+        messages.push(json!({"role": "user", "content": results}));
+    }
+    Err("the model kept calling tools past the tool budget".into())
+}
+
 pub(super) fn cut(text: &str) -> String {
     let text = text.trim();
     match text.char_indices().nth(ERROR_MAX) {
@@ -313,10 +363,25 @@ impl WorkerSupervisor {
         input: &str,
         model: Option<&str>,
     ) -> Result<(Value, Option<String>), String> {
+        self.call_model_tools(run, prompt, input, model, None)
+    }
+
+    /// [`Self::call_model_with`] with the read-only repository `tools` when
+    /// given: a credit call runs the tool loop over the API's tool use. The
+    /// `claude -p` path (a run without credits, or the fallback after a
+    /// credit refusal) has no tools: its call is the same stateless one.
+    pub(in crate::workers) fn call_model_tools(
+        &self,
+        run: &super::Run,
+        prompt: &Prompt<'_>,
+        input: &str,
+        model: Option<&str>,
+        tools: Option<&mut RepoTools<'_>>,
+    ) -> Result<(Value, Option<String>), String> {
         if !run.finish.anthropic_credits {
             return self.call_model(prompt, input, model);
         }
-        match self.call_credit(run, prompt, input, model) {
+        match self.call_credit(run, prompt, input, model, tools) {
             Ok(CreditCall::Answered { reply, cost }) => {
                 let note = json!({"type": "run_credit_call", "run_spent_usd": cost});
                 self.write_note(&run.info.run_id, &note)?;
@@ -339,6 +404,7 @@ impl WorkerSupervisor {
         prompt: &Prompt<'_>,
         input: &str,
         model: Option<&str>,
+        tools: Option<&mut RepoTools<'_>>,
     ) -> Result<CreditCall, String> {
         use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
 
@@ -359,7 +425,6 @@ impl WorkerSupervisor {
         }
         let ledger = ledger_path(&config).map_err(|error| error.to_string())?;
         std::fs::create_dir_all(crate::config::state_dir()).map_err(|error| error.to_string())?;
-        let proxy = AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
         let schema: Value = serde_json::from_str(prompt.schema)
             .map_err(|error| format!("the output schema is not JSON: {error}"))?;
         let body = json!({
@@ -368,23 +433,34 @@ impl WorkerSupervisor {
             "system": prompt.system,
             "messages": [{"role": "user", "content": format!("{}\n\n{input}\n", prompt.intro)}],
             "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        });
+        let send = |body: &Value| -> Result<(Value, f64), String> {
+            let proxy =
+                AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
+            let (status, reply) = proxy
+                .message(&run.info.run_id, &run.info.item, &body.to_string())
+                .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
+            if status != 200 {
+                return Err(format!(
+                    "the credit proxy answered {status}: {}",
+                    cut(&reply)
+                ));
+            }
+            let reply: Value = serde_json::from_str(&reply)
+                .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
+            // The proxy settled the call in the ledger before it answered.
+            let (cost, _) = AnthropicProxy::accounting(&ledger, Some(&run.info.run_id))
+                .map_err(|error| error.to_string())?;
+            Ok((reply, cost))
+        };
+        let answered = match tools {
+            Some(tools) => tool_loop(body, tools, send),
+            None => send(&body),
+        };
+        Ok(match answered {
+            Ok((reply, cost)) => CreditCall::Answered { reply, cost },
+            Err(reason) => CreditCall::Refused(reason),
         })
-        .to_string();
-        let (status, reply) = proxy
-            .message(&run.info.run_id, &run.info.item, &body)
-            .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
-        if status != 200 {
-            return Ok(CreditCall::Refused(format!(
-                "the credit proxy answered {status}: {}",
-                cut(&reply)
-            )));
-        }
-        let reply: Value = serde_json::from_str(&reply)
-            .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
-        // The proxy settled the call in the ledger before it answered.
-        let (cost, _) = AnthropicProxy::accounting(&ledger, Some(&run.info.run_id))
-            .map_err(|error| error.to_string())?;
-        Ok(CreditCall::Answered { reply, cost })
     }
 
     #[cfg(not(unix))]
@@ -394,6 +470,7 @@ impl WorkerSupervisor {
         _prompt: &Prompt<'_>,
         _input: &str,
         _model: Option<&str>,
+        _tools: Option<&mut RepoTools<'_>>,
     ) -> Result<CreditCall, String> {
         Err("the Anthropic credit proxy requires Unix".into())
     }
@@ -496,6 +573,62 @@ mod tests {
                 .contains("limit")
         );
         assert!(parse_cli_output(&json!({"result": "prose"}).to_string()).is_err());
+    }
+
+    #[test]
+    fn the_tool_loop_runs_tools_until_the_budget_is_spent_then_forces_the_answer() {
+        let (dir, sha) = super::super::review_tools::tests::repo_with(&[("a.txt", "x\n")]);
+        let mut tools = RepoTools::new(&dir, &sha).unwrap();
+        let mut sent: Vec<Value> = Vec::new();
+        let body = json!({"messages": [{"role": "user", "content": "review"}]});
+        let result = tool_loop(body, &mut tools, |body| {
+            sent.push(body.clone());
+            let round = sent.len();
+            if body["tool_choice"]["type"] == "none" {
+                let answer = json!({"stop_reason": "end_turn", "content": [
+                    {"type": "text", "text": "{\"action\":\"approve\"}"}]});
+                return Ok((answer, 0.5));
+            }
+            // Two parallel calls a round.
+            let uses: Vec<Value> = (0..2)
+                .map(|i| {
+                    json!({"type": "tool_use", "id": format!("t{round}{i}"),
+                    "name": "read_file", "input": {"path": "a.txt"}})
+                })
+                .collect();
+            Ok((json!({"stop_reason": "tool_use", "content": uses}), 0.1))
+        });
+        let (reply, cost) = result.unwrap();
+        assert_eq!(reply["stop_reason"], "end_turn");
+        assert_eq!(cost, 0.5);
+        assert_eq!(tools.calls.len(), review_tools::MAX_CALLS);
+        assert!(tools.calls.iter().all(|call| !call.error));
+        assert_eq!(sent.len(), review_tools::MAX_CALLS / 2 + 1);
+        assert_eq!(sent[0]["tools"].as_array().unwrap().len(), 3);
+        assert!(sent[0].get("tool_choice").is_none());
+        let last = sent.last().unwrap()["messages"].as_array().unwrap().clone();
+        assert_eq!(last.len(), 1 + 2 * (review_tools::MAX_CALLS / 2));
+        assert_eq!(last[2]["content"][0]["tool_use_id"], "t10");
+        assert_eq!(last[2]["content"][0]["is_error"], false);
+        // A model that ignores `tool_choice` none gets refusals, then fails.
+        let mut tools = RepoTools::new(&dir, &sha).unwrap();
+        let mut rounds = 0;
+        let stubborn = tool_loop(json!({"messages": []}), &mut tools, |_| {
+            rounds += 1;
+            Ok((
+                json!({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "id": "x", "name": "grep", "input": {"pattern": "x"}}]}),
+                0.0,
+            ))
+        });
+        assert!(stubborn.unwrap_err().contains("kept calling tools"));
+        assert_eq!(rounds, review_tools::MAX_CALLS + 3);
+        assert!(tools.calls.last().unwrap().error);
+        // A refusal of the proxy ends the loop.
+        let mut tools = RepoTools::new(&dir, &sha).unwrap();
+        let refused = tool_loop(json!({"messages": []}), &mut tools, |_| Err("cap".into()));
+        assert_eq!(refused.unwrap_err(), "cap");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

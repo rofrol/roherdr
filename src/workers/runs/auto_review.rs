@@ -45,6 +45,7 @@ use super::context_pack::{self, LogPaths};
 use super::decision::{self, Prompt, MAX_CALLS};
 use super::escalations;
 use super::review_diff;
+use super::review_tools::{self, DiffLines, RepoTools};
 use super::{
     event_of, git, is_gone, new_event, read_checks, Run, APPROVE, DECISIONS_FILE, MAX_ATTEMPTS,
     NO_DEADLINE, RETRY,
@@ -72,6 +73,13 @@ const APPLIED: &str = "run_auto_reviewed";
 const VERIFIED: &str = "run_review_verified";
 /// The findings of a call that the server dropped for lack of a citation.
 const DROPPED: &str = "run_review_findings_dropped";
+/// One tool call of the review (name, arguments, bytes).
+const TOOL_CALL: &str = "run_review_tool_call";
+/// Whether the review had repository tools, and why not when it had none.
+const TOOLS: &str = "run_review_tools";
+/// Per review call: how many kept findings came from a checklist line and
+/// how many were free, to see checklist anchoring.
+const ORIGINS: &str = "run_review_origins";
 const STOP_INTENT: &str = "run_review_stop_intent";
 /// The key a `review` event raised by an escalation carries: the decision
 /// that raised it. The server does not review such an event again.
@@ -79,7 +87,7 @@ pub(super) const ESCALATES: &str = "escalates";
 
 /// The output's JSON schema, which `claude -p --json-schema` enforces and
 /// [`parse_decision`] checks again.
-const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["approve","retry","escalate"]},"note":{"type":"string","description":"approve only: an optional note on the approval"},"cut_files_reviewed":{"type":"boolean","description":"approve only: false when the input's diff_cut_files is not empty (you did not see those files, and the server never applies an approval of a cut diff); true otherwise"},"review":{"type":"string","description":"retry only: what the next attempt must change; its worker gets this text"},"question":{"type":"string","description":"escalate only: the question for the user"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4,"description":"escalate only: the answers the user can choose from, the recommended one first"},"findings":{"type":"array","description":"the problems you found; the server drops a finding that lacks file, line or verified_by","items":{"type":"object","additionalProperties":false,"required":["file","line","verified_by","text"],"properties":{"file":{"type":"string","description":"the file the finding is about"},"line":{"type":"integer","description":"the line in that file, from the diff or the context pack"},"verified_by":{"type":"string","description":"what in the input shows it: the diff hunk, a check's evidence, a context pack entry"},"text":{"type":"string","description":"what is wrong"}}}}}}"#;
+const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["approve","retry","escalate"]},"note":{"type":"string","description":"approve only: an optional note on the approval"},"cut_files_reviewed":{"type":"boolean","description":"approve only: false when the input's diff_cut_files is not empty (you did not see those files, and the server never applies an approval of a cut diff); true otherwise"},"review":{"type":"string","description":"retry only: what the next attempt must change; its worker gets this text"},"question":{"type":"string","description":"escalate only: the question for the user"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4,"description":"escalate only: the answers the user can choose from, the recommended one first"},"findings":{"type":"array","description":"the problems you found; the server drops a finding that lacks file, line or verified_by, or whose file or line is not in the reviewed commit","items":{"type":"object","additionalProperties":false,"required":["file","line","verified_by","text","origin"],"properties":{"origin":{"type":"string","enum":["checklist","free"],"description":"checklist: the finding applies a line of review_checklist; free: you found it without one"},"checklist_line":{"type":"integer","description":"origin checklist only: the 1-based position of that line in review_checklist"},"file":{"type":"string","description":"the file the finding is about"},"line":{"type":"integer","description":"the line in that file, from the diff or the context pack"},"verified_by":{"type":"string","description":"what in the input shows it: the diff hunk, a check's evidence, a context pack entry"},"text":{"type":"string","description":"what is wrong"}}}}}}"#;
 
 const SYSTEM_PROMPT: &str = "You review one attempt of a headless coding worker that herdr's \
 TODO driver ran for a TODO item. The input is JSON: the item's text, the worker's task, the \
@@ -100,8 +108,14 @@ included: the review says concretely what to change, and the next attempt's work
 decision (scope, a product choice, a permission, a contradiction in the item), a check could \
 not run, or you cannot judge it.\n\
 When the input has `user_answer`, the user answered your earlier question: decide by it.\n\
-Every finding cites `file`, `line` and `verified_by` (what in the input shows it); the server \
-drops a finding without them, so name no problem you cannot show. An approval of a diff that \
+You may read the repository as it is in the reviewed commit with the tools read_file, grep \
+and git_log (a few calls only: the budget is small and, once spent, you must answer); use them \
+to check a doubt before you name it. Every finding cites `file`, `line` and `verified_by` \
+(what shows it: the diff hunk, a check's evidence, a context pack entry or a tool result) and \
+its `origin`: `checklist` with `checklist_line` (the 1-based position in review_checklist) when \
+it applies a checklist line, else `free`. The server checks that the file exists at the commit \
+and the line is in it, and drops a finding that fails or lacks them, so name no problem you \
+cannot show. An approval of a diff that \
 was cut (`diff_cut_files` not empty) is never applied: say `cut_files_reviewed: false` and retry \
 or escalate instead when the cut files matter.\n\
 Never approve an attempt without a commit or one whose verify failed.";
@@ -276,6 +290,77 @@ fn cite_findings(output: &Value) -> (Vec<Value>, Vec<Value>) {
         }
     }
     (kept, dropped)
+}
+
+/// The mechanical check of the cited findings: each one's `file` must be a
+/// regular file at `commit` and its `line` within it (for a file the diff
+/// changed, `in_diff` records whether the line is in the diff), and its
+/// `origin` is `checklist` with a `checklist_line` among the
+/// `checklist_len` lines, or `free`. A finding that fails is dropped with
+/// what failed, as an uncited one is. Without a commit nothing can be
+/// checked against it and only the origin is.
+fn check_findings(
+    repo: &Path,
+    commit: Option<&str>,
+    base: Option<&str>,
+    findings: Vec<Value>,
+    checklist_len: usize,
+) -> (Vec<Value>, Vec<Value>) {
+    let diff = match (base, commit) {
+        (Some(base), Some(commit)) => Some(DiffLines::read(repo, base, commit)),
+        _ => None,
+    };
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for mut finding in findings {
+        let mut failed: Vec<String> = Vec::new();
+        if finding["origin"].as_str() == Some("checklist") {
+            let line = finding["checklist_line"].as_u64().map(|line| line as usize);
+            if !line.is_some_and(|line| (1..=checklist_len).contains(&line)) {
+                failed.push(format!(
+                    "checklist_line (a line of 1 to {checklist_len} of the checklist)"
+                ));
+            }
+        } else {
+            finding["origin"] = json!("free");
+            if let Some(object) = finding.as_object_mut() {
+                object.remove("checklist_line");
+            }
+        }
+        if let Some(commit) = commit {
+            let file = finding["file"].as_str().unwrap_or_default().to_owned();
+            let line = finding["line"].as_u64().unwrap_or_default() as usize;
+            match review_tools::blob_at(repo, commit, &file) {
+                Err(error) => failed.push(format!("file at the commit ({error})")),
+                Ok(text) if line > text.lines().count() => failed.push(format!(
+                    "line within the file ({file} has {} lines)",
+                    text.lines().count()
+                )),
+                Ok(_) => {
+                    if let Some(in_diff) = diff.as_ref().and_then(|d| d.touches(&file, line)) {
+                        finding["in_diff"] = json!(in_diff);
+                    }
+                }
+            }
+        }
+        if failed.is_empty() {
+            kept.push(finding);
+        } else {
+            dropped.push(json!({"finding": finding, "missing": failed}));
+        }
+    }
+    (kept, dropped)
+}
+
+/// The counts of the kept findings by origin, with the checklist lines
+/// they cite.
+fn origin_counts(findings: &[Value]) -> Value {
+    let lines: Vec<&Value> = findings
+        .iter()
+        .filter(|finding| finding["origin"] == "checklist")
+        .map(|finding| &finding["checklist_line"])
+        .collect();
+    json!({"checklist": lines.len(), "free": findings.len() - lines.len(),
+           "checklist_lines": lines})
 }
 
 /// The decision as recorded and applied: the checked decision with the
@@ -588,15 +673,54 @@ impl WorkerSupervisor {
             decision::recorded_calls(&calls, ("event", &json!(seq)), &digest);
         let mut decided = answered.filter(|(output, _)| parse_decision(output).is_ok());
         let model = review_model();
+        let repo = Path::new(&run.info.repo);
+        let commit = event.commits.last().cloned();
+        let checklist_len = checklist_of(repo).0.len();
+        // One budget of tools for the whole review, however many calls it
+        // takes. Only a credit call has them: `claude -p` keeps its own
+        // stateless, tool-less call.
+        let mut tools = commit
+            .as_deref()
+            .filter(|_| run.finish.anthropic_credits)
+            .and_then(|commit| RepoTools::new(repo, commit));
+        if decided.is_none() {
+            let note = match &tools {
+                Some(_) => json!({"type": TOOLS, "event": seq, "available": true,
+                    "max_calls": review_tools::MAX_CALLS, "max_bytes": review_tools::MAX_BYTES}),
+                None => json!({"type": TOOLS, "event": seq, "available": false,
+                    "reason": "only a credit run's review call has repository tools"}),
+            };
+            self.write_note(&run.info.run_id, &note)?;
+        }
+        let mut recorded_tool_calls = 0;
         while decided.is_none() && errors.len() < MAX_CALLS {
             let call = errors.len() + 1;
-            let answered = self
-                .call_model_with(run, &PROMPT, &text, model.as_deref())
-                .and_then(|(output, model)| {
-                    let decision = parse_decision(&output)?;
-                    let (cited, dropped) = cite_findings(&output);
-                    Ok((checked_output(&decision, &output, cited), dropped, model))
-                });
+            let called =
+                self.call_model_tools(run, &PROMPT, &text, model.as_deref(), tools.as_mut());
+            if let Some(tools) = &tools {
+                for (index, tool_call) in tools.calls.iter().enumerate().skip(recorded_tool_calls) {
+                    let mut note = tool_call.to_json();
+                    note["type"] = json!(TOOL_CALL);
+                    note["event"] = json!(seq);
+                    note["call"] = json!(call);
+                    note["index"] = json!(index + 1);
+                    self.write_note(&run.info.run_id, &note)?;
+                }
+                recorded_tool_calls = tools.calls.len();
+            }
+            let answered = called.and_then(|(output, model)| {
+                let decision = parse_decision(&output)?;
+                let (cited, mut dropped) = cite_findings(&output);
+                let (cited, uncheckable) = check_findings(
+                    repo,
+                    commit.as_deref(),
+                    run.info.base.as_deref(),
+                    cited,
+                    checklist_len,
+                );
+                dropped.extend(uncheckable);
+                Ok((checked_output(&decision, &output, cited), dropped, model))
+            });
             let note = match &answered {
                 Ok((output, dropped, model)) => {
                     if !dropped.is_empty() {
@@ -605,6 +729,13 @@ impl WorkerSupervisor {
                         });
                         self.write_note(&run.info.run_id, &note)?;
                     }
+                    let kept = output["findings"].as_array().cloned().unwrap_or_default();
+                    let mut counts = origin_counts(&kept);
+                    counts["type"] = json!(ORIGINS);
+                    counts["event"] = json!(seq);
+                    counts["call"] = json!(call);
+                    counts["dropped"] = json!(dropped.len());
+                    self.write_note(&run.info.run_id, &counts)?;
                     json!({
                         "type": CALL, "event": seq, "call": call, "input_digest": digest,
                         "model": model, "output": output,
@@ -1087,6 +1218,83 @@ mod tests {
         assert!(parse_decision(&output).is_ok());
         let (kept, dropped) = cite_findings(&json!({"action": "approve"}));
         assert!(kept.is_empty() && dropped.is_empty());
+    }
+
+    #[test]
+    fn findings_are_checked_against_the_commit_and_tagged_by_origin() {
+        use super::super::review_tools::tests::repo_with;
+        let (dir, base) = repo_with(&[("src/a.rs", "1\n2\n3\n"), ("b.rs", "x\n")]);
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        std::fs::write(dir.join("src/a.rs"), "1\n2\nthree\nfour\n").unwrap();
+        run(&["commit", "-qam", "second"]);
+        let commit = run(&["rev-parse", "HEAD"]).trim().to_owned();
+        let f = |file: &str, line: u64, extra: Value| {
+            let mut finding = json!({"file": file, "line": line, "verified_by": "v", "text": "t"});
+            for (key, value) in extra.as_object().unwrap() {
+                finding[key] = value.clone();
+            }
+            finding
+        };
+        let findings = vec![
+            f(
+                "src/a.rs",
+                4,
+                json!({"origin": "checklist", "checklist_line": 2}),
+            ),
+            f("src/a.rs", 1, json!({"origin": "free"})),
+            f("b.rs", 1, json!({})),
+            f("src/a.rs", 5, json!({"origin": "free"})),
+            f("src/none.rs", 1, json!({"origin": "free"})),
+            f("link", 1, json!({"origin": "free"})),
+            f("../x", 1, json!({"origin": "free"})),
+            f(
+                "b.rs",
+                1,
+                json!({"origin": "checklist", "checklist_line": 9}),
+            ),
+            f("b.rs", 1, json!({"origin": "checklist"})),
+            f("b.rs", 1, json!({"origin": "free", "checklist_line": 1})),
+        ];
+        let (kept, dropped) = check_findings(&dir, Some(&commit), Some(&base), findings, 3);
+        assert_eq!(kept.len(), 4);
+        assert_eq!(kept[0]["in_diff"], true);
+        assert_eq!(kept[0]["origin"], "checklist");
+        assert_eq!(kept[1]["in_diff"], false);
+        assert!(kept[2].get("in_diff").is_none());
+        assert_eq!(kept[2]["origin"], "free");
+        assert!(kept[3].get("checklist_line").is_none());
+        let why: Vec<String> = dropped
+            .iter()
+            .map(|d| d["missing"][0].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(dropped.len(), 6);
+        assert!(
+            why[0].contains("line within the file (src/a.rs has 4 lines)"),
+            "{why:?}"
+        );
+        assert!(why[1].starts_with("file at the commit"), "{why:?}");
+        assert!(why[2].contains("symlink"), "{why:?}");
+        assert!(why[3].contains("inside the repository"), "{why:?}");
+        assert!(why[4].starts_with("checklist_line"), "{why:?}");
+        assert!(why[5].starts_with("checklist_line"), "{why:?}");
+        assert_eq!(
+            origin_counts(&kept),
+            json!({"checklist": 1, "free": 3, "checklist_lines": [2]})
+        );
+        // Without a commit only the origin is checked.
+        let (kept, _) = check_findings(&dir, None, None, vec![f("zz", 99, json!({}))], 3);
+        assert_eq!(kept[0]["origin"], "free");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
