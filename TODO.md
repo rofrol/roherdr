@@ -281,6 +281,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   injected pre-ack failures show the rollback works, with a user-visible
   notice and a switch to turn it off; one automatic handoff per tenure
   (no loops after a resume). The in-flight new-pane slice lands as is.
+  Attempt 1 of r-6s6uppz2 (2cd7b8ad3) reviewed 2026-10-12: the ready,
+  successor and ack path and ack validation hold; not landed because the
+  fence covers only some mutations, nothing refuses a superseded caller
+  (and a failed close of the old pane is ignored), a successor that never
+  produces an event freezes the tenure with no cancel, and the pending
+  handoff is memory-only. Attempt 2 builds on that commit with those
+  fixes, `coordinator handoff --abort`, abort on a Blocked successor, a
+  single-lock ack and a server-side absolute-path check. Kept as decided
+  by the coordinator: `ready` runs inside the turn (documented); manifest
+  and note copies stay after the handoff for audit.
 
 - [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
   2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
