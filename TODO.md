@@ -2172,6 +2172,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   baseline, no SSE4.2/POPCNT/AVX), verify with objdump that the binary has
   none of those instructions, copy it to the old Mac and attach with
   `herdr --remote <m1>`; the M1 needs Remote Login. Guix packaging later.
+  Packaging decided 2026-10-12 (the user: "why not a Guix package, so the
+  dependencies are handled? ask the models"; round of 2026-10-12, sol,
+  MiMo, DeepSeek): a static musl binary has no runtime dependencies; the
+  hard dependencies are build-time (Rust, ~310 crates, Zig, SQLite's C).
+  Order: (1) the static baseline-CPU musl binary now, tested on the
+  laptop; (2) a Guix package in the owner's app channel wrapping the
+  hash-pinned release artifact (copy-build-system): Guix profiles,
+  rollbacks and `guix package -u`, one hash bump per release (MiMo,
+  DeepSeek); (3) later, if source provenance matters more than release
+  speed, a source build with a vendored crate tarball, Guix's zig 0.16 and
+  rust (first test whether herdr builds with Guix's rust 1.93: the 1.96.1
+  pin may not be a minimum), substitutes from the owner's CI so the 2-core
+  laptop never compiles (sol). Rejected: every crate as its own Guix
+  package (weeks of churn for a fast-moving fork).
 
 ## Proposed
 
