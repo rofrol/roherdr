@@ -1369,3 +1369,18 @@ startup/handoff, with fixtures and a supervisor self-test; `prompt_turns`
 carried across a live handoff. The design flaw (round
 20261012-010450-e610): predicates fired only on parsed facts, so missing
 evidence meant silence; a requested predicate had been dropped.
+
+## Supervision delivers its findings: it wakes the owning coordinator
+
+Supervision only recorded findings and notified the user once; nobody woke
+the owning coordinator (audit 2026-10-12: 7 findings unseen for hours).
+Now (fd31107c): a per-finding-state notice queue typed into the owning
+coordinator through `agent.prompt` at its turn boundary (fixed template,
+finding text quoted as data), acknowledged by id with `supervise.ack`,
+one user alert when the next turn ends unacknowledged; the herdr
+coordinator gets a digest and the unowned queue; ownerless findings go to
+the user at once; the `?` entry shows each notice's state (queued, not
+delivered / delivered, not acknowledged / acknowledged); open assignments
+without a registered handle are `unaccounted_assignment`. No timers.
+Decided with sol, MiMo, DeepSeek (round 20261012-012938-bf23) and the
+user (d-akvsmeyw: before the grants).
