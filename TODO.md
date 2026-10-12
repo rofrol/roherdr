@@ -39,6 +39,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      its evidence handle to the fixtures for a missing fact or unmodeled
      rule; it never overrides a finding. The herdr coordinator stops judging
      findings one by one.
+  Clarified 2026-10-12 (the user: "deterministic correction, meaning
+  what? a model decides again? ask the models"; sol, MiMo, DeepSeek
+  agreeing): at runtime no model decides; the fix step is model-authored
+  correction with deterministic acceptance checks, so bound it: (6) the
+  default fix is data, not code: a counter-evidence entry or an event
+  binding from a fixed, typed vocabulary in the predicate's rule table,
+  verified by replay, no code written; (7) a code change to a predicate is
+  the exception, for what the vocabulary cannot express, and needs the
+  owner's approval of the diff; (8) acceptance replays the retracted
+  fixtures, the known-true cases, a hold-out set the fixer never sees, and
+  a non-vacuity check (known-true coverage must not drop); (9) a predicate
+  that keeps needing code changes is retired or redesigned by the owner.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
