@@ -2903,6 +2903,40 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the list has been reviewed; when something is added or changed it has to
   be reviewed again. And the coordinator does one task and disappears? ask
   the models").
+  Round 20261012-202716-dbce (sol, MiMo, DeepSeek agreeing; decided by
+  the coordinator where they split):
+  - "Reviewed" means checked for current applicability, never the user's
+    approval; it is a receipt per item (by id), not a flag on the file or
+    a section (one edit would invalidate everything). The receipt records
+    the item's canonical text hash, the linked decision ids with their
+    revisions, the dependency items' hashes, the base commit examined,
+    the reviewer, the typed verdict (`ready`, `needs_decision`,
+    `obsolete`) with reasons and cited evidence; append-only.
+  - Invalidation is lazy: an edit of the item, a linked decision or a
+    dependency invalidates its receipt at once; commits on master do not,
+    instead the queue checks at dispatch whether commits since the base
+    touch the item's paths and asks for a bounded re-review only then
+    (path overlap is a signal, not proof: misses callers and config).
+  - Review: deterministic checks first (id, structure, links resolve,
+    approval provenance, receipt fresh), then one bounded model call
+    without edit rights, in a context other than the item's drafter. A
+    model that changes an item's substance needs the user's approval
+    again. Hand edits outside `todo_edit.py` are detected by hash and
+    re-reviewed; writes carry an expected revision (CAS).
+  - Queue mode starts only user-approved items with a fresh receipt,
+    pinned to the reviewed revision and commit.
+  - A review that ends without a typed verdict is a failed state: the
+    item is blocked with a finding, never approved by default. Dismissed:
+    review deadlines and timeouts (sol, MiMo, DeepSeek) are timers.
+  - "One task and disappears": a fresh agent per item that picks and
+    drives the next item is the per-item coordinator rejected on
+    2026-10-10; queue mode's typed calls (draft, review, answer) plus the
+    short-lived conversation session [t-botcpa2j] are that idea. Findings
+    persist in the receipt and DECISIONS.md so item N's decisions reach
+    item N+1. MiMo: the receipt does not cut the 300-700k a day; the
+    queue-mode trial does; do not build it instead of the trial.
+  - Order (coordinator): the receipt goes into queue mode's dispatch
+    after the trial starts, not before it.
 
 ## Proposed
 
