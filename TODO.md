@@ -128,6 +128,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (claude-sonnet-5-5 or claude-opus-5-5); an automatic cycle rollover on the
   8th; the fallback to this agent when the subscription gate closes; the
   proxy surviving a server handoff.
+  Slice 3 landed 2026-10-12 (fd50679a, a pi worker): `[workers]
+  anthropic_api_model` (default claude-sonnet-5-5) with the allowlist
+  following it; the run journal names the model; every proxy refusal names
+  its reason with distinct statuses, logged without key, token or bodies;
+  pi's request routes and headers allowed. The capture of installed pi's
+  exact request shape is the ignored test
+  `installed_pi_anthropic_messages_request_shape_offline` (loopback is
+  denied in the sandbox): the coordinator runs it outside, then one real
+  credit run. The first real credit run (before this) ended with a bare 403.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
