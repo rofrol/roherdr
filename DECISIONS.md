@@ -1426,3 +1426,13 @@ the ignored `.local/`), and `scripts/private_details_check.py` refuses a
 `todo run` landing or push whose outgoing commits add lines matching the
 untracked `.local/private-patterns.txt`, reporting only file and line;
 an optional pre-push hook. Commit messages are not scanned yet.
+
+## The usage gate tells "unknown" from "high", and a refused run waits
+
+One DNS timeout in a usage read closed the gate like real high usage
+(rormpc, 2026-10-12; the user chose a separate state, d-a4xri5ph). Now
+(ad8d7288, by a pi worker): open/unknown/high per provider, a failed read
+never clears a high latch, readings kept as history; a refused `todo run`
+becomes a durable, idempotent, cancelable pending start that herdr
+dispatches once when the gate opens (re-checked at dispatch); the sidebar
+and `?` say why the queue is paused.

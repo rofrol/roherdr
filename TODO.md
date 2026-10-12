@@ -34,26 +34,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tab; a handoff between pi's last message and its turn end loses the result
   text (to fix with the verdict recording of the Stop path).
 
-- [ ] The usage gate tells "unknown" from "high", and a refused run waits [t-mzj67zon]
-  for the gate instead of stopping the queue (the user via the rormpc
-  coordinator, 2026-10-12: one DNS timeout in the usage read closed the
-  gate until a read showed every window below 80%, at 86% usage, so only
-  `--ignore-usage` got through; round of 2026-10-12, sol, MiMo, DeepSeek
-  agreeing; d-a4xri5ph, the user: "yes, a separate state"). Decided:
-  1. Three gate states: open, unknown (a failed read: refuses; the first
-     successful read below 90% opens it) and high (a read >=90%: refuses
-     until a read shows every window below 80%); a failed read never
-     clears a high latch; no cached readings authorize a start.
-  2. A refused `todo run` registers one pending start per item (durable,
-     idempotent, cancelable) and returns its id; herdr re-evaluates the
-     gate on its own periodic usage measurement (a legitimate periodic
-     timer) and on any successful read, re-checks at dispatch and starts
-     the run exactly once; the coordinator waits with `herdr todo wait`.
-  3. The sidebar and a `?` entry say why the queue is paused: "usage
-     read failed (DNS: <error>), waiting for a successful measurement" or
-     "Claude usage 91%, resumes below 80%", with the last good reading
-     shown as history.
-
 - [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
   them in a usage widget (the user, 2026-10-12: "so we do not lose these
   credits", "and show it in a usage widget; spend the $200 first?"; he
