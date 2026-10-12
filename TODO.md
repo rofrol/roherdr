@@ -58,6 +58,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `../herdr-worktrees/consult-rule10`, base 8a946bbbb.
   Fix a landed 2026-10-12: 9c8985ea0 (worker w277, verified), consult rounds
   now prepend `plugins/consult/rule10-preamble.md`.
+  Substep b progress 2026-10-13: verified worker w297's global-rule text
+  and landed it in the dotfiles (08890dc). The pi rule file is a symlink
+  to the Claude rule file; byte equality and diff whitespace checks pass.
+  Canonical Rule 10 is handled next in its own isolated repository worker.
+  Hook code and regression cases remain unapplied pending full-patch
+  approval; the text-only change does not broaden permissions.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
