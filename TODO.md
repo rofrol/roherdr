@@ -2211,6 +2211,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   run's base commit (what the coordinator approved), and refuse a run
   whose commit changes `.herdr/checks.toml` unless the item says so.
 
+- [ ] Two tests fail only under the full suite's load (found by the [t-rlvhvswr]
+  quiet-supervision worker, 2026-10-12): plugins/job
+  `WaitAgentTests.test_a_gone_agent_ends_the_wait_without_a_retry`
+  recorded sleeps [0.001 ... 0.05] instead of none (passes 5/5 alone), and
+  `session_restore::server_restores_while_git_metadata_is_blocked` (a
+  5-second read timeout in the test). Reproduce each with the stress loop
+  in AGENTS.md and fix the asynchronous cause (Rule 10), not the timeout.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
