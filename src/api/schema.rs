@@ -164,6 +164,9 @@ pub enum Method {
     /// Wait-capable start; a refused usage gate returns a durable pending run id.
     #[serde(rename = "todo.run_wait")]
     TodoRunWait(TodoRunParams),
+    /// Credit-backed pi run, independent of the frozen run methods.
+    #[serde(rename = "todo.run_anthropic")]
+    TodoRunAnthropic(TodoRunParams),
     /// Cancel a start that still waits for usage, idempotently.
     #[serde(rename = "todo.cancel_pending")]
     TodoCancelPending(TodoCancelPendingParams),

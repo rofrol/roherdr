@@ -610,6 +610,8 @@ impl WorkerSupervisor {
             owner_lock,
             pi: is_pi.then(Default::default),
             pi_extension: is_pi.then(|| pi_extension_path(&self.shared.dir, &worker_id)),
+            #[cfg(unix)]
+            credit_proxy: None,
         };
         {
             let mut registry = lock(&self.shared.registry);

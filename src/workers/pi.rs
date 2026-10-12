@@ -45,6 +45,19 @@ use serde_json::{json, Value};
 /// The program a pi worker runs.
 pub(super) const PROGRAM: &str = "pi";
 
+pub(super) const ANTHROPIC_MODEL: &str = "herdr-anthropic/claude-sonnet-4-5-20250929";
+
+/// pi 1.1's custom provider, isolated from the user's auth.json. Only the
+/// opaque grant is interpolated; neither credential is written to this file.
+#[cfg(unix)]
+pub(super) fn anthropic_models(address: &str) -> Value {
+    json!({"providers": {"herdr-anthropic": {
+        "baseUrl": address, "api": "anthropic-messages",
+        "apiKey": "${HERDR_ANTHROPIC_PROXY_TOKEN}",
+        "models": [{"id": "claude-sonnet-4-5-20250929", "contextWindow": 200000, "maxTokens": 8192}]
+    }}})
+}
+
 /// The model a pi worker runs when none is given: GPT-6.1 Sol through the
 /// `openai-codex` provider, on the owner's ChatGPT plan.
 pub(super) const DEFAULT_MODEL: &str = "openai-codex/gpt-6.1-sol";
@@ -575,6 +588,21 @@ mod tests {
         assert!(refused["result"].as_str().unwrap().contains("No API key"));
         let accepted = json!({"type": "response", "command": "prompt", "success": true});
         assert_eq!(translator.output(&accepted), Out::Skip);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anthropic_provider_file_contains_only_proxy_address_and_environment_reference() {
+        let config = anthropic_models("http://127.0.0.1:12345");
+        let provider = &config["providers"]["herdr-anthropic"];
+        assert_eq!(provider["api"], "anthropic-messages");
+        assert_eq!(provider["baseUrl"], "http://127.0.0.1:12345");
+        assert_eq!(provider["apiKey"], "${HERDR_ANTHROPIC_PROXY_TOKEN}");
+        assert_eq!(provider["models"][0]["id"], "claude-sonnet-4-5-20250929");
+        assert!(!config.to_string().contains("sk-ant-"));
+        assert!(
+            args(ANTHROPIC_MODEL, "extension", "contract").contains(&ANTHROPIC_MODEL.to_owned())
+        );
     }
 
     #[test]

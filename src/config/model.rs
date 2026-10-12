@@ -935,9 +935,12 @@ pub struct WorkersConfig {
     pub folder_slots_dir: String,
     /// Private credential file, read by the server only. Empty disables API workers.
     pub anthropic_api_key_file: String,
-    /// Lifetime local spend ceiling in USD; zero explicitly disables spending.
+    /// Local spend ceiling per confirmed credit cycle; zero disables spending.
     #[serde(default = "anthropic_default_cap")]
     pub anthropic_api_cap_usd: f64,
+    /// Operator-confirmed billing cycle. Never reset accounting from a timer.
+    #[serde(default)]
+    pub anthropic_api_cycle: String,
 }
 
 fn anthropic_default_cap() -> f64 {
@@ -951,6 +954,7 @@ impl Default for WorkersConfig {
             folder_slots_dir: String::new(),
             anthropic_api_key_file: String::new(),
             anthropic_api_cap_usd: anthropic_default_cap(),
+            anthropic_api_cycle: String::new(),
         }
     }
 }

@@ -39,6 +39,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerDenyAndStop(_)
             | Method::TodoRun(_)
             | Method::TodoRunWait(_)
+            | Method::TodoRunAnthropic(_)
             | Method::TodoCancelPending(_)
             | Method::TodoDraftRun(_)
             | Method::TodoResume(_)
@@ -221,6 +222,11 @@ fn handle_immediate(
         Method::TodoRun(params) => {
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_run(params)?,
+            })
+        }
+        Method::TodoRunAnthropic(params) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_run_anthropic(params)?,
             })
         }
         Method::TodoRunWait(params) => {

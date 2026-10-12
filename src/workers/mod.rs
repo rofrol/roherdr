@@ -175,6 +175,14 @@ const ENV_FILE_GLOBS: &[&str] = &["**/.env", "**/.env.*", "**/.envrc"];
 pub(crate) fn anthropic_key_path(
     config: &crate::config::WorkersConfig,
 ) -> std::io::Result<Option<PathBuf>> {
+    if config.anthropic_api_cycle.len() > 64
+        || !config
+            .anthropic_api_cycle
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(std::io::Error::other("invalid Anthropic API credit cycle"));
+    }
     if !config.anthropic_api_cap_usd.is_finite() || config.anthropic_api_cap_usd < 0.0 {
         return Err(std::io::Error::other("invalid Anthropic API spending cap"));
     }

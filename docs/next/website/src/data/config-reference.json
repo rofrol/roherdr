@@ -1687,13 +1687,19 @@
           "key": "workers.anthropic_api_key_file",
           "type": "string",
           "default": "\"\"",
-          "description": "Server-only Anthropic credential file for the internal API-worker transport. Empty disables API access. Use an absolute path or ~/; on Unix the file must be owned by the server user with mode 0600. Worker shell and file policies deny the resolved path. This infrastructure does not yet switch existing workers to paid API access."
+          "description": "Server-only Anthropic credential file for the internal API-worker transport. Empty disables API access. Use an absolute path or ~/; on Unix the file must be owned by the server user with mode 0600. Worker shell and file policies deny the resolved path. Explicit `todo run --agent pi-anthropic` workers use this key through herdr's authenticated loopback proxy; existing subscription workers are unchanged."
         },
         {
           "key": "workers.anthropic_api_cap_usd",
           "type": "number",
           "default": "200.0",
-          "description": "Persistent local Anthropic API spend ceiling in USD. Zero disables spending. Admission reserves a conservative request upper bound; unavailable or incomplete accounting refuses more spend across restarts. No automatic billing-cycle reset. Keep an independent Console workspace spend limit."
+          "description": "Persistent local Anthropic API spend ceiling in USD per confirmed credit cycle. Zero disables spending. Admission reserves a conservative request upper bound; unavailable or incomplete accounting refuses more spend across restarts. No automatic billing-cycle reset. Keep an independent Console workspace spend limit."
+        },
+        {
+          "key": "workers.anthropic_api_cycle",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Explicit Console-confirmed credit cycle identifier (1–64 ASCII letters, digits or hyphens). Empty refuses paid worker starts. Each identifier selects its own durable ledger; reuse retains spend. Change only after confirming a new credit allocation, with no active credit workers. No timer resets accounting."
         },
         {
           "key": "workers.folder_slots_dir",

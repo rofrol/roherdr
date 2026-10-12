@@ -30,7 +30,7 @@ impl Fixture {
         let body =
             serde_json::json!({"model": MODEL,"max_tokens":100,"messages":[],"stream":stream})
                 .to_string();
-        format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nx-api-key: untrusted\r\nHost: evil.invalid\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
+        format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nX-Untrusted: untrusted\r\nHost: evil.invalid\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
     }
     fn response() -> Vec<u8> {
         serde_json::json!({"model":MODEL,"usage":{"input_tokens":10,"output_tokens":20,
@@ -44,6 +44,64 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+#[test]
+fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
+    let mut f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    // Leave the fixture's cleanup alive while the listener owns this connection.
+    let config = crate::config::WorkersConfig {
+        anthropic_api_key_file: f.dir.join("key").display().to_string(),
+        anthropic_api_cap_usd: 200.0,
+        ..Default::default()
+    };
+    let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
+    let listener = LoopbackProxy::start_with(
+        proxy,
+        ledger.clone(),
+        "todo-run",
+        "todo-item",
+        |key, _, out| {
+            assert_eq!(key, "sk-ant-fake-offline-key");
+            out.write_all(&Fixture::response())
+        },
+    )
+    .unwrap();
+    let exchange = |request: Vec<u8>| {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", listener.port)).unwrap();
+        stream.write_all(&request).unwrap();
+        let mut output = String::new();
+        stream.read_to_string(&mut output).unwrap();
+        output
+    };
+    let request = String::from_utf8(Fixture::request(&listener.token, false))
+        .unwrap()
+        .replace(
+            &format!("Authorization: Bearer {}", listener.token),
+            &format!("x-api-key: {}", listener.token),
+        );
+    assert!(exchange(request.into_bytes()).starts_with("HTTP/1.1 200 OK"));
+    assert!(exchange(Fixture::request("not-a-grant", false)).starts_with("HTTP/1.1 403"));
+    let (cost, pending) = AnthropicProxy::accounting(&ledger, Some("todo-run")).unwrap();
+    assert!((cost - 0.00034785).abs() < 1e-12);
+    assert_eq!(pending, 0);
+    f.proxy.cap = cost;
+    assert!(f.proxy.available(0.0).is_err());
+    assert!(f.proxy.register("second", "item").is_err());
+    drop(listener);
+}
+
+#[test]
+fn cycle_requires_explicit_operator_identifier_and_cannot_escape_state_directory() {
+    let mut config = crate::config::WorkersConfig::default();
+    assert!(ledger_path(&config).is_err());
+    config.anthropic_api_cycle = "../bad".into();
+    assert!(ledger_path(&config).is_err());
+    config.anthropic_api_cycle = "cycle-2026-11".into();
+    assert!(ledger_path(&config)
+        .unwrap()
+        .ends_with("anthropic-credits-cycle-2026-11.sqlite"));
 }
 
 #[test]

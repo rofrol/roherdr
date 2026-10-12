@@ -14,7 +14,7 @@ use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
-                 [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi]
+                 [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi|pi-anthropic]
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
@@ -31,6 +31,8 @@ const USAGE: &str = "usage:
       task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
+      With --agent pi-anthropic the run spends configured Anthropic API credits
+      through herdr's authenticated loopback proxy (todo.run_anthropic).
       With --agent pi the run's workers run headless pi (pi --mode rpc) with
       openai-codex/gpt-6.1-sol on your ChatGPT plan instead of Claude, in the
       same folder slot, contract, checks and verify; herdr's own pi extension
@@ -572,7 +574,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
             let (agent, rest) = take_string_option(&rest, "--agent")?;
-            let agent = agent.as_deref().map(parse_agent).transpose()?;
+            let credits = agent.as_deref() == Some("pi-anthropic");
+            let agent = if credits {
+                Some(WorkerAgent::Pi)
+            } else {
+                agent.as_deref().map(parse_agent).transpose()?
+            };
             let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -592,7 +599,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             };
             let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
             let pane = super::target::caller_pane_id();
-            Method::TodoRunWait(TodoRunParams {
+            let params = TodoRunParams {
                 cwd: std::path::absolute(&cwd)
                     .map_err(|error| error.to_string())?
                     .display()
@@ -610,7 +617,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 agent,
                 auto_review,
                 auto_answer,
-            })
+            };
+            if credits {
+                Method::TodoRunAnthropic(params)
+            } else {
+                Method::TodoRunWait(params)
+            }
         }
         "cancel-pending" => {
             Method::TodoCancelPending(crate::api::schema::TodoCancelPendingParams {
@@ -977,6 +989,31 @@ mod tests {
     }
 
     #[test]
+    fn credit_agent_selects_a_new_method_without_changing_the_pi_wire_value() {
+        let task = concat!(env!("CARGO_MANIFEST_DIR"), "/src/workers/pi.rs");
+        let Ok(Some(Method::TodoRunAnthropic(params))) = parse(&args(&[
+            "run",
+            "t-example",
+            "--agent",
+            "pi-anthropic",
+            "--task",
+            task,
+            "--message",
+            "feat: test",
+            "--paths",
+            "src/**",
+            "--check",
+            "tests",
+        ])) else {
+            panic!("credit worker command did not parse");
+        };
+        assert_eq!(params.agent, Some(WorkerAgent::Pi));
+        let wire = serde_json::to_value(Method::TodoRunAnthropic(params)).unwrap();
+        assert_eq!(wire["method"], "todo.run_anthropic");
+        assert_eq!(wire["params"]["agent"], "pi");
+    }
+
+    #[test]
     fn run_draft_takes_the_item_only() {
         let Ok(Some(Method::TodoDraftRun(params))) =
             parse(&args(&["run", "t-abcd2345", "--draft", "--auto-review"]))
@@ -1072,6 +1109,13 @@ mod tests {
         };
         assert_eq!(params.agent, Some(WorkerAgent::Pi));
         assert_eq!(params.paths, ["src/**"]);
+        let Ok(Some(Method::TodoRunAnthropic(params))) = with_agent("pi-anthropic") else {
+            panic!("credit worker did not select its independent method");
+        };
+        assert_eq!(params.agent, Some(WorkerAgent::Pi));
+        let wire = serde_json::to_value(Method::TodoRunAnthropic(params)).unwrap();
+        assert_eq!(wire["method"], "todo.run_anthropic");
+
         let Ok(Some(Method::TodoRunWait(params))) = with_agent("claude") else {
             panic!("run --agent claude did not parse");
         };

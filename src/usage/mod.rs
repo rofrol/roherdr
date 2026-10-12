@@ -521,10 +521,85 @@ fn merge_result(
     }
 }
 
+#[cfg(unix)]
+fn anthropic_credit_usage(config: &crate::config::WorkersConfig) -> ProviderUsage {
+    use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
+    credit_report(
+        config,
+        ledger_path(config).and_then(|path| AnthropicProxy::accounting(&path, None)),
+    )
+}
+
+#[cfg(unix)]
+fn credit_report(
+    config: &crate::config::WorkersConfig,
+    accounting: std::io::Result<(f64, i64)>,
+) -> ProviderUsage {
+    let mut usage = ProviderUsage::pending("anthropic_api", "Anthropic · API credits");
+    match accounting {
+        Ok((spent, pending)) => {
+            usage.status = if pending == 0 {
+                ProviderUsageStatus::Ok
+            } else {
+                ProviderUsageStatus::Error
+            };
+            usage.spend.push(crate::api::schema::UsageSpend {
+                currency: "USD".into(),
+                amount: format!("{spent:.8}"),
+                since: 0,
+                limit: Some(format!("{:.2}", config.anthropic_api_cap_usd)),
+                limit_enforcing: pending != 0 || spent >= config.anthropic_api_cap_usd,
+            });
+            usage.notes.push(format!(
+                "Credit cycle {}; Console is the billing authority",
+                config.anthropic_api_cycle
+            ));
+            if pending != 0 {
+                usage.message = Some("Incomplete accounting: spending is closed".into());
+            }
+        }
+        Err(_) => {
+            usage.status = ProviderUsageStatus::Error;
+            usage.message = Some("Credit accounting unavailable: spending is closed".into());
+        }
+    }
+    usage
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn credit_widget_uses_accounted_spend_and_cap_and_reports_uncertainty() {
+    let config = crate::config::WorkersConfig {
+        anthropic_api_cap_usd: 200.0,
+        anthropic_api_cycle: "test-cycle".into(),
+        ..Default::default()
+    };
+    let report = credit_report(&config, Ok((12.5, 0)));
+    assert_eq!(report.provider, "anthropic_api");
+    assert_eq!(report.spend[0].amount, "12.50000000");
+    assert_eq!(report.spend[0].limit.as_deref(), Some("200.00"));
+    assert!(!report.spend[0].limit_enforcing);
+    assert!(credit_report(&config, Ok((200.0, 0))).spend[0].limit_enforcing);
+    assert_eq!(
+        credit_report(&config, Ok((1.0, 1))).status,
+        ProviderUsageStatus::Error
+    );
+    let unknown = credit_report(&config, Err(std::io::Error::other("offline")));
+    assert_eq!(unknown.status, ProviderUsageStatus::Error);
+    assert!(unknown.spend.is_empty());
+}
+
 /// The report as `usage.read` returns it: each window stamped with when it
 /// was observed and whether that value is still current at `now`.
 pub(crate) fn with_freshness(report: &UsageReport, config: &UsageConfig, now: u64) -> UsageReport {
     let mut report = report.clone();
+    #[cfg(unix)]
+    if let Ok(loaded) = crate::config::load_live_config() {
+        let config = loaded.config.workers;
+        if !config.anthropic_api_key_file.is_empty() {
+            report.providers.push(anthropic_credit_usage(&config));
+        }
+    }
     for usage in &mut report.providers {
         let stale_after = ALL_PROVIDERS
             .into_iter()

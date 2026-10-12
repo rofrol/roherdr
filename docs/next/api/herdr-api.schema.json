@@ -8551,6 +8551,23 @@
           "type": "object"
         },
         {
+          "description": "Credit-backed pi run, independent of the frozen run methods.",
+          "properties": {
+            "method": {
+              "const": "todo.run_anthropic",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Cancel a start that still waits for usage, idempotently.",
           "properties": {
             "method": {

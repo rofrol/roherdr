@@ -626,7 +626,7 @@ pub(super) fn account_text(account: &UsageAccount) -> String {
 
 pub(super) fn provider_code(provider: &ProviderUsage) -> String {
     match provider.provider.as_str() {
-        "claude" => "AN".into(),
+        "claude" | "anthropic_api" => "AN".into(),
         // Codes name vendors: Codex limits and API spend are both OpenAI.
         "codex" | "openai_api" => "OA".into(),
         "gemini" => "GO".into(),
@@ -647,6 +647,7 @@ pub(super) fn provider_code(provider: &ProviderUsage) -> String {
 pub(super) fn provider_name(provider: &ProviderUsage) -> String {
     match provider.provider.as_str() {
         "claude" => "Anthropic".into(),
+        "anthropic_api" => "Anthropic · API credits".into(),
         "codex" => "OpenAI · Codex".into(),
         "openai_api" => "OpenAI · API spend".into(),
         "gemini" => "Google".into(),

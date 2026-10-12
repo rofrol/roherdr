@@ -677,7 +677,7 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
         };
-        match self.create_run_with_wait(params, true, Some(&start), true) {
+        match self.create_run_with_wait(params, true, Some(&start), true, false) {
             Ok(run) => Ok(QueueStep::Started(run.run_id)),
             // Another start claimed the token, or a run started meanwhile:
             // its end is the next event.

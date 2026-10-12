@@ -1,5 +1,5 @@
-//! Slice-one API transport. The next worker slice owns start/register/revoke;
-//! no existing subscription worker is silently switched to paid API access.
+//! Capped API transport for explicit credit-backed pi workers. Existing
+//! subscription workers are never silently switched to paid API access.
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -95,7 +95,7 @@ impl AnthropicProxy {
         self.grants.clear();
     }
 
-    fn available(&self, reserve: f64) -> io::Result<()> {
+    pub(crate) fn available(&self, reserve: f64) -> io::Result<()> {
         let (cost, pending): (f64, i64) = self
             .ledger
             .query_row(
@@ -157,6 +157,16 @@ impl AnthropicProxy {
         Ok(())
     }
 
+    /// Read durable accounting without loading the upstream key.
+    pub(crate) fn accounting(path: &Path, run: Option<&str>) -> io::Result<(f64, i64)> {
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| refused())?;
+        db.query_row(
+            "SELECT COALESCE(SUM(cost),0),COALESCE(SUM(pending),0) FROM anthropic_requests WHERE (?1 IS NULL OR run=?1)",
+            params![run], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|_| refused())
+    }
+
     /// Socket parent must already be user-only; never replace an existing path.
     /// Callers own the accept loop's lifetime. Revocation and kill are synchronous.
     pub(crate) fn listen(proxy: Arc<Mutex<Self>>, path: &Path) -> io::Result<()> {
@@ -185,6 +195,101 @@ impl AnthropicProxy {
         }
         Ok(())
     }
+}
+
+/// A run-scoped HTTP listener. Dropping it revokes the grant and wakes accept;
+/// there is no polling thread or timeout-driven lifetime.
+pub(crate) struct LoopbackProxy {
+    pub(crate) address: String,
+    pub(crate) token: String,
+    pub(crate) ledger: std::path::PathBuf,
+    pub(crate) run: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    port: u16,
+}
+
+impl LoopbackProxy {
+    pub(crate) fn start(
+        proxy: AnthropicProxy,
+        ledger: std::path::PathBuf,
+        run: &str,
+        item: &str,
+    ) -> io::Result<Self> {
+        Self::start_with(proxy, ledger, run, item, curl)
+    }
+
+    fn start_with(
+        mut proxy: AnthropicProxy,
+        ledger: std::path::PathBuf,
+        run: &str,
+        item: &str,
+        upstream: fn(&str, &[u8], &mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let token = proxy.register(run, item)?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = crate::thread_spawn::spawn_named("herdr-anthropic-proxy", move || {
+            for client in listener.incoming() {
+                if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut client) = client else {
+                    break;
+                };
+                let Ok(input) = client.try_clone() else {
+                    continue;
+                };
+                let mut output = TrackedWriter {
+                    inner: &mut client,
+                    wrote: false,
+                };
+                if proxy.serve(input, &mut output, upstream).is_err() && !output.wrote {
+                    let _ = output.write_all(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+                let _ = client.shutdown(std::net::Shutdown::Both);
+            }
+            proxy.kill();
+        })?;
+        Ok(Self {
+            address: format!("http://127.0.0.1:{port}"),
+            token,
+            ledger,
+            run: run.to_owned(),
+            stop,
+            thread: Some(thread),
+            port,
+        })
+    }
+}
+
+impl Drop for LoopbackProxy {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub(crate) fn ledger_path(config: &crate::config::WorkersConfig) -> io::Result<std::path::PathBuf> {
+    let cycle = &config.anthropic_api_cycle;
+    if cycle.is_empty()
+        || cycle.len() > 64
+        || !cycle
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(io::Error::other(
+            "configure anthropic_api_cycle for the confirmed credit cycle",
+        ));
+    }
+    Ok(crate::config::state_dir().join(format!("anthropic-credits-{cycle}.sqlite")))
 }
 
 struct TrackedWriter<W> {
@@ -238,17 +343,19 @@ fn request(input: impl Read) -> io::Result<(String, Vec<u8>, bool, f64)> {
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':').ok_or_else(refused)?;
         match name.to_ascii_lowercase().as_str() {
-            "authorization" => {
+            "x-api-key" | "authorization" => {
                 if token.is_some() {
                     return Err(refused());
                 }
-                token = Some(
+                token = Some(if name.eq_ignore_ascii_case("x-api-key") {
+                    value.trim().to_owned()
+                } else {
                     value
                         .trim()
                         .strip_prefix("Bearer ")
                         .ok_or_else(refused)?
-                        .to_owned(),
-                );
+                        .to_owned()
+                });
             }
             "content-length" => {
                 if length.is_some() {

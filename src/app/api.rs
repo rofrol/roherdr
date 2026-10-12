@@ -1426,6 +1426,7 @@ impl App {
             | Method::WorkerVerify(_)
             | Method::TodoRun(_)
             | Method::TodoRunWait(_)
+            | Method::TodoRunAnthropic(_)
             | Method::TodoCancelPending(_)
             | Method::TodoDraftRun(_)
             | Method::TodoResume(_)

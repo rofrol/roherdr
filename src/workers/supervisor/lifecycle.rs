@@ -158,6 +158,8 @@ impl WorkerSupervisor {
         let settings = settings.to_string();
 
         let mut pi_extension = None;
+        #[cfg(unix)]
+        let mut credit_proxy = None;
         let mut args: Vec<String> = [
             "-p",
             "--input-format",
@@ -211,15 +213,19 @@ impl WorkerSupervisor {
         let enabled = |name: &str| {
             std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
         };
-        let bedrock = enabled("CLAUDE_CODE_USE_BEDROCK");
-        let vertex = enabled("CLAUDE_CODE_USE_VERTEX");
+        let paid_pi = agent == WorkerAgent::Pi && model.as_deref() == Some(pi::ANTHROPIC_MODEL);
+        let bedrock = !paid_pi && enabled("CLAUDE_CODE_USE_BEDROCK");
+        let vertex = !paid_pi && enabled("CLAUDE_CODE_USE_VERTEX");
         let mut removed_env = Vec::new();
         let mut env_removed = Vec::new();
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
             if name.starts_with("HERDR_") {
                 env_removed.push(key);
-            } else if is_credential_env(&name, bedrock, vertex) {
+            } else if (paid_pi
+                && (name.starts_with("ANTHROPIC_") || name.starts_with("CLAUDE_CODE_")))
+                || is_credential_env(&name, bedrock, vertex)
+            {
                 removed_env.push(name.into_owned());
                 env_removed.push(key);
             }
@@ -237,6 +243,38 @@ impl WorkerSupervisor {
             env_set.push(("CARGO_TARGET_DIR", slot.target_dir()));
             env_set.push(("ZIG_GLOBAL_CACHE_DIR", zig_cache.clone()));
             env_set.push(("ZIG_LOCAL_CACHE_DIR", zig_cache));
+        }
+        #[cfg(unix)]
+        if paid_pi {
+            use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy, LoopbackProxy};
+            let config = crate::config::load_live_config()
+                .map_err(|_| std::io::Error::other("cannot load credit configuration"))?
+                .config
+                .workers;
+            let ledger = ledger_path(&config)?;
+            std::fs::create_dir_all(crate::config::state_dir())?;
+            let proxy = AnthropicProxy::open(&config, &ledger)?;
+            let accounting_run = params
+                .command_id
+                .as_deref()
+                .and_then(|id| id.split_once(':'))
+                .map(|(run, _)| run)
+                .unwrap_or(&worker_id);
+            let proxy = LoopbackProxy::start(
+                proxy,
+                ledger,
+                accounting_run,
+                params.item.as_deref().unwrap_or(&worker_id),
+            )?;
+            let agent_dir = temp_dir.join("pi-agent");
+            std::fs::create_dir(&agent_dir)?;
+            std::fs::write(
+                agent_dir.join("models.json"),
+                pi::anthropic_models(&proxy.address).to_string(),
+            )?;
+            env_set.push(("PI_CODING_AGENT_DIR", agent_dir));
+            env_set.push(("HERDR_ANTHROPIC_PROXY_TOKEN", PathBuf::from(&proxy.token)));
+            credit_proxy = Some(proxy);
         }
         let configure = |command: &mut Command| {
             for key in &env_removed {
@@ -366,6 +404,8 @@ impl WorkerSupervisor {
             owner_lock,
             pi: (agent == WorkerAgent::Pi).then(Default::default),
             pi_extension,
+            #[cfg(unix)]
+            credit_proxy,
         };
         let reading = match spawned.source {
             Source::Pipes {

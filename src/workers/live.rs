@@ -479,6 +479,8 @@ pub(super) struct Reader {
     /// extension, removed with the temp dir; none for Claude.
     pub(super) pi: Option<std::cell::RefCell<pi::Translator>>,
     pub(super) pi_extension: Option<PathBuf>,
+    #[cfg(unix)]
+    pub(super) credit_proxy: Option<crate::platform::anthropic_proxy::LoopbackProxy>,
 }
 
 impl Reader {
@@ -632,9 +634,30 @@ impl Reader {
                 }
             }
         };
+        #[cfg(unix)]
+        let mut event = event;
         // Held output waiting for its tool call goes into the turn it
         // happened in, before the turn's end.
         if event["type"].as_str() == Some("result") {
+            #[cfg(unix)]
+            if let Some(proxy) = &self.credit_proxy {
+                match crate::platform::anthropic_proxy::AnthropicProxy::accounting(
+                    &proxy.ledger,
+                    Some(&proxy.run),
+                ) {
+                    Ok((cost, 0)) => {
+                        event["total_cost_usd"] = json!(cost);
+                        event["credit_accounting"] =
+                            json!({"spent_usd": cost, "worker": proxy.run});
+                    }
+                    _ => {
+                        event["is_error"] = json!(true);
+                        event["result"] =
+                            json!("Anthropic credit accounting unavailable; spending is closed");
+                        event["total_cost_usd"] = Value::Null;
+                    }
+                }
+            }
             self.supervisor.flush_held_output(self.number, true);
         }
         let spooled = self.record_line(broker_seq, Direction::Out, store::Recorded::Event(&event));

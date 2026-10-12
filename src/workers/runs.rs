@@ -236,6 +236,10 @@ pub(super) struct RunFinish {
     /// The agent CLI the run's workers run; Claude when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent: Option<WorkerAgent>,
+    #[serde(default)]
+    pub(super) anthropic_credits: bool,
+    #[serde(default)]
+    pub(super) credit_ledger: Option<PathBuf>,
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -1603,9 +1607,56 @@ impl WorkerSupervisor {
         self.create_run(params, false, None)
     }
 
+    /// Paid pi starts use a new method; published run methods keep their shape.
+    pub(crate) fn todo_run_anthropic(
+        &self,
+        mut params: TodoRunParams,
+    ) -> Result<TodoRunInfo, WorkerError> {
+        params.agent = Some(WorkerAgent::Pi);
+        if params.auto_review || params.auto_answer || params.ignore_usage {
+            return Err(WorkerError::Invalid("credit runs do not support subscription auto-review, auto-answer or --ignore-usage".into()));
+        }
+        self.create_run_with_wait(params, false, None, false, true)
+    }
+
+    pub(super) fn credit_gate(&self) -> Result<Value, WorkerError> {
+        #[cfg(unix)]
+        {
+            use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
+            let config = crate::config::load_live_config()
+                .map_err(|_| WorkerError::Preflight("cannot load credit configuration".into()))?
+                .config
+                .workers;
+            let ledger = ledger_path(&config)?;
+            std::fs::create_dir_all(crate::config::state_dir())?;
+            let proxy = AnthropicProxy::open(&config, &ledger)?;
+            proxy.available(0.0).map_err(|_| {
+                WorkerError::Preflight("Anthropic credits at cap or accounting unavailable".into())
+            })?;
+            let (spent, _) = AnthropicProxy::accounting(&ledger, None)?;
+            Ok(
+                json!({"provider": "anthropic_api", "spent_usd": spent, "cap_usd": config.anthropic_api_cap_usd, "decision": "admit"}),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            Err(WorkerError::Unsupported(
+                "Anthropic credit proxy requires Unix".into(),
+            ))
+        }
+    }
+
+    pub(super) fn run_usage_gate(&self, run: &Run, ignore: bool) -> Result<Value, WorkerError> {
+        if run.finish.anthropic_credits {
+            self.credit_gate()
+        } else {
+            self.usage_gate(&run.info.repo, run.finish.agent.unwrap_or_default(), ignore)
+        }
+    }
+
     /// Wait-capable start; the published `todo.run` contract remains unchanged.
     pub(crate) fn todo_run_wait(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
-        self.create_run_with_wait(params, false, None, true)
+        self.create_run_with_wait(params, false, None, true, false)
     }
 
     /// Starts a run of `params.item` whose task, subject, paths and checks
@@ -1645,7 +1696,7 @@ impl WorkerSupervisor {
         draft: bool,
         queue: Option<&queue::QueueStart>,
     ) -> Result<TodoRunInfo, WorkerError> {
-        self.create_run_with_wait(params, draft, queue, false)
+        self.create_run_with_wait(params, draft, queue, false, false)
     }
 
     fn existing_wait_start(
@@ -1687,6 +1738,7 @@ impl WorkerSupervisor {
         draft: bool,
         queue: Option<&queue::QueueStart>,
         wait_usage: bool,
+        anthropic_credits: bool,
     ) -> Result<TodoRunInfo, WorkerError> {
         let cwd = Path::new(&params.cwd);
         if !cwd.is_absolute() {
@@ -1707,7 +1759,12 @@ impl WorkerSupervisor {
         }
         let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
         let agent = params.agent.unwrap_or_default();
-        let (usage, pending_reason) = match self.usage_gate(&repo, agent, params.ignore_usage) {
+        let gate = if anthropic_credits {
+            self.credit_gate()
+        } else {
+            self.usage_gate(&repo, agent, params.ignore_usage)
+        };
+        let (usage, pending_reason) = match gate {
             Ok(usage) => (usage, None),
             Err(WorkerError::UsageGate(why)) if wait_usage => (Value::Null, Some(why)),
             Err(error) => return Err(error),
@@ -1731,6 +1788,18 @@ impl WorkerSupervisor {
                 .filter(|tenure| tenure.headless)
                 .map(|tenure| tenure.id),
         };
+        #[cfg(unix)]
+        let credit_ledger = if anthropic_credits {
+            let config = crate::config::load_live_config()
+                .map_err(|_| WorkerError::Preflight("cannot load credit configuration".into()))?
+                .config
+                .workers;
+            Some(crate::platform::anthropic_proxy::ledger_path(&config)?)
+        } else {
+            None
+        };
+        #[cfg(not(unix))]
+        let credit_ledger = None;
         let mut run = Run {
             info: TodoRunInfo {
                 run_id: run_id.clone(),
@@ -1797,6 +1866,8 @@ impl WorkerSupervisor {
                 queued: queue.is_some(),
                 prepare: preflighted.prepare.clone(),
                 agent: params.agent,
+                anthropic_credits,
+                credit_ledger,
                 pending_usage: pending_reason.is_some(),
                 usage_dispatch: wait_usage,
                 ignore_usage: params.ignore_usage,
@@ -1826,7 +1897,7 @@ impl WorkerSupervisor {
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
             "agent": agent.as_str(),
-            "model": (agent == WorkerAgent::Pi).then_some(super::pi::DEFAULT_MODEL),
+            "model": (agent == WorkerAgent::Pi).then_some(if anthropic_credits { super::pi::ANTHROPIC_MODEL } else { super::pi::DEFAULT_MODEL }),
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
             "draft": draft,
@@ -2475,11 +2546,7 @@ impl WorkerSupervisor {
                 // the run). The run itself is not touched by a refusal: it
                 // keeps waiting on the same event.
                 if run.info.attempt < MAX_ATTEMPTS {
-                    usage = Some(self.usage_gate(
-                        &run.info.repo,
-                        run.finish.agent.unwrap_or_default(),
-                        params.ignore_usage,
-                    )?);
+                    usage = Some(self.run_usage_gate(&run, params.ignore_usage)?);
                 }
             }
             // The kill follows the recorded resume: the driver waiting for
@@ -3223,10 +3290,16 @@ impl WorkerSupervisor {
                 "command_id": command_id,
             }),
         )?;
+        if run.finish.anthropic_credits && !recovering_worker {
+            self.credit_gate().map_err(|e| e.to_string())?;
+        }
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
             prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
-            model: None,
+            model: run
+                .finish
+                .anthropic_credits
+                .then(|| super::pi::ANTHROPIC_MODEL.to_owned()),
             agent: run.finish.agent,
             name: None,
             workspace_id: run.workspace.clone(),
@@ -3336,6 +3409,22 @@ impl WorkerSupervisor {
                 event
             }
         };
+        #[cfg(unix)]
+        if let Some(ledger) = &run.finish.credit_ledger {
+            let accounting = crate::platform::anthropic_proxy::AnthropicProxy::accounting(
+                ledger,
+                Some(&run.info.run_id),
+            );
+            let body = match accounting {
+                Ok((cost, pending)) => {
+                    json!({"type": "run_credit_accounting", "worker": worker_id, "attempt": run.info.attempt, "run_spent_usd": cost, "pending": pending})
+                }
+                Err(_) => {
+                    json!({"type": "run_credit_accounting", "worker": worker_id, "error": "accounting unavailable"})
+                }
+            };
+            self.run_step(run, body)?;
+        }
         run.info.status = TodoRunStatus::Waiting;
         self.record_run_event(run, &event)?;
         Ok(())
