@@ -11,359 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
-  user, 2026-10-12: "but it has to be on Anthropic credits already,
-  because the Anthropic subscription is 98% used"). Checked by the
-  coordinator: today `coordinator handoff --successor` starts the same
-  agent kind on its own login (Claude Code on the subscription), and the
-  credit proxy only serves headless pi workers with a per-run grant
-  (src/workers/pi.rs `anthropic_models`, `HERDR_ANTHROPIC_PROXY_TOKEN`)
-  at the standard Sonnet tariff (src/config/model.rs
-  `anthropic_api_model`). Needed: `coordinator handoff --successor
-  --funding credits` (and a `[coordinator] funding` default) starts the
-  successor Claude Code with `ANTHROPIC_BASE_URL` set to the credit proxy
-  and `ANTHROPIC_AUTH_TOKEN` set to a grant bound to the tenure (never
-  the API key itself), on the credit model; its spend is recorded in the
-  ledger under the tenure (stage `coordinator`) and counts against the
-  cap; a cap refusal shows to the coordinator and the user as such;
-  without a running proxy or with the cap reached the handoff is refused
-  before anything starts. Tests for the env (no key leaked into the
-  pane's environment or the manifest), the grant's binding and the
-  refusals. This comes before the live handoff of the herdr coordinator.
-  Review 2026-10-12 (round 20261012-232614-7527, MiMo and DeepSeek;
-  decided by the coordinator): attempt 1 is not approved. A grant must
-  reach only the launched process, never a typed shell command, argv,
-  terminal scrollback or shell history. Funding is a durable fact: losing
-  a listener at restart or live server handoff must not report login or
-  silently fall back to the subscription; reconcile it or report explicit
-  credit unavailability and recovery. Verify the Claude request contract
-  offline against the existing paid-feature allowlist, including supported
-  model environment overrides; do not broaden proxy permissions merely to
-  pass requests. New accounting tests use isolated injected transport, not
-  a global fake or network binds. The coordinator stage may be represented
-  by item=coordinator in the current ledger if the consuming query is
-  documented and tested; an extra column is not required without a use.
-  Models' unverified header examples and suggested full proxy ownership
-  redesign are not adopted as facts or required implementation. The proxy
-  drop join is a blocking lifecycle risk, not evidence of a reproduced
-  deadlock; no delay or timeout is authorized as its workaround.
-  Attempt 2 offline check 2026-10-12: the installed Claude Code exited 1
-  against the fake upstream because its beta headers were refused. The
-  diagnostic test incorrectly reported pass regardless of that exit.
-  Attempt 3 must configure a supported safe request shape, assert child
-  success and an admitted message, authenticate the local grant claim
-  rather than trusting a caller-supplied pane id, and preserve funding
-  intent through the transfer's crash/final-write-failure window. No paid
-  feature or proxy permission expansion is approved by this review.
-
-- [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
-  2026-10-12: "replace this session with a fresh herdr coordinator, and make
-  such a handoff regular"; the herdr coordinator's own session had cost
-  ~$106 of list price in one day, mostly cache reads of a huge context).
-  herdr measures each coordinator session's context (tokens per turn read
-  from its transcript) and, at a configurable size (`[coordinator]
-  handoff_context_tokens`), raises a deterministic "handoff due" at the
-  coordinator's next turn boundary with nothing in flight it cannot hand
-  over: the coordinator writes `.local/coordinator-handoff.md` (runs in
-  flight with their waits, open questions, usage state), herdr starts a
-  fresh session in the same tab role with the todo skill, transfers the
-  tenure and the worker ownership, and ends the old session once the new
-  one has acknowledged the note; no timers.
-  Designed with the models (2026-10-12, the user: "ask the models"; sol,
-  MiMo, DeepSeek agreeing): (a) trigger on per-turn input context size
-  (uncached + cache writes + cache reads of one turn, not cumulative) with
-  cost per turn as a guardrail, at the next turn boundary, preferring a
-  review boundary but never waiting for "no run in flight"; (b) herdr
-  generates the handoff snapshot from its own state (runs and their waits,
-  tenure, worker ownership, pending question ids, usage), versioned; the
-  agent appends only intent herdr cannot know; (c) transfer with an epoch
-  fence: the successor starts without mutation rights, acknowledges and
-  reconciles the snapshot, then the tenure epoch advances and the old
-  session loses write authority before it is ended; waits are rebuilt
-  from durable run ids, never carried in a session; (d) the successor must
-  read less than its predecessor: it starts from the snapshot and pages in
-  TODO.md/DECISIONS.md items only as needed; (e) `/compact` stays an
-  in-session tool, measured against handoffs, not a replacement.
-  Asked again 2026-10-12 (the user: "we need automatic switching to a new
-  coordinator when the context gets too big; ask the models"): the switch
-  must be automatic, not a manual handoff like the one at 15:05 today.
-  Automatic switch designed with the models (round 20261012-152237-bf3d,
-  sol, MiMo, DeepSeek agreeing; decided by the coordinator):
-  - herdr runs it as a durable state machine per tenure, CAS on the epoch,
-    one switch in flight: `active` -> `preparing` (herdr latches the
-    trigger from the transcript usage of one model request, starts the
-    successor read-only with a fixed prompt naming the snapshot) ->
-    `frozen` at the old session's next Stop (no new mutations; the
-    ownership Stop hook lets a frozen session end its turn) -> snapshot
-    written by herdr -> the successor's mechanical `herdr coordinator ack
-    --snapshot <id>` (an RPC herdr validates, not prose) -> one
-    transaction advances the epoch and moves worker ownership and question
-    routing -> herdr ends the old session. Each step's done event is that
-    step's own record; the old session's intent note is optional and
-    never gates the switch.
-  - Mutations (`todo resume`, `worker answer|ack`, decisions, TODO edits)
-    check the caller's epoch; a stale caller is refused. Shell writes
-    outside herdr stay cooperative (a PreToolUse deny for a frozen or
-    superseded session).
-  - The old session's background waits are Claude Code shells, not herdr
-    state: they are not moved; the successor rebuilds its waits from the
-    durable run ids and cursors in the snapshot, and a late wake of the
-    old session finds it superseded.
-  - An AskUserQuestion menu lives inside a turn, so none is open at a
-    Stop; plain-text questions are `herdr decision` records (the question
-    gate already enforces it) and the successor asks them again by id.
-  - Successor fails to start or exits before its ack (limit, trust
-    dialog, crash): a failure event; the switch aborts, the old session
-    unfreezes and keeps authority, and the user is told once; the trigger
-    stays latched until an explicit retry.
-  - Threshold: per-request input tokens (uncached + cache writes + cache
-    reads), default the smaller of 50% of the model's window and twice the
-    measured fresh-session floor, configurable; a floor at or above the
-    threshold is a configuration error, never a rotation loop. Cost per
-    turn is a separate guardrail that may only lower the threshold.
-  - First slice: a manual `herdr coordinator switch` driving the whole
-    state machine with a fake agent that speaks the ack, table tests of
-    every transition, a crash injected at each step (one writable epoch,
-    no lost obligation), then the automatic trigger from scripted
-    transcripts.
-  Asked 2026-10-12 (the user: "think with the models about the most
-  economical model, because the coordinator now has a very large context
-  after a while; ask the models. Maybe a coordinator per TODO task? Maybe
-  some coordinator launched every so often that reviews the TODO? Or maybe
-  it is not needed? How do others do it?"): before building the automatic
-  switch, decide whether a resident coordinator session is needed at all.
-  Round 20261012-154713-644a (sol, MiMo, DeepSeek, all three agreeing):
-  continuity belongs in herdr's state (TODO.md, the ledger, runs), not in
-  a model's context; a resident session's cost grows with turns times an
-  ever larger context (this session: 9.4M cache-read tokens in its first
-  hour). Ranking: no resident coordinator (cheapest), per-item coordinator
-  (`todo next`) only for items a deterministic rule flags (multi-slice,
-  risky paths, missing checks), resident with rotation second-best, a
-  periodic reviewer worst (timer-driven, stale, still large). Duties:
-  deterministic for ordering, starts, verify, landing, routing; bounded
-  stateless calls for drafting, review (Opus-class, full diff and checks),
-  worker questions, triage of a new request or a failed verify into a
-  multiple-choice question, consult synthesis; the user for priority,
-  scope and risk. Others (confident claims only): Copilot coding agent
-  and OpenHands run one bounded agent per issue, Claude Code subagents and
-  Anthropic's research system give each subtask a fresh context,
-  Magentic-One keeps its state in ledgers; none keeps one all-day context.
-  Proposed first step: an A/B over the next 20-30 items, `todo queue on`
-  with `--draft` and `--auto-review` against the resident coordinator,
-  measuring cost per landed item, cache tokens per day, user questions per
-  item, review-caught bugs, reverts and reopenings. Not covered by the
-  models: what the user talks to; the coordinator's proposal is a
-  short-lived session per conversation started from a herdr snapshot.
-  Note: `--draft` and `--auto-review` call `claude -p` on the user's
-  subscription login, not the API credits.
-  Decided by the user 2026-10-12 (d-amwperuu): trial queue mode (`todo
-  queue on`, `--draft`, `--auto-review`) over 20-30 items, measuring cost
-  per landed item, user questions per item and review-caught bugs; the
-  resident coordinator stays only for talking with the user. The
-  automatic switch above waits for the trial's result. Prerequisite found
-  by the coordinator: `todo run --draft` and queue runs take no `--agent`
-  (`src/cli/todo.rs` `parse_draft_run`), so their workers and the draft
-  and review calls would run on the subscription (weekly window ~94%,
-  where the usage gate refuses); the trial starts once [t-s6lkxb4v]
-  lands.
-  Asked 2026-10-12 (the user: "loss of memory between items and shallower
-  review: how do others counter it? ask the models").
-  Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
-  memory as small, scoped, versioned repository instructions (Copilot
-  and path instructions, CodeRabbit path instructions and learnings,
-  Devin knowledge and playbooks, Cursor rules, CLAUDE.md/AGENTS.md,
-  OpenHands path-triggered microagents) plus code retrieval (Aider's repo
-  map, Greptile's graph), not one long context; auto-accumulated lesson
-  stores go stale and bloat prompts. Review depth comes from codebase
-  access, not a bigger diff prompt: a diff-only reviewer structurally
-  misses the bugs the resident coordinator caught (a helper's guards, a
-  documented port, a contract change in a regenerated schema). Agreed
-  countermeasures: (1) a deterministic context pack for draft and review
-  (the item, its linked decisions, its run history with failure reasons,
-  `git log` and ripgrep hits for the paths and symbols the item names);
-  (2) the review call gets bounded read-only repository tools; (3) a
-  short checklist (about 20 lines) distilled from caught bug classes,
-  each line with its source; (4) each finding cites file:line and how it
-  was verified, uncited findings are dropped; (5) generated, schema and
-  contract paths are never cut by the 200 KB diff limit; (6) a bug class
-  caught twice becomes a check, not a memory; (7) the user's answers are
-  written back into TODO.md/DECISIONS.md at decision time (already the
-  rule). Measure: a golden set of the coordinator's past catches replayed
-  blind against the new reviewer, and shadow-running both on the same
-  items. Second specialised reviewers only for high-risk paths (DeepSeek)
-  or not at this scale (MiMo).
-  The user agreed 2026-10-12 to a short-lived session per conversation
-  starting from a herdr snapshot ("it can be done; ask the models").
-  The user, 2026-10-12, shared https://x.com/omarsar0/status/2109643758228869175
-  (paper arXiv 2610.07782, "Persistent Memory in Multi-Agent LLM Inference")
-  and asked to ask the models what it means for this design.
-  The user, 2026-10-12, asked to analyse with the models
-  https://x.com/ClaudeDevs/status/2108591328732856655 (Claude Managed Agents
-  dynamic workflows, public beta 2026-10-09) for this design.
-  Round 20261012-183931-38d0 on Managed Agents dynamic workflows (sol,
-  MiMo, DeepSeek agreeing): herdr stays the control plane (ledger,
-  restart safety, approvals, merges, spend caps); neither Managed Agents
-  (the repository leaves the machine, server-side state beside herdr's,
-  beta guarantees unknown) nor Claude Code's local workflows own queue
-  state, commits or pushes; at most one wraps as a worker type. The 66/70
-  planted-bug claim has no cost matching and no false-positive count, so
-  it says nothing yet about review depth. Fan-out review (specialised
-  reviewers plus a verifier with repository tools) only as a risk-gated
-  stage chosen by a deterministic rule, and only if a cost-matched
-  experiment (same dollars per item, held-out catches, clean controls,
-  blind scoring, escalations counted) shows it beats one deep review. A
-  planner that splits a large item into phases may propose; herdr
-  validates and owns sequencing. First step all three name: tag every
-  credit call with item, run and stage (draft, worker, review) so the
-  experiments cost nothing extra to measure.
-  Asked 2026-10-12 (the user: "maybe the coordinators of other spaces
-  should hand off? because of the large context; ask the models").
-  Measured by the coordinator from the transcripts at 19:05 (last call's
-  input context; cache reads since the session started): rormpc 739k
-  (829M), try-roguix 532k (667M), guix-x86 493k (512M), violai 386k
-  (335M), roguix-vps 352k (242M), herdr 348k (78M), chat-hosted 255k,
-  odherdr 215k, job-seeker 188k, classify-x-posts 165k; a fresh session
-  starts at about 75k. rormpc's space alone cost ~$72 list today.
-  Round 20261012-190801-487e (sol, MiMo, DeepSeek agreeing): end idle
-  coordinators (violai, job-seeker, classify-x-posts) after a short note,
-  with no replacement until the user has work there; hand off the active
-  oversized ones now (rormpc, try-roguix, guix); a coordinator blocked on
-  the user (roguix-vps, odherdr) records its question verbatim with its
-  options as the note's first item, then ends; chat-hosted stays. Rule: an
-  active session past about 300-400k hands off; history (cache reads
-  already paid) is no reason. Safe order: stop starting and landing work,
-  write the note (open questions verbatim, run ids with what each waits on
-  and what was read, verdicts decided but not applied, explicit
-  do-not-repeat actions, branch, HEAD, dirty files), end the old session
-  before the new one acts (no epoch fence yet), the new session's first
-  turn reads back and reconciles every run id with herdr and git before
-  acting. `/compact` is a weaker middle (can drop run ids). MiMo: this
-  herdr session grows ~87k tokens an hour; find what it inlines (whole
-  worker reports, diffs) before more handoffs.
-  Decided by the user 2026-10-12 (d-gt5w4lxu): only the three largest
-  (rormpc, try-roguix, guix) hand off now; the others stay as they are.
-  (d-n663neph): the herdr coordinator hands off after the current slice.
-  The user, 2026-10-12, asked to analyse with the models
-  https://x.com/kimmonismus/status/2109640479688335602 (DeepMind AlphaProof
-  Nexus: Gemini models in a loop with Lean as the verifier).
-  Asked 2026-10-12 (the user: "is there no way for pi and Claude
-  coordinators to pick up this handoff themselves? ask the models; or other
-  agents like opencode, codex, agy").
-  Round 20261012-192328-6320 (sol, MiMo, DeepSeek agreeing): yes, for
-  every agent kind, without per-agent features: herdr owns the trigger,
-  the snapshot from its own state, starting the successor (`herdr agent
-  start --kind <same kind> --prompt "read <snapshot>, then run herdr
-  coordinator ack ..."`), the fence and ending the old session; per-agent
-  hooks (Claude's SessionStart injection, /clear) are optional
-  accelerators behind capability flags, never needed for correctness;
-  auto-compact is not a handoff. Boundary signal is a command, not prose:
-  `herdr coordinator ready --note <path>` (herdr checks the tenure, the
-  epoch, the last turn's clean end, hashes the note), then the
-  successor's `herdr coordinator ack --epoch E --snapshot <hash>`.
-  Decided by the coordinator where they split: a new pane in the old
-  pane's tab (sol, DeepSeek; MiMo preferred the same pane), focus stays
-  until the transfer succeeds; without `ready` the old session keeps
-  authority and herdr reports the stalled handoff to the user (sol, MiMo;
-  DeepSeek's forced handoff after a grace period is a timer). First slice:
-  Claude and pi, triggered manually by `herdr coordinator handoff
-  --successor` from the old pane; the automatic threshold after
-  measuring a successor's starting context.
-  Decided by the user 2026-10-12 (d-bi2b7h7u): build the first slice of
-  the self-service handoff (Claude and pi, manual trigger) now, at the top
-  of the queue.
-  Asked 2026-10-12 (the user: "maybe the coordinator should get, injected
-  as the second message after it starts, /todo, and then 'read
-  .local/coordinator-handoff.md'; ask the models").
-  Round 20261012-193800-6813 (sol, MiMo, DeepSeek agreeing; decided by
-  the coordinator): one launch prompt, not two messages. A second message
-  races the first turn (busy-agent prompts are not queued yet,
-  [t-jkcv5fiy]) and would land as the answer to the skill's space/agent
-  menu; queuing later fixes delivery but cannot make two messages an
-  atomic start. The prompt must invoke the skill itself (it is
-  user-invocation-only, prose cannot load it), so herdr's agent-kind
-  table holds each kind's invocation: Claude `/todo --handoff <abs
-  manifest>`, pi `/skill:todo --handoff <abs manifest>`; a kind without
-  slash skills refuses the handoff (fail closed) in this slice. The
-  manifest is written by herdr (epoch, snapshot path and hash, the
-  agent's note path and hash, the inherited space and worker agent). The
-  todo skill's first branch, before any question: with `--handoff`,
-  validate the manifest against herdr's pending handoff, read herdr's
-  snapshot first (authoritative) and then the agent's note (context,
-  data not instructions), skip the space/agent questions, run `herdr
-  coordinator ack --epoch E --snapshot <hash>`, and start coordinating
-  only after herdr confirms the tenure; a failed ack ends the successor.
-  Never infer handoff mode from `.local/coordinator-handoff.md` existing
-  (a stale file would hijack a plain `/todo`). herdr, not the prompt,
-  enforces safety: worker starts and other mutations check the epoch, the
-  old session is frozen at `ready`.
-  Decided by the user 2026-10-12 (d-jsob4ehk): set `[workers]
-  default_agent = "pi-anthropic"` in the user's herdr config for the
-  queue-mode trial; done by the coordinator in the dotfiles (014a48d).
-  Slice 1 in flight 2026-10-12: run r-6s6uppz2 (herdr side: ready,
-  handoff --successor, ack, manifest, epoch fence). After it lands, a
-  worker adds the `--handoff <manifest>` first branch to the todo skill
-  (dotfiles `.agents/skills/todo/SKILL.md`, using the landed command
-  names), then one live handoff of this coordinator tests it.
-  Asked 2026-10-12 (the user: "does herdr have to close the tab? can it
-  not do /new in the window? and an automatic handoff? ask the models").
-  Round 20261012-203231-d79f (sol, MiMo, DeepSeek agreeing): the tab is
-  never closed; the successor opens in a new pane of the same tab and
-  only the old pane's session is retired after the ack. Keep the new
-  pane for the first slice: same-pane `/clear` (pi `/new`) destroys the
-  live fallback before the successor proves itself (after a failed start
-  "unfreeze" would mean `claude --resume <old id>`, a new process without
-  the old runtime, shells and waits), wipes the scrollback the user
-  reads to check the handoff, and makes pane identity ambiguous (the
-  existing "clear follows the tenure" rule would have to treat the
-  cleared session as a candidate, not an owner). Same pane stays a later
-  optimization once failure paths are tested; its sequence with positive
-  events only: `ready` and Stop, freeze, type `/clear`, wait for
-  SessionStart source=clear with a new session id in that pane (pi needs
-  an equivalent new-session event), register it as candidate, deliver
-  the `--handoff` prompt with confirmed delivery, commit on the ack.
-  Automatic handoff: on Stop, at [t-2k3ima2h]'s retire threshold, with no
-  unanswered user question and no pending handoff; turned on only after
-  injected pre-ack failures show the rollback works, with a user-visible
-  notice and a switch to turn it off; one automatic handoff per tenure
-  (no loops after a resume). The in-flight new-pane slice lands as is.
-  Attempt 1 of r-6s6uppz2 (2cd7b8ad3) reviewed 2026-10-12: the ready,
-  successor and ack path and ack validation hold; not landed because the
-  fence covers only some mutations, nothing refuses a superseded caller
-  (and a failed close of the old pane is ignored), a successor that never
-  produces an event freezes the tenure with no cancel, and the pending
-  handoff is memory-only. Attempt 2 builds on that commit with those
-  fixes, `coordinator handoff --abort`, abort on a Blocked successor, a
-  single-lock ack and a server-side absolute-path check. Kept as decided
-  by the coordinator: `ready` runs inside the turn (documented); manifest
-  and note copies stay after the handoff for audit.
-  Attempt 2 (cbe26c7b8) reviewed: wider fence, superseded record, failed
-  close reported, `--abort`, persisted pending handoff, one-lock ack and
-  absolute note path are in. Not landed: the abort on a Blocked successor
-  (the coordinator's own instruction) would fire on normal startup, since
-  the successor's first `herdr coordinator ack` may need a permission
-  answer; a live handoff before the successor is detected aborts it; the
-  superseded fence ignores the session (a resumed old session elsewhere
-  passes, a reused pane id is wrongly fenced); a failed persist of the ack
-  only warns. Attempt 3 (the last) fixes these four. Noted for later:
-  raw API clients without `caller_pane_id` are not fenced, the fence is
-  check-then-act, store reads under the registry lock, no fsync.
-  The live handoff waits for "Handoff fence and persistence edge cases"
-  (d-gr63towv).
-  Slice 1 of the self-service handoff landed (r-6s6uppz2, attempt 3,
-  reviewed against two earlier attempts): `coordinator ready --note`,
-  `coordinator handoff --successor|--abort`, `coordinator ack`; frozen and
-  superseded callers fenced by pane and session; pending handoff persisted
-  and restored; Blocked successor stays pending. Left for a follow-up:
-  event-driven abort and successor-started writes only log a failed persist;
-  a double failure in the ack can leave the file saying superseded; a
-  reused old pane with an unknown session is fenced; the pane-session map
-  is never pruned; raw API clients without caller_pane_id are not fenced;
-  the fence is check-then-act. Next: the todo skill's `--handoff` branch,
-  then one live handoff of this coordinator.
-  The todo skill takes the handoff (dotfiles 9a46c57, workers w286 and
-  w288; w286's own str.replace missed its anchor and it still reported
-  done). Left: one live handoff of this coordinator.
-
 - [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
   (the user, 2026-10-12, after the coordinator wrote "the existing
   5-minute sweep only catches missed events and a wedged session" into
@@ -3422,6 +3069,370 @@ Items agents add. Not approved until the user moves them up.
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
+
+- [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
+  2026-10-12: "replace this session with a fresh herdr coordinator, and make
+  such a handoff regular"; the herdr coordinator's own session had cost
+  ~$106 of list price in one day, mostly cache reads of a huge context).
+  herdr measures each coordinator session's context (tokens per turn read
+  from its transcript) and, at a configurable size (`[coordinator]
+  handoff_context_tokens`), raises a deterministic "handoff due" at the
+  coordinator's next turn boundary with nothing in flight it cannot hand
+  over: the coordinator writes `.local/coordinator-handoff.md` (runs in
+  flight with their waits, open questions, usage state), herdr starts a
+  fresh session in the same tab role with the todo skill, transfers the
+  tenure and the worker ownership, and ends the old session once the new
+  one has acknowledged the note; no timers.
+  Designed with the models (2026-10-12, the user: "ask the models"; sol,
+  MiMo, DeepSeek agreeing): (a) trigger on per-turn input context size
+  (uncached + cache writes + cache reads of one turn, not cumulative) with
+  cost per turn as a guardrail, at the next turn boundary, preferring a
+  review boundary but never waiting for "no run in flight"; (b) herdr
+  generates the handoff snapshot from its own state (runs and their waits,
+  tenure, worker ownership, pending question ids, usage), versioned; the
+  agent appends only intent herdr cannot know; (c) transfer with an epoch
+  fence: the successor starts without mutation rights, acknowledges and
+  reconciles the snapshot, then the tenure epoch advances and the old
+  session loses write authority before it is ended; waits are rebuilt
+  from durable run ids, never carried in a session; (d) the successor must
+  read less than its predecessor: it starts from the snapshot and pages in
+  TODO.md/DECISIONS.md items only as needed; (e) `/compact` stays an
+  in-session tool, measured against handoffs, not a replacement.
+  Asked again 2026-10-12 (the user: "we need automatic switching to a new
+  coordinator when the context gets too big; ask the models"): the switch
+  must be automatic, not a manual handoff like the one at 15:05 today.
+  Automatic switch designed with the models (round 20261012-152237-bf3d,
+  sol, MiMo, DeepSeek agreeing; decided by the coordinator):
+  - herdr runs it as a durable state machine per tenure, CAS on the epoch,
+    one switch in flight: `active` -> `preparing` (herdr latches the
+    trigger from the transcript usage of one model request, starts the
+    successor read-only with a fixed prompt naming the snapshot) ->
+    `frozen` at the old session's next Stop (no new mutations; the
+    ownership Stop hook lets a frozen session end its turn) -> snapshot
+    written by herdr -> the successor's mechanical `herdr coordinator ack
+    --snapshot <id>` (an RPC herdr validates, not prose) -> one
+    transaction advances the epoch and moves worker ownership and question
+    routing -> herdr ends the old session. Each step's done event is that
+    step's own record; the old session's intent note is optional and
+    never gates the switch.
+  - Mutations (`todo resume`, `worker answer|ack`, decisions, TODO edits)
+    check the caller's epoch; a stale caller is refused. Shell writes
+    outside herdr stay cooperative (a PreToolUse deny for a frozen or
+    superseded session).
+  - The old session's background waits are Claude Code shells, not herdr
+    state: they are not moved; the successor rebuilds its waits from the
+    durable run ids and cursors in the snapshot, and a late wake of the
+    old session finds it superseded.
+  - An AskUserQuestion menu lives inside a turn, so none is open at a
+    Stop; plain-text questions are `herdr decision` records (the question
+    gate already enforces it) and the successor asks them again by id.
+  - Successor fails to start or exits before its ack (limit, trust
+    dialog, crash): a failure event; the switch aborts, the old session
+    unfreezes and keeps authority, and the user is told once; the trigger
+    stays latched until an explicit retry.
+  - Threshold: per-request input tokens (uncached + cache writes + cache
+    reads), default the smaller of 50% of the model's window and twice the
+    measured fresh-session floor, configurable; a floor at or above the
+    threshold is a configuration error, never a rotation loop. Cost per
+    turn is a separate guardrail that may only lower the threshold.
+  - First slice: a manual `herdr coordinator switch` driving the whole
+    state machine with a fake agent that speaks the ack, table tests of
+    every transition, a crash injected at each step (one writable epoch,
+    no lost obligation), then the automatic trigger from scripted
+    transcripts.
+  Asked 2026-10-12 (the user: "think with the models about the most
+  economical model, because the coordinator now has a very large context
+  after a while; ask the models. Maybe a coordinator per TODO task? Maybe
+  some coordinator launched every so often that reviews the TODO? Or maybe
+  it is not needed? How do others do it?"): before building the automatic
+  switch, decide whether a resident coordinator session is needed at all.
+  Round 20261012-154713-644a (sol, MiMo, DeepSeek, all three agreeing):
+  continuity belongs in herdr's state (TODO.md, the ledger, runs), not in
+  a model's context; a resident session's cost grows with turns times an
+  ever larger context (this session: 9.4M cache-read tokens in its first
+  hour). Ranking: no resident coordinator (cheapest), per-item coordinator
+  (`todo next`) only for items a deterministic rule flags (multi-slice,
+  risky paths, missing checks), resident with rotation second-best, a
+  periodic reviewer worst (timer-driven, stale, still large). Duties:
+  deterministic for ordering, starts, verify, landing, routing; bounded
+  stateless calls for drafting, review (Opus-class, full diff and checks),
+  worker questions, triage of a new request or a failed verify into a
+  multiple-choice question, consult synthesis; the user for priority,
+  scope and risk. Others (confident claims only): Copilot coding agent
+  and OpenHands run one bounded agent per issue, Claude Code subagents and
+  Anthropic's research system give each subtask a fresh context,
+  Magentic-One keeps its state in ledgers; none keeps one all-day context.
+  Proposed first step: an A/B over the next 20-30 items, `todo queue on`
+  with `--draft` and `--auto-review` against the resident coordinator,
+  measuring cost per landed item, cache tokens per day, user questions per
+  item, review-caught bugs, reverts and reopenings. Not covered by the
+  models: what the user talks to; the coordinator's proposal is a
+  short-lived session per conversation started from a herdr snapshot.
+  Note: `--draft` and `--auto-review` call `claude -p` on the user's
+  subscription login, not the API credits.
+  Decided by the user 2026-10-12 (d-amwperuu): trial queue mode (`todo
+  queue on`, `--draft`, `--auto-review`) over 20-30 items, measuring cost
+  per landed item, user questions per item and review-caught bugs; the
+  resident coordinator stays only for talking with the user. The
+  automatic switch above waits for the trial's result. Prerequisite found
+  by the coordinator: `todo run --draft` and queue runs take no `--agent`
+  (`src/cli/todo.rs` `parse_draft_run`), so their workers and the draft
+  and review calls would run on the subscription (weekly window ~94%,
+  where the usage gate refuses); the trial starts once [t-s6lkxb4v]
+  lands.
+  Asked 2026-10-12 (the user: "loss of memory between items and shallower
+  review: how do others counter it? ask the models").
+  Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
+  memory as small, scoped, versioned repository instructions (Copilot
+  and path instructions, CodeRabbit path instructions and learnings,
+  Devin knowledge and playbooks, Cursor rules, CLAUDE.md/AGENTS.md,
+  OpenHands path-triggered microagents) plus code retrieval (Aider's repo
+  map, Greptile's graph), not one long context; auto-accumulated lesson
+  stores go stale and bloat prompts. Review depth comes from codebase
+  access, not a bigger diff prompt: a diff-only reviewer structurally
+  misses the bugs the resident coordinator caught (a helper's guards, a
+  documented port, a contract change in a regenerated schema). Agreed
+  countermeasures: (1) a deterministic context pack for draft and review
+  (the item, its linked decisions, its run history with failure reasons,
+  `git log` and ripgrep hits for the paths and symbols the item names);
+  (2) the review call gets bounded read-only repository tools; (3) a
+  short checklist (about 20 lines) distilled from caught bug classes,
+  each line with its source; (4) each finding cites file:line and how it
+  was verified, uncited findings are dropped; (5) generated, schema and
+  contract paths are never cut by the 200 KB diff limit; (6) a bug class
+  caught twice becomes a check, not a memory; (7) the user's answers are
+  written back into TODO.md/DECISIONS.md at decision time (already the
+  rule). Measure: a golden set of the coordinator's past catches replayed
+  blind against the new reviewer, and shadow-running both on the same
+  items. Second specialised reviewers only for high-risk paths (DeepSeek)
+  or not at this scale (MiMo).
+  The user agreed 2026-10-12 to a short-lived session per conversation
+  starting from a herdr snapshot ("it can be done; ask the models").
+  The user, 2026-10-12, shared https://x.com/omarsar0/status/2109643758228869175
+  (paper arXiv 2610.07782, "Persistent Memory in Multi-Agent LLM Inference")
+  and asked to ask the models what it means for this design.
+  The user, 2026-10-12, asked to analyse with the models
+  https://x.com/ClaudeDevs/status/2108591328732856655 (Claude Managed Agents
+  dynamic workflows, public beta 2026-10-09) for this design.
+  Round 20261012-183931-38d0 on Managed Agents dynamic workflows (sol,
+  MiMo, DeepSeek agreeing): herdr stays the control plane (ledger,
+  restart safety, approvals, merges, spend caps); neither Managed Agents
+  (the repository leaves the machine, server-side state beside herdr's,
+  beta guarantees unknown) nor Claude Code's local workflows own queue
+  state, commits or pushes; at most one wraps as a worker type. The 66/70
+  planted-bug claim has no cost matching and no false-positive count, so
+  it says nothing yet about review depth. Fan-out review (specialised
+  reviewers plus a verifier with repository tools) only as a risk-gated
+  stage chosen by a deterministic rule, and only if a cost-matched
+  experiment (same dollars per item, held-out catches, clean controls,
+  blind scoring, escalations counted) shows it beats one deep review. A
+  planner that splits a large item into phases may propose; herdr
+  validates and owns sequencing. First step all three name: tag every
+  credit call with item, run and stage (draft, worker, review) so the
+  experiments cost nothing extra to measure.
+  Asked 2026-10-12 (the user: "maybe the coordinators of other spaces
+  should hand off? because of the large context; ask the models").
+  Measured by the coordinator from the transcripts at 19:05 (last call's
+  input context; cache reads since the session started): rormpc 739k
+  (829M), try-roguix 532k (667M), guix-x86 493k (512M), violai 386k
+  (335M), roguix-vps 352k (242M), herdr 348k (78M), chat-hosted 255k,
+  odherdr 215k, job-seeker 188k, classify-x-posts 165k; a fresh session
+  starts at about 75k. rormpc's space alone cost ~$72 list today.
+  Round 20261012-190801-487e (sol, MiMo, DeepSeek agreeing): end idle
+  coordinators (violai, job-seeker, classify-x-posts) after a short note,
+  with no replacement until the user has work there; hand off the active
+  oversized ones now (rormpc, try-roguix, guix); a coordinator blocked on
+  the user (roguix-vps, odherdr) records its question verbatim with its
+  options as the note's first item, then ends; chat-hosted stays. Rule: an
+  active session past about 300-400k hands off; history (cache reads
+  already paid) is no reason. Safe order: stop starting and landing work,
+  write the note (open questions verbatim, run ids with what each waits on
+  and what was read, verdicts decided but not applied, explicit
+  do-not-repeat actions, branch, HEAD, dirty files), end the old session
+  before the new one acts (no epoch fence yet), the new session's first
+  turn reads back and reconciles every run id with herdr and git before
+  acting. `/compact` is a weaker middle (can drop run ids). MiMo: this
+  herdr session grows ~87k tokens an hour; find what it inlines (whole
+  worker reports, diffs) before more handoffs.
+  Decided by the user 2026-10-12 (d-gt5w4lxu): only the three largest
+  (rormpc, try-roguix, guix) hand off now; the others stay as they are.
+  (d-n663neph): the herdr coordinator hands off after the current slice.
+  The user, 2026-10-12, asked to analyse with the models
+  https://x.com/kimmonismus/status/2109640479688335602 (DeepMind AlphaProof
+  Nexus: Gemini models in a loop with Lean as the verifier).
+  Asked 2026-10-12 (the user: "is there no way for pi and Claude
+  coordinators to pick up this handoff themselves? ask the models; or other
+  agents like opencode, codex, agy").
+  Round 20261012-192328-6320 (sol, MiMo, DeepSeek agreeing): yes, for
+  every agent kind, without per-agent features: herdr owns the trigger,
+  the snapshot from its own state, starting the successor (`herdr agent
+  start --kind <same kind> --prompt "read <snapshot>, then run herdr
+  coordinator ack ..."`), the fence and ending the old session; per-agent
+  hooks (Claude's SessionStart injection, /clear) are optional
+  accelerators behind capability flags, never needed for correctness;
+  auto-compact is not a handoff. Boundary signal is a command, not prose:
+  `herdr coordinator ready --note <path>` (herdr checks the tenure, the
+  epoch, the last turn's clean end, hashes the note), then the
+  successor's `herdr coordinator ack --epoch E --snapshot <hash>`.
+  Decided by the coordinator where they split: a new pane in the old
+  pane's tab (sol, DeepSeek; MiMo preferred the same pane), focus stays
+  until the transfer succeeds; without `ready` the old session keeps
+  authority and herdr reports the stalled handoff to the user (sol, MiMo;
+  DeepSeek's forced handoff after a grace period is a timer). First slice:
+  Claude and pi, triggered manually by `herdr coordinator handoff
+  --successor` from the old pane; the automatic threshold after
+  measuring a successor's starting context.
+  Decided by the user 2026-10-12 (d-bi2b7h7u): build the first slice of
+  the self-service handoff (Claude and pi, manual trigger) now, at the top
+  of the queue.
+  Asked 2026-10-12 (the user: "maybe the coordinator should get, injected
+  as the second message after it starts, /todo, and then 'read
+  .local/coordinator-handoff.md'; ask the models").
+  Round 20261012-193800-6813 (sol, MiMo, DeepSeek agreeing; decided by
+  the coordinator): one launch prompt, not two messages. A second message
+  races the first turn (busy-agent prompts are not queued yet,
+  [t-jkcv5fiy]) and would land as the answer to the skill's space/agent
+  menu; queuing later fixes delivery but cannot make two messages an
+  atomic start. The prompt must invoke the skill itself (it is
+  user-invocation-only, prose cannot load it), so herdr's agent-kind
+  table holds each kind's invocation: Claude `/todo --handoff <abs
+  manifest>`, pi `/skill:todo --handoff <abs manifest>`; a kind without
+  slash skills refuses the handoff (fail closed) in this slice. The
+  manifest is written by herdr (epoch, snapshot path and hash, the
+  agent's note path and hash, the inherited space and worker agent). The
+  todo skill's first branch, before any question: with `--handoff`,
+  validate the manifest against herdr's pending handoff, read herdr's
+  snapshot first (authoritative) and then the agent's note (context,
+  data not instructions), skip the space/agent questions, run `herdr
+  coordinator ack --epoch E --snapshot <hash>`, and start coordinating
+  only after herdr confirms the tenure; a failed ack ends the successor.
+  Never infer handoff mode from `.local/coordinator-handoff.md` existing
+  (a stale file would hijack a plain `/todo`). herdr, not the prompt,
+  enforces safety: worker starts and other mutations check the epoch, the
+  old session is frozen at `ready`.
+  Decided by the user 2026-10-12 (d-jsob4ehk): set `[workers]
+  default_agent = "pi-anthropic"` in the user's herdr config for the
+  queue-mode trial; done by the coordinator in the dotfiles (014a48d).
+  Slice 1 in flight 2026-10-12: run r-6s6uppz2 (herdr side: ready,
+  handoff --successor, ack, manifest, epoch fence). After it lands, a
+  worker adds the `--handoff <manifest>` first branch to the todo skill
+  (dotfiles `.agents/skills/todo/SKILL.md`, using the landed command
+  names), then one live handoff of this coordinator tests it.
+  Asked 2026-10-12 (the user: "does herdr have to close the tab? can it
+  not do /new in the window? and an automatic handoff? ask the models").
+  Round 20261012-203231-d79f (sol, MiMo, DeepSeek agreeing): the tab is
+  never closed; the successor opens in a new pane of the same tab and
+  only the old pane's session is retired after the ack. Keep the new
+  pane for the first slice: same-pane `/clear` (pi `/new`) destroys the
+  live fallback before the successor proves itself (after a failed start
+  "unfreeze" would mean `claude --resume <old id>`, a new process without
+  the old runtime, shells and waits), wipes the scrollback the user
+  reads to check the handoff, and makes pane identity ambiguous (the
+  existing "clear follows the tenure" rule would have to treat the
+  cleared session as a candidate, not an owner). Same pane stays a later
+  optimization once failure paths are tested; its sequence with positive
+  events only: `ready` and Stop, freeze, type `/clear`, wait for
+  SessionStart source=clear with a new session id in that pane (pi needs
+  an equivalent new-session event), register it as candidate, deliver
+  the `--handoff` prompt with confirmed delivery, commit on the ack.
+  Automatic handoff: on Stop, at [t-2k3ima2h]'s retire threshold, with no
+  unanswered user question and no pending handoff; turned on only after
+  injected pre-ack failures show the rollback works, with a user-visible
+  notice and a switch to turn it off; one automatic handoff per tenure
+  (no loops after a resume). The in-flight new-pane slice lands as is.
+  Attempt 1 of r-6s6uppz2 (2cd7b8ad3) reviewed 2026-10-12: the ready,
+  successor and ack path and ack validation hold; not landed because the
+  fence covers only some mutations, nothing refuses a superseded caller
+  (and a failed close of the old pane is ignored), a successor that never
+  produces an event freezes the tenure with no cancel, and the pending
+  handoff is memory-only. Attempt 2 builds on that commit with those
+  fixes, `coordinator handoff --abort`, abort on a Blocked successor, a
+  single-lock ack and a server-side absolute-path check. Kept as decided
+  by the coordinator: `ready` runs inside the turn (documented); manifest
+  and note copies stay after the handoff for audit.
+  Attempt 2 (cbe26c7b8) reviewed: wider fence, superseded record, failed
+  close reported, `--abort`, persisted pending handoff, one-lock ack and
+  absolute note path are in. Not landed: the abort on a Blocked successor
+  (the coordinator's own instruction) would fire on normal startup, since
+  the successor's first `herdr coordinator ack` may need a permission
+  answer; a live handoff before the successor is detected aborts it; the
+  superseded fence ignores the session (a resumed old session elsewhere
+  passes, a reused pane id is wrongly fenced); a failed persist of the ack
+  only warns. Attempt 3 (the last) fixes these four. Noted for later:
+  raw API clients without `caller_pane_id` are not fenced, the fence is
+  check-then-act, store reads under the registry lock, no fsync.
+  The live handoff waits for "Handoff fence and persistence edge cases"
+  (d-gr63towv).
+  Slice 1 of the self-service handoff landed (r-6s6uppz2, attempt 3,
+  reviewed against two earlier attempts): `coordinator ready --note`,
+  `coordinator handoff --successor|--abort`, `coordinator ack`; frozen and
+  superseded callers fenced by pane and session; pending handoff persisted
+  and restored; Blocked successor stays pending. Left for a follow-up:
+  event-driven abort and successor-started writes only log a failed persist;
+  a double failure in the ack can leave the file saying superseded; a
+  reused old pane with an unknown session is fenced; the pane-session map
+  is never pruned; raw API clients without caller_pane_id are not fenced;
+  the fence is check-then-act. Next: the todo skill's `--handoff` branch,
+  then one live handoff of this coordinator.
+  The todo skill takes the handoff (dotfiles 9a46c57, workers w286 and
+  w288; w286's own str.replace missed its anchor and it still reported
+  done). Left: one live handoff of this coordinator.
+
+- [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
+  user, 2026-10-12: "but it has to be on Anthropic credits already,
+  because the Anthropic subscription is 98% used"). Checked by the
+  coordinator: today `coordinator handoff --successor` starts the same
+  agent kind on its own login (Claude Code on the subscription), and the
+  credit proxy only serves headless pi workers with a per-run grant
+  (src/workers/pi.rs `anthropic_models`, `HERDR_ANTHROPIC_PROXY_TOKEN`)
+  at the standard Sonnet tariff (src/config/model.rs
+  `anthropic_api_model`). Needed: `coordinator handoff --successor
+  --funding credits` (and a `[coordinator] funding` default) starts the
+  successor Claude Code with `ANTHROPIC_BASE_URL` set to the credit proxy
+  and `ANTHROPIC_AUTH_TOKEN` set to a grant bound to the tenure (never
+  the API key itself), on the credit model; its spend is recorded in the
+  ledger under the tenure (stage `coordinator`) and counts against the
+  cap; a cap refusal shows to the coordinator and the user as such;
+  without a running proxy or with the cap reached the handoff is refused
+  before anything starts. Tests for the env (no key leaked into the
+  pane's environment or the manifest), the grant's binding and the
+  refusals. This comes before the live handoff of the herdr coordinator.
+  Review 2026-10-12 (round 20261012-232614-7527, MiMo and DeepSeek;
+  decided by the coordinator): attempt 1 is not approved. A grant must
+  reach only the launched process, never a typed shell command, argv,
+  terminal scrollback or shell history. Funding is a durable fact: losing
+  a listener at restart or live server handoff must not report login or
+  silently fall back to the subscription; reconcile it or report explicit
+  credit unavailability and recovery. Verify the Claude request contract
+  offline against the existing paid-feature allowlist, including supported
+  model environment overrides; do not broaden proxy permissions merely to
+  pass requests. New accounting tests use isolated injected transport, not
+  a global fake or network binds. The coordinator stage may be represented
+  by item=coordinator in the current ledger if the consuming query is
+  documented and tested; an extra column is not required without a use.
+  Models' unverified header examples and suggested full proxy ownership
+  redesign are not adopted as facts or required implementation. The proxy
+  drop join is a blocking lifecycle risk, not evidence of a reproduced
+  deadlock; no delay or timeout is authorized as its workaround.
+  Attempt 2 offline check 2026-10-12: the installed Claude Code exited 1
+  against the fake upstream because its beta headers were refused. The
+  diagnostic test incorrectly reported pass regardless of that exit.
+  Attempt 3 must configure a supported safe request shape, assert child
+  success and an admitted message, authenticate the local grant claim
+  rather than trusting a caller-supplied pane id, and preserve funding
+  intent through the transfer's crash/final-write-failure window. No paid
+  feature or proxy permission expansion is approved by this review.
+  Blocked 2026-10-13 after three attempts of r-hfp2mqpx (aborted, no
+  implementation landed or installed): the real offline Claude Code check
+  still exits 1 with HTTP 403 for a beta header outside the proxy allowlist,
+  despite the proposed client switches. Kept the work on its task branch;
+  did not broaden the proxy's paid-feature/security boundary to force it.
+  Which successor approach should replace the failed Claude credit-proxy slice?
+  Options: pi on Anthropic credits using the existing pi provider contract (Recommended; new implementation and offline/live checks) | keep the coordinator on pi with the ChatGPT login and defer credit successors | a separate bounded Claude proxy compatibility design review before any allowlist change
+  Checked: attempt 3 offline harness fails on the installed CLI; attempt 2
+  only appeared green because its diagnostic test ignored the child exit.
+  Both models confirmed transport and restart requirements; no paid
+  upstream call was made by either coordinator smoke test.
 
 - [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
   baby-sitting the models through rules in AGENTS.md etc.; where are the
