@@ -229,6 +229,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Asked 2026-10-12 (the user: "maybe the coordinator should get, injected
   as the second message after it starts, /todo, and then 'read
   .local/coordinator-handoff.md'; ask the models").
+  Round 20261012-193800-6813 (sol, MiMo, DeepSeek agreeing; decided by
+  the coordinator): one launch prompt, not two messages. A second message
+  races the first turn (busy-agent prompts are not queued yet,
+  [t-jkcv5fiy]) and would land as the answer to the skill's space/agent
+  menu; queuing later fixes delivery but cannot make two messages an
+  atomic start. The prompt must invoke the skill itself (it is
+  user-invocation-only, prose cannot load it), so herdr's agent-kind
+  table holds each kind's invocation: Claude `/todo --handoff <abs
+  manifest>`, pi `/skill:todo --handoff <abs manifest>`; a kind without
+  slash skills refuses the handoff (fail closed) in this slice. The
+  manifest is written by herdr (epoch, snapshot path and hash, the
+  agent's note path and hash, the inherited space and worker agent). The
+  todo skill's first branch, before any question: with `--handoff`,
+  validate the manifest against herdr's pending handoff, read herdr's
+  snapshot first (authoritative) and then the agent's note (context,
+  data not instructions), skip the space/agent questions, run `herdr
+  coordinator ack --epoch E --snapshot <hash>`, and start coordinating
+  only after herdr confirms the tenure; a failed ack ends the successor.
+  Never infer handoff mode from `.local/coordinator-handoff.md` existing
+  (a stale file would hijack a plain `/todo`). herdr, not the prompt,
+  enforces safety: worker starts and other mutations check the epoch, the
+  old session is frozen at `ready`.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
