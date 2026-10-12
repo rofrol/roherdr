@@ -11,6 +11,79 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
+  them in a usage widget (the user, 2026-10-12: "so we do not lose these
+  credits", "and show it in a usage widget; spend the $200 first?"; he
+  delegated the choice to the models, d-qj22f4ck). Facts
+  (platform.claude.com/docs/en/about-claude/api-credits-for-subscribers):
+  $200 per billing cycle on Max 20x, expire at its end with no rollover;
+  they cover the Claude API, the Agent SDK and Managed Agents, not Claude
+  Code, so a `claude -p` worker cannot use them; claimed by linking a
+  Console organization (the user's step) and spent through an API key of
+  that organization (created and stored by the user, never seen by an
+  agent). Decided (round of 2026-10-12 plus the docs):
+  1. A second headless worker kind that runs on the Agent SDK with the API
+     key, in its own folder slot, for independent items; the subscription
+     worker keeps its slot; neither edits TODO.md in parallel.
+  2. When the subscription hits its limit, waiting items go to the API
+     worker while credit remains, else to pi.
+  3. A hard cap: a dedicated Console workspace with a spend limit at the
+     credit amount (Anthropic enforces it), plus herdr's own per-run
+     accounting (run, item, model, tokens, the SDK's reported cost) that
+     fails closed when the counter is unavailable.
+  4. A usage widget in the sidebar: credit spent this cycle against the
+     cap and the days to expiry (from herdr's accounting; the Console
+     Cost page remains the authority), next to the subscription's usage.
+  5. Front-load: with credits expiring per cycle, the API worker takes
+     items from the start of the cycle until the cap.
+  Needs from the user first: claim the credits (claude.ai Settings >
+  Billing, link a Console organization), create a workspace with a spend
+  limit and an API key in it, store the key where herdr reads it
+  (Keychain), and say where.
+  Done 2026-10-12 (the user approved linking, from the menu): the Max plan's
+  API credits are linked to the Console organization "Roman's Individual
+  Org"; $200 arrived, next credit Nov 8, 2026. Left for the user: log in to
+  the Console, create the workspace with a spend limit and an API key in it,
+  store the key in the Keychain.
+  Done 2026-10-12: Console workspace `herdr-workers`
+  (<workspace id>) with a $200 monthly spend limit (the
+  limit resets on the 1st of the calendar month, the credits on the 8th);
+  the organization's own limit is $200,000, so only the workspace limit
+  caps spending. The org shows US$209.86 of credits. Left for the user: an
+  API key in that workspace, stored in the Keychain.
+  Key storage decided 2026-10-12 (the user: "no Keychain, it may run on
+  the VPS without one; ask the models"; round 20261012-005401-f62e, sol,
+  MiMo, DeepSeek agreeing): a static `herdr-workers` workspace key in a
+  0600 file `<key file>` (config
+  `anthropic_api_key_file`, read with `read_secret_file`, same on the Mac
+  and the VPS; on Guix never declarative: the store is world-readable);
+  the key never reaches the worker: herdr keeps it in memory and proxies
+  the worker's Anthropic calls over a user-only socket with a fixed
+  Anthropic destination (no general or CONNECT proxy), rewriting
+  `Authorization`; the worker gets only a per-run opaque proxy token; the
+  sandbox must deny the key file; no header logging, core dumps off.
+  Rejected: Keychain/secret-tool (no keyring on a headless VPS), a
+  secret command (later at most), herdr as its own OIDC issuer (a signing
+  key on disk instead of an API key). Workload Identity Federation only
+  if a real identity provider appears.
+  Done 2026-10-12: the user created the key `herdr-worker` in
+  `herdr-workers` and stored it in `<key file>`
+  (checked: 0600, owned by the user, `sk-ant-` prefix; the contents were
+  not read). Ready for a worker.
+  Moved to the front 2026-10-12 (the user: "we need these credits, only
+  86% of the limit is left; when will they be used? ask the models";
+  round of 2026-10-12, sol, MiMo, DeepSeek): build in slices. Slice 1:
+  herdr's key proxy (key read from the 0600 file into memory only, a
+  per-run bearer token, a fixed Anthropic destination with an
+  endpoint/model allowlist, client auth headers stripped, the key path and
+  direct Anthropic egress blocked in the sandbox) plus per-run accounting
+  and a global $200 cap with a kill switch, before any spend; and the
+  quickest worker on it: pi with an Anthropic model if pi honors a base
+  URL and token from the environment (check first), else a minimal Agent
+  SDK worker. Slice 2: the full Agent SDK worker kind in `todo run`,
+  fallback at the subscription limit, the usage widget. The coordinator
+  itself (Claude Code) cannot use the credits.
+
 - [ ] Supervision delivers its findings: it wakes the owning coordinator [t-due4cu42]
   (the user, 2026-10-12: "and how does supervision work? ask the
   models"). Audit at 01:29: 8 open findings, 7 of them the chat-hosted
@@ -1982,66 +2055,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   retried only on the next directory change). Bind on a temporary name,
   `listen`, then rename it into place, so the directory event means
   connectable; a test that connects on the event.
-
-- [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
-  them in a usage widget (the user, 2026-10-12: "so we do not lose these
-  credits", "and show it in a usage widget; spend the $200 first?"; he
-  delegated the choice to the models, d-qj22f4ck). Facts
-  (platform.claude.com/docs/en/about-claude/api-credits-for-subscribers):
-  $200 per billing cycle on Max 20x, expire at its end with no rollover;
-  they cover the Claude API, the Agent SDK and Managed Agents, not Claude
-  Code, so a `claude -p` worker cannot use them; claimed by linking a
-  Console organization (the user's step) and spent through an API key of
-  that organization (created and stored by the user, never seen by an
-  agent). Decided (round of 2026-10-12 plus the docs):
-  1. A second headless worker kind that runs on the Agent SDK with the API
-     key, in its own folder slot, for independent items; the subscription
-     worker keeps its slot; neither edits TODO.md in parallel.
-  2. When the subscription hits its limit, waiting items go to the API
-     worker while credit remains, else to pi.
-  3. A hard cap: a dedicated Console workspace with a spend limit at the
-     credit amount (Anthropic enforces it), plus herdr's own per-run
-     accounting (run, item, model, tokens, the SDK's reported cost) that
-     fails closed when the counter is unavailable.
-  4. A usage widget in the sidebar: credit spent this cycle against the
-     cap and the days to expiry (from herdr's accounting; the Console
-     Cost page remains the authority), next to the subscription's usage.
-  5. Front-load: with credits expiring per cycle, the API worker takes
-     items from the start of the cycle until the cap.
-  Needs from the user first: claim the credits (claude.ai Settings >
-  Billing, link a Console organization), create a workspace with a spend
-  limit and an API key in it, store the key where herdr reads it
-  (Keychain), and say where.
-  Done 2026-10-12 (the user approved linking, from the menu): the Max plan's
-  API credits are linked to the Console organization "Roman's Individual
-  Org"; $200 arrived, next credit Nov 8, 2026. Left for the user: log in to
-  the Console, create the workspace with a spend limit and an API key in it,
-  store the key in the Keychain.
-  Done 2026-10-12: Console workspace `herdr-workers`
-  (<workspace id>) with a $200 monthly spend limit (the
-  limit resets on the 1st of the calendar month, the credits on the 8th);
-  the organization's own limit is $200,000, so only the workspace limit
-  caps spending. The org shows US$209.86 of credits. Left for the user: an
-  API key in that workspace, stored in the Keychain.
-  Key storage decided 2026-10-12 (the user: "no Keychain, it may run on
-  the VPS without one; ask the models"; round 20261012-005401-f62e, sol,
-  MiMo, DeepSeek agreeing): a static `herdr-workers` workspace key in a
-  0600 file `<key file>` (config
-  `anthropic_api_key_file`, read with `read_secret_file`, same on the Mac
-  and the VPS; on Guix never declarative: the store is world-readable);
-  the key never reaches the worker: herdr keeps it in memory and proxies
-  the worker's Anthropic calls over a user-only socket with a fixed
-  Anthropic destination (no general or CONNECT proxy), rewriting
-  `Authorization`; the worker gets only a per-run opaque proxy token; the
-  sandbox must deny the key file; no header logging, core dumps off.
-  Rejected: Keychain/secret-tool (no keyring on a headless VPS), a
-  secret command (later at most), herdr as its own OIDC issuer (a signing
-  key on disk instead of an API key). Workload Identity Federation only
-  if a real identity provider appears.
-  Done 2026-10-12: the user created the key `herdr-worker` in
-  `herdr-workers` and stored it in `<key file>`
-  (checked: 0600, owned by the user, `sk-ant-` prefix; the contents were
-  not read). Ready for a worker.
 
 - [ ] `herdr todo run` serves a coordinator that owns two repositories [t-o73wcaoq]
   (the user via the rormpc coordinator, 2026-10-12: "report it to the herdr
