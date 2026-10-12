@@ -177,6 +177,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   only. Deterministic, no model.
   Decided by the user 2026-10-12 (d-64mjmvju): yes, queue it.
 
+- [ ] A herdr-job plugin test catches another test's sleeps (follow-up of [t-t62majdo]
+  [t-73ysybkj], found by the coordinator 2026-10-12: run r-fgkhfqpt's
+  install failed in `just maintenance-test` at
+  `plugins/job/test_herdr_job.py` `WaitAgentTests.test_an_error_that_waiting_cannot_fix_ends_the_wait`
+  with `self.sleeps == [0.001, 0.002]` instead of `[]`; 30/30 alone pass;
+  the same run warned "subprocess ... is still running"). Likely cause: the
+  test patches `time.sleep` process-wide and records calls from a thread
+  or helper another test left running. Find the source of the 0.001/0.002
+  sleeps, make the recorder count only the code under test (or end the
+  leftover thread), and prove it with the documented stress loop.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
