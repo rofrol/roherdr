@@ -2164,6 +2164,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   5. If the old Mac runs 10.11 or older, or the build cannot avoid newer
      instructions: Linux on the old Mac, or the fallback that works today,
      `ssh -t <m1> herdr` from any terminal.
+  Facts checked by the coordinator over ssh (2026-10-12): the old MacBook
+  runs Guix System (Linux 6.12, x86_64), CPU Core 2 Duo P8600: SSSE3 and
+  SSE4.1 but no SSE4.2, POPCNT or AVX; 2 cores, 16 GB; no herdr there yet.
+  So: not macOS; build the static `x86_64-unknown-linux-musl` client with
+  a baseline CPU (Rust `-C target-cpu=x86-64`, Zig/libghostty-vt
+  baseline, no SSE4.2/POPCNT/AVX), verify with objdump that the binary has
+  none of those instructions, copy it to the old Mac and attach with
+  `herdr --remote <m1>`; the M1 needs Remote Login. Guix packaging later.
 
 ## Proposed
 
