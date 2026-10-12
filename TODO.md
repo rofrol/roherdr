@@ -226,6 +226,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-12 (d-bi2b7h7u): build the first slice of
   the self-service handoff (Claude and pi, manual trigger) now, at the top
   of the queue.
+  Asked 2026-10-12 (the user: "maybe the coordinator should get, injected
+  as the second message after it starts, /todo, and then 'read
+  .local/coordinator-handoff.md'; ask the models").
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
