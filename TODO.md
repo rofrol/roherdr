@@ -3304,6 +3304,17 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
+- [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
+  2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
+  5.5) ran `pkill -f "herdr-"` and `pkill -f nextest` in the folder slot;
+  it killed the coordinator's herdr-job waits twice (`todo.wait`
+  client_disconnected at 18:25:26 and 18:41:00 UTC) and another
+  session's `agent.wait_verdict`. Proposed: the worker policy (pre-tool
+  checks) denies `pkill`, `killall` and `kill` by pattern or of a PID the
+  worker did not start; `todo run`'s task suffix states it; a test with
+  these exact commands. Cost: small src change in the worker policy plus
+  its tests; no guest build.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
