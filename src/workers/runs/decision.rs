@@ -154,6 +154,36 @@ pub(super) fn parse_cli_output(stdout: &str) -> Result<(Value, Option<String>), 
     Ok((output, model))
 }
 
+/// The output tokens one credit call may bill at most.
+#[cfg(unix)]
+const CREDIT_MAX_TOKENS: u32 = 16_000;
+
+/// What a credit call came to.
+// The credit proxy is Unix only: elsewhere a credit call is always refused.
+#[cfg_attr(not(unix), allow(dead_code))]
+enum CreditCall {
+    Answered { reply: Value, cost: f64 },
+    Refused(String),
+}
+
+/// The structured output and the model of an API message that answered a
+/// call with a JSON schema: its text blocks hold the JSON.
+fn parse_message(reply: &Value) -> Result<(Value, Option<String>), String> {
+    if reply["stop_reason"].as_str() == Some("max_tokens") {
+        return Err("the model's answer was cut at its token limit".into());
+    }
+    let text: String = reply["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect();
+    let output: Value = serde_json::from_str(text.trim())
+        .map_err(|error| format!("the model's answer is not JSON: {error}: {}", cut(&text)))?;
+    Ok((output, reply["model"].as_str().map(str::to_owned)))
+}
+
 pub(super) fn cut(text: &str) -> String {
     let text = text.trim();
     match text.char_indices().nth(ERROR_MAX) {
@@ -186,10 +216,10 @@ pub(super) fn digest(text: &str) -> String {
 
 /// One decision call's prompt: the output schema, the system prompt and
 /// the line before the input.
-pub(super) struct Prompt<'a> {
-    pub(super) schema: &'a str,
-    pub(super) system: &'a str,
-    pub(super) intro: &'a str,
+pub(in crate::workers) struct Prompt<'a> {
+    pub(in crate::workers) schema: &'a str,
+    pub(in crate::workers) system: &'a str,
+    pub(in crate::workers) intro: &'a str,
 }
 
 /// The calls already recorded for one decision (`kind` notes whose `key`
@@ -257,6 +287,97 @@ impl WorkerSupervisor {
             .map_err(|error| format!("the worker store failed: {error}"))?;
         super::announce();
         Ok(())
+    }
+
+    /// The call of one of `run`'s decisions. A run on the API credits
+    /// (`pi-anthropic`) makes it through herdr's credit proxy, its cost in the
+    /// credit ledger under the run; a credit refusal (the proxy, the cap, the
+    /// key) falls back once to `claude -p` and is recorded as a
+    /// `run_credit_call_fallback` event. Other runs call `claude -p` as ever.
+    pub(in crate::workers) fn call_model_for(
+        &self,
+        run: &super::Run,
+        prompt: &Prompt<'_>,
+        input: &str,
+    ) -> Result<(Value, Option<String>), String> {
+        if !run.finish.anthropic_credits {
+            return self.call_model(prompt, input);
+        }
+        match self.call_credit(run, prompt, input) {
+            Ok(CreditCall::Answered { reply, cost }) => {
+                let note = json!({"type": "run_credit_call", "run_spent_usd": cost});
+                self.write_note(&run.info.run_id, &note)?;
+                parse_message(&reply)
+            }
+            Ok(CreditCall::Refused(reason)) | Err(reason) => {
+                let note = json!({"type": "run_credit_call_fallback", "refusal": reason});
+                self.write_note(&run.info.run_id, &note)?;
+                self.call_model(prompt, input)
+            }
+        }
+    }
+
+    /// One call through the credit proxy, in-process (no listener: the
+    /// run's grant, the run's ledger rows). `Err` and `Refused` are credit refusals.
+    #[cfg(unix)]
+    fn call_credit(
+        &self,
+        run: &super::Run,
+        prompt: &Prompt<'_>,
+        input: &str,
+    ) -> Result<CreditCall, String> {
+        use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
+
+        let mut config = crate::config::load_live_config()
+            .map_err(|_| "cannot load credit configuration".to_owned())?
+            .config
+            .workers;
+        if let Some(model) = run
+            .finish
+            .credit_model
+            .as_deref()
+            .and_then(|model| model.strip_prefix(crate::workers::pi::ANTHROPIC_PREFIX))
+        {
+            config.anthropic_api_model = model.to_owned();
+        }
+        let ledger = ledger_path(&config).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(crate::config::state_dir()).map_err(|error| error.to_string())?;
+        let proxy = AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
+        let schema: Value = serde_json::from_str(prompt.schema)
+            .map_err(|error| format!("the output schema is not JSON: {error}"))?;
+        let body = json!({
+            "model": config.anthropic_api_model,
+            "max_tokens": CREDIT_MAX_TOKENS,
+            "system": prompt.system,
+            "messages": [{"role": "user", "content": format!("{}\n\n{input}\n", prompt.intro)}],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        })
+        .to_string();
+        let (status, reply) = proxy
+            .message(&run.info.run_id, &run.info.item, &body)
+            .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
+        if status != 200 {
+            return Ok(CreditCall::Refused(format!(
+                "the credit proxy answered {status}: {}",
+                cut(&reply)
+            )));
+        }
+        let reply: Value = serde_json::from_str(&reply)
+            .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
+        // The proxy settled the call in the ledger before it answered.
+        let (cost, _) = AnthropicProxy::accounting(&ledger, Some(&run.info.run_id))
+            .map_err(|error| error.to_string())?;
+        Ok(CreditCall::Answered { reply, cost })
+    }
+
+    #[cfg(not(unix))]
+    fn call_credit(
+        &self,
+        _run: &super::Run,
+        _prompt: &Prompt<'_>,
+        _input: &str,
+    ) -> Result<CreditCall, String> {
+        Err("the Anthropic credit proxy requires Unix".into())
     }
 
     /// One `claude -p` call with `input` on its standard input; its exit is

@@ -10844,6 +10844,147 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             created[0]["event"].as_i64().unwrap()
         }
 
+        /// A fake API upstream: answers with the decision `approve`, from
+        /// the model the request names, billing 100 input and 20 output tokens.
+        #[cfg(unix)]
+        fn fake_api(body: &[u8], output: &mut dyn std::io::Write) -> std::io::Result<()> {
+            let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+            // The same bounded call: no tools, a JSON schema, the system prompt.
+            assert!(request.get("tools").is_none(), "{request}");
+            assert_eq!(request["output_config"]["format"]["type"], "json_schema");
+            assert!(request["system"].is_string());
+            let message = serde_json::json!({
+                "model": request["model"], "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "{\"action\": \"approve\"}"}],
+                "usage": {"input_tokens": 100, "output_tokens": 20,
+                          "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            });
+            output.write_all(message.to_string().as_bytes())
+        }
+
+        /// Credentials for the credit path in the fixture's own state: a key
+        /// file, a cycle and a cap of `cap` dollars.
+        #[cfg(unix)]
+        fn credit_config(fixture: &Fixture, cap: f64) -> std::path::PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let key = fixture.root.join("api-key");
+            std::fs::write(&key, "sk-ant-test-key\n").unwrap();
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let config = fixture.root.join("credit.toml");
+            std::fs::write(
+                &config,
+                format!(
+                    "[workers]\nanthropic_api_key_file = \"{}\"\nanthropic_api_cycle = \"test-cycle\"\nanthropic_api_cap_usd = {cap}\n",
+                    key.display()
+                ),
+            )
+            .unwrap();
+            std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config);
+            std::env::set_var("XDG_STATE_HOME", fixture.root.join("state"));
+            std::fs::create_dir_all(fixture.root.join("state")).unwrap();
+            crate::platform::anthropic_proxy::ledger_path(
+                &crate::config::load_live_config().unwrap().config.workers,
+            )
+            .unwrap()
+        }
+
+        /// A run that waits at its review (no auto-review), as the credit
+        /// run or the claude run the calls are made for.
+        #[cfg(unix)]
+        fn run_for_calls(fixture: &Fixture, credits: bool) -> super::runs::Run {
+            let run = fixture
+                .supervisor
+                .todo_run(params(fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+                .unwrap();
+            let mut run = fixture.supervisor.load_run(&run.run_id).unwrap();
+            run.finish.anthropic_credits = credits;
+            run
+        }
+
+        #[cfg(unix)]
+        fn prompt() -> super::runs::decision::Prompt<'static> {
+            super::runs::decision::Prompt {
+                schema: r#"{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string"}}}"#,
+                system: "decide",
+                intro: "Decide.",
+            }
+        }
+
+        /// S7: a `pi-anthropic` run's draft/review calls go through the
+        /// credit proxy, not `claude -p`, and land in the credit ledger
+        /// under the run, each with an event.
+        #[cfg(unix)]
+        #[test]
+        fn a_credit_runs_decision_calls_go_through_the_api_credits() {
+            use crate::platform::anthropic_proxy::{AnthropicProxy, TEST_UPSTREAM};
+            let fixture = reviewed("todo-credit-calls", &[]);
+            let ledger = credit_config(&fixture, 5.0);
+            *TEST_UPSTREAM.lock().unwrap() = Some(fake_api);
+            let run = run_for_calls(&fixture, true);
+            for _ in 0..2 {
+                let (output, model) = fixture
+                    .supervisor
+                    .call_model_for(&run, &prompt(), "{}")
+                    .unwrap();
+                assert_eq!(output, serde_json::json!({"action": "approve"}));
+                assert_eq!(model.as_deref(), Some("claude-sonnet-5-5"));
+            }
+            assert!(calls(&fixture).is_empty(), "claude -p was called");
+            let (spent, pending) =
+                AnthropicProxy::accounting(&ledger, Some(&run.info.run_id)).unwrap();
+            assert!(spent > 0.0 && pending == 0, "{spent} {pending}");
+            let recorded = run_events(&fixture, &run.info.run_id, "run_credit_call");
+            assert_eq!(recorded.len(), 2, "{recorded:#?}");
+            assert!(
+                recorded[1]["run_spent_usd"].as_f64().unwrap()
+                    > recorded[0]["run_spent_usd"].as_f64().unwrap()
+            );
+            assert!(run_events(&fixture, &run.info.run_id, "run_credit_call_fallback").is_empty());
+        }
+
+        /// S6: a credit refusal (here the cap) falls back to `claude -p`
+        /// for that call once, recorded as an event.
+        #[cfg(unix)]
+        #[test]
+        fn a_credit_refusal_falls_back_to_claude_once() {
+            let fixture = reviewed(
+                "todo-credit-refusal",
+                &[r#"{"action": "approve", "note": "by claude"}"#],
+            );
+            let _ = credit_config(&fixture, 0.0);
+            let run = run_for_calls(&fixture, true);
+            let (output, model) = fixture
+                .supervisor
+                .call_model_for(&run, &prompt(), "{}")
+                .unwrap();
+            assert_eq!(output["note"], "by claude");
+            assert_eq!(model.as_deref(), Some("stub-review-model"));
+            assert_eq!(calls(&fixture).len(), 1);
+            let fallbacks = run_events(&fixture, &run.info.run_id, "run_credit_call_fallback");
+            assert_eq!(fallbacks.len(), 1, "{fallbacks:#?}");
+            assert!(fallbacks[0]["refusal"].as_str().is_some());
+            assert!(run_events(&fixture, &run.info.run_id, "run_credit_call").is_empty());
+        }
+
+        /// A run on `claude` keeps `claude -p` and never touches the credits.
+        #[cfg(unix)]
+        #[test]
+        fn a_claude_runs_decision_calls_are_unchanged() {
+            let fixture = reviewed("todo-credit-claude", &[r#"{"action": "approve"}"#]);
+            let ledger = credit_config(&fixture, 5.0);
+            let run = run_for_calls(&fixture, false);
+            let (output, model) = fixture
+                .supervisor
+                .call_model_for(&run, &prompt(), "{}")
+                .unwrap();
+            assert_eq!(output["action"], "approve");
+            assert_eq!(model.as_deref(), Some("stub-review-model"));
+            assert_eq!(calls(&fixture).len(), 1);
+            assert!(!ledger.exists());
+            assert!(run_events(&fixture, &run.info.run_id, "run_credit_call").is_empty());
+            assert!(run_events(&fixture, &run.info.run_id, "run_credit_call_fallback").is_empty());
+        }
+
         #[test]
         fn an_approval_is_bound_to_the_commit_and_lands_it() {
             let fixture = reviewed(

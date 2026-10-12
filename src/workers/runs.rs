@@ -1668,8 +1668,10 @@ impl WorkerSupervisor {
         mut params: TodoRunParams,
     ) -> Result<TodoRunInfo, WorkerError> {
         params.agent = Some(WorkerAgent::Pi);
-        if params.auto_review || params.auto_answer || params.ignore_usage {
-            return Err(WorkerError::Invalid("credit runs do not support subscription auto-review, auto-answer or --ignore-usage".into()));
+        if params.ignore_usage {
+            return Err(WorkerError::Invalid(
+                "credit runs do not support --ignore-usage".into(),
+            ));
         }
         self.create_run_with_wait(params, false, None, false, true)
     }

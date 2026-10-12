@@ -438,7 +438,7 @@ impl WorkerSupervisor {
             }
             let call = errors.len() + 1;
             let answered = self
-                .call_model(&prompt, &text)
+                .call_model_for(run, &prompt, &text)
                 .and_then(|(output, model)| Ok((parse_decision(&output, checks)?, model)));
             let note = match &answered {
                 Ok((decision, model)) => json!({

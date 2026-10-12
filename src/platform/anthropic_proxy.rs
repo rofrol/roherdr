@@ -176,6 +176,35 @@ impl AnthropicProxy {
         })
     }
 
+    /// One `POST /v1/messages` of `body` made in-process, with no listener:
+    /// the proxy's whole request validation, reservation and ledger
+    /// accounting apply, under `run` and `item`. Returns the HTTP status and
+    /// body the proxy answered; an `Err` means it answered nothing.
+    pub(crate) fn message(
+        mut self,
+        run: &str,
+        item: &str,
+        body: &str,
+    ) -> io::Result<(u16, String)> {
+        let token = self.register(run, item)?;
+        let request = format!(
+            "POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut answer = Vec::new();
+        let served = self.serve(request.as_bytes(), &mut answer, upstream_transport());
+        let answer = String::from_utf8_lossy(&answer).into_owned();
+        let (head, text) = answer.split_once("\r\n\r\n").unwrap_or((&answer, ""));
+        match head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse::<u16>().ok())
+        {
+            Some(status) => Ok((status, text.to_owned())),
+            None => Err(served.err().unwrap_or_else(refused)),
+        }
+    }
+
     /// Tokens live only in the owning server and the run's authenticated client.
     pub(crate) fn register(&mut self, run: &str, item: &str) -> io::Result<String> {
         if run.is_empty() || item.is_empty() {
@@ -389,7 +418,7 @@ impl LoopbackProxy {
         run: &str,
         item: &str,
     ) -> io::Result<Self> {
-        Self::start_with(proxy, ledger, run, item, curl)
+        Self::start_with(proxy, ledger, run, item, upstream_transport())
     }
 
     fn start_with(
@@ -443,6 +472,36 @@ impl Drop for LoopbackProxy {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// A fake upstream for offline tests of the callers: it gets the request body
+/// and writes the message JSON an API answer would hold.
+type Upstream = fn(&str, &Request, &mut dyn Write) -> io::Result<()>;
+
+/// The upstream transport: curl, or the fake of a test that set one.
+fn upstream_transport() -> Upstream {
+    #[cfg(test)]
+    if TEST_UPSTREAM
+        .lock()
+        .map(|fake| fake.is_some())
+        .unwrap_or(false)
+    {
+        return test_upstream;
+    }
+    curl
+}
+
+#[cfg(test)]
+pub(crate) type FakeUpstream = fn(&[u8], &mut dyn Write) -> io::Result<()>;
+#[cfg(test)]
+pub(crate) static TEST_UPSTREAM: Mutex<Option<FakeUpstream>> = Mutex::new(None);
+#[cfg(test)]
+fn test_upstream(_key: &str, request: &Request, output: &mut dyn Write) -> io::Result<()> {
+    let fake = TEST_UPSTREAM.lock().ok().and_then(|fake| *fake);
+    match fake {
+        Some(fake) => fake(&request.body, output),
+        None => Err(refused()),
     }
 }
 
