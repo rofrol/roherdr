@@ -1414,3 +1414,15 @@ button at the right of the tab bar (`♪` on, `×` muted), `prefix+m`
 (`[keys] toggle_sound`), persisted as `[ui.sound] enabled` in the client's
 config, also for remote machines; Settings -> Sound when the tab bar is
 hidden; `HERDR_DISABLE_SOUND` still wins.
+
+## Rewrite the fork's history to remove the owner's private details (the
+
+The coordinator had written the owner's private details into TODO.md and
+DECISIONS.md and `todo run` pushed them to the public fork (2026-10-12).
+Fixed: the fork's commits were rewritten with git filter-repo (only those
+above the upstream base) and the owner force-pushed (d73ada7e); now
+(6e217a3c) AGENTS.md forbids private details in tracked files (they go to
+the ignored `.local/`), and `scripts/private_details_check.py` refuses a
+`todo run` landing or push whose outgoing commits add lines matching the
+untracked `.local/private-patterns.txt`, reporting only file and line;
+an optional pre-push hook. Commit messages are not scanned yet.
