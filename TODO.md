@@ -2443,6 +2443,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   read less than its predecessor: it starts from the snapshot and pages in
   TODO.md/DECISIONS.md items only as needed; (e) `/compact` stays an
   in-session tool, measured against handoffs, not a replacement.
+  Asked again 2026-10-12 (the user: "we need automatic switching to a new
+  coordinator when the context gets too big; ask the models"): the switch
+  must be automatic, not a manual handoff like the one at 15:05 today.
+
+- [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
+  Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
+  Reported by the roguix-vps coordinator 2026-10-11: after RackNerd moved
+  the VPS to <new IP>, 11 Porkbun A records had to move; the owner
+  said "change the records, you have Porkbun API access", but the
+  classifier's DNS category denied even reading the variable names in
+  the DNS provider's env file; the agent handed a script to run with `!`. An
+  in-session request does not lift a classifier category; only a
+  permission rule does, and permission changes need your approval of the
+  whole patch (AGENTS.md); a peer coordinator cannot grant it.
+  Decided by the user 2026-10-12: an allow rule in settings.json for one
+  named, reviewed script, approved by the user as a whole patch. A worker
+  prepares the patch outside `~`; the coordinator applies it after a yes.
 
 ## Proposed
 
@@ -2714,6 +2731,7 @@ user needs to decide or do.
   create that credential (a fine-grained token or a second account) and
   approve the ruleset change on GitHub (outward-facing); CI checks to
   require are listed by the worker that prepares it.
+  Asked 2026-10-12: the user creates the credential later; the item waits.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
@@ -2843,41 +2861,6 @@ user needs to decide or do.
   Decided 2026-10-10 (the user: "decide with the models"; round
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
-
-- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
-  ends with new commits, list them as "to review" until I acknowledge them.
-  Decided by the user 2026-10-06: start with lazygit in a popup on the
-  tab's repository, no new code beyond that; a herdr-native list only if
-  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
-  unit is the commit (uncommitted changes in the shared checkout cannot be
-  attributed); at turn start record the session id and HEAD, at turn end
-  find new commits carrying `Claude-Session: <id>`; show each commit's own
-  patch, never `git diff first^..last` (other agents' commits fall in the
-  range); only an explicit acknowledgement clears "to review". Codex and pi
-  need an equivalent of the trailer.
-  Done 2026-10-11 as the user decided (lazygit first, no new code):
-  `prefix+alt+g` opens lazygit in a 90% popup in the focused pane's
-  directory (dotfiles d603a3f, config reloaded; `prefix+g` is taken by
-  the default goto). Left: the herdr-native "to review" list, only if
-  lazygit falls short; the user's feedback decides.
-  Does lazygit in the popup (`prefix+alt+g`) cover reviewing agent commits, or build the herdr-native list?
-  Options: lazygit is enough, close the item (Recommended) | build the native "to review" list
-
-- [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
-  Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
-  Reported by the roguix-vps coordinator 2026-10-11: after RackNerd moved
-  the VPS to <new IP>, 11 Porkbun A records had to move; the owner
-  said "change the records, you have Porkbun API access", but the
-  classifier's DNS category denied even reading the variable names in
-  the DNS provider's env file; the agent handed a script to run with `!`. An
-  in-session request does not lift a classifier category; only a
-  permission rule does, and permission changes need your approval of the
-  whole patch (AGENTS.md); a peer coordinator cannot grant it.
-
-- [ ] [t-rntnb7bs] Pre-trust herdr's worktree roots in Claude Code so pane workers in new worktrees do not stop at the folder-trust dialog?
-  Options: no, keep the dialog and let herdr report it at once; prefer headless workers (Recommended) | yes, trust ~/.herdr/worktrees and ../herdr-worktrees once yourself (trust extends to everything created there)
-  Checked 2026-10-11: agents may not answer the dialog or write trust
-  config (AGENTS.md); a guix pane worker sat blocked until the user clicked.
 
 ### Decide
 

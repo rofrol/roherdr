@@ -1436,3 +1436,16 @@ never clears a high latch, readings kept as history; a refused `todo run`
 becomes a durable, idempotent, cancelable pending start that herdr
 dispatches once when the gate opens (re-checked at dispatch); the sidebar
 and `?` say why the queue is paused.
+
+## Agent commit review and worktree trust (2026-10-12)
+
+Reviewing agent commits: lazygit in a 90% popup (`prefix+alt+g`, dotfiles)
+is enough (decided by the user 2026-10-12); no herdr-native "to review"
+list. If it is ever built: the unit is the commit, found by the
+`Claude-Session` trailer, each commit's own patch, cleared only by an
+explicit acknowledgement.
+
+Folder trust for worktrees: herdr's worktree roots are not pre-trusted in
+Claude Code (decided by the user 2026-10-12); the trust dialog stays,
+herdr reports a worker blocked on it at once, and headless workers are
+preferred. Agents never answer trust dialogs or write trust config.
