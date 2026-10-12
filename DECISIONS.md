@@ -1405,3 +1405,12 @@ for a coordinator's prompt to its own worker, `agent prompt --note` and
 prompts to another coordinator are messages, false ones close for good; a
 notice waits while any client focuses the pane and starts with "herdr
 supervision". Lesson: a rollback across a store migration breaks the store.
+
+## A sound on/off button in herdr's UI (the user, 2026-10-12: "some
+
+The user asked for "some icon in herdr, a button that turns off sounds"
+(2026-10-12). Now (fe9ea526, the first item done by a pi worker): a sound
+button at the right of the tab bar (`♪` on, `×` muted), `prefix+m`
+(`[keys] toggle_sound`), persisted as `[ui.sound] enabled` in the client's
+config, also for remote machines; Settings -> Sound when the tab bar is
+hidden; `HERDR_DISABLE_SOUND` still wins.

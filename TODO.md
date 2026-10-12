@@ -34,12 +34,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tab; a handoff between pi's last message and its turn end loses the result
   text (to fix with the verdict recording of the Stop path).
 
-- [ ] A sound on/off button in herdr's UI (the user, 2026-10-12: "some [t-txlrolmj]
-  icon in herdr, a button that turns off sounds"). A clickable icon (the
-  sidebar footer or the top bar, following the existing UI patterns) that
-  mutes and unmutes herdr's sounds at once, shows the current state, and
-  persists it in the config (`[ui.sound] enabled`); a key binding too.
-
 - [ ] Rewrite the fork's history to remove the owner's private details (the [t-y54wm4hy]
   user, 2026-10-12: "you put private things into the repo?", "rewrite the
   history of my changes", "as TODO 4"). The coordinator wrote host IPs,
