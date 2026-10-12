@@ -2898,6 +2898,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     the cap with the user told; (3) automatic only after a few handoffs
     show the successor's cost per hour is lower.
 
+- [ ] A "reviewed" state for TODO.md, and a coordinator that does one item [t-ktz7l3hl]
+  and exits (the user, 2026-10-12: "maybe set some state for TODO.md that
+  the list has been reviewed; when something is added or changed it has to
+  be reviewed again. And the coordinator does one task and disappears? ask
+  the models").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
