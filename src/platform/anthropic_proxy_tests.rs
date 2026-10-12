@@ -124,6 +124,49 @@ fn thinking_types_reach_fake_upstream_and_billed_thinking_counts_as_output() {
 }
 
 #[test]
+fn multi_turn_agent_content_reaches_fake_upstream_unchanged() {
+    let mut f = OfflineFixture::new(200.0);
+    let token = f.proxy.register("conversation", "item").unwrap();
+    let messages = serde_json::json!([
+        {"role":"user", "content":[{"type":"text", "text":"Inspect the image and read the file"},
+            {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"synthetic-image"}}]},
+        {"role":"assistant", "content":[
+            {"type":"thinking", "thinking":"I should read the file", "signature":"synthetic-signature"},
+            {"type":"tool_use", "id":"call_1", "name":"read", "input":{"path":"example.txt"}}]},
+        {"role":"user", "content":[{"type":"tool_result", "tool_use_id":"call_1", "content":[
+            {"type":"text", "text":"File contents"}]}]},
+        {"role":"assistant", "content":[{"type":"text", "text":"The file is readable"}]},
+        {"role":"user", "content":"Summarize it"}
+    ]);
+    // Invalid shapes, including missing messages, also belong to the API.
+    for messages in [
+        Some(messages),
+        Some(serde_json::json!({"invalid":"shape"})),
+        Some(serde_json::json!([{"unexpected":true}])),
+        None,
+    ] {
+        let mut body = serde_json::json!({"model":MODEL, "max_tokens":4096,
+            "system":[{"type":"text", "text":"Help with the task"}],
+            "thinking":{"type":"adaptive"}, "output_config":{"effort":"medium"},
+            "tools":[{"name":"read", "input_schema":{"type":"object", "properties":{"path":{"type":"string"}}}}]});
+        if let Some(messages) = messages {
+            body["messages"] = messages;
+        }
+        let encoded = body.to_string();
+        let raw = format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{encoded}", encoded.len());
+        f.proxy
+            .serve(raw.as_bytes(), &mut Vec::new(), |_, req, out| {
+                let forwarded: Value = serde_json::from_slice(&req.body).unwrap();
+                body["service_tier"] = serde_json::json!("standard_only");
+                assert_eq!(forwarded, body);
+                assert!(req.reserve >= 4096.0 * 15.0 / 1_000_000.0);
+                out.write_all(&Fixture::response())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
 fn thinking_output_reservation_denies_budget_beyond_remaining_credit() {
     for thinking in [
         serde_json::json!({"type":"enabled", "budget_tokens":2048}),
@@ -216,7 +259,6 @@ fn non_object_thinking_is_refused_with_exact_field_diagnostics() {
         let mut context = RequestContext::default();
         assert!(request(raw.as_slice(), MODEL, &mut context).is_err());
         assert_eq!(context.offending_field.as_deref(), Some("thinking"));
-        assert_eq!(context.offending_json, Some(thinking));
     }
 }
 
@@ -236,7 +278,6 @@ fn output_config_is_forwarded_but_unknown_top_level_fields_are_refused() {
         } else {
             assert!(result.is_err());
             assert_eq!(context.offending_field.as_deref(), Some(field));
-            assert_eq!(context.offending_json, Some(value));
         }
     }
 }
@@ -490,13 +531,37 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
             false,
         );
         let mut context = RequestContext::default();
-        let error = field_denial(
-            &mut context,
-            "thinking",
-            &serde_json::json!(["adaptive"]),
-            "thinking must be an object",
-        );
+        let error = field_denial(&mut context, "thinking", "thinking must be an object");
         report_refusal(&error, &context, &mut Vec::new(), false);
+        for (field, value) in [
+            (
+                "unknown_option",
+                serde_json::json!({"input":"private-content"}),
+            ),
+            ("model", serde_json::json!("private-content")),
+            (
+                "max_tokens",
+                serde_json::json!({"prompt":"private-content"}),
+            ),
+            (
+                "tools",
+                serde_json::json!([{"input_schema":{"$ref":"private-content"}}]),
+            ),
+            ("thinking", serde_json::json!("private-content")),
+            ("stream", serde_json::json!("private-content")),
+        ] {
+            let body = serde_json::json!({
+                "model": MODEL, "max_tokens": 100,
+                "messages": [{"role":"user", "content":"private-content"}],
+                "system": "private-content", field: value
+            })
+            .to_string();
+            let raw = format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer synthetic-token\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let mut context = RequestContext::default();
+            let error = request(raw.as_bytes(), MODEL, &mut context).err().unwrap();
+            assert_eq!(context.offending_field.as_deref(), Some(field));
+            report_refusal(&error, &context, &mut Vec::new(), false);
+        }
     });
     let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     for field in [
@@ -509,11 +574,12 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
         "429",
         "thinking must be an object",
         "offending_field=Some(\"thinking\")",
-        "offending_json=[\"adaptive\"]",
     ] {
         assert!(log.contains(field), "{log}");
     }
     assert!(!log.contains("sk-ant-") && !log.contains("x-api-key"));
+    assert!(!log.contains("offending_json"));
+    assert!(!log.contains("private-content"));
 }
 
 #[test]
@@ -529,23 +595,12 @@ fn field_diagnostics_never_copy_prompts_or_credentials() {
         "secret",
     ] {
         let mut context = RequestContext::default();
-        field_denial(
-            &mut context,
-            field,
-            &serde_json::json!("private-content"),
-            "request field not allowlisted",
-        );
+        field_denial(&mut context, field, "request field not allowlisted");
         assert_eq!(context.offending_field.as_deref(), Some(field));
-        assert!(context.offending_json.is_none());
     }
     let mut context = RequestContext::default();
-    field_denial(
-        &mut context,
-        "max_tokens",
-        &serde_json::json!(64001),
-        "max_tokens not allowlisted",
-    );
-    assert_eq!(context.offending_json, Some(serde_json::json!(64001)));
+    field_denial(&mut context, "max_tokens", "max_tokens not allowlisted");
+    assert_eq!(context.offending_field.as_deref(), Some("max_tokens"));
 }
 
 #[test]
@@ -829,21 +884,11 @@ fn anthropic_proxy_canonicalizes_duplicate_keys_and_refuses_unknown_cache_cost()
 }
 
 #[test]
-fn anthropic_proxy_refuses_public_socket_parents_and_unbounded_input_sources() {
+fn anthropic_proxy_refuses_public_socket_parents_and_schema_references() {
     let f = Fixture::new(200.0);
     std::fs::set_permissions(&f.dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(bind_socket(&f.dir.join("socket")).is_err());
-    for block in [
-        serde_json::json!({"type":"image", "source":{"type":"url", "url":"https://example.invalid/large"}}),
-        serde_json::json!({"type":"document", "source":{"type":"file", "file_id":"fake"}}),
-        serde_json::json!({"type":"redacted_thinking", "data":"opaque"}),
-        serde_json::json!({"type":"thinking", "thinking":"summary", "signature":"opaque"}),
-        serde_json::json!({"type":"tool_result", "tool_use_id":"id", "content":[{"type":"image"}]}),
-    ] {
-        assert!(text_content(&serde_json::json!([block]), true).is_err());
-    }
     assert!(inline_schema(&serde_json::json!({"type":"object", "$ref":"#/large"})).is_err());
-    assert!(text_content(&serde_json::json!([{"type":"text", "text":"hello"}]), true).is_ok());
 }
 
 /// Capture the installed pi provider against a fake upstream only. This is

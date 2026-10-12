@@ -59,29 +59,12 @@ struct RequestContext {
     path: &'static str,
     model: String,
     offending_field: Option<String>,
-    offending_json: Option<Value>,
 }
 
-// Diagnostics are limited to configuration fields, never prompts or credentials.
-fn field_denial(
-    context: &mut RequestContext,
-    field: &str,
-    value: &Value,
-    check: &'static str,
-) -> io::Error {
+// Never log request values: even unknown configuration fields may contain
+// prompts, tool inputs or credentials. Diagnostics identify only the field/check.
+fn field_denial(context: &mut RequestContext, field: &str, check: &'static str) -> io::Error {
     context.offending_field = Some(field.to_owned());
-    let name = field.to_ascii_lowercase();
-    context.offending_json =
-        if matches!(name.as_str(), "messages" | "system" | "tools" | "metadata")
-            || ["key", "token", "auth", "secret", "credential"]
-                .iter()
-                .any(|part| name.contains(part))
-                && !matches!(name.as_str(), "max_tokens" | "top_k")
-        {
-            None
-        } else {
-            Some(value.clone())
-        };
     deny(403, check)
 }
 struct Request {
@@ -117,7 +100,6 @@ fn report_refusal(
     tracing::warn!(method = context.method, path = context.path, model = %context.model,
         check, status, upstream_status = ?upstream, error_type, error_message,
         offending_field = ?context.offending_field,
-        offending_json = %context.offending_json.as_ref().map(|value| value.to_string()).unwrap_or_default(),
         "Anthropic proxy refused request");
     if !wrote {
         let body =
@@ -676,12 +658,7 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         "not allowlisted".into()
     };
     if data["model"].as_str() != Some(model) {
-        return Err(field_denial(
-            context,
-            "model",
-            &data["model"],
-            "model not allowlisted",
-        ));
+        return Err(field_denial(context, "model", "model not allowlisted"));
     }
     let object = data
         .as_object()
@@ -708,76 +685,29 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
             return Err(field_denial(
                 context,
                 field,
-                &object[field],
                 "request field not allowlisted",
             ));
         }
     }
-    if let Some(system) = data.get("system") {
-        text_content(system, false).map_err(|_| {
-            field_denial(context, "system", system, "system content not allowlisted")
-        })?;
-    }
-    for message in data["messages"].as_array().ok_or_else(|| {
-        field_denial(
-            context,
-            "messages",
-            &data["messages"],
-            "messages must be an array",
-        )
-    })? {
-        let message = message.as_object().ok_or_else(|| {
-            field_denial(context, "messages", message, "message must be an object")
-        })?;
-        if message
-            .keys()
-            .any(|key| !["role", "content"].contains(&key.as_str()))
-        {
-            return Err(field_denial(
-                context,
-                "messages",
-                &data["messages"],
-                "message field not allowlisted",
-            ));
-        }
-        text_content(
-            message.get("content").ok_or_else(|| {
-                field_denial(
-                    context,
-                    "messages",
-                    &data["messages"],
-                    "missing message content",
-                )
-            })?,
-            true,
-        )
-        .map_err(|_| {
-            field_denial(
-                context,
-                "messages",
-                &data["messages"],
-                "message content not allowlisted",
-            )
-        })?;
-    }
+    // Message shapes and content (including tool, thinking and image blocks)
+    // belong to the API. Forward them unchanged, including invalid shapes, so
+    // the client receives the API's validation error rather than a local one.
     // Server-side tools and premium service tiers carry non-token charges.
     // Only ordinary client-defined tools are accepted in this first slice.
     if let Some(tools) = data.get("tools") {
         for tool in tools
             .as_array()
-            .ok_or_else(|| field_denial(context, "tools", tools, "tools must be an array"))?
+            .ok_or_else(|| field_denial(context, "tools", "tools must be an array"))?
         {
             if tool.get("type").is_some() || !tool["input_schema"].is_object() {
                 return Err(field_denial(
                     context,
                     "tools",
-                    tools,
                     "server tool or schema not allowlisted",
                 ));
             }
-            inline_schema(&tool["input_schema"]).map_err(|_| {
-                field_denial(context, "tools", tools, "schema references not allowlisted")
-            })?;
+            inline_schema(&tool["input_schema"])
+                .map_err(|_| field_denial(context, "tools", "schema references not allowlisted"))?;
         }
     }
     let max = if count_request {
@@ -786,21 +716,13 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         data["max_tokens"]
             .as_u64()
             .filter(|n| *n > 0 && *n <= 64_000)
-            .ok_or_else(|| {
-                field_denial(
-                    context,
-                    "max_tokens",
-                    &data["max_tokens"],
-                    "max_tokens not allowlisted",
-                )
-            })?
+            .ok_or_else(|| field_denial(context, "max_tokens", "max_tokens not allowlisted"))?
     };
     if let Some(thinking) = data.get("thinking") {
         if !thinking.is_object() {
             return Err(field_denial(
                 context,
                 "thinking",
-                thinking,
                 "thinking must be an object",
             ));
         }
@@ -810,14 +732,7 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
     let streaming = match data.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        Some(value) => {
-            return Err(field_denial(
-                context,
-                "stream",
-                value,
-                "stream must be boolean",
-            ))
-        }
+        Some(_) => return Err(field_denial(context, "stream", "stream must be boolean")),
     };
     // The API's default `auto` tier may consume priority capacity. Force the
     // standard tier whose prices the ledger and reservation actually know.
@@ -872,43 +787,6 @@ fn inline_schema(value: &Value) -> io::Result<()> {
             }
         }
         _ => {}
-    }
-    Ok(())
-}
-
-/// Remote documents, images and opaque thinking replay can expand into input
-/// tokens not bounded by the request's byte length. They are deliberately not
-/// supported until there is an independent, safe reservation mechanism.
-fn text_content(content: &Value, tools: bool) -> io::Result<()> {
-    if content.is_string() {
-        return Ok(());
-    }
-    for block in content.as_array().ok_or_else(refused)? {
-        let fields: &[&str] = match block["type"].as_str() {
-            Some("text") if block["text"].is_string() => &["type", "text", "cache_control"],
-            Some("tool_use") if tools => &["type", "id", "name", "input", "cache_control"],
-            Some("tool_result") if tools => {
-                if let Some(content) = block.get("content") {
-                    text_content(content, false)?;
-                }
-                &[
-                    "type",
-                    "tool_use_id",
-                    "content",
-                    "is_error",
-                    "cache_control",
-                ]
-            }
-            _ => return Err(refused()),
-        };
-        if block
-            .as_object()
-            .ok_or_else(refused)?
-            .keys()
-            .any(|key| !fields.contains(&key.as_str()))
-        {
-            return Err(refused());
-        }
     }
     Ok(())
 }

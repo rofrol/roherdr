@@ -43,10 +43,11 @@ supported standard Sonnet tariffs. Token counting is authenticated but does not
 create billed message rows. Absolute URLs, other query strings, CONNECT,
 chunked request bodies, duplicate authentication or length headers, unknown
 models, premium service tiers, and server-side tools are refused. Bodies are limited to 150,000 bytes and output to 64,000 tokens.
-Only text and ordinary client-tool content are supported. Images, documents,
-remote/file sources and thinking replay are refused: their expanded
-input cannot safely be reserved from the submitted byte count. Tool schemas
-must be inline, without reference expansion. Conservative per-message/tool
+Message shapes and content are validated only by the API, not the proxy.
+Tool-use, tool-result, thinking replay, image and document blocks are forwarded
+unchanged, as are invalid message shapes; API validation errors reach the client.
+System content is also left to the API. Tool schemas must be inline, without
+reference expansion. Conservative per-message/tool
 framing is reserved too; requests whose input bound reaches 200,000 tokens are
 refused to exclude long-context premium pricing. Validated JSON
 is re-encoded before forwarding so duplicate keys cannot change upstream model
@@ -60,8 +61,9 @@ the object unchanged; it does not inject disabled thinking. The top-level
 is reserved at the output tariff before forwarding. API-reported
 `output_tokens`, including billed thinking, determine the settled cost. A
 request whose reservation exceeds remaining credit is refused with 402 before
-any upstream call. Opaque/summarized thinking replay remains refused because
-its expanded input cannot safely be bounded from submitted bytes.
+any upstream call. The input reservation uses submitted bytes and framing;
+API-expanded content is not guaranteed to fit that estimate. Keep the Console
+workspace spending limit enabled as the authoritative spending boundary.
 Client authentication and destination headers are discarded; only allowlisted
 `anthropic-beta` features are preserved. The server supplies API version, content type
 and `x-api-key` to the fixed HTTPS destination `api.anthropic.com`. Curl receives
@@ -70,8 +72,8 @@ redirects, stderr, and core dumps disabled. The server also disables its own cor
 dumps before reading the credential. Neither credential nor headers are logged.
 Refusals name a safe check in the JSON response and server log, along with
 normalized method, path, model and upstream status when known. Configuration
-field refusals also log the offending field name and JSON value, never messages,
-system prompts, tool definitions, metadata or authentication fields. Anthropic JSON
+field refusals log only the offending field name and check, never a request
+value, including unknown fields, messages, system prompts or tool inputs. Anthropic JSON
 errors expose only `error.type` and `error.message`, not the full response body;
 these fields are also logged. HTTP 4xx/5xx statuses are preserved. Local statuses
 are 401 for invalid run tokens, 403 for non-allowlisted requests, 402 for credit
