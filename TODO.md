@@ -2860,6 +2860,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pushes; spend and concurrency limits per credit worker (after
   "Concurrent credit workers refuse each other").
 
+- [ ] A hard cap on a coordinator's context size, enforced by supervision [t-2k3ima2h]
+  (the user, 2026-10-12: "maybe add some hard cap on the coordinator's
+  context size, so supervision does something about it: warn the
+  coordinator, a warning threshold and then a shutdown threshold; ask the
+  models").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
