@@ -2865,6 +2865,38 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   context size, so supervision does something about it: warn the
   coordinator, a warning threshold and then a shutdown threshold; ask the
   models").
+  Round 20261012-202058-a92c (sol, MiMo, DeepSeek agreeing; decided by
+  the coordinator where they split):
+  - No kill at any threshold. "Shutdown" means retire: at the
+    coordinator's next turn end herdr freezes the tenure (refuses its
+    mutations by tenure credentials, not pane identity; text replies to
+    the user stay allowed), runs the `coordinator ready` semantics and
+    starts the successor through [t-ic5rrxn3]'s handoff; workers keep
+    running and pass to the successor; open questions travel in the
+    manifest. A failed handoff unfreezes but keeps an open finding and
+    tells the user; it never silently resumes normal work above the cap.
+  - Metric: the input context of the latest model request as the agent
+    reports it (uncached + cache writes + cache reads), never a transcript
+    sum and never cost. Evaluated on each request-usage / turn-end event;
+    the existing 5-minute sweep only catches missed events and a wedged
+    session. Defaults: warn at the smaller of 300k and 60% of the
+    agent's effective window, retire at the smaller of 400k and 80%,
+    configurable per agent kind; a measured fresh-session floor at or
+    above the warn threshold is a configuration error.
+  - Thrash guard: the successor's starting context is measured; one
+    automatic retirement per tenure, a second breach only alerts the user.
+  - A wedged session (no turn end) cannot be bounded without kill
+    authority: herdr records a finding when its usage event crosses the
+    cap and alerts the user; no timer, no grace period.
+  - Dismissed: request admission control (MiMo, sol) — Claude Code
+    coordinators run on the subscription, outside herdr's credit proxy,
+    so herdr cannot refuse their requests; DeepSeek's "grace, then reap"
+    and "escalate after X minutes" are timers.
+  - Order: after the handoff slice lands, (1) show per-request input
+    context and growth per coordinator in `supervise --report`, with a
+    warn finding at the warn threshold and no other action; (2) retire at
+    the cap with the user told; (3) automatic only after a few handoffs
+    show the successor's cost per hour is lower.
 
 ## Proposed
 
