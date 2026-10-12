@@ -2698,6 +2698,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   acting. `/compact` is a weaker middle (can drop run ids). MiMo: this
   herdr session grows ~87k tokens an hour; find what it inlines (whole
   worker reports, diffs) before more handoffs.
+  Decided by the user 2026-10-12 (d-gt5w4lxu): only the three largest
+  (rormpc, try-roguix, guix) hand off now; the others stay as they are.
+  (d-n663neph): the herdr coordinator hands off after the current slice.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
