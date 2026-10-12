@@ -52,6 +52,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a non-vacuity check (known-true coverage must not drop); (9) a predicate
   that keeps needing code changes is retired or redesigned by the owner.
 
+- [ ] Workers default to the API credits, coordinators stay on Claude Code [t-s6lkxb4v]
+  (the user, 2026-10-12: "94% of the AN subscription used and only $0.50 of
+  $200; do we finally move to the $200? ask the models"; round of
+  2026-10-12, MiMo and DeepSeek; sol failed at capacity): `[workers]
+  default_agent` (default `pi-anthropic` once the credit path has run
+  clean) for every repository's `todo run`, falling back to `pi" (OpenAI)
+  on a proxy or credit failure, Claude Code only by explicit `--agent
+  claude`; each run records which agent and model actually ran; daily
+  credit spend visible. Coordinators are not moved off Claude Code now
+  (porting herdr's hooks and skills to pi is a migration, piloted later on
+  one non-critical repository).
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
