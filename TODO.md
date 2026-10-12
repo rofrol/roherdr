@@ -325,6 +325,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Measure: owner-caught Rule 10 corrections per item, target zero; where
   catches happen (hook, consult, record, owner); `delay:` reasons
   counted. No periodic audit timer.
+  Fix a in flight 2026-10-12: worker w277 (pi-anthropic) in worktree
+  `../herdr-worktrees/consult-rule10`, base 8a946bbbb.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
