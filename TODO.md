@@ -2897,6 +2897,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     warn finding at the warn threshold and no other action; (2) retire at
     the cap with the user told; (3) automatic only after a few handoffs
     show the successor's cost per hour is lower.
+  Asked 2026-10-12 (the user, on "the 5-minute sweep only catches missed
+  events and a wedged session": "an asynchronous workaround again? ask the
+  models").
 
 - [ ] A "reviewed" state for TODO.md, and a coordinator that does one item [t-ktz7l3hl]
   and exits (the user, 2026-10-12: "maybe set some state for TODO.md that
