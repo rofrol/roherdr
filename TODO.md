@@ -291,6 +291,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   single-lock ack and a server-side absolute-path check. Kept as decided
   by the coordinator: `ready` runs inside the turn (documented); manifest
   and note copies stay after the handoff for audit.
+  Attempt 2 (cbe26c7b8) reviewed: wider fence, superseded record, failed
+  close reported, `--abort`, persisted pending handoff, one-lock ack and
+  absolute note path are in. Not landed: the abort on a Blocked successor
+  (the coordinator's own instruction) would fire on normal startup, since
+  the successor's first `herdr coordinator ack` may need a permission
+  answer; a live handoff before the successor is detected aborts it; the
+  superseded fence ignores the session (a resumed old session elsewhere
+  passes, a reused pane id is wrongly fenced); a failed persist of the ack
+  only warns. Attempt 3 (the last) fixes these four. Noted for later:
+  raw API clients without `caller_pane_id` are not fenced, the fence is
+  check-then-act, store reads under the registry lock, no fsync.
 
 - [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
   2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
