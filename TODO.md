@@ -2900,6 +2900,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Asked 2026-10-12 (the user, on "the 5-minute sweep only catches missed
   events and a wedged session": "an asynchronous workaround again? ask the
   models").
+  Round 20261012-203001-263e (sol, MiMo, DeepSeek agreeing; decided by
+  the coordinator): yes, a sweep that "catches missed events" is a Rule 10
+  workaround; it replaces the sweep line above. The agent's transcript is
+  the source of truth; a hook or a file-watch notification only wakes a
+  reconcile that reads every complete line from a persisted cursor
+  (session, file identity, byte offset, last usage), applies the
+  thresholds idempotently on the maximum per-request input seen (a cache
+  discount never un-retires), and advances the cursor atomically with the
+  transition. Watch the directory, not only the file (rotation and
+  compaction replace it): a new file identity or a shrink rescans.
+  Reconcile at startup, handoff, Stop and after a watch is re-armed, so a
+  dropped notification only makes enforcement later, never wrong; a hook
+  that fires before the line is written reads nothing and the line's own
+  write wakes the next reconcile (no sleep). Linux and Windows use their
+  watchers (inotify, ReadDirectoryChangesW) feeding the same reconcile.
+  A wedged session makes no requests, so it grows no context and needs no
+  cap action; detecting it would be a negative-time condition and stays
+  out of this item. Periodic work is allowed only for external state
+  without notifications (provider billing, quota), labelled as external
+  reconciliation with its source.
 
 - [ ] A "reviewed" state for TODO.md, and a coordinator that does one item [t-ktz7l3hl]
   and exits (the user, 2026-10-12: "maybe set some state for TODO.md that
@@ -3163,6 +3183,15 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
+
+- [ ] Audit what the supervisor's 5-minute sweep catches that an event [t-ybzw6mhn]
+  should (follow-up of [t-2k3ima2h], round 20261012-203001-263e: a sweep
+  that catches missed events is a Rule 10 workaround). List each
+  predicate the timer sweep evaluates; for each, name the event and
+  durable cursor that should drive it, or label it external
+  reconciliation with its source; then move the event-driven ones off the
+  timer. Cost: one worker audit (text) plus small src slices; no build of
+  guests.
 
 ## Needs a decision
 
