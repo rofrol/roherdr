@@ -64,6 +64,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Canonical Rule 10 is handled next in its own isolated repository worker.
   Hook code and regression cases remain unapplied pending full-patch
   approval; the text-only change does not broaden permissions.
+  Substep b complete 2026-10-13: canonical Rule 10 landed in its policy
+  repository (952cd8f), after full diff review and worker verification;
+  only Rule 10 changed, existing allowed categories and safeguard remain.
+  Substeps c/d are being prepared as a single hook-and-regression patch in
+  an isolated dotfiles worktree; live safeguard application still requires
+  the user's approval of the whole reviewed patch.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
