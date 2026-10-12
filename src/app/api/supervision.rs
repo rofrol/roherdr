@@ -47,6 +47,7 @@ impl App {
                         asks_user: !terminal.open_questions().is_empty(),
                         limited: terminal.limit().is_some(),
                         running_jobs: Vec::new(),
+                        job_started_ms: Default::default(),
                     });
                 }
             }
@@ -66,6 +67,9 @@ impl App {
                 let owner = self.canonical_pane_id(owner);
                 if let Some(pane) = panes.iter_mut().find(|pane| pane.pane_id == owner) {
                     pane.running_jobs.push(job.id.clone());
+                    if let Some(started) = crate::workers::supervision::job_started_ms(&job.id) {
+                        pane.job_started_ms.insert(job.id.clone(), started);
+                    }
                 }
             }
         }
@@ -263,6 +267,7 @@ mod tests {
             asks_user: false,
             limited: false,
             running_jobs: Vec::new(),
+            job_started_ms: Default::default(),
         };
         supervisor
             .supervision_sweep("timer", vec![stuck.clone()])
@@ -370,6 +375,7 @@ mod tests {
             asks_user: false,
             limited: false,
             running_jobs: Vec::new(),
+            job_started_ms: Default::default(),
         };
         let mut facts = app.supervision_pane_facts();
         facts.push(stuck);

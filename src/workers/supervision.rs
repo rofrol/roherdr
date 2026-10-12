@@ -64,15 +64,15 @@ use tracing::warn;
 use super::coordinators::store_error;
 use super::reports::is_herdr_repository;
 use super::store::{EventRow, Recorded, StoreResult, Tx};
-use super::supervision_rules::{self, ExpectedEvent, HoldEnd};
+use super::supervision_rules::{self, ExpectedEvent, HoldEnd, PendingHold};
 use super::{lock, notify_clients, now_ms, Direction, PendingWorkerQuestion};
 use super::{WorkerError, WorkerSupervisor};
 use crate::api::schema::{
     AgentStatus, CoordinatorInfo, SupervisedCoordinator, SupervisionDelivery,
-    SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding, SupervisionPredicate,
-    SupervisionReport, SupervisionSeverity, SupervisionStatus, TodoRunnableState,
-    WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion, WorkerQuestionDetail,
-    WorkerQuestionKind, WorkerQuestionState, WorkerState,
+    SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding, SupervisionHoldCount,
+    SupervisionPendingHold, SupervisionPredicate, SupervisionReport, SupervisionSeverity,
+    SupervisionStatus, TodoRunnableState, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
+    WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerState,
 };
 
 /// The findings table.
@@ -233,6 +233,37 @@ pub(crate) struct PaneFacts {
     pub(crate) limited: bool,
     /// The herdr-job jobs it owns whose tabs show them running.
     pub(crate) running_jobs: Vec<String>,
+    /// When each of those jobs was registered with this server, Unix milliseconds; a job
+    /// missing here has an unknown start (see [`note_job_started`]).
+    pub(crate) job_started_ms: BTreeMap<String, u64>,
+}
+
+/// The jobs' registration times, by job id: herdr's own record of when a job started, since
+/// the job metadata carries none. Runtime only; bounded.
+static JOB_STARTS: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+const JOB_STARTS_KEPT: usize = 2048;
+
+/// Notes the first registration of job `job_id` (a later one keeps the first time).
+pub(crate) fn note_job_started(job_id: &str) {
+    let mut starts = lock(&JOB_STARTS);
+    if starts.contains_key(job_id) {
+        return;
+    }
+    if starts.len() >= JOB_STARTS_KEPT {
+        if let Some(oldest) = starts
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(id, _)| id.clone())
+        {
+            starts.remove(&oldest);
+        }
+    }
+    starts.insert(job_id.to_owned(), now_ms());
+}
+
+/// When job `job_id` was first registered with this server, when known.
+pub(crate) fn job_started_ms(job_id: &str) -> Option<u64> {
+    lock(&JOB_STARTS).get(job_id).copied()
 }
 
 /// One active tenure with what the sweep found of it.
@@ -318,6 +349,71 @@ fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
         SupervisionPredicate::UnaccountedAssignment => "unaccounted_assignment",
         SupervisionPredicate::Unknown => "unknown",
     }
+}
+
+/// Holds per predicate and rule version by end state, from `supervision_holds`.
+fn hold_counts(conn: &rusqlite::Connection) -> StoreResult<Vec<SupervisionHoldCount>> {
+    let mut statement = conn.prepare(
+        "SELECT predicate, rule_version, state, COUNT(*) FROM supervision_holds
+         WHERE state != 'pending' GROUP BY predicate, rule_version, state
+         ORDER BY predicate, rule_version",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut counts: Vec<SupervisionHoldCount> = Vec::new();
+    for row in rows {
+        let (predicate, rule_version, state, count) = row?;
+        let predicate = parse_predicate(&predicate);
+        let index = match counts
+            .iter()
+            .position(|c| c.predicate == predicate && c.rule_version == rule_version)
+        {
+            Some(index) => index,
+            None => {
+                counts.push(SupervisionHoldCount {
+                    predicate,
+                    rule_version,
+                    retracted: 0,
+                    delivered: 0,
+                    resolved: 0,
+                });
+                counts.len() - 1
+            }
+        };
+        let count = count.max(0) as u64;
+        match state.as_str() {
+            "retracted" => counts[index].retracted = count,
+            "delivered" => counts[index].delivered = count,
+            _ => counts[index].resolved = count,
+        }
+    }
+    Ok(counts)
+}
+
+/// The holds pending now, the oldest first.
+fn pending_holds(conn: &rusqlite::Connection) -> StoreResult<Vec<SupervisionPendingHold>> {
+    let mut statement = conn.prepare(
+        "SELECT fingerprint, predicate, rule_version, request_id, job_ids, opened_ms
+         FROM supervision_holds WHERE state = 'pending' ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let jobs: String = row.get(4)?;
+        Ok(SupervisionPendingHold {
+            fingerprint: row.get(0)?,
+            predicate: parse_predicate(&row.get::<_, String>(1)?),
+            rule_version: row.get(2)?,
+            request_id: row.get(3)?,
+            job_ids: serde_json::from_str(&jobs).unwrap_or_default(),
+            opened_ms: row.get::<_, i64>(5)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
 }
 
 fn parse_predicate(name: &str) -> SupervisionPredicate {
@@ -504,7 +600,9 @@ fn apply_rule(
     let Some(rule) = supervision_rules::rule_for(candidate.predicate) else {
         return candidate;
     };
-    if let Some((entry, job_ids)) = supervision_rules::counter_evidence(rule, pane) {
+    if let Some((entry, job_ids)) =
+        supervision_rules::counter_evidence(rule, pane, assignment.accepted_ms)
+    {
         candidate
             .evidence
             .facts
@@ -1245,9 +1343,7 @@ struct Changes {
 /// escalated, open again, when its severity rose), and every holding
 /// finding the sweep no longer saw is resolved.
 fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResult<Changes> {
-    record_sweep_with(tx, candidates, at_ms, &|expected, request_id| {
-        supervision_rules::hold_end(expected, request_id)
-    })
+    record_sweep_with(tx, candidates, at_ms, &supervision_rules::hold_end)
 }
 
 /// Appends a `supervision.hold` event for one change of a pending finding.
@@ -1303,7 +1399,7 @@ fn record_sweep_with(
     tx: &Tx<'_>,
     candidates: &[Candidate],
     at_ms: u64,
-    hold_end: &dyn Fn(ExpectedEvent, &str) -> HoldEnd,
+    hold_end: &dyn Fn(ExpectedEvent, &PendingHold) -> HoldEnd,
 ) -> StoreResult<Changes> {
     let conn = tx.connection();
     let mut changes = Changes::default();
@@ -1431,20 +1527,28 @@ fn record_sweep_with(
             }
         }
     }
-    let pending: Vec<(String, String, u32)> = {
+    let pending: Vec<(String, String, u64)> = {
         let mut statement = conn.prepare(
-            "SELECT fingerprint, request_id, rule_version FROM supervision_holds
+            "SELECT fingerprint, request_id, opened_ms FROM supervision_holds
              WHERE state = 'pending' ORDER BY id",
         )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? as u64))
+        })?;
         rows.collect::<StoreResult<_>>()?
     };
-    for (fingerprint, request_id, _version) in pending {
+    for (fingerprint, request_id, opened_ms) in pending {
         if seen.contains(&fingerprint) {
             continue;
         }
         let expected = ExpectedEvent::WorkerNextTurnOnAssignment;
-        match hold_end(expected, &request_id) {
+        match hold_end(
+            expected,
+            &PendingHold {
+                request_id,
+                opened_ms,
+            },
+        ) {
             HoldEnd::Retracted(reason) => end_hold(tx, &fingerprint, "retracted", reason, at_ms)?,
             HoldEnd::Resolved => end_hold(
                 tx,
@@ -2378,7 +2482,13 @@ impl WorkerSupervisor {
                 .map_err(store_error)?;
         }
         let last = lock(&LAST_SWEEP).clone().unwrap_or_default();
+        let (hold_counts, pending_holds) = self
+            .supervision_store()?
+            .read(|conn| Ok((hold_counts(conn)?, pending_holds(conn)?)))
+            .map_err(store_error)?;
         Ok(SupervisionReport {
+            hold_counts,
+            pending_holds,
             swept_ms: last.swept_ms,
             trigger: last.trigger,
             herdr_coordinator_id: herdr.map(|herdr| herdr.coordinator_id),
@@ -2882,6 +2992,7 @@ mod tests {
             asks_user: false,
             limited: false,
             running_jobs: Vec::new(),
+            job_started_ms: BTreeMap::new(),
         }
     }
 
@@ -2961,6 +3072,7 @@ mod tests {
             verdict: verdict.and_then(|line| crate::assignments::worker_line(line, 5)),
             superseded: None,
             stopped_ms: None,
+            resumed_ms: None,
             answered_ms: None,
             delivered_ms: None,
             turn_closed: None,
@@ -4542,6 +4654,158 @@ mod tests {
         record_with(&supervisor, &running, 1000, HoldEnd::Resolved);
         record_with(&supervisor, &[], 1100, HoldEnd::Resolved);
         assert_eq!(hold_states(&supervisor), ["resolved"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A job its pane owns, registered `started` ms; the assignment was accepted at 1000.
+    fn bound_facts(job_started: Option<u64>) -> Facts {
+        let mut facts = stopped_upgrade_facts(&["make app (upgrade test)"]);
+        facts.stopped[0].accepted_ms = 1000;
+        let worker = facts
+            .panes
+            .iter_mut()
+            .find(|pane| pane.pane_id == "w1:p2")
+            .unwrap();
+        if let Some(started) = job_started {
+            worker
+                .job_started_ms
+                .insert("make app (upgrade test)".into(), started);
+        }
+        facts
+    }
+
+    /// The real judgement of an ended hold, over the assignments ledger.
+    fn record_real(supervisor: &WorkerSupervisor, candidates: &[Candidate], at_ms: u64) -> Changes {
+        supervisor
+            .supervision_store()
+            .unwrap()
+            .transaction(|tx| {
+                record_sweep_with(tx, candidates, at_ms, &supervision_rules::hold_end)
+            })
+            .unwrap()
+    }
+
+    fn stopped_assignment(root: &std::path::Path) {
+        crate::assignments::set_test_dir(Some(root.join("assignments")));
+        crate::assignments::accepted(
+            "prompt_1_2",
+            "w1:p2",
+            Some("claude"),
+            Some("w-item"),
+            Some("w1:p1"),
+            "do the item",
+            None,
+        );
+        assert!(crate::assignments::stopped_without_verdict("prompt_1_2"));
+    }
+
+    #[test]
+    fn f114_the_job_ends_and_the_worker_resumes_after_it_is_retracted() {
+        let (supervisor, root) = supervisor("bound-retract");
+        stopped_assignment(&root);
+        let running = evaluate(&bound_facts(Some(2000)));
+        assert!(running[0].hold.is_some(), "{running:?}");
+        assert!(record_real(&supervisor, &running, 3000).opened.is_empty());
+        assert_eq!(hold_states(&supervisor), ["pending"]);
+        // The job ended and the worker's next turn started: the sweep sees no candidate.
+        assert!(crate::assignments::turn_started("w1:p2"));
+        let changes = record_real(&supervisor, &[], u64::MAX / 2);
+        assert!(changes.opened.is_empty());
+        assert_eq!(hold_states(&supervisor), ["retracted"]);
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_resume_from_before_the_hold_does_not_retract_it() {
+        let (supervisor, root) = supervisor("bound-old-resume");
+        stopped_assignment(&root);
+        // An earlier resume was recorded, then the worker stopped again.
+        assert!(crate::assignments::turn_started("w1:p2"));
+        assert!(crate::assignments::stopped_without_verdict("prompt_1_2"));
+        let running = evaluate(&bound_facts(Some(2000)));
+        record_real(&supervisor, &running, u64::MAX / 2);
+        record_real(&supervisor, &[], u64::MAX / 2 + 1);
+        assert_eq!(hold_states(&supervisor), ["resolved"]);
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn f114_the_job_ends_and_the_worker_does_not_resume_is_delivered() {
+        let (supervisor, root) = supervisor("bound-deliver");
+        stopped_assignment(&root);
+        let running = evaluate(&bound_facts(Some(2000)));
+        record_real(&supervisor, &running, 3000);
+        let mut ended = bound_facts(None);
+        ended
+            .panes
+            .iter_mut()
+            .find(|pane| pane.pane_id == "w1:p2")
+            .unwrap()
+            .running_jobs
+            .clear();
+        let ended = evaluate(&ended);
+        assert!(ended[0].hold.is_none());
+        let changes = record_real(&supervisor, &ended, 4000);
+        assert_eq!(changes.opened.len(), 1);
+        assert_eq!(hold_states(&supervisor), ["delivered"]);
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_job_started_before_the_assignment_is_no_counter_evidence() {
+        let (supervisor, root) = supervisor("bound-before");
+        let before = evaluate(&bound_facts(Some(999)));
+        assert_eq!(before.len(), 1);
+        assert!(before[0].hold.is_none(), "{before:?}");
+        assert_eq!(record_real(&supervisor, &before, 3000).opened.len(), 1);
+        assert!(hold_states(&supervisor).is_empty());
+        // Started exactly with the assignment, or of unknown start: counts (per-pane check).
+        assert!(evaluate(&bound_facts(Some(1000)))[0].hold.is_some());
+        assert!(evaluate(&bound_facts(None))[0].hold.is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn holds_are_counted_per_predicate_and_rule_version_by_end_state() {
+        let (supervisor, root) = supervisor("hold-counts");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let with = |n: u32| {
+            let mut candidate = base.clone();
+            candidate.fingerprint = format!("fp{n}");
+            candidate
+        };
+        let all: Vec<Candidate> = (0..4).map(with).collect();
+        record_with(&supervisor, &all, 1000, HoldEnd::Resolved);
+        let report = supervisor.supervision_report(true, None).unwrap();
+        assert_eq!(report.pending_holds.len(), 4);
+        assert!(report.hold_counts.is_empty());
+        // fp0 and fp1 retract (their expected event happened).
+        record_with(&supervisor, &all[2..], 1100, HoldEnd::Retracted("x"));
+        // fp2's job ended and no turn followed: it fires, without a hold.
+        let mut fired = all[2].clone();
+        fired.hold = None;
+        // fp3 resolves some other way.
+        let changes = record_with(&supervisor, &[fired], 1200, HoldEnd::Resolved);
+        assert_eq!(changes.opened.len(), 1);
+        assert_eq!(
+            hold_states(&supervisor),
+            ["retracted", "retracted", "delivered", "resolved"]
+        );
+        let report = supervisor.supervision_report(true, None).unwrap();
+        assert!(report.pending_holds.is_empty());
+        assert_eq!(
+            report.hold_counts,
+            vec![SupervisionHoldCount {
+                predicate: SupervisionPredicate::StoppedWithoutVerdict,
+                rule_version: 1,
+                retracted: 2,
+                delivered: 1,
+                resolved: 1,
+            }]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

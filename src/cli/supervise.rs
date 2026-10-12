@@ -319,6 +319,22 @@ fn report_text(report: &SupervisionReport, offset: i64) -> String {
         out.push_str(&line);
         out.push('\n');
     }
+    for count in &report.hold_counts {
+        out.push_str(&format!(
+            "holds {:?} rule v{}: retracted {}, delivered {}, resolved {}\n",
+            count.predicate, count.rule_version, count.retracted, count.delivered, count.resolved
+        ));
+    }
+    for hold in &report.pending_holds {
+        out.push_str(&format!(
+            "pending {:?} rule v{} on {}  jobs {}  since {}\n",
+            hold.predicate,
+            hold.rule_version,
+            hold.request_id,
+            hold.job_ids.join(" "),
+            when(hold.opened_ms)
+        ));
+    }
     if report.findings.is_empty() {
         out.push_str("no findings\n");
     }
@@ -429,8 +445,20 @@ mod tests {
                     drop_reason: None,
                 }],
             }],
+            hold_counts: vec![crate::api::schema::SupervisionHoldCount {
+                predicate: SupervisionPredicate::StoppedWithoutVerdict,
+                rule_version: 1,
+                retracted: 2,
+                delivered: 1,
+                resolved: 0,
+            }],
+            pending_holds: Vec::new(),
         };
         let text = report_text(&report, 0);
+        assert!(
+            text.contains("rule v1: retracted 2, delivered 1, resolved 0"),
+            "{text}"
+        );
         assert!(
             text.contains("c-aaaaaaaa  /repo  pane w1:p1  working  cannot establish progress"),
             "{text}"

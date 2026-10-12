@@ -812,6 +812,9 @@ impl App {
         else {
             return tab_not_found(id, &params.tab_id);
         };
+        if let Some(job) = &params.job {
+            crate::workers::supervision::note_job_started(&job.id);
+        }
         tab.job = params.job;
         self.schedule_session_save();
         match self.tab_info(ws_idx, tab_idx) {

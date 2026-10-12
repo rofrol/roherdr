@@ -278,6 +278,37 @@ pub struct SupervisedCoordinator {
     pub note: Option<String>,
 }
 
+/// How many holds of one predicate and rule version ended in each state
+/// (`supervision_holds`): `retracted` is a false positive whose expected event followed,
+/// `delivered` a finding whose continuation ended without it, `resolved` a predicate that
+/// stopped holding some other way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionHoldCount {
+    pub predicate: SupervisionPredicate,
+    pub rule_version: u32,
+    #[serde(default)]
+    pub retracted: u64,
+    #[serde(default)]
+    pub delivered: u64,
+    #[serde(default)]
+    pub resolved: u64,
+}
+
+/// A finding kept back (pending) because an allowed continuation is live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionPendingHold {
+    pub fingerprint: String,
+    pub predicate: SupervisionPredicate,
+    pub rule_version: u32,
+    /// The assignment whose continuation is awaited.
+    pub request_id: String,
+    /// The jobs the hold rests on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_ids: Vec<String>,
+    /// Unix milliseconds.
+    pub opened_ms: u64,
+}
+
 /// `supervise.report`'s reply.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SupervisionReport {
@@ -297,4 +328,10 @@ pub struct SupervisionReport {
     /// The latest seen first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<SupervisionFinding>,
+    /// Holds per predicate and rule version by end state; absent from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hold_counts: Vec<SupervisionHoldCount>,
+    /// The holds pending now; absent from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_holds: Vec<SupervisionPendingHold>,
 }

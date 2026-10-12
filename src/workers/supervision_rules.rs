@@ -82,9 +82,17 @@ pub(super) fn rule_for(predicate: SupervisionPredicate) -> Option<&'static Predi
 
 /// The counter-evidence that holds for the worker's pane (`None`: the pane is gone), with
 /// the jobs it rests on; `None` when no entry holds.
+///
+/// A job is bound to the assignment, not only to the pane: it counts when its pane owns it
+/// and it was started after the assignment was typed (`accepted_ms`). A job started before
+/// is the pane's older business and no evidence of a continuation of this assignment.
+/// Known gap: herdr records a job's start only when its registration reaches this server
+/// (`note_job_started`); a job whose start is unknown (registered before a server restart or
+/// handoff) keeps the per-pane check and counts.
 pub(super) fn counter_evidence(
     rule: &PredicateRule,
     pane: Option<&PaneFacts>,
+    accepted_ms: u64,
 ) -> Option<(CounterEvidence, Vec<String>)> {
     rule.counter_evidence.iter().find_map(|entry| match entry {
         CounterEvidence::LiveSupervisedJob {
@@ -94,7 +102,16 @@ pub(super) fn counter_evidence(
             // The jobs are those of the assignment's pane, and the pane must be live to
             // receive their completion: a gone pane delivers at once.
             let pane = pane?;
-            (!pane.running_jobs.is_empty()).then(|| (*entry, pane.running_jobs.clone()))
+            let jobs: Vec<String> = pane
+                .running_jobs
+                .iter()
+                .filter(|job| match pane.job_started_ms.get(*job) {
+                    Some(started) => *started >= accepted_ms,
+                    None => true,
+                })
+                .cloned()
+                .collect();
+            (!jobs.is_empty()).then_some((*entry, jobs))
         }
     })
 }
@@ -108,21 +125,37 @@ pub(super) enum HoldEnd {
     Resolved,
 }
 
-/// Whether the expected event happened for the assignment `request_id`.
-pub(super) fn hold_end(expected: ExpectedEvent, request_id: &str) -> HoldEnd {
+/// A pending hold, as far as its end is judged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingHold {
+    pub(super) request_id: String,
+    /// When the hold opened, Unix milliseconds: the stop it rests on happened before.
+    pub(super) opened_ms: u64,
+}
+
+/// Whether the expected event happened for the pending hold: the worker's next turn on the
+/// assignment (recorded by herdr when it started, `resumed_ms`) or its verdict, after the
+/// hold opened, that is after the job(s) it rests on started, whether they still live or
+/// ended. A resume or verdict from before the hold is no evidence; the finding is delivered
+/// by the sweep when no such turn follows the job's end.
+pub(super) fn hold_end(expected: ExpectedEvent, hold: &PendingHold) -> HoldEnd {
     match expected {
-        ExpectedEvent::WorkerNextTurnOnAssignment => match crate::assignments::get(request_id) {
-            Some(assignment) if assignment.verdict.is_some() => {
-                HoldEnd::Retracted("the worker recorded a verdict on the assignment")
+        ExpectedEvent::WorkerNextTurnOnAssignment => {
+            let Some(assignment) = crate::assignments::get(&hold.request_id) else {
+                return HoldEnd::Resolved;
+            };
+            if let Some(verdict) = &assignment.verdict {
+                if verdict.recorded_ms >= hold.opened_ms {
+                    return HoldEnd::Retracted("the worker recorded a verdict on the assignment");
+                }
+                return HoldEnd::Resolved;
             }
-            Some(assignment)
-                if assignment.is_open()
-                    && assignment.stopped_ms.is_none()
-                    && assignment.turn_closed.is_none() =>
-            {
-                HoldEnd::Retracted("the worker's next turn on the assignment started")
+            match assignment.resumed_ms {
+                Some(resumed) if resumed >= hold.opened_ms && assignment.is_open() => {
+                    HoldEnd::Retracted("the worker's next turn on the assignment started")
+                }
+                _ => HoldEnd::Resolved,
             }
-            _ => HoldEnd::Resolved,
-        },
+        }
     }
 }

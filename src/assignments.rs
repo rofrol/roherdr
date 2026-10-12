@@ -112,6 +112,10 @@ pub(crate) struct Assignment {
     /// verdict, Unix milliseconds; cleared when the pane's next turn starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) stopped_ms: Option<u64>,
+    /// When the pane's next turn started after a stop or closed turn of this assignment, Unix
+    /// milliseconds (the last time; the causal fact a pending supervision hold waits for).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resumed_ms: Option<u64>,
     /// When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) answered_ms: Option<u64>,
@@ -358,6 +362,7 @@ pub(crate) fn accepted_as(
         verdict: None,
         superseded: None,
         stopped_ms: None,
+        resumed_ms: None,
         answered_ms: None,
         delivered_ms: None,
         turn_closed: None,
@@ -614,6 +619,9 @@ pub(crate) fn turn_started(pane_id: &str) -> bool {
         cleared |= update(&request_id, |record| {
             let stopped = record.stopped_ms.take().is_some();
             let closed = record.turn_closed.take().is_some();
+            if stopped || closed {
+                record.resumed_ms = Some(now_ms());
+            }
             stopped || closed
         });
     }
@@ -1368,6 +1376,7 @@ mod tests {
             verdict: None,
             superseded: None,
             stopped_ms: None,
+            resumed_ms: None,
             answered_ms: None,
             delivered_ms: None,
             turn_closed: None,

@@ -18655,6 +18655,83 @@
           ],
           "type": "object"
         },
+        "SupervisionHoldCount": {
+          "description": "How many holds of one predicate and rule version ended in each state\n(`supervision_holds`): `retracted` is a false positive whose expected event followed,\n`delivered` a finding whose continuation ended without it, `resolved` a predicate that\nstopped holding some other way.",
+          "properties": {
+            "delivered": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "predicate": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionPredicate"
+            },
+            "resolved": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "retracted": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rule_version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "predicate",
+            "rule_version"
+          ],
+          "type": "object"
+        },
+        "SupervisionPendingHold": {
+          "description": "A finding kept back (pending) because an allowed continuation is live.",
+          "properties": {
+            "fingerprint": {
+              "type": "string"
+            },
+            "job_ids": {
+              "description": "The jobs the hold rests on.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "opened_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "predicate": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionPredicate"
+            },
+            "request_id": {
+              "description": "The assignment whose continuation is awaited.",
+              "type": "string"
+            },
+            "rule_version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "fingerprint",
+            "predicate",
+            "rule_version",
+            "request_id",
+            "opened_ms"
+          ],
+          "type": "object"
+        },
         "SupervisionPredicate": {
           "description": "The predicate a finding names: a positive fact and the event that did\nnot follow it. Quiet output is never one: it only means progress cannot\nbe established.",
           "oneOf": [
@@ -18723,6 +18800,20 @@
                 "string",
                 "null"
               ]
+            },
+            "hold_counts": {
+              "description": "Holds per predicate and rule version by end state; absent from older servers.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionHoldCount"
+              },
+              "type": "array"
+            },
+            "pending_holds": {
+              "description": "The holds pending now; absent from older servers.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionPendingHold"
+              },
+              "type": "array"
             },
             "swept_ms": {
               "description": "When the latest sweep of this server ran; absent before its first.",
