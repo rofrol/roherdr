@@ -26,6 +26,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   coordinator, or any prompt marked as a note (`agent prompt --note`),
   is a message: delivered and confirmed, never awaiting a verdict; tests
   for each, and the existing false findings resolve at the next sweep.
+  Another instance, f-77: rormpc-tools' coordinator (c-x3kbyxpu) messaged
+  todo-rormpc (w1M:p25), prompt_1a12d5d1bb1_8.
 
 - [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
   them in a usage widget (the user, 2026-10-12: "so we do not lose these
