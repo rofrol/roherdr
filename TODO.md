@@ -19,6 +19,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   notifications (an agent done or asking) are unchanged. A test that a new
   or escalated finding queues no user notice.
 
+- [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
+  2026-10-09): a second worker kind with its own stream parser, tool policy
+  and sandbox equivalent and broker support, so a run can go to pi/sol while
+  Claude's windows are at 90% (then the old 90/80 switch). All three models
+  advised building it only as a reviewed backend, not a quota stopgap, and
+  MiMo to measure first how often a Claude window reaches 90%.
+  Approved 2026-10-12 (the user: "and right after the supervisor fix,
+  use the OpenAI credits"; Anthropic's weekly window at 88%, OpenAI's at
+  14% and 6%): moved to Next, in order, right after the quiet-supervision
+  item. Slice 1: `todo run` can start the item's worker as headless pi
+  with `openai-codex/gpt-6.1-sol` on the owner's ChatGPT plan (`--agent
+  pi`), with the same folder slot, sandbox, checks, verify and WORKER
+  line; the usage gate reads the provider of the chosen agent; the
+  coordinator picks pi when Anthropic's gate is closed or near it.
+
 - [ ] A sound on/off button in herdr's UI (the user, 2026-10-12: "some [t-txlrolmj]
   icon in herdr, a button that turns off sounds"). A clickable icon (the
   sidebar footer or the top bar, following the existing UI patterns) that
@@ -2362,13 +2377,6 @@ Items agents add. Not approved until the user moves them up.
     an overflow menu, a second row as last resort. Bug found on the way:
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
-
-- [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
-  2026-10-09): a second worker kind with its own stream parser, tool policy
-  and sandbox equivalent and broker support, so a run can go to pi/sol while
-  Claude's windows are at 90% (then the old 90/80 switch). All three models
-  advised building it only as a reviewed backend, not a quota stopgap, and
-  MiMo to measure first how often a Claude window reaches 90%.
 
 - [ ] A coordinator that hits a gap in its own protocol (proposed by the [t-aketwwun]
   try-roguix coordinator, 2026-10-10): it uses the smallest reversible
