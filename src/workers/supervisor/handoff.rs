@@ -130,6 +130,8 @@ impl WorkerSupervisor {
                 #[cfg(test)]
                 openai_usage: Mutex::new(Ok(runs::low_usage_for_test())),
                 #[cfg(test)]
+                usage_gate_config: Mutex::new(crate::config::UsageConfig::default()),
+                #[cfg(test)]
                 review_program: Mutex::new(None),
             }),
         };

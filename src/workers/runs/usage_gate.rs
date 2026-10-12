@@ -1,9 +1,11 @@
 //! `herdr todo run`'s usage gate (the user's rule, 2026-10-09; asking the
 //! provider, 2026-10-10): a new run, or a retry's new attempt, reads
 //! Claude's usage from the provider in that call and is refused while any
-//! Claude window is at least [`CLOSE_AT`] percent used, or when the read
-//! fails (unknown usage refuses). After a refusal the gate stays closed
-//! until an answer shows every Claude window below [`REOPEN_BELOW`]. The
+//! Claude window is at least `[usage] gate_close_percent` (default 90)
+//! used, or when the read fails (unknown usage refuses). After a refusal
+//! the gate stays closed until an answer shows every Claude window below
+//! `[usage] gate_reopen_percent` (default 80). Both are read from the
+//! config at each check ([`Thresholds`]), for every provider's gate. The
 //! gate decides on that answer alone: never on the usage poller's cached
 //! report, a reading's age or a window's reset time. The state lives with
 //! the repository's runs in the worker store, so a restart keeps it.
@@ -19,6 +21,7 @@
 use serde_json::{json, Value};
 
 use crate::api::schema::{ProviderUsage, WorkerAgent};
+pub(super) use crate::config::UsageGateThresholds as Thresholds;
 
 /// Whose usage the gate reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,11 +64,6 @@ impl GateProvider {
     }
 }
 
-/// A window at or above this many percent used closes the gate.
-pub(super) const CLOSE_AT: u8 = 90;
-/// A closed gate reopens once every window is below this.
-pub(super) const REOPEN_BELOW: u8 = 80;
-
 /// What the gate decided for one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Decision {
@@ -99,9 +97,11 @@ fn unknown(why: String) -> Decision {
 }
 
 /// The gate's decision on `answer`, `provider`'s usage as it gave it just
-/// now (or the read's failure), for a gate that is `closed` or open.
+/// now (or the read's failure), for a gate that is `closed` or open, with
+/// `thresholds` as the config gives them at this check.
 pub(super) fn decide(
     provider: GateProvider,
+    thresholds: Thresholds,
     answer: Result<&ProviderUsage, &str>,
     closed: bool,
 ) -> Decision {
@@ -113,7 +113,11 @@ pub(super) fn decide(
     if usage.windows.is_empty() {
         return unknown(format!("{name}'s usage answer has no window"));
     }
-    let threshold = if closed { REOPEN_BELOW } else { CLOSE_AT };
+    let threshold = if closed {
+        thresholds.reopen_below
+    } else {
+        thresholds.close_at
+    };
     let blockers = usage
         .windows
         .iter()
@@ -136,8 +140,12 @@ pub(super) fn decide(
 }
 
 /// The refusal as the `usage_gate` error's message: each window with its
-/// value, or the read's failure.
-pub(super) fn refusal_message(provider: GateProvider, blockers: &[Blocker]) -> String {
+/// value, or the read's failure, and the thresholds that apply.
+pub(super) fn refusal_message(
+    provider: GateProvider,
+    thresholds: Thresholds,
+    blockers: &[Blocker],
+) -> String {
     let name = provider.label();
     let windows = blockers
         .iter()
@@ -155,9 +163,12 @@ pub(super) fn refusal_message(provider: GateProvider, blockers: &[Blocker]) -> S
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It admits \
-         again once {name}'s usage, read when a run is asked for, shows every window below \
-         {REOPEN_BELOW}%; --ignore-usage, on the user's word, overrides"
+        "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It closes \
+         at {close}% ([usage] gate_close_percent) and admits again once {name}'s usage, read \
+         when a run is asked for, shows every window below {reopen}% ([usage] \
+         gate_reopen_percent); --ignore-usage, on the user's word, overrides",
+        close = thresholds.close_at,
+        reopen = thresholds.reopen_below,
     )
 }
 
@@ -219,12 +230,22 @@ mod tests {
     #[test]
     fn an_open_gate_admits_89_and_refuses_90_and_91() {
         assert_eq!(
-            decide(GateProvider::Claude, Ok(&answer(89, 89)), false),
+            decide(
+                GateProvider::Claude,
+                Thresholds::default(),
+                Ok(&answer(89, 89)),
+                false
+            ),
             Decision::Admit { reopened: false }
         );
         for used in [90, 91] {
             assert_eq!(
-                refused(&decide(GateProvider::Claude, Ok(&answer(40, used)), false)),
+                refused(&decide(
+                    GateProvider::Claude,
+                    Thresholds::default(),
+                    Ok(&answer(40, used)),
+                    false
+                )),
                 [Some("seven_day".into())]
             );
         }
@@ -235,14 +256,24 @@ mod tests {
         for used in [80, 85, 89] {
             assert!(
                 matches!(
-                    decide(GateProvider::Claude, Ok(&answer(used, 10)), true),
+                    decide(
+                        GateProvider::Claude,
+                        Thresholds::default(),
+                        Ok(&answer(used, 10)),
+                        true
+                    ),
                     Decision::Refuse { .. }
                 ),
                 "{used}"
             );
         }
         assert_eq!(
-            decide(GateProvider::Claude, Ok(&answer(79, 79)), true),
+            decide(
+                GateProvider::Claude,
+                Thresholds::default(),
+                Ok(&answer(79, 79)),
+                true
+            ),
             Decision::Admit { reopened: true }
         );
     }
@@ -250,19 +281,30 @@ mod tests {
     #[test]
     fn a_failed_read_or_an_answer_without_windows_refuses() {
         for closed in [false, true] {
-            let decision = decide(GateProvider::Claude, Err("Claude login expired"), closed);
+            let decision = decide(
+                GateProvider::Claude,
+                Thresholds::default(),
+                Err("Claude login expired"),
+                closed,
+            );
             assert_eq!(refused(&decision), [None]);
             let Decision::Refuse { blockers } = decision else {
                 unreachable!();
             };
             assert!(
-                refusal_message(GateProvider::Claude, &blockers).contains("Claude login expired")
+                refusal_message(GateProvider::Claude, Thresholds::default(), &blockers)
+                    .contains("Claude login expired")
             );
         }
         let mut empty = answer(0, 0);
         empty.windows.clear();
         assert_eq!(
-            refused(&decide(GateProvider::Claude, Ok(&empty), false)),
+            refused(&decide(
+                GateProvider::Claude,
+                Thresholds::default(),
+                Ok(&empty),
+                false
+            )),
             [None]
         );
     }
@@ -283,13 +325,18 @@ mod tests {
             window.resets_at = Some(2);
         }
         assert_eq!(
-            decide(GateProvider::Claude, Ok(&old), false),
+            decide(GateProvider::Claude, Thresholds::default(), Ok(&old), false),
             Decision::Admit { reopened: false }
         );
         old.windows[0].used_percent = 90;
         old.windows[0].freshness = Some(UsageFreshness::Failed);
         assert_eq!(
-            refused(&decide(GateProvider::Claude, Ok(&old), false)),
+            refused(&decide(
+                GateProvider::Claude,
+                Thresholds::default(),
+                Ok(&old),
+                false
+            )),
             [Some("five_hour".into())]
         );
     }
@@ -327,34 +374,85 @@ mod tests {
         assert_eq!(GateProvider::of(WorkerAgent::Claude), GateProvider::Claude);
         assert_eq!(GateProvider::Claude.store_key("/r"), "/r");
         assert_eq!(GateProvider::OpenAi.store_key("/r"), "openai:/r");
-        let Decision::Refuse { blockers } =
-            decide(GateProvider::OpenAi, Ok(&answer(95, 10)), false)
-        else {
+        let Decision::Refuse { blockers } = decide(
+            GateProvider::OpenAi,
+            Thresholds::default(),
+            Ok(&answer(95, 10)),
+            false,
+        ) else {
             panic!("admitted");
         };
-        let message = refusal_message(GateProvider::OpenAi, &blockers);
+        let message = refusal_message(GateProvider::OpenAi, Thresholds::default(), &blockers);
         assert!(
             message.contains("OpenAI (ChatGPT plan) window five_hour"),
             "{message}"
         );
         assert!(!message.contains("Claude"), "{message}");
-        let failed = decide(GateProvider::OpenAi, Err("no login"), false);
+        let failed = decide(
+            GateProvider::OpenAi,
+            Thresholds::default(),
+            Err("no login"),
+            false,
+        );
         let Decision::Refuse { blockers } = failed else {
             panic!("admitted");
         };
-        assert!(refusal_message(GateProvider::OpenAi, &blockers).contains("OpenAI"));
+        assert!(
+            refusal_message(GateProvider::OpenAi, Thresholds::default(), &blockers)
+                .contains("OpenAI")
+        );
     }
 
     #[test]
     fn the_message_names_the_window_and_its_value() {
-        let Decision::Refuse { blockers } =
-            decide(GateProvider::Claude, Ok(&answer(91, 10)), false)
-        else {
+        let Decision::Refuse { blockers } = decide(
+            GateProvider::Claude,
+            Thresholds::default(),
+            Ok(&answer(91, 10)),
+            false,
+        ) else {
             panic!("admitted");
         };
-        let message = refusal_message(GateProvider::Claude, &blockers);
-        for part in ["five_hour", "91% used", "--ignore-usage"] {
+        let message = refusal_message(GateProvider::Claude, Thresholds::default(), &blockers);
+        for part in [
+            "five_hour",
+            "91% used",
+            "--ignore-usage",
+            "at 90% ([usage] gate_close_percent)",
+            "below 80% ([usage] gate_reopen_percent)",
+        ] {
             assert!(message.contains(part), "{part:?} not in {message}");
+        }
+    }
+
+    #[test]
+    fn configured_thresholds_decide_for_every_provider_and_name_themselves() {
+        let thresholds = Thresholds {
+            close_at: 95,
+            reopen_below: 50,
+        };
+        for provider in [GateProvider::Claude, GateProvider::OpenAi] {
+            assert_eq!(
+                decide(provider, thresholds, Ok(&answer(94, 10)), false),
+                Decision::Admit { reopened: false }
+            );
+            let Decision::Refuse { blockers } =
+                decide(provider, thresholds, Ok(&answer(95, 10)), false)
+            else {
+                panic!("admitted");
+            };
+            let message = refusal_message(provider, thresholds, &blockers);
+            for part in ["at 95%", "below 50%"] {
+                assert!(message.contains(part), "{part:?} not in {message}");
+            }
+            assert!(matches!(
+                decide(provider, thresholds, Ok(&answer(50, 10)), true),
+                Decision::Refuse { .. }
+            ));
+            assert_eq!(
+                decide(provider, thresholds, Ok(&answer(49, 49)), true),
+                Decision::Admit { reopened: true }
+            );
         }
     }
 }

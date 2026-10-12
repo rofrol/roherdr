@@ -570,6 +570,18 @@
           "type": "string",
           "default": "\"~/.config/herdr/openai-admin-key\"",
           "description": "File holding the OpenAI Admin key (read access to usage and costs) on one line. On Unix it must be owned by you and not readable by others (mode 0600). No environment variable is read, so agent panes never inherit the key."
+        },
+        {
+          "key": "usage.gate_close_percent",
+          "type": "integer",
+          "default": "90",
+          "description": "The usage gate of herdr todo run refuses a new run while a window of the run's provider (Claude, or the ChatGPT plan for pi workers) is at least this many percent used. 1-100, above gate_reopen_percent; invalid values give the defaults. Read at each gate check."
+        },
+        {
+          "key": "usage.gate_reopen_percent",
+          "type": "integer",
+          "default": "80",
+          "description": "A usage gate closed by a refusal admits again once every window of the provider is below this many percent. 1-100, below gate_close_percent; invalid values give the defaults. Read at each gate check."
         }
       ]
     },

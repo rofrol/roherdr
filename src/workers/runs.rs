@@ -1408,6 +1408,29 @@ impl WorkerSupervisor {
         }
     }
 
+    /// `[usage] gate_close_percent` and `gate_reopen_percent`, read from the
+    /// config file at each gate check (a test's instead), so a change
+    /// applies to the next run asked for. Invalid values, or a config that
+    /// cannot be read, give the defaults (90 and 80), with a warning.
+    fn usage_gate_thresholds(&self) -> usage_gate::Thresholds {
+        #[cfg(test)]
+        let configured = lock(&self.shared.usage_gate_config).usage_gate_thresholds();
+        #[cfg(not(test))]
+        let configured = crate::config::load_live_config()
+            .map_err(|diagnostics| diagnostics.join("; "))
+            .and_then(|loaded| loaded.config.usage.usage_gate_thresholds());
+        configured.unwrap_or_else(|why| {
+            tracing::warn!("the usage gate uses its default thresholds: {why}");
+            usage_gate::Thresholds::default()
+        })
+    }
+
+    /// The `[usage]` section a test sets for the usage gate's thresholds.
+    #[cfg(all(test, unix))]
+    pub(super) fn set_usage_gate_config_for_test(&self, config: crate::config::UsageConfig) {
+        *lock(&self.shared.usage_gate_config) = config;
+    }
+
     #[cfg(all(test, unix))]
     pub(super) fn set_usage_for_test(
         &self,
@@ -1441,9 +1464,14 @@ impl WorkerSupervisor {
         let provider = usage_gate::GateProvider::of(agent);
         let key = provider.store_key(repo);
         let closed = store.usage_gate_closed(&key).map_err(store_error)?;
+        let thresholds = self.usage_gate_thresholds();
         let answer = self.read_claude_usage(agent);
-        let decision =
-            usage_gate::decide(provider, answer.as_ref().map_err(String::as_str), closed);
+        let decision = usage_gate::decide(
+            provider,
+            thresholds,
+            answer.as_ref().map_err(String::as_str),
+            closed,
+        );
         let mut recorded = usage_gate::decision_json(&decision, ignore_usage);
         recorded["provider"] = json!(provider.id());
         match decision {
@@ -1453,7 +1481,7 @@ impl WorkerSupervisor {
                     .set_usage_gate(&key, true, &recorded, now_ms())
                     .map_err(store_error)?;
                 return Err(WorkerError::UsageGate(usage_gate::refusal_message(
-                    provider, &blockers,
+                    provider, thresholds, &blockers,
                 )));
             }
             usage_gate::Decision::Admit { reopened: true } => store

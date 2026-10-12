@@ -6552,6 +6552,45 @@ mod todo_runs {
     }
 
     #[test]
+    fn the_usage_gate_reads_its_thresholds_from_the_config_at_each_check() {
+        let fixture = todo_repo("todo-usage-gate-config");
+        let repo = repository_of(&fixture.repo).unwrap();
+        let gate = |agent| fixture.supervisor.usage_gate(&repo, agent, false);
+        let set = |close, reopen| {
+            fixture
+                .supervisor
+                .set_usage_gate_config_for_test(crate::config::UsageConfig {
+                    gate_close_percent: close,
+                    gate_reopen_percent: reopen,
+                    ..crate::config::UsageConfig::default()
+                })
+        };
+        set(95, 50);
+        fixture.supervisor.set_usage_for_test(fresh_usage(94, 10));
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(fresh_usage(94, 10));
+        for agent in [WorkerAgent::Claude, WorkerAgent::Pi] {
+            assert_eq!(gate(agent).unwrap()["decision"], "admit");
+        }
+        fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
+        let message = gate(WorkerAgent::Claude).unwrap_err().to_string();
+        for part in ["95% used", "at 95%", "below 50%"] {
+            assert!(message.contains(part), "{part:?} not in {message}");
+        }
+        // The next check reads the changed setting.
+        set(98, 60);
+        fixture.supervisor.set_usage_for_test(fresh_usage(59, 10));
+        assert_eq!(gate(WorkerAgent::Claude).unwrap()["reopened"], true);
+        // Invalid values (reopen not below close) give the defaults.
+        set(80, 80);
+        fixture.supervisor.set_usage_for_test(fresh_usage(90, 10));
+        let message = gate(WorkerAgent::Claude).unwrap_err().to_string();
+        assert!(message.contains("at 90%"), "{message}");
+        assert!(message.contains("below 80%"), "{message}");
+    }
+
+    #[test]
     fn a_failed_read_or_an_answer_without_windows_refuses_a_run() {
         let fixture = todo_repo("todo-usage-unknown");
         for (answer, expected) in [
