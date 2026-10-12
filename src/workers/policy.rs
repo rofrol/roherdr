@@ -64,6 +64,319 @@ pub(super) fn background_wait_denial(tool_name: &str, input: &Value) -> Option<&
     background.then_some(BACKGROUND_WAIT_DENIAL)
 }
 
+/// Why a worker may not kill processes by name, pattern or group.
+pub(super) const PROCESS_KILL_DENIAL: &str = "herdr worker policy: never kill processes by name or pattern; end only processes you started, by the PID you recorded.";
+
+/// The denial for a Bash command that kills processes the worker did not
+/// start: `pkill`, `killall`, `xargs kill`, `kill` with a name, option,
+/// process group, `0`, `-1` or a substitution. `kill <pid>` with literal
+/// positive PIDs and `kill %<job>` stay allowed. A worker's broad kill once
+/// ended the coordinator's waits (they share "herdr-" in their command lines).
+pub(super) fn process_kill_denial(tool_name: &str, input: &Value) -> Option<&'static str> {
+    if tool_name != "Bash" {
+        return None;
+    }
+    let command = input.get("command").and_then(Value::as_str)?;
+    command_kills_by_pattern(command, 0).then_some(PROCESS_KILL_DENIAL)
+}
+
+/// One shell word: its text with quotes removed, and whether it is not a
+/// plain literal (it has a glob or a `$` that is not a plain parameter
+/// expansion). `param` marks a word that is only a parameter expansion
+/// (`$name`, `${name}`, `${name[@]}`, `$!`).
+struct Word {
+    text: String,
+    dynamic: bool,
+    param: bool,
+}
+
+/// Whether `text` is exactly one plain parameter expansion.
+fn is_plain_parameter(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('$') else {
+        return false;
+    };
+    let name_ok = |n: &str| {
+        !n.is_empty()
+            && !n.starts_with(|c: char| c.is_ascii_digit())
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if rest == "!" {
+        return true;
+    }
+    if let Some(inner) = rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
+        let inner = inner
+            .strip_suffix("[@]")
+            .or(inner.strip_suffix("[*]"))
+            .unwrap_or(inner);
+        return name_ok(inner);
+    }
+    name_ok(rest)
+}
+
+/// Splits a command into simple-command segments of words. Operators
+/// (`;`, `&`, `|`, newline, parentheses, backticks, `$(`) end a segment; a
+/// substitution leaves a dynamic word in the segment it interrupts.
+// The word macros reset state that the last call never reads again.
+#[allow(unused_assignments)]
+fn shell_segments(command: &str) -> Vec<Vec<Word>> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut segments: Vec<Vec<Word>> = Vec::new();
+    let mut words: Vec<Word> = Vec::new();
+    let mut text = String::new();
+    let mut dynamic = false;
+    let mut dollar = false;
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    macro_rules! end_word {
+        () => {
+            if in_word {
+                let param = dollar && is_plain_parameter(&text);
+                words.push(Word {
+                    dynamic: dynamic || (dollar && !param),
+                    param,
+                    text: std::mem::take(&mut text),
+                });
+                dynamic = false;
+                dollar = false;
+                in_word = false;
+            }
+        };
+    }
+    macro_rules! end_segment {
+        () => {
+            end_word!();
+            if !words.is_empty() {
+                segments.push(std::mem::take(&mut words));
+            }
+        };
+    }
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if quote == Some('\'') {
+            if c == '\'' {
+                quote = None;
+            } else {
+                text.push(c);
+            }
+        } else if c == '\\' {
+            in_word = true;
+            if quote.is_none() || matches!(next, Some('"' | '\\' | '$' | '`')) {
+                if let Some(n) = next {
+                    text.push(n);
+                    i += 1;
+                }
+            } else {
+                text.push(c);
+            }
+        } else if c == '`' || (c == '$' && next == Some('(')) {
+            // A substitution, also inside double quotes.
+            end_word!();
+            words.push(Word {
+                text: "$".into(),
+                dynamic: true,
+                param: false,
+            });
+            end_segment!();
+            if c == '$' {
+                i += 1;
+            }
+        } else if quote == Some('"') {
+            if c == '"' {
+                quote = None;
+            } else {
+                dollar |= c == '$';
+                text.push(c);
+            }
+        } else if c == '\'' || c == '"' {
+            quote = Some(c);
+            in_word = true;
+        } else if matches!(c, ';' | '&' | '|' | '\n' | '(' | ')') {
+            end_segment!();
+        } else if c.is_whitespace() {
+            end_word!();
+        } else {
+            in_word = true;
+            dollar |= c == '$';
+            // `{` and `[` belong to a `${name[@]}` expansion; elsewhere
+            // they make the word not a literal either way.
+            dynamic |=
+                matches!(c, '*' | '?') || (matches!(c, '[' | '{') && !(text.starts_with('$')));
+            text.push(c);
+        }
+        i += 1;
+    }
+    end_segment!();
+    segments
+}
+
+fn command_kills_by_pattern(command: &str, depth: u32) -> bool {
+    if depth > 4 {
+        return true;
+    }
+    // A substitution (`kill $(pgrep x)`) leaves a dynamic word in the
+    // segment it interrupts, which `kill` then refuses.
+    shell_segments(command)
+        .iter()
+        .any(|segment| segment_kills_by_pattern(segment, depth))
+}
+
+/// Skips assignments and wrappers (`sudo`, `env`, `command`, ...) to the
+/// words of the command they run.
+fn command_words(segment: &[Word]) -> &[Word] {
+    let mut rest = segment;
+    loop {
+        let Some(first) = rest.first() else {
+            return rest;
+        };
+        let name = first.text.rsplit('/').next().unwrap_or("");
+        let is_assignment = !first.text.starts_with('-')
+            && first.text.split_once('=').is_some_and(|(key, _)| {
+                !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
+            });
+        let keyword = matches!(
+            first.text.as_str(),
+            "!" | "{" | "}" | "then" | "do" | "else" | "if" | "while" | "until"
+        );
+        if is_assignment || keyword {
+            rest = &rest[1..];
+        } else if matches!(
+            name,
+            "sudo"
+                | "doas"
+                | "env"
+                | "command"
+                | "exec"
+                | "nohup"
+                | "time"
+                | "nice"
+                | "builtin"
+                | "stdbuf"
+                | "timeout"
+                | "setsid"
+        ) {
+            rest = &rest[1..];
+            // Options of the wrapper (and the value of the few that take one).
+            while let Some(word) = rest.first() {
+                let takes_value = matches!(
+                    word.text.as_str(),
+                    "-u" | "-g" | "-n" | "-C" | "-S" | "-s" | "-k"
+                ) && matches!(name, "sudo" | "doas" | "env" | "nice" | "timeout");
+                if word.text.starts_with('-') && word.text != "--" {
+                    rest = &rest[1..];
+                    if takes_value && !rest.is_empty() {
+                        rest = &rest[1..];
+                    }
+                } else if word.text == "--"
+                    || (name == "timeout"
+                        && word.text.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+        } else {
+            return rest;
+        }
+    }
+}
+
+fn segment_kills_by_pattern(segment: &[Word], depth: u32) -> bool {
+    let words = command_words(segment);
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let name = first.text.rsplit('/').next().unwrap_or("");
+    let args = &words[1..];
+    match name {
+        "pkill" | "killall" | "killall5" | "skill" | "snice" => true,
+        "kill" => !kill_args_are_own_pids(args),
+        // `trap 'kill "$pid"' EXIT`: the handler is a script.
+        "trap" => args
+            .first()
+            .is_some_and(|w| command_kills_by_pattern(&w.text, depth + 1)),
+        "xargs" | "parallel" | "find" => args.iter().any(|word| {
+            matches!(
+                word.text.rsplit('/').next().unwrap_or(""),
+                "kill" | "pkill" | "killall"
+            )
+        }),
+        "bash" | "sh" | "zsh" | "dash" | "ksh" | "eval" => {
+            let script = if name == "eval" {
+                Some(
+                    args.iter()
+                        .map(|w| w.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                args.iter()
+                    .position(|w| w.text.starts_with('-') && w.text.contains('c'))
+                    .and_then(|at| args.get(at + 1))
+                    .map(|w| w.text.clone())
+            };
+            script.is_some_and(|script| command_kills_by_pattern(&script, depth + 1))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `kill`'s arguments are an optional signal and literal positive
+/// PIDs or `%job`s (or a listing with `-l`).
+fn kill_args_are_own_pids(args: &[Word]) -> bool {
+    // Drop redirections (`2>/dev/null`, `> file`): they are not arguments.
+    let mut kept: Vec<&Word> = Vec::new();
+    let mut skip_target = false;
+    for word in args {
+        let text = word.text.trim_start_matches(|c: char| c.is_ascii_digit());
+        if skip_target {
+            skip_target = false;
+        } else if text.starts_with('>') || text.starts_with('<') {
+            skip_target = text.chars().all(|c| matches!(c, '>' | '<'));
+        } else {
+            kept.push(word);
+        }
+    }
+    let args: Vec<&Word> = kept;
+    let mut rest: &[&Word] = &args;
+    if let Some(first) = rest.first() {
+        let text = first.text.as_str();
+        if !first.dynamic && matches!(text, "-l" | "-L") {
+            return true;
+        }
+        if !first.dynamic && matches!(text, "-s" | "-n") {
+            rest = rest.get(2..).unwrap_or(&[]);
+        } else if !first.dynamic
+            && text.len() > 1
+            && text.starts_with('-')
+            && text[1..].chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            rest = &rest[1..];
+        }
+    }
+    if rest.first().is_some_and(|w| w.text == "--") {
+        rest = &rest[1..];
+    }
+    !rest.is_empty()
+        && rest.iter().all(|word| {
+            if word.dynamic {
+                return false;
+            }
+            if word.param {
+                return true;
+            }
+            let text = word.text.as_str();
+            if let Some(job) = text.strip_prefix('%') {
+                return job.is_empty() || job == "%" || job.chars().all(|c| c.is_ascii_digit());
+            }
+            !text.is_empty()
+                && text.chars().all(|c| c.is_ascii_digit())
+                && text.chars().any(|c| c != '0')
+        })
+}
+
 /// Why the policy asks about a request the CLI's auto mode classifier
 /// escalated.
 pub(super) const CLASSIFIER_ASK: &str =
@@ -137,6 +450,9 @@ impl Policy {
         blocked_path: Option<&str>,
     ) -> Decision {
         if let Some(reason) = background_wait_denial(tool_name, input) {
+            return Decision::Deny(reason.to_owned());
+        }
+        if let Some(reason) = process_kill_denial(tool_name, input) {
             return Decision::Deny(reason.to_owned());
         }
         if let Some((field, _)) = file_tool_path_field(tool_name) {
@@ -635,6 +951,111 @@ mod tests {
         assert_eq!(
             background_wait_denial("Agent", &json!({"run_in_background": false})),
             None
+        );
+    }
+
+    #[test]
+    fn process_kills_by_pattern_are_denied_and_own_pids_allowed() {
+        let denied = [
+            r#"pkill -f "herdr-""#,
+            "pkill -f nextest",
+            "killall cargo",
+            "/usr/bin/pkill foo",
+            "sudo pkill foo",
+            "env FOO=1 pkill foo",
+            "command killall foo",
+            "ls; pkill foo",
+            "true && pkill foo",
+            "false || pkill foo",
+            "pgrep -f foo | xargs kill",
+            "pgrep foo | xargs -r kill -9",
+            "kill -f foo",
+            "kill foo",
+            "kill -9 -1234",
+            "kill -TERM -- -1234",
+            "kill 0",
+            "kill -1",
+            "kill -9 -1",
+            "kill $(pgrep foo)",
+            "kill `pgrep foo`",
+            "kill -9 $(pgrep -f foo)",
+            "echo $(pkill foo)",
+            "bash -c 'pkill foo'",
+            "kill 12 foo",
+            "kill $(pgrep x)",
+            "kill `pgrep x`",
+            "kill \"$(pgrep x)\"",
+            "kill $pid*",
+            "kill a$pid",
+            "trap 'pkill foo' EXIT",
+            "trap 'kill $(pgrep x)' EXIT",
+        ];
+        for command in denied {
+            assert_eq!(
+                process_kill_denial("Bash", &json!({"command": command})),
+                Some(PROCESS_KILL_DENIAL),
+                "{command}"
+            );
+        }
+        for command in [
+            "kill 1234",
+            "kill -TERM 1234",
+            "kill -9 1234 5678",
+            "kill -s TERM 1234",
+            "kill %1",
+            "kill -9 %1",
+            "sleep 1 & kill 4242; wait",
+            "echo pkill foo",
+            "cargo nextest run -E 'test(/workers::/)'",
+            "pgrep foo",
+            "kill -l",
+            "pid=$!; sleep 1; kill \"$pid\"",
+            "kill -TERM $pid",
+            "kill $!",
+            "kill ${pid}",
+            r#"kill "${pids[@]}" 2>/dev/null"#,
+        ] {
+            assert_eq!(
+                process_kill_denial("Bash", &json!({"command": command})),
+                None,
+                "{command}"
+            );
+        }
+        assert_eq!(
+            process_kill_denial("Read", &json!({"command": "pkill x"})),
+            None
+        );
+    }
+
+    #[test]
+    fn the_documented_stress_loop_is_allowed() {
+        let doc = include_str!("../../AGENTS.md");
+        let block = doc
+            .split("```bash")
+            .map(|b| b.split("```").next().unwrap_or(""))
+            .find(|b| b.contains("yes > /dev/null"))
+            .expect("the stress loop block");
+        assert!(block.contains("trap 'kill \"${pids[@]}\" 2>/dev/null' EXIT INT TERM"));
+        assert_eq!(
+            process_kill_denial("Bash", &json!({"command": block})),
+            None
+        );
+    }
+
+    #[test]
+    fn decide_denies_process_kills_for_every_worker_kind() {
+        let dirs = Dirs::new("kill");
+        let policy = dirs.policy();
+        assert_eq!(
+            policy.decide("Bash", &json!({"command": "pkill -f nextest"}), None, None),
+            Decision::Deny(PROCESS_KILL_DENIAL.into())
+        );
+        // pi's `bash` is named as Claude's by `claude_tool` before it gets here.
+        let (tool, input) =
+            crate::workers::pi::claude_tool("bash", &json!({"command": "pkill -f herdr-"}));
+        assert_eq!(
+            policy.decide(&tool, &input, None, None),
+            Decision::Deny(PROCESS_KILL_DENIAL.into())
         );
     }
 

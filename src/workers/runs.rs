@@ -1138,7 +1138,7 @@ fn worker_task(run: &Run, carried: Option<&str>) -> String {
     let info = &run.info;
     format!(
         "{}\n\n---\n{}Run everything in the foreground: no `run_in_background`, no Monitor. \
-         You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this \
+         You are a headless worker: nothing wakes you after your turn ends.\nNever kill processes by name or pattern (no `pkill`, `killall`, `kill $(pgrep ...)`): end only processes you started, by the PID you recorded.\nCommit your work as exactly one commit whose message is exactly this \
          subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
          {}\n{}Advertised client methods keep their v1 shape: add a new method instead of \
          changing one (AGENTS.md, Stable client endpoint contract).\nEnd your last reply with \

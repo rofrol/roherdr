@@ -16,8 +16,9 @@
 //! user's allow rule permits.
 //!
 //! The hook is registered for every worker, checks or none: it also runs
-//! herdr's own rule against waiting in the background
-//! ([`super::policy::background_wait_denial`]) before any check, for
+//! herdr's own rules against waiting in the background
+//! ([`super::policy::background_wait_denial`]) and killing processes by
+//! pattern ([`super::policy::process_kill_denial`]) before any check, for
 //! [`MATCHER`]'s tools; the checks run only for [`CHECKED_TOOLS`].
 //!
 //! Each check runs in the worker's directory, outside the worker's sandbox,

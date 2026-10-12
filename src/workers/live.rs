@@ -793,7 +793,9 @@ impl Reader {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let tool = tool_name.as_str().unwrap_or("");
-        if let Some(reason) = policy::background_wait_denial(tool, &tool_input) {
+        if let Some(reason) = policy::background_wait_denial(tool, &tool_input)
+            .or_else(|| policy::process_kill_denial(tool, &tool_input))
+        {
             supervisor.record(
                 number,
                 Direction::Herdr,

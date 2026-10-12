@@ -182,7 +182,7 @@ export default function (pi) {{
 /// the input with the path field the policy reads (`file_path` for the file
 /// tools, `path` and `pattern` for `find`). Unknown tools keep their name,
 /// which the policy leaves to the user.
-fn claude_tool(tool: &str, input: &Value) -> (String, Value) {
+pub(super) fn claude_tool(tool: &str, input: &Value) -> (String, Value) {
     let mut mapped = input.clone();
     if !mapped.is_object() {
         mapped = json!({});
