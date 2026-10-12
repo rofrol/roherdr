@@ -1702,6 +1702,12 @@
           "description": "The sole model admitted by each credit worker's proxy, pinned in the run journal across retries. Supported standard Sonnet tariffs: claude-sonnet-5-5, claude-sonnet-4-6, claude-sonnet-4-5-20250929. Unknown models refuse starts rather than applying an incorrect cap tariff. Does not change subscription workers."
         },
         {
+          "key": "workers.anthropic_api_thinking",
+          "type": "string",
+          "default": "\"medium\"",
+          "description": "Starting pi thinking level for API credit workers: minimal, low, medium, high or xhigh. Off and unknown levels refuse startup. The private model is reasoning-capable and pi starts with an explicit --thinking flag. Read at worker startup, including retries; does not change subscription workers."
+        },
+        {
           "key": "workers.anthropic_api_cycle",
           "type": "string",
           "default": "\"\"",

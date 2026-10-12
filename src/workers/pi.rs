@@ -58,7 +58,7 @@ pub(super) fn anthropic_models(address: &str, model: &str) -> Value {
     json!({"providers": {"herdr-anthropic": {
         "baseUrl": address, "api": "anthropic-messages",
         "apiKey": "${HERDR_ANTHROPIC_PROXY_TOKEN}",
-        "models": [{"id": model, "contextWindow": 200000, "maxTokens": 8192}]
+        "models": [{"id": model, "reasoning": true, "contextWindow": 200000, "maxTokens": 8192}]
     }}})
 }
 
@@ -106,6 +106,26 @@ pub(super) fn args(model: &str, extension: &str, contract: &str) -> Vec<String> 
     .iter()
     .map(|arg| (*arg).to_owned())
     .collect()
+}
+
+/// Credit workers must opt into reasoning both in models.json and at startup:
+/// pi otherwise sends `thinking: disabled`, which newer Sonnet models reject.
+/// `--thinking` is pi 1.1's starting-level flag; the private agent directory
+/// must not rely on the user's settings or pi's default thinking level.
+#[cfg(any(unix, test))]
+pub(super) fn anthropic_args(
+    args: &mut Vec<String>,
+    config: &crate::config::WorkersConfig,
+) -> std::io::Result<()> {
+    match config.anthropic_api_thinking.as_str() {
+        "minimal" | "low" | "medium" | "high" | "xhigh" => {
+            args.extend(["--thinking".into(), config.anthropic_api_thinking.clone()]);
+            Ok(())
+        }
+        _ => Err(std::io::Error::other(
+            "anthropic_api_thinking must be minimal, low, medium, high or xhigh (not off)",
+        )),
+    }
 }
 
 /// herdr's first line to pi, which pi answers once it has started.
@@ -606,10 +626,34 @@ mod tests {
         assert_eq!(provider["baseUrl"], "http://127.0.0.1:12345");
         assert_eq!(provider["apiKey"], "${HERDR_ANTHROPIC_PROXY_TOKEN}");
         assert_eq!(provider["models"][0]["id"], "claude-sonnet-5-5");
+        assert_eq!(provider["models"][0]["reasoning"], true);
         assert!(!config.to_string().contains("sk-ant-"));
         let model = anthropic_model(&crate::config::WorkersConfig::default());
         assert_eq!(model, "herdr-anthropic/claude-sonnet-5-5");
         assert!(args(&model, "extension", "contract").contains(&model));
+    }
+
+    #[test]
+    fn credit_worker_thinking_defaults_and_configured_levels_are_explicit() {
+        let mut config: crate::config::WorkersConfig = toml::from_str("").unwrap();
+        assert_eq!(config.anthropic_api_thinking, "medium");
+        for level in ["minimal", "low", "medium", "high", "xhigh"] {
+            config = toml::from_str(&format!("anthropic_api_thinking = {level:?}")).unwrap();
+            let mut argv = args(&anthropic_model(&config), "extension", "contract");
+            anthropic_args(&mut argv, &config).unwrap();
+            let index = argv.iter().position(|arg| arg == "--thinking").unwrap();
+            assert_eq!(argv[index + 1], level);
+            assert_eq!(argv.iter().filter(|arg| *arg == "--thinking").count(), 1);
+        }
+        for invalid in ["off", "", "disabled", "medum"] {
+            config.anthropic_api_thinking = invalid.into();
+            let mut argv = args(&anthropic_model(&config), "extension", "contract");
+            let original = argv.clone();
+            assert!(anthropic_args(&mut argv, &config).is_err());
+            assert_eq!(argv, original);
+        }
+        // Subscription pi workers retain their existing startup behavior.
+        assert!(!args(DEFAULT_MODEL, "extension", "contract").contains(&"--thinking".into()));
     }
 
     #[test]

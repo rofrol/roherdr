@@ -943,6 +943,8 @@ pub struct WorkersConfig {
     pub anthropic_api_cycle: String,
     /// The sole model admitted by the credit proxy (standard Sonnet pricing).
     pub anthropic_api_model: String,
+    /// pi's starting thinking level for credit workers. Must enable reasoning.
+    pub anthropic_api_thinking: String,
 }
 
 pub(crate) const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-5-5";
@@ -971,6 +973,7 @@ impl Default for WorkersConfig {
             anthropic_api_cap_usd: anthropic_default_cap(),
             anthropic_api_cycle: String::new(),
             anthropic_api_model: ANTHROPIC_DEFAULT_MODEL.into(),
+            anthropic_api_thinking: "medium".into(),
         }
     }
 }

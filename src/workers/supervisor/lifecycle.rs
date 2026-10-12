@@ -260,6 +260,7 @@ impl WorkerSupervisor {
                 .and_then(|model| model.strip_prefix(pi::ANTHROPIC_PREFIX))
                 .ok_or_else(|| std::io::Error::other("missing credit model"))?
                 .to_owned();
+            pi::anthropic_args(&mut args, &config)?;
             let ledger = ledger_path(&config)?;
             std::fs::create_dir_all(crate::config::state_dir())?;
             let proxy = AnthropicProxy::open(&config, &ledger)?;

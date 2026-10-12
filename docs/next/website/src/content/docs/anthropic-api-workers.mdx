@@ -14,8 +14,11 @@ Configure the existing worker key file and cap, plus an explicit cycle identifie
 anthropic_api_key_file = "~/.config/herdr/worker-api-key"
 anthropic_api_cap_usd = 200.0
 anthropic_api_model = "claude-sonnet-5-5"
+anthropic_api_thinking = "medium"
 anthropic_api_cycle = "cycle-2026-11"
 ```
+
+Credit workers mark the private pi model as reasoning-capable and start pi with `--thinking` set to `[workers] anthropic_api_thinking` (default `medium`). Accepted levels are `minimal`, `low`, `medium`, `high` and `xhigh`; `off` and unknown levels refuse startup, since disabling thinking is not accepted by the current model. This setting is read at worker startup, including retries, and does not change subscription pi workers. Pi maps the level to the model's supported reasoning options.
 
 The upstream key file must be owned by the user and mode 0600. Keep the Console workspace's own spending limit enabled: the Console is the billing authority. Herdr's local counter covers only requests through its proxy, not other applications or previous Console spend. Set the local cap to the amount actually available for these workers.
 
