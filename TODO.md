@@ -3049,6 +3049,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   it starts an agent on each TODO item in turn, deterministically: first
   with the $200 Anthropic credits, then the Anthropic subscription, when
   credits run short pi with Sol, etc. Ask the models").
+  Round 20261012-203917-b6de (sol, MiMo, DeepSeek agreeing; the first
+  round with the Rule 10 preamble: every answer ended with a Timing list,
+  only events and external reconciliation of provider balances; decided
+  by the coordinator where they split):
+  - Queue mode's state machine owns the loop, not the supervisor: the
+    supervisor stays observe, record, wake, alert and never starts
+    anything (two components able to start workers cannot prove a single
+    start). On a stalled queue it files a finding.
+  - "Dirty" means committed items without a fresh receipt ([t-...]
+    "reviewed" state); uncommitted TODO.md edits are unpublished input,
+    never approval. The trigger is the event "a `todo_edit.py` commit
+    touched TODO.md", reconciled against receipts at startup, handoff and
+    turn end; the analysis's own writes do not retrigger it.
+  - The analysis call inspects code and decisions and proposes a typed
+    verdict per changed item with evidence; the server validates and
+    stores the receipt. It never edits item text, promotes Proposed
+    items, invents the owner's decisions, starts workers or lands code;
+    `ready` is technical readiness, not approval.
+  - Funding is chosen per stage (draft, worker, review), at each stage's
+    start from live readings (credit proxy balance and cap, subscription
+    usage gate, pi availability): Anthropic credits, then the Claude
+    subscription, then pi with Sol. Estimated cost is reserved before the
+    start ([t-alwaqkn5]). Review is never silently downgraded to a weaker
+    model: without a strong reviewer the item waits and the owner is told.
+    A fallback after a refusal only when the refused run provably never
+    started. All routes exhausted: `blocked_funding`, owner told, resumes
+    on a funding change event or the owner's action; no retry loop.
+  - First step: the queue-mode trial already decided (d-amwperuu), one
+    approved item, credits only, mandatory review, small spend cap; the
+    ladder and automatic analysis come after the trial's numbers.
 
 ## Proposed
 
