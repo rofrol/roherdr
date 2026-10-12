@@ -40,23 +40,38 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::auto_draft::decisions_named;
+use super::context_pack::{self, LogPaths};
 use super::decision::{self, Prompt, MAX_CALLS};
 use super::escalations;
-use super::{event_of, git, is_gone, new_event, Run, APPROVE, MAX_ATTEMPTS, NO_DEADLINE, RETRY};
+use super::review_diff;
+use super::{
+    event_of, git, is_gone, new_event, read_checks, Run, APPROVE, DECISIONS_FILE, MAX_ATTEMPTS,
+    NO_DEADLINE, RETRY,
+};
 use crate::api::schema::{
     TodoEventKind, TodoRunEvent, TodoRunStatus, TodoStep, WorkerCheckOutcome, WorkerCommandTarget,
     WorkerVerdict, WorkerVerification, WorkerWaitUntil,
 };
 use crate::workers::{now_ms, WorkerError, WorkerSupervisor};
 
-/// The diff the model gets is cut at this many bytes.
+/// The diff the model gets is cut at this many bytes, except the files of
+/// [`review_diff::FULL_PATHS`] and the repository's `[review] full_paths`,
+/// which are never cut.
 const DIFF_MAX: usize = 200_000;
+/// The repository's review checklist: one line per bug class, each ending
+/// with its source (a `DECISIONS.md` section title or a commit sha).
+pub(super) const CHECKLIST_FILE: &str = ".herdr/review-checklist.md";
+/// The checklist's lines the model gets, at most.
+pub(super) const CHECKLIST_MAX: usize = 25;
 /// The run events this module writes.
 const CALL: &str = "run_review_call";
 const DECISION: &str = "run_review_decision";
 const SUPERSEDED: &str = "run_review_superseded";
 const APPLIED: &str = "run_auto_reviewed";
 const VERIFIED: &str = "run_review_verified";
+/// The findings of a call that the server dropped for lack of a citation.
+const DROPPED: &str = "run_review_findings_dropped";
 const STOP_INTENT: &str = "run_review_stop_intent";
 /// The key a `review` event raised by an escalation carries: the decision
 /// that raised it. The server does not review such an event again.
@@ -64,14 +79,19 @@ pub(super) const ESCALATES: &str = "escalates";
 
 /// The output's JSON schema, which `claude -p --json-schema` enforces and
 /// [`parse_decision`] checks again.
-const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["approve","retry","escalate"]},"note":{"type":"string","description":"approve only: an optional note on the approval"},"review":{"type":"string","description":"retry only: what the next attempt must change; its worker gets this text"},"question":{"type":"string","description":"escalate only: the question for the user"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4,"description":"escalate only: the answers the user can choose from, the recommended one first"}}}"#;
+const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["approve","retry","escalate"]},"note":{"type":"string","description":"approve only: an optional note on the approval"},"cut_files_reviewed":{"type":"boolean","description":"approve only: false when the input's diff_cut_files is not empty (you did not see those files, and the server never applies an approval of a cut diff); true otherwise"},"review":{"type":"string","description":"retry only: what the next attempt must change; its worker gets this text"},"question":{"type":"string","description":"escalate only: the question for the user"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4,"description":"escalate only: the answers the user can choose from, the recommended one first"},"findings":{"type":"array","description":"the problems you found; the server drops a finding that lacks file, line or verified_by","items":{"type":"object","additionalProperties":false,"required":["file","line","verified_by","text"],"properties":{"file":{"type":"string","description":"the file the finding is about"},"line":{"type":"integer","description":"the line in that file, from the diff or the context pack"},"verified_by":{"type":"string","description":"what in the input shows it: the diff hunk, a check's evidence, a context pack entry"},"text":{"type":"string","description":"what is wrong"}}}}}}"#;
 
 const SYSTEM_PROMPT: &str = "You review one attempt of a headless coding worker that herdr's \
 TODO driver ran for a TODO item. The input is JSON: the item's text, the worker's task, the \
 exact commit subject and the paths it had to keep to, the worker's final reply, the diff of its \
-commit against the run's base, and the verify the server ran on that commit before asking you \
-(the exact subject, the paths, a clean tree, and every registered check with its outcome and \
-evidence). Decide one action and answer only with JSON matching the schema:\n\
+commit against the run's base (`diff_cut_files` names the files the diff leaves out when it was \
+cut), the verify the server ran on that commit before asking you (the exact subject, the paths, \
+a clean tree, and every registered check with its outcome and evidence), a `context_pack` the \
+server built without a model (the item's text, the DECISIONS.md sections it names, its run \
+history with each earlier attempt's failure reason, the recent commits of the paths, and lines \
+of code the item names) and, when the repository has one, a `review_checklist` of bug classes \
+with their sources: check the diff against each line. Decide one action and answer only with \
+JSON matching the schema:\n\
 - approve (optional note) when the verify passed and the diff does what the item and the task \
 ask, within the paths, and nothing in the worker's reply contradicts it;\n\
 - retry (review) when something is missing or wrong that the worker can fix, a failed check \
@@ -80,6 +100,10 @@ included: the review says concretely what to change, and the next attempt's work
 decision (scope, a product choice, a permission, a contradiction in the item), a check could \
 not run, or you cannot judge it.\n\
 When the input has `user_answer`, the user answered your earlier question: decide by it.\n\
+Every finding cites `file`, `line` and `verified_by` (what in the input shows it); the server \
+drops a finding without them, so name no problem you cannot show. An approval of a diff that \
+was cut (`diff_cut_files` not empty) is never applied: say `cut_files_reviewed: false` and retry \
+or escalate instead when the cut files matter.\n\
 Never approve an attempt without a commit or one whose verify failed.";
 
 const PROMPT: Prompt<'static> = Prompt {
@@ -116,6 +140,15 @@ struct RawDecision {
     question: Option<String>,
     #[serde(default)]
     options: Option<Vec<String>>,
+    /// Read by the server from the raw output ([`checked_output`]); the
+    /// field is here so the schema check accepts it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    cut_files_reviewed: Option<bool>,
+    /// Checked apart ([`cite_findings`]); any entry is accepted here.
+    #[serde(default)]
+    #[allow(dead_code)]
+    findings: Option<Vec<Value>>,
 }
 
 /// The text of a field an action needs, trimmed, refused when empty.
@@ -213,17 +246,95 @@ impl Decision {
     }
 }
 
-/// The diff cut at [`DIFF_MAX`] bytes on a character boundary, and whether
-/// it was cut.
-fn cut_diff(diff: String) -> (String, bool) {
-    if diff.len() <= DIFF_MAX {
-        return (diff, false);
+/// The findings that cite their evidence (a nonempty `file`, a `line` of 1
+/// or more and a nonempty `verified_by`) and the ones that do not, each
+/// with what it lacks.
+fn cite_findings(output: &Value) -> (Vec<Value>, Vec<Value>) {
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for finding in output["findings"].as_array().into_iter().flatten() {
+        let text = |field: &str| {
+            finding[field]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty())
+        };
+        let missing: Vec<&str> = [
+            ("file", text("file")),
+            (
+                "line",
+                finding["line"].as_u64().is_some_and(|line| line >= 1),
+            ),
+            ("verified_by", text("verified_by")),
+        ]
+        .into_iter()
+        .filter(|(_, present)| !present)
+        .map(|(field, _)| field)
+        .collect();
+        if missing.is_empty() {
+            kept.push(finding.clone());
+        } else {
+            dropped.push(json!({"finding": finding, "missing": missing}));
+        }
     }
-    let mut at = DIFF_MAX;
-    while !diff.is_char_boundary(at) {
-        at -= 1;
+    (kept, dropped)
+}
+
+/// The decision as recorded and applied: the checked decision with the
+/// model's `cut_files_reviewed` and its cited findings.
+fn checked_output(decision: &Decision, output: &Value, findings: Vec<Value>) -> Value {
+    let mut checked = decision.to_json();
+    if let Some(reviewed) = output["cut_files_reviewed"].as_bool() {
+        checked["cut_files_reviewed"] = json!(reviewed);
     }
-    (diff[..at].to_owned(), true)
+    if !findings.is_empty() {
+        checked["findings"] = Value::Array(findings);
+    }
+    checked
+}
+
+/// A retry's review text with the findings the decision cited.
+fn with_findings(review: &str, output: Option<&Value>) -> String {
+    let lines: Vec<String> = output
+        .and_then(|output| output["findings"].as_array())
+        .into_iter()
+        .flatten()
+        .map(|finding| {
+            format!(
+                "- {}:{} {} (verified by: {})",
+                finding["file"].as_str().unwrap_or_default(),
+                finding["line"],
+                finding["text"].as_str().unwrap_or_default().trim(),
+                finding["verified_by"].as_str().unwrap_or_default().trim(),
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        return review.to_owned();
+    }
+    format!("{review}\n\nFindings:\n{}", lines.join("\n"))
+}
+
+/// The review checklist's lines (at most [`CHECKLIST_MAX`]) and how many
+/// the cut left out; none for a repository without the file.
+fn checklist_of(repo: &Path) -> (Vec<String>, usize) {
+    let text = std::fs::read_to_string(repo.join(CHECKLIST_FILE)).unwrap_or_default();
+    let lines: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    let left_out = lines.len().saturating_sub(CHECKLIST_MAX);
+    (lines.into_iter().take(CHECKLIST_MAX).collect(), left_out)
+}
+
+/// The model of the review's call: `[review] model` of herdr's config; none
+/// keeps the run's own.
+fn review_model() -> Option<String> {
+    crate::config::load_live_config()
+        .ok()
+        .and_then(|loaded| loaded.config.review.model)
+        .map(|model| model.trim().to_owned())
+        .filter(|model| !model.is_empty())
 }
 
 /// Whether the server reviews the run's pending event itself: an automatic
@@ -255,6 +366,9 @@ struct DecisionRecord {
     /// Each failed call's error.
     #[serde(default)]
     errors: Vec<String>,
+    /// The files the diff the model got left out (it was cut).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cut_files: Vec<String>,
     /// The verdict of the verify run before the review, of `commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verdict: Option<WorkerVerdict>,
@@ -272,7 +386,7 @@ enum Outcome {
 }
 
 /// The checks of a verification that failed, each with its evidence.
-fn failed_checks(verification: &WorkerVerification) -> Vec<String> {
+pub(super) fn failed_checks(verification: &WorkerVerification) -> Vec<String> {
     verification
         .checks
         .iter()
@@ -463,7 +577,7 @@ impl WorkerSupervisor {
         body: &Value,
         verification: Option<&WorkerVerification>,
     ) -> Result<DecisionRecord, String> {
-        let input = self.review_input(run, event, body);
+        let (input, cut_files) = self.review_input(run, event, body);
         let text = serde_json::to_string_pretty(&input).map_err(|error| error.to_string())?;
         let digest = decision::digest(&text);
         let store = self.run_store().map_err(|error| error.to_string())?;
@@ -472,21 +586,30 @@ impl WorkerSupervisor {
             .map_err(|error| format!("the worker store failed: {error}"))?;
         let (mut errors, answered) =
             decision::recorded_calls(&calls, ("event", &json!(seq)), &digest);
-        let mut decided = answered.and_then(|(output, model)| {
-            parse_decision(&output)
-                .ok()
-                .map(|decision| (decision, model))
-        });
+        let mut decided = answered.filter(|(output, _)| parse_decision(output).is_ok());
+        let model = review_model();
         while decided.is_none() && errors.len() < MAX_CALLS {
             let call = errors.len() + 1;
             let answered = self
-                .call_model_for(run, &PROMPT, &text)
-                .and_then(|(output, model)| Ok((parse_decision(&output)?, model)));
+                .call_model_with(run, &PROMPT, &text, model.as_deref())
+                .and_then(|(output, model)| {
+                    let decision = parse_decision(&output)?;
+                    let (cited, dropped) = cite_findings(&output);
+                    Ok((checked_output(&decision, &output, cited), dropped, model))
+                });
             let note = match &answered {
-                Ok((decision, model)) => json!({
-                    "type": CALL, "event": seq, "call": call, "input_digest": digest,
-                    "model": model, "output": decision.to_json(),
-                }),
+                Ok((output, dropped, model)) => {
+                    if !dropped.is_empty() {
+                        let note = json!({
+                            "type": DROPPED, "event": seq, "call": call, "dropped": dropped,
+                        });
+                        self.write_note(&run.info.run_id, &note)?;
+                    }
+                    json!({
+                        "type": CALL, "event": seq, "call": call, "input_digest": digest,
+                        "model": model, "output": output,
+                    })
+                }
                 Err(error) => json!({
                     "type": CALL, "event": seq, "call": call, "input_digest": digest,
                     "error": error,
@@ -494,12 +617,12 @@ impl WorkerSupervisor {
             };
             self.write_note(&run.info.run_id, &note)?;
             match answered {
-                Ok(answer) => decided = Some(answer),
+                Ok((output, _, model)) => decided = Some((output, model)),
                 Err(error) => errors.push(error),
             }
         }
         let (output, model) = match decided {
-            Some((decision, model)) => (Some(decision.to_json()), model),
+            Some((output, model)) => (Some(output), model),
             None => (None, None),
         };
         let record = DecisionRecord {
@@ -512,6 +635,7 @@ impl WorkerSupervisor {
             model,
             output,
             errors,
+            cut_files,
             verdict: verification.map(|verification| verification.verdict),
             failed_checks: verification.map(failed_checks).unwrap_or_default(),
         };
@@ -525,26 +649,38 @@ impl WorkerSupervisor {
     /// worker's final reply, the diff of the event's commit against the
     /// base, the checks with the verify run before the review, and the
     /// user's answer when the event carries one.
-    fn review_input(&self, run: &Run, event: &TodoRunEvent, body: &Value) -> Value {
+    fn review_input(&self, run: &Run, event: &TodoRunEvent, body: &Value) -> (Value, Vec<String>) {
         let repo = Path::new(&run.info.repo);
         let commit = event.commits.last().cloned();
-        let (diff, cut) = match (&run.info.base, &commit) {
-            (Some(base), Some(commit)) => cut_diff(
+        let full_paths = read_checks(repo)
+            .map(|checks| checks.review.full_paths)
+            .unwrap_or_default();
+        let cut = match (&run.info.base, &commit) {
+            (Some(base), Some(commit)) => review_diff::cut(
                 git(repo, &["diff", base, commit])
                     .unwrap_or_else(|error| format!("(the diff could not be read: {error})")),
+                DIFF_MAX,
+                &full_paths,
             ),
-            _ => (
-                "(the attempt has no commit since the base)".to_owned(),
-                false,
-            ),
+            _ => review_diff::CutDiff {
+                text: "(the attempt has no commit since the base)".to_owned(),
+                cut_files: Vec::new(),
+            },
         };
-        let item_text = self
-            .run_store()
-            .ok()
-            .and_then(|store| store.run_events_of(&run.info.run_id, "run_created").ok())
-            .and_then(|created| created.into_iter().next())
-            .map(|created| created["item_text"].clone())
-            .unwrap_or(Value::Null);
+        let item_text = self.item_text_of(run);
+        let base = run.info.base.as_deref().unwrap_or("master");
+        let decisions = git(repo, &["show", &format!("{base}:{DECISIONS_FILE}")])
+            .map(|text| decisions_named(&text, &item_text, &run.info.item))
+            .unwrap_or_default();
+        let pack = context_pack::build(
+            repo,
+            run.info.base.as_deref(),
+            &item_text,
+            decisions,
+            self.run_history_of(run),
+            LogPaths::Globs(&run.info.paths),
+        );
+        let (checklist, checklist_cut) = checklist_of(repo);
         let verification = run
             .current
             .verification
@@ -561,8 +697,10 @@ impl WorkerSupervisor {
             "commit": commit,
             "worker_final_text": event.result_text,
             "diff_stat": event.diff_stat,
-            "diff": diff,
-            "diff_truncated": cut,
+            "diff": cut.text,
+            "diff_truncated": !cut.cut_files.is_empty(),
+            "diff_cut_files": cut.cut_files,
+            "context_pack": pack,
             "event_note": event.error,
             "checks": {
                 "registered": run.checks,
@@ -570,10 +708,24 @@ impl WorkerSupervisor {
                 "verify_before_review": verification,
             },
         });
+        if !checklist.is_empty() {
+            input["review_checklist"] = json!(checklist);
+            if checklist_cut > 0 {
+                input["review_checklist_cut"] = json!(format!(
+                    "{checklist_cut} lines past {CHECKLIST_MAX} were left out"
+                ));
+            }
+        }
         if body["user_answer"].is_object() {
             input["user_answer"] = body["user_answer"].clone();
         }
-        input
+        let cut_files = input["diff_cut_files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| file.as_str().map(str::to_owned))
+            .collect();
+        (input, cut_files)
     }
 
     /// Applies the recorded decision, checked against the run's state; an
@@ -587,46 +739,67 @@ impl WorkerSupervisor {
         record: &DecisionRecord,
     ) -> Result<(), String> {
         let decision = record.output.as_ref().map(parse_decision).transpose();
-        let outcome = match decision {
-            Err(error) => Outcome::Escalate(
-                format!(
+        let outcome =
+            match decision {
+                Err(error) => Outcome::Escalate(
+                    format!(
                     "The recorded automatic review is unreadable ({error}); review the attempt."
                 ),
-                review_options(),
-            ),
-            Ok(None) => Outcome::Escalate(
-                format!(
-                    "The automatic review failed {} times ({}); review attempt {} yourself.",
-                    record.errors.len(),
-                    record.errors.join("; "),
-                    record.attempt
+                    review_options(),
                 ),
-                review_options(),
-            ),
-            Ok(Some(Decision::Escalate { question, options })) => {
-                Outcome::Escalate(question, options)
-            }
-            Ok(Some(Decision::Approve { .. })) if record.verdict == Some(WorkerVerdict::Failed) => {
-                Outcome::Escalate(
+                Ok(None) => Outcome::Escalate(
                     format!(
-                        "The automatic review approved commit {}, but its verify failed ({}); \
-                         review it.",
-                        record.commit.as_deref().unwrap_or("none"),
-                        record.failed_checks.join("; ")
+                        "The automatic review failed {} times ({}); review attempt {} yourself.",
+                        record.errors.len(),
+                        record.errors.join("; "),
+                        record.attempt
                     ),
                     review_options(),
-                )
-            }
-            Ok(Some(Decision::Approve { note })) => match &record.commit {
-                None => Outcome::Escalate(
-                    "The automatic review approved an attempt without a commit; review it."
-                        .to_owned(),
-                    review_options(),
                 ),
-                Some(commit) => self.approve(run, seq, record, commit, note)?,
-            },
-            Ok(Some(Decision::Retry { review })) => self.retry(run, seq, record, &review)?,
-        };
+                Ok(Some(Decision::Escalate { question, options })) => {
+                    Outcome::Escalate(question, options)
+                }
+                Ok(Some(Decision::Approve { .. }))
+                    if record.verdict == Some(WorkerVerdict::Failed) =>
+                {
+                    Outcome::Escalate(
+                        format!(
+                            "The automatic review approved commit {}, but its verify failed ({}); \
+                         review it.",
+                            record.commit.as_deref().unwrap_or("none"),
+                            record.failed_checks.join("; ")
+                        ),
+                        review_options(),
+                    )
+                }
+                Ok(Some(Decision::Approve { .. })) if !record.cut_files.is_empty() => {
+                    Outcome::Escalate(
+                        format!(
+                        "The automatic review approved commit {}, but the diff it read was cut \
+                         and it did not read {} (cut_files_reviewed: {}); review {}.",
+                        record.commit.as_deref().unwrap_or("none"),
+                        record.cut_files.join(", "),
+                        record.output.as_ref().map_or("not given".to_owned(), |output| {
+                            output["cut_files_reviewed"].to_string()
+                        }),
+                        if record.cut_files.len() == 1 { "that file" } else { "those files" },
+                    ),
+                        review_options(),
+                    )
+                }
+                Ok(Some(Decision::Approve { note })) => match &record.commit {
+                    None => Outcome::Escalate(
+                        "The automatic review approved an attempt without a commit; review it."
+                            .to_owned(),
+                        review_options(),
+                    ),
+                    Some(commit) => self.approve(run, seq, record, commit, note)?,
+                },
+                Ok(Some(Decision::Retry { review })) => {
+                    let review = with_findings(&review, record.output.as_ref());
+                    self.retry(run, seq, record, &review)?
+                }
+            };
         match outcome {
             Outcome::Applied => Ok(()),
             Outcome::Escalate(question, options) => {
@@ -890,11 +1063,110 @@ mod tests {
     }
 
     #[test]
-    fn a_long_diff_is_cut_on_a_character_boundary() {
-        let (short, cut) = cut_diff("abc".into());
-        assert_eq!((short.as_str(), cut), ("abc", false));
-        let long = "é".repeat(DIFF_MAX);
-        let (diff, cut) = cut_diff(long);
-        assert!(cut && diff.len() <= DIFF_MAX && diff.chars().all(|c| c == 'é'));
+    fn findings_without_a_citation_are_dropped_with_what_they_lack() {
+        let output = json!({"action": "retry", "review": "x", "findings": [
+            {"file": "src/a.rs", "line": 3, "verified_by": "the diff hunk", "text": "ok"},
+            {"file": "src/b.rs", "line": 4, "text": "no evidence"},
+            {"file": "", "line": 0, "verified_by": " ", "text": "nothing"},
+            {"line": 7, "verified_by": "diff", "text": "no file"},
+            {"file": "c.rs", "line": "7", "verified_by": "diff"},
+        ]});
+        let (kept, dropped) = cite_findings(&output);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["file"], "src/a.rs");
+        let missing: Vec<&Value> = dropped.iter().map(|drop| &drop["missing"]).collect();
+        assert_eq!(
+            missing,
+            [
+                &json!(["verified_by"]),
+                &json!(["file", "line", "verified_by"]),
+                &json!(["file"]),
+                &json!(["line"]),
+            ]
+        );
+        assert!(parse_decision(&output).is_ok());
+        let (kept, dropped) = cite_findings(&json!({"action": "approve"}));
+        assert!(kept.is_empty() && dropped.is_empty());
+    }
+
+    #[test]
+    fn the_checked_output_keeps_the_cut_flag_and_the_cited_findings() {
+        let output = json!({"action": "approve", "cut_files_reviewed": false});
+        let decision = parse_decision(&output).unwrap();
+        let finding = json!({"file": "a", "line": 1, "verified_by": "d", "text": "t"});
+        let checked = checked_output(&decision, &output, vec![finding.clone()]);
+        assert_eq!(checked["cut_files_reviewed"], false);
+        assert_eq!(checked["findings"], json!([finding]));
+        assert_eq!(parse_decision(&checked), Ok(decision));
+        let plain = checked_output(&Decision::Approve { note: None }, &json!({}), vec![]);
+        assert_eq!(plain, json!({"action": "approve"}));
+    }
+
+    #[test]
+    fn a_retry_carries_its_cited_findings_to_the_worker() {
+        let output = json!({"findings": [
+            {"file": "src/a.rs", "line": 3, "verified_by": "hunk 2", "text": " bad "},
+        ]});
+        assert_eq!(
+            with_findings("fix it", Some(&output)),
+            "fix it\n\nFindings:\n- src/a.rs:3 bad (verified by: hunk 2)"
+        );
+        assert_eq!(with_findings("fix it", Some(&json!({}))), "fix it");
+        assert_eq!(with_findings("fix it", None), "fix it");
+    }
+
+    #[test]
+    fn the_checklist_is_read_when_the_repository_has_one_and_cut_at_25_lines() {
+        let dir = std::env::temp_dir().join(format!("herdr-checklist-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".herdr")).unwrap();
+        assert_eq!(checklist_of(&dir), (vec![], 0));
+        let lines: String = (0..30)
+            .map(|i| format!("- class {i} (source: abc{i})\n"))
+            .collect();
+        std::fs::write(dir.join(CHECKLIST_FILE), format!("# Checklist\n\n{lines}")).unwrap();
+        let (kept, left_out) = checklist_of(&dir);
+        assert_eq!((kept.len(), left_out), (CHECKLIST_MAX, 5));
+        assert_eq!(kept[0], "- class 0 (source: abc0)");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_committed_checklist_is_short_and_each_line_names_its_source() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (lines, left_out) = checklist_of(root);
+        assert!(!lines.is_empty() && left_out == 0, "{left_out}");
+        let decisions = std::fs::read_to_string(root.join("DECISIONS.md")).unwrap_or_default();
+        let shallow = git(root, &["rev-parse", "--is-shallow-repository"])
+            .map_or(true, |text| text.trim() != "false");
+        for line in &lines {
+            let source = line
+                .strip_suffix(')')
+                .and_then(|line| line.rsplit_once("(source: "))
+                .map(|(_, source)| source)
+                .unwrap_or_else(|| panic!("no source at the end of: {line}"));
+            match source.strip_prefix("DECISIONS.md \"") {
+                Some(title) => {
+                    let title = title.trim_end_matches('"');
+                    assert!(
+                        decisions
+                            .lines()
+                            .any(|l| l.starts_with("## ") && l[3..].starts_with(title)),
+                        "no DECISIONS.md section {title:?}"
+                    );
+                }
+                None => {
+                    assert!(
+                        source.len() >= 7 && source.chars().all(|c| c.is_ascii_hexdigit()),
+                        "{source}"
+                    );
+                    if !shallow {
+                        assert!(
+                            git(root, &["cat-file", "-e", &format!("{source}^{{commit}}")]).is_ok(),
+                            "no commit {source}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

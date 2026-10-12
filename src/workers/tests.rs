@@ -20,6 +20,7 @@
 //! `<fifo>` is written), `commit <file> <subject...>` (appends to
 //! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`),
 //! `amend <file> <subject...>` (the same, amending `HEAD` instead),
+//! `bigcommit <file> <subject...>` (`commit` with a 250 KB line),
 //! `commit2 <file> <subject...>` (`commit` twice, the second changing what
 //! the first added),
 //! `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`),
@@ -66,9 +67,9 @@ emit({"type": "system", "subtype": "init", "session_id": "stub-session",
 ignore_term = False
 hooks = {}
 
-def commit(path, subject, amend=False):
+def commit(path, subject, amend=False, text="change\n"):
     with open(path, "a") as f:
-        f.write("change\n")
+        f.write(text)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
     subprocess.run(git + ["add", path], check=True)
@@ -143,6 +144,8 @@ while True:
         commit(words[1], " ".join(words[2:]))
     elif command == "amend":
         commit(words[1], " ".join(words[2:]), amend=True)
+    elif command == "bigcommit":
+        commit(words[1], " ".join(words[2:]), text="x" * 250000 + "\n")
     elif command == "commit2":
         with open(words[1], "a") as f:
             f.write("first\n")
@@ -11255,6 +11258,202 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             assert!(input.contains("\"verdict\": \"failed\""), "{input}");
             assert_eq!(master_subjects(&fixture), ["init"]);
             abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        /// The JSON input of the `n`th review call.
+        fn call_input(fixture: &Fixture, n: usize) -> serde_json::Value {
+            let stdin = calls(fixture)[n]["stdin"].as_str().unwrap().to_owned();
+            let start = stdin.find("\n{\n").expect("no JSON input") + 1;
+            serde_json::from_str(&stdin[start..]).unwrap()
+        }
+
+        #[test]
+        fn a_review_gets_the_context_pack_and_the_repositorys_checklist() {
+            let fixture = reviewed("todo-auto-pack", &[r#"{"action": "approve"}"#]);
+            std::fs::write(
+                fixture.repo.join(".herdr/review-checklist.md"),
+                "# header\n\n- one (source: abc1234)\n- two (source: abc5678)\n",
+            )
+            .unwrap();
+            git_in(&fixture.repo, &["add", "."]);
+            git_in(&fixture.repo, &["commit", "-q", "-m", "checklist"]);
+            let run = start(&fixture);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let input = call_input(&fixture, 0);
+            let pack = &input["context_pack"];
+            assert!(pack["item_text"].as_str().unwrap().contains("driven item"));
+            for key in ["decisions", "run_history", "git_log", "code_hits", "cut"] {
+                assert!(pack[key].is_array(), "{key} in {pack}");
+            }
+            assert_eq!(
+                input["review_checklist"],
+                serde_json::json!(["- one (source: abc1234)", "- two (source: abc5678)"])
+            );
+            assert_eq!(input["diff_truncated"], false);
+            assert_eq!(input["diff_cut_files"], serde_json::json!([]));
+        }
+
+        #[test]
+        fn a_repository_without_a_checklist_gets_none() {
+            let fixture = reviewed("todo-auto-no-checklist", &[r#"{"action": "approve"}"#]);
+            let run = start(&fixture);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert!(call_input(&fixture, 0).get("review_checklist").is_none());
+        }
+
+        #[test]
+        fn a_retry_drops_uncited_findings_and_the_next_review_sees_the_history() {
+            let fixture = reviewed(
+                "todo-auto-findings",
+                &[
+                    r#"{"action": "retry", "review": "amend a.txt feat: add a", "findings": [{"file": "a.txt", "line": 1, "verified_by": "the diff", "text": "bad"}, {"file": "a.txt", "line": 2, "text": "no evidence"}]}"#,
+                    r#"{"action": "escalate", "question": "Keep both files?", "options": ["keep", "drop b.txt"]}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            assert!(
+                waiting.task.ends_with(
+                    "Review of attempt 1:\namend a.txt feat: add a\n\nFindings:\n- a.txt:1 bad (verified by: the diff)"
+                ),
+                "{}",
+                waiting.task
+            );
+            let dropped = run_events(&fixture, &run.run_id, "run_review_findings_dropped");
+            assert_eq!(dropped.len(), 1, "{dropped:#?}");
+            assert_eq!(
+                dropped[0]["dropped"][0]["missing"],
+                serde_json::json!(["verified_by"])
+            );
+            let decisions = run_events(&fixture, &run.run_id, "run_review_decision");
+            assert_eq!(
+                decisions[0]["output"]["findings"].as_array().unwrap().len(),
+                1
+            );
+            let history = call_input(&fixture, 1)["context_pack"]["run_history"].clone();
+            let retry = history
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["kind"] == "retry_review")
+                .unwrap_or_else(|| panic!("no retry_review in {history}"));
+            assert!(retry["text"].as_str().unwrap().starts_with("amend a.txt"));
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn an_approval_of_a_cut_diff_is_escalated_and_not_applied() {
+            let fixture = reviewed(
+                "todo-auto-cut",
+                &[r#"{"action": "approve", "cut_files_reviewed": true}"#],
+            );
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: true,
+                    ..params(&fixture, &format!("bigcommit a.txt {SUBJECT}"), "ok")
+                })
+                .unwrap();
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(
+                error.contains("was cut") && error.contains("a.txt"),
+                "{error}"
+            );
+            let input = call_input(&fixture, 0);
+            assert_eq!(input["diff_truncated"], true);
+            assert_eq!(input["diff_cut_files"], serde_json::json!(["a.txt"]));
+            assert_eq!(master_subjects(&fixture), ["init"]);
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn a_path_the_repository_names_is_never_cut_from_the_diff() {
+            let fixture = reviewed("todo-auto-full-path", &[r#"{"action": "approve"}"#]);
+            let checks = fixture.repo.join(".herdr/checks.toml");
+            let text = std::fs::read_to_string(&checks).unwrap();
+            std::fs::write(
+                &checks,
+                format!("{text}[review]\nfull_paths = [\"a.txt\"]\n"),
+            )
+            .unwrap();
+            git_in(&fixture.repo, &["add", "."]);
+            git_in(&fixture.repo, &["commit", "-q", "-m", "full path"]);
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: true,
+                    ..params(&fixture, &format!("bigcommit a.txt {SUBJECT}"), "ok")
+                })
+                .unwrap();
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let input = call_input(&fixture, 0);
+            assert_eq!(input["diff_truncated"], false);
+            assert!(input["diff"].as_str().unwrap().len() > 250_000);
+        }
+
+        #[test]
+        fn the_reviews_model_is_the_configs_on_the_claude_path() {
+            let fixture = reviewed(
+                "todo-auto-model",
+                &[r#"{"action": "approve"}"#, r#"{"action": "approve"}"#],
+            );
+            let config = fixture.root.join("review.toml");
+            std::fs::write(&config, "[review]\nmodel = \"review-model-x\"\n").unwrap();
+            std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config);
+            let run = start(&fixture);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let argv = calls(&fixture)[0]["argv"].clone();
+            let argv: Vec<&str> = argv
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap())
+                .collect();
+            let at = argv
+                .iter()
+                .position(|arg| *arg == "--model")
+                .expect("no --model");
+            assert_eq!(argv[at + 1], "review-model-x");
+            // Without the key the call keeps the run's own model: no flag.
+            std::fs::write(&config, "").unwrap();
+            let run = fixture.supervisor.load_run(&run.run_id).unwrap();
+            fixture
+                .supervisor
+                .call_model_for(&run, &prompt(), "{}")
+                .unwrap();
+            let argv = calls(&fixture)[1]["argv"].clone();
+            assert!(!argv.to_string().contains("--model"), "{argv}");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn the_reviews_model_reaches_the_credit_proxy_or_falls_back_to_claude() {
+            use crate::platform::anthropic_proxy::TEST_UPSTREAM;
+            let fixture = reviewed("todo-credit-model", &[r#"{"action": "approve"}"#]);
+            let _ = credit_config(&fixture, 5.0);
+            *TEST_UPSTREAM.lock().unwrap() = Some(fake_api);
+            let run = run_for_calls(&fixture, true);
+            let (_, model) = fixture
+                .supervisor
+                .call_model_with(&run, &prompt(), "{}", Some("claude-sonnet-4-6"))
+                .unwrap();
+            assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
+            assert!(calls(&fixture).is_empty());
+            // A model the proxy has no tariff for is a refusal: claude -p gets it.
+            let (_, model) = fixture
+                .supervisor
+                .call_model_with(&run, &prompt(), "{}", Some("opus"))
+                .unwrap();
+            assert_eq!(model.as_deref(), Some("stub-review-model"));
+            let argv = calls(&fixture)[0]["argv"].to_string();
+            assert!(argv.contains("\"--model\",\"opus\""), "{argv}");
         }
 
         /// The escalation's entry in the user's `?` list.

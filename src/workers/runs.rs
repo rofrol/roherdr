@@ -73,12 +73,14 @@ pub(super) mod activity;
 mod auto_answer;
 mod auto_draft;
 mod auto_review;
+mod context_pack;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;
 pub(super) mod pending_usage;
 mod prepare;
 pub(super) mod queue;
+mod review_diff;
 pub(super) mod usage_gate;
 
 #[cfg(all(test, unix))]
@@ -530,6 +532,20 @@ struct ChecksFile {
     /// none skips the install.
     #[serde(default)]
     install: Option<InstallCommand>,
+    /// What the automatic review reads of this repository.
+    #[serde(default)]
+    review: ReviewFile,
+}
+
+/// The `[review]` table of `.herdr/checks.toml`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewFile {
+    /// Git pathspec-style patterns of files whose diff the automatic review
+    /// always gets whole, besides the generated, schema and contract paths
+    /// herdr always keeps (`review_diff::FULL_PATHS`).
+    #[serde(default)]
+    full_paths: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

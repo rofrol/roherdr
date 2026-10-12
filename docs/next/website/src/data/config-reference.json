@@ -1745,6 +1745,18 @@
       ]
     },
     {
+      "id": "review",
+      "title": "Automatic review",
+      "keys": [
+        {
+          "key": "review.model",
+          "type": "string",
+          "default": "unset",
+          "description": "The model of the automatic review's call (`herdr todo run --auto-review`, and the reviews of `--draft` and queue runs). Unset: the run's own model, as before (`claude -p` with the login's default model, or the credit run's pinned `workers.anthropic_api_model`). Set: `claude -p --model <model>` for a subscription run, and for a `pi-anthropic` run the credit proxy's model, which must be one of the supported tariffs of `workers.anthropic_api_model`; an unsupported value makes the credit call refuse and fall back to `claude -p --model`. The draft and the worker-question calls are not changed. Read at each call."
+        }
+      ]
+    },
+    {
       "id": "supervision",
       "title": "Supervision",
       "keys": [

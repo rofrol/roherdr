@@ -336,6 +336,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
     pub workers: WorkersConfig,
+    pub review: ReviewConfig,
     pub coordinator: CoordinatorConfig,
     pub supervision: SupervisionConfig,
     pub advanced: AdvancedConfig,
@@ -919,6 +920,15 @@ pub struct IndexedKeysConfig {
 pub struct WorktreesConfig {
     /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
     pub directory: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// The model of the automatic review's call (`todo run --auto-review`),
+    /// on both of its paths: the credit proxy and `claude -p --model`.
+    /// Default: unset, the run's own model.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

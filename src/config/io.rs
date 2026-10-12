@@ -11,6 +11,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "keys",
     "onboarding",
     "remote",
+    "review",
     "server",
     "session",
     "supervision",
@@ -378,6 +379,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.workers = section,
+    );
+    load_live_section(
+        table,
+        "review",
+        "review config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.review = section,
     );
     load_live_section(
         table,
@@ -934,6 +943,18 @@ resume_agents_on_restore = true
         assert!(loaded.config.session.resume_agents_on_restore);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn review_model_is_unset_unless_the_config_names_one() {
+        let loaded = load_live_config_from_str("").unwrap();
+        assert_eq!(loaded.config.review.model, None);
+        let loaded = load_live_config_from_str("[review]\nmodel = \"some-model\"\n").unwrap();
+        assert_eq!(loaded.config.review.model.as_deref(), Some("some-model"));
+        assert!(loaded.invalid_sections.is_empty());
+        let loaded = load_live_config_from_str("[review]\nmodel = 5\n").unwrap();
+        assert_eq!(loaded.invalid_sections, ["review"]);
+        assert_eq!(loaded.config.review.model, None);
     }
 
     #[test]

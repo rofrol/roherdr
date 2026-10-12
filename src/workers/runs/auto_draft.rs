@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::auto_review::{escalation_options, nonempty, only};
+use super::context_pack::{self, LogPaths};
 use super::decision::{self, Prompt, MAX_CALLS};
 use super::escalations;
 use super::{
@@ -63,14 +64,15 @@ const RULE_HEADINGS: [&str; 3] = ["test", "code convention", "commit"];
 /// sections of one file stop once they reach [`SECTIONS_MAX`].
 const SECTION_MAX: usize = 12_000;
 const SECTIONS_MAX: usize = 60_000;
-/// A history record's text is cut at this many characters.
-const HISTORY_TEXT_MAX: usize = 2_000;
 
 const SYSTEM_PROMPT: &str = "You draft the task of a headless coding worker that herdr's TODO \
-driver starts for one TODO item of a repository. The input is JSON: the item's text from \
-TODO.md, the DECISIONS.md sections it names, the repository's code, test and commit rules from \
-AGENTS.md, its registered checks (.herdr/checks.toml), the last 20 commits of master, the item's \
-history, and the user's answers to your earlier questions. Decide one action and answer only \
+driver starts for one TODO item of a repository. The input is JSON: a `context_pack` the server \
+built without a model (the item's text from TODO.md, the DECISIONS.md sections it names, the \
+item's run history with each earlier attempt's failure reason, the recent commits of the paths \
+the item names, and lines of code the item names in backticks, with what was cut), the \
+repository's code, test and commit rules from AGENTS.md, its registered checks \
+(.herdr/checks.toml), the last 20 commits of master, and the user's answers to your earlier \
+questions. Decide one action and answer only \
 with JSON matching the schema:\n\
 - draft when the item can be done as it stands: `task` says what the worker must change and \
 test, what to read first and what not to touch (the driver appends the commit subject, the \
@@ -349,13 +351,6 @@ pub(super) fn agents_rules(agents: &str) -> Vec<Value> {
     section_texts(&lines, chosen)
 }
 
-fn cut_text(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((at, _)) => format!("{}...", &text[..at]),
-        None => text.to_owned(),
-    }
-}
-
 impl WorkerSupervisor {
     /// The run's draft step: the decision recorded for this round, else
     /// the model's, recorded first; then applies it. A run that was aborted
@@ -487,13 +482,7 @@ impl WorkerSupervisor {
     /// checks, the item's history before this run and the answers so far.
     fn draft_input(&self, run: &Run, answers: &[Value], checks: &ChecksFile) -> Value {
         let repo = Path::new(&run.info.repo);
-        let item_text = self
-            .run_store()
-            .ok()
-            .and_then(|store| store.run_events_of(&run.info.run_id, "run_created").ok())
-            .and_then(|created| created.into_iter().next())
-            .and_then(|created| created["item_text"].as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let item_text = self.item_text_of(run);
         let base = run.info.base.clone().unwrap_or_else(|| "master".into());
         let at_base = |path: &str| git(repo, &["show", &format!("{base}:{path}")]).ok();
         let decisions = at_base(DECISIONS_FILE)
@@ -505,26 +494,14 @@ impl WorkerSupervisor {
         let log = git(repo, &["log", "-20", "--format=%h %s", &base])
             .unwrap_or_else(|error| format!("(the log could not be read: {error})"));
         let checks_text = std::fs::read_to_string(repo.join(CHECKS_FILE)).unwrap_or_default();
-        let history: Vec<Value> = self
-            .run_store()
-            .ok()
-            .and_then(|store| {
-                store
-                    .item_history(Some(&run.info.repo), Some(&run.info.item))
-                    .ok()
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|stored| stored.event)
-            .filter(|event| event.run_id.as_deref() != Some(run.info.run_id.as_str()))
-            .map(|event| {
-                json!({
-                    "kind": event.kind, "ts_ms": event.ts_ms, "run_id": event.run_id,
-                    "attempt": event.attempt,
-                    "text": event.text.map(|text| cut_text(&text, HISTORY_TEXT_MAX)),
-                })
-            })
-            .collect();
+        let pack = context_pack::build(
+            repo,
+            Some(&base),
+            &item_text,
+            decisions,
+            self.run_history_of(run),
+            LogPaths::Named,
+        );
         let answers: Vec<Value> = answers
             .iter()
             .map(|answer| {
@@ -535,13 +512,12 @@ impl WorkerSupervisor {
             })
             .collect();
         json!({
-            "item": {"id": run.info.item, "text": item_text},
-            "decisions": decisions,
+            "item": {"id": run.info.item},
+            "context_pack": pack,
             "agents_rules": rules,
             "checks_file": checks_text,
             "registered_checks": checks.checks.keys().collect::<Vec<_>>(),
             "git_log": log,
-            "item_history": history,
             "answers": answers,
         })
     }

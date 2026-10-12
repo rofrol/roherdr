@@ -300,10 +300,23 @@ impl WorkerSupervisor {
         prompt: &Prompt<'_>,
         input: &str,
     ) -> Result<(Value, Option<String>), String> {
+        self.call_model_with(run, prompt, input, None)
+    }
+
+    /// [`Self::call_model_for`] with `model` when given: `claude -p --model`,
+    /// or the credit proxy's model for a credit run (a model the proxy does
+    /// not admit is a credit refusal, which falls back to `claude -p`).
+    pub(in crate::workers) fn call_model_with(
+        &self,
+        run: &super::Run,
+        prompt: &Prompt<'_>,
+        input: &str,
+        model: Option<&str>,
+    ) -> Result<(Value, Option<String>), String> {
         if !run.finish.anthropic_credits {
-            return self.call_model(prompt, input);
+            return self.call_model(prompt, input, model);
         }
-        match self.call_credit(run, prompt, input) {
+        match self.call_credit(run, prompt, input, model) {
             Ok(CreditCall::Answered { reply, cost }) => {
                 let note = json!({"type": "run_credit_call", "run_spent_usd": cost});
                 self.write_note(&run.info.run_id, &note)?;
@@ -312,7 +325,7 @@ impl WorkerSupervisor {
             Ok(CreditCall::Refused(reason)) | Err(reason) => {
                 let note = json!({"type": "run_credit_call_fallback", "refusal": reason});
                 self.write_note(&run.info.run_id, &note)?;
-                self.call_model(prompt, input)
+                self.call_model(prompt, input, model)
             }
         }
     }
@@ -325,6 +338,7 @@ impl WorkerSupervisor {
         run: &super::Run,
         prompt: &Prompt<'_>,
         input: &str,
+        model: Option<&str>,
     ) -> Result<CreditCall, String> {
         use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
 
@@ -338,6 +352,9 @@ impl WorkerSupervisor {
             .as_deref()
             .and_then(|model| model.strip_prefix(crate::workers::pi::ANTHROPIC_PREFIX))
         {
+            config.anthropic_api_model = model.to_owned();
+        }
+        if let Some(model) = model {
             config.anthropic_api_model = model.to_owned();
         }
         let ledger = ledger_path(&config).map_err(|error| error.to_string())?;
@@ -376,6 +393,7 @@ impl WorkerSupervisor {
         _run: &super::Run,
         _prompt: &Prompt<'_>,
         _input: &str,
+        _model: Option<&str>,
     ) -> Result<CreditCall, String> {
         Err("the Anthropic credit proxy requires Unix".into())
     }
@@ -384,14 +402,19 @@ impl WorkerSupervisor {
     /// the event waited for (no deadline: the provider imposes none). The
     /// call runs in the worker store's directory with the server's
     /// environment (the user's login) without `HERDR_*`, and without tools,
-    /// session, MCP servers, hooks or project instructions.
+    /// session, MCP servers, hooks or project instructions. `model` is
+    /// `--model`.
     pub(super) fn call_model(
         &self,
         prompt: &Prompt<'_>,
         input: &str,
+        model: Option<&str>,
     ) -> Result<(Value, Option<String>), String> {
         let program = self.decision_program();
         let mut command = Command::new(&program);
+        if let Some(model) = model {
+            command.args(["--model", model]);
+        }
         command
             .args([
                 "-p",
