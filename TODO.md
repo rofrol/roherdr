@@ -3094,6 +3094,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     ladder and automatic analysis come after the trial's numbers.
   (The "reviewed" state above is [t-ktz7l3hl].)
 
+- [ ] The coordinator's tab shows its context size in tokens (the user, [t-gpnmlys3]
+  2026-10-12: "on the coordinator's tab I want to see how many tokens its
+  context has; ask the models").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
