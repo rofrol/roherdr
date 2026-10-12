@@ -11,14 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The supervisor makes no sounds and sends no notifications (the [t-hfmxryxk]
-  user, 2026-10-12: "no sounds from the supervisor, and no
-  notifications"). Its findings stop going through `notify_user` (toast,
-  system notification, sound) entirely; they stay in the Supervision tab,
-  the `?` list and the notices to the owning coordinator. Other herdr
-  notifications (an agent done or asking) are unchanged. A test that a new
-  or escalated finding queues no user notice.
-
 - [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
   2026-10-09): a second worker kind with its own stream parser, tool policy
   and sandbox equivalent and broker support, so a run can go to pi/sol while
@@ -47,37 +39,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   sidebar footer or the top bar, following the existing UI patterns) that
   mutes and unmutes herdr's sounds at once, shows the current state, and
   persists it in the config (`[ui.sound] enabled`); a key binding too.
-
-- [ ] A message between coordinators is not a worker assignment (follows [t-yeravkf6]
-  from [t-due4cu42]; the first digest the herdr coordinator received,
-  2026-10-12 ~03:21, all five findings fired together at the install's
-  reconciliation): f-70 (guix -> todo-try-roguix), f-73 (odherdr ->
-  todo-herdr, its reports) and f-75 (guix -> todo-roguix-vps) are
-  `agent prompt` messages from one coordinator to another, tracked as
-  assignments that expect a WORKER line, so they raise
-  `stopped_without_verdict`/`unaccounted_assignment` falsely; f-71/f-72
-  (try-roguix's workers metal and ci-system) may be notes sent to busy
-  workers, not tasks. Decided by the coordinator: an assignment exists only
-  for a prompt from a coordinator tenure to a pane that is its worker (a
-  worker it started, or one registered to it); a prompt to another
-  coordinator, or any prompt marked as a note (`agent prompt --note`),
-  is a message: delivered and confirmed, never awaiting a verdict; tests
-  for each, and the existing false findings resolve at the next sweep.
-  Another instance, f-77: rormpc-tools' coordinator (c-x3kbyxpu) messaged
-  todo-rormpc (w1M:p25), prompt_1a12d5d1bb1_8.
-  Also (the user, 2026-10-12: "who is pasting text here?", "why does the
-  supervisor open notifications and ...", his own message cut off by a
-  notice typed into his pane): the notices are typed with `agent prompt`
-  into the coordinator's pane, look like the user's pastes and interleave
-  with what the user is typing; an ack only resolves a finding until the
-  next sweep reopens it (f-85 -> f-87 -> f-89), so the same notice repeats
-  for every message between coordinators. Part of this item: a false
-  assignment closes for good (nothing else can close one today: only a
-  verdict or a newer prompt); a notice is never typed while the user is
-  typing in or focused on that pane: it waits for the next turn boundary
-  the agent reaches without user input, or goes through a channel that
-  is not typing (the hook's additional context); and a notice says
-  "herdr supervision" in its first words.
 
 - [ ] Rewrite the fork's history to remove the owner's private details (the [t-y54wm4hy]
   user, 2026-10-12: "you put private things into the repo?", "rewrite the

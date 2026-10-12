@@ -1391,3 +1391,17 @@ The usage gate's 90/80 thresholds were constants; the user kept 90% and
 asked for a setting (2026-10-12). Now (6a6c3f6d) `[usage] gate_close_percent`
 and `gate_reopen_percent` (90/80) for every provider's gate, validated
 (defaults on an invalid pair), read at each check, named in the refusal.
+
+## Quiet supervision and messages that are not assignments (2026-10-12)
+
+Supervision delivery typed notices into the coordinator's pane, sounded and
+notified the user, and treated messages between coordinators as worker
+assignments, so false findings reopened after every resolve (2026-10-12; the
+user: "who is pasting text here?", "no sounds from the supervisor, and no
+notifications"). A rollback to the build before delivery left the worker store
+unreadable (schema 36 against 35), so the fix was built by a pane worker and
+installed (a6fb8ad6): findings send no user notices; an assignment exists only
+for a coordinator's prompt to its own worker, `agent prompt --note` and
+prompts to another coordinator are messages, false ones close for good; a
+notice waits while any client focuses the pane and starts with "herdr
+supervision". Lesson: a rollback across a store migration breaks the store.
