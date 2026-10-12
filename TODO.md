@@ -2816,6 +2816,19 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
+- [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
+  user's question 2026-10-12, "loss of memory between items and shallower
+  review: how do others counter it?"; round 20261012-155246-e730, see
+  [t-ic5rrxn3]). For `--draft` and `--auto-review`: a deterministic
+  context pack (the item, its linked decisions, its run history with
+  failure reasons, `git log` and ripgrep hits for the paths and symbols it
+  names); bounded read-only repository tools for the review call; a
+  checklist of about 20 lines distilled from caught bug classes, each with
+  its source; findings must cite file:line and how they were verified;
+  generated, schema and contract paths never cut by the 200 KB limit; a
+  golden set of the resident coordinator's past catches replayed blind
+  against the reviewer. Needs a decision before the queue-mode trial.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -2993,6 +3006,35 @@ user needs to decide or do.
   Decided 2026-10-10 (the user: "decide with the models"; round
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
+
+- [ ] A short-lived conversation session replaces the resident coordinator [t-botcpa2j]
+  for talking with the user (the user, 2026-10-12, agreeing to the
+  coordinator's proposal: "it can be done; ask the models"; part of the
+  queue-mode trial, d-amwperuu). Round 20261012-155443-74c0 (sol, MiMo,
+  DeepSeek agreeing; boundaries decided by the coordinator):
+  - A conversation is a durable thread record in herdr (id, the user's
+    Polish words verbatim beside the English, linked TODO and decision
+    ids), not a process. A model execution starts on the user's input,
+    never on a herdr event alone (escalations and peer messages wait in
+    the question list); it ends on an explicit disposition (request queued
+    and committed, answer given, decision recorded, cancelled), never on
+    idleness; an unanswered clarification stays pending without a process.
+  - The snapshot herdr generates is bounded (about 3-6k tokens): the
+    thread's recent turns, pending questions, open TODO titles with the
+    user's words, the decisions index, the last runs' outcomes, queue
+    status and usage, unread peer messages. Everything else is paged in by
+    commands; "that thing from before" is found with a herdr search over
+    threads, TODO, DECISIONS and run history, not with a digest.
+  - Every write goes through herdr commands carrying an expected revision
+    and an idempotency key (TODO/DECISIONS edits, decisions, messages,
+    consult requests); a stale one is refused with a readable conflict, so
+    phone and desk sessions cannot overwrite each other. Starting,
+    approving and closing runs stay herdr's.
+  - A role-specific instruction file (about 1k tokens), not the full
+    AGENTS.md and skills; measure a fresh launch's input tokens.
+  - First slice: intake only, in one repository: a request becomes a TODO
+    entry with its Polish original and an explicit "queued as <id>"
+    receipt; thread records and search; reuse the question list.
 
 ### Decide
 
