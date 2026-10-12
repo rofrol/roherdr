@@ -2428,6 +2428,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   fresh session in the same tab role with the todo skill, transfers the
   tenure and the worker ownership, and ends the old session once the new
   one has acknowledged the note; no timers.
+  Designed with the models (2026-10-12, the user: "ask the models"; sol,
+  MiMo, DeepSeek agreeing): (a) trigger on per-turn input context size
+  (uncached + cache writes + cache reads of one turn, not cumulative) with
+  cost per turn as a guardrail, at the next turn boundary, preferring a
+  review boundary but never waiting for "no run in flight"; (b) herdr
+  generates the handoff snapshot from its own state (runs and their waits,
+  tenure, worker ownership, pending question ids, usage), versioned; the
+  agent appends only intent herdr cannot know; (c) transfer with an epoch
+  fence: the successor starts without mutation rights, acknowledges and
+  reconciles the snapshot, then the tenure epoch advances and the old
+  session loses write authority before it is ended; waits are rebuilt
+  from durable run ids, never carried in a session; (d) the successor must
+  read less than its predecessor: it starts from the snapshot and pages in
+  TODO.md/DECISIONS.md items only as needed; (e) `/compact` stays an
+  in-session tool, measured against handoffs, not a replacement.
 
 ## Proposed
 
