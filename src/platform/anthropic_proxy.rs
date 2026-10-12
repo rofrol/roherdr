@@ -675,11 +675,6 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
             return Err(deny(403, "request field not allowlisted"));
         }
     }
-    if let Some(thinking) = data.get("thinking") {
-        if thinking["type"].as_str() != Some("disabled") {
-            return Err(deny(403, "thinking must be disabled"));
-        }
-    }
     if let Some(system) = data.get("system") {
         text_content(system, false).map_err(|_| deny(403, "system content not allowlisted"))?;
     }
@@ -726,6 +721,9 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
             .filter(|n| *n > 0 && *n <= 64_000)
             .ok_or_else(|| deny(403, "max_tokens not allowlisted"))?
     };
+    if let Some(thinking) = data.get("thinking") {
+        validate_thinking(thinking, (!count_request).then_some(max))?;
+    }
     let streaming = match data.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -735,7 +733,6 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
     // standard tier whose prices the ledger and reservation actually know.
     if !count_request {
         data["service_tier"] = Value::String("standard_only".into());
-        data["thinking"] = serde_json::json!({"type": "disabled"});
     }
     // Re-encode the validated value: duplicate JSON keys cannot cause the
     // upstream to interpret a different model or token ceiling than we did.
@@ -753,6 +750,8 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         return Err(deny(403, "long-context pricing not allowlisted"));
     } // Exclude long-context premium pricing.
       // 6 USD/M covers even one-hour cache writes; output is standard tier.
+      // max_tokens bounds all generated tokens, including thinking. Reserving
+      // it at the output tariff covers adaptive/between-tools thinking too.
     let reserve = input_bound as f64 * 6.0 / 1_000_000.0 + max as f64 * 15.0 / 1_000_000.0;
     Ok(Request {
         token,
@@ -763,6 +762,35 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         beta,
         count: count_request,
     })
+}
+
+/// Thinking consumes the same output ceiling and tariff as visible output.
+/// Keep its shape closed so future unaccounted options cannot pass through.
+fn validate_thinking(value: &Value, max: Option<u64>) -> io::Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| deny(403, "thinking must be an object"))?;
+    let kind = value["type"].as_str();
+    let budget_allowed = matches!(kind, Some("enabled" | "between_tools"));
+    if !matches!(
+        kind,
+        Some("disabled" | "enabled" | "adaptive" | "between_tools")
+    ) || object
+        .keys()
+        .any(|key| key != "type" && !(budget_allowed && key == "budget_tokens"))
+    {
+        return Err(deny(403, "thinking field or type not allowlisted"));
+    }
+    if kind == Some("enabled") || object.contains_key("budget_tokens") {
+        let budget = value["budget_tokens"]
+            .as_u64()
+            .filter(|budget| *budget >= 1024 && *budget <= 64_000)
+            .ok_or_else(|| deny(403, "thinking budget not allowlisted"))?;
+        if max.is_some_and(|max| budget >= max) {
+            return Err(deny(403, "thinking budget must be below max_tokens"));
+        }
+    }
+    Ok(())
 }
 
 fn inline_schema(value: &Value) -> io::Result<()> {
@@ -871,6 +899,8 @@ impl Usage {
                 return Err(deny(502, "upstream cache counts inconsistent"));
             }
         }
+        // Anthropic's billed output_tokens includes thinking tokens, even
+        // when the response exposes only a summary or no thinking text.
         self.output = count("output_tokens")?;
         Ok(())
     }

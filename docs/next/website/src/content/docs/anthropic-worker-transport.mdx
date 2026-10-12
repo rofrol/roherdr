@@ -52,8 +52,16 @@ refused to exclude long-context premium pricing. Validated JSON
 is re-encoded before forwarding so duplicate keys cannot change upstream model
 or token-limit interpretation. The server forces `service_tier = "standard_only"`
 rather than allowing the API's default automatic priority-tier selection.
-Extended thinking is disabled; opaque/summarized thinking replay cannot be
-safely bounded from submitted bytes in this slice.
+Thinking configuration accepts `disabled`, `enabled` with `budget_tokens`,
+`adaptive`, and `between_tools` (with an optional `budget_tokens`). Explicit
+budgets must be integer token counts of at least 1,024 and below `max_tokens`.
+The proxy preserves the requested type; it does not inject disabled thinking.
+`max_tokens` bounds thinking and visible output together, and the full ceiling
+is reserved at the output tariff before forwarding. API-reported
+`output_tokens`, including billed thinking, determine the settled cost. A
+request whose reservation exceeds remaining credit is refused with 402 before
+any upstream call. Opaque/summarized thinking replay remains refused because
+its expanded input cannot safely be bounded from submitted bytes.
 Client authentication and destination headers are discarded; only allowlisted
 `anthropic-beta` features are preserved. The server supplies API version, content type
 and `x-api-key` to the fixed HTTPS destination `api.anthropic.com`. Curl receives

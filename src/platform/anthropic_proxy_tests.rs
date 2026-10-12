@@ -75,6 +75,134 @@ impl Drop for Fixture {
     }
 }
 
+fn thinking_request(token: &str, thinking: Value, max: u64) -> Vec<u8> {
+    let body = serde_json::json!({
+        "model": MODEL, "max_tokens": max, "messages": [], "thinking": thinking
+    })
+    .to_string();
+    format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
+}
+
+#[test]
+fn thinking_types_reach_fake_upstream_and_billed_thinking_counts_as_output() {
+    for thinking in [
+        serde_json::json!({"type":"disabled"}),
+        serde_json::json!({"type":"enabled", "budget_tokens":2048}),
+        serde_json::json!({"type":"adaptive"}),
+        serde_json::json!({"type":"between_tools"}),
+        serde_json::json!({"type":"between_tools", "budget_tokens":2048}),
+    ] {
+        let mut f = OfflineFixture::new(200.0);
+        let token = f.proxy.register("thinking", "item").unwrap();
+        let request = thinking_request(&token, thinking.clone(), 4096);
+        let mut output = Vec::new();
+        f.proxy
+            .serve(request.as_slice(), &mut output, |_, req, out| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["thinking"], thinking);
+                assert_eq!(body["max_tokens"], 4096);
+                assert_eq!(body["service_tier"], "standard_only");
+                assert!(req.reserve >= 4096.0 * 15.0 / 1_000_000.0);
+                // The billed output includes 2048 thinking and 20 visible
+                // tokens; do not infer usage from visible content length.
+                let mut response: Value = serde_json::from_slice(&Fixture::response()).unwrap();
+                response["usage"]["output_tokens"] = Value::from(2068);
+                out.write_all(&serde_json::to_vec(&response).unwrap())
+            })
+            .unwrap();
+        let (cost, pending): (f64, i64) = f
+            .proxy
+            .ledger
+            .query_row("SELECT cost,pending FROM anthropic_requests", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert!((cost - (0.00034785 + 2048.0 * 15.0 / 1_000_000.0)).abs() < 1e-12);
+        assert_eq!(pending, 0);
+        assert!(output.starts_with(b"HTTP/1.1 200 OK"));
+    }
+}
+
+#[test]
+fn thinking_output_reservation_denies_budget_beyond_remaining_credit() {
+    for thinking in [
+        serde_json::json!({"type":"enabled", "budget_tokens":2048}),
+        serde_json::json!({"type":"adaptive"}),
+        serde_json::json!({"type":"between_tools", "budget_tokens":2048}),
+    ] {
+        let mut f = OfflineFixture::new(1.0);
+        let token = f.proxy.register("thinking", "item").unwrap();
+        f.proxy.ledger.execute(
+            "INSERT INTO anthropic_requests(run,item,model,cost,pending) VALUES ('prior','item',?1,0.99,0)",
+            [MODEL],
+        ).unwrap();
+        let request = thinking_request(&token, thinking, 4096);
+        let mut output = Vec::new();
+        assert!(f
+            .proxy
+            .serve(request.as_slice(), &mut output, |_, _, _| {
+                panic!("no upstream bytes may precede the credit reservation")
+            })
+            .is_err());
+        assert!(output.starts_with(b"HTTP/1.1 402"));
+        let pending: i64 = f
+            .proxy
+            .ledger
+            .query_row("SELECT SUM(pending) FROM anthropic_requests", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+}
+
+#[test]
+fn absent_thinking_is_not_rewritten_to_disabled() {
+    let mut f = OfflineFixture::new(200.0);
+    let token = f.proxy.register("thinking", "item").unwrap();
+    f.proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, req, out| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert!(body.get("thinking").is_none());
+                out.write_all(&Fixture::response())
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn thinking_validation_keeps_shapes_and_output_ceiling_closed() {
+    for thinking in [
+        serde_json::json!(null),
+        serde_json::json!({"type":"unknown"}),
+        serde_json::json!({"type":"enabled"}),
+        serde_json::json!({"type":"enabled", "budget_tokens":0}),
+        serde_json::json!({"type":"enabled", "budget_tokens":1023}),
+        serde_json::json!({"type":"enabled", "budget_tokens":"2048"}),
+        serde_json::json!({"type":"enabled", "budget_tokens":4096}),
+        serde_json::json!({"type":"enabled", "budget_tokens":64001}),
+        serde_json::json!({"type":"between_tools", "budget_tokens":4097}),
+        serde_json::json!({"type":"adaptive", "budget_tokens":2048}),
+        serde_json::json!({"type":"disabled", "budget_tokens":2048}),
+        serde_json::json!({"type":"enabled", "budget_tokens":2048, "extra":true}),
+    ] {
+        let mut f = OfflineFixture::new(200.0);
+        let token = f.proxy.register("thinking", "item").unwrap();
+        let request = thinking_request(&token, thinking, 4096);
+        let mut output = Vec::new();
+        assert!(f
+            .proxy
+            .serve(request.as_slice(), &mut output, |_, _, _| {
+                panic!("invalid thinking must not reach upstream")
+            })
+            .is_err());
+        assert!(output.starts_with(b"HTTP/1.1 403"));
+    }
+}
+
 #[test]
 fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
     let mut f = Fixture::new(200.0);
