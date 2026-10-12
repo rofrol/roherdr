@@ -205,6 +205,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repositories' own coordinators, see the item on waiting on another
   coordinator.
 
+- [ ] Releases run through herdr's driver, portable and without allow rules [t-5bunzos6]
+  (the user, 2026-10-12, on rormpc-tools' release script: "it must work
+  when someone installs it at their place; ask the models"; d-r7pimalx;
+  round of 2026-10-12, sol, MiMo, DeepSeek agreeing). No allow rule, user
+  or committed project one: both trust a file agents can edit (the script,
+  its tests, the settings themselves). Instead a release registered in
+  `.herdr/checks.toml` (argv such as `scripts/release.sh X.Y.Z`): the
+  driver, with the owner's grant bound to the approved commit and the
+  script's blob hash, makes a clean detached checkout of that commit,
+  runs verification there without publish credentials, then itself
+  creates the annotated tag and pushes `<sha>:<default branch>` and that
+  tag (no force), re-checking that the tag is absent and the push is a
+  fast-forward; the agent never pushes. Until then the owner approves each
+  release by hand. The same hole applies to the existing path allow rules
+  (Porkbun, the VPS check): review them under the classifier plan.
+
 - [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
   (the user, 2026-10-12, rejecting a herdr-managed cross-repository
   handover: "I don't like this; there is supposed to be a coordinator per
