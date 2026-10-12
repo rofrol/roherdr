@@ -74,6 +74,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and `herdr supervise fixtures <predicate>` exports the retracted holds
   (and delivered ones as known-true cases) as JSON fixtures; the
   coordinator turns the finding into a TODO item.
+  Slice 3 landed (2026-10-12, run r-uucamlb4): `predicate_review_due`
+  finding at `[supervision] review_after_retractions` (default 3),
+  `herdr supervise fixtures` (`supervise.fixtures`), per-predicate digest
+  lines. Still open: points 4-9 (fix gated by replay, annotate, data-first
+  fixes, approval of code fixes, hold-out set, retiring predicates).
+  Ordered by the coordinator 2026-10-12: the rest of this item goes after
+  [t-s6lkxb4v] and the deeper review item, which the user's queue-mode
+  trial (d-amwperuu) waits on.
 
 - [ ] Workers default to the API credits, coordinators stay on Claude Code [t-s6lkxb4v]
   (the user, 2026-10-12: "94% of the AN subscription used and only $0.50 of
