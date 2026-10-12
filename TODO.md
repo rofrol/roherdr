@@ -11,6 +11,14 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The supervisor makes no sounds and sends no notifications (the [t-hfmxryxk]
+  user, 2026-10-12: "no sounds from the supervisor, and no
+  notifications"). Its findings stop going through `notify_user` (toast,
+  system notification, sound) entirely; they stay in the Supervision tab,
+  the `?` list and the notices to the owning coordinator. Other herdr
+  notifications (an agent done or asking) are unchanged. A test that a new
+  or escalated finding queues no user notice.
+
 - [ ] A message between coordinators is not a worker assignment (follows [t-yeravkf6]
   from [t-due4cu42]; the first digest the herdr coordinator received,
   2026-10-12 ~03:21, all five findings fired together at the install's
