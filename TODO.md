@@ -47,6 +47,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   redesign are not adopted as facts or required implementation. The proxy
   drop join is a blocking lifecycle risk, not evidence of a reproduced
   deadlock; no delay or timeout is authorized as its workaround.
+  Attempt 2 offline check 2026-10-12: the installed Claude Code exited 1
+  against the fake upstream because its beta headers were refused. The
+  diagnostic test incorrectly reported pass regardless of that exit.
+  Attempt 3 must configure a supported safe request shape, assert child
+  success and an admitted message, authenticate the local grant claim
+  rather than trusting a caller-supplied pane id, and preserve funding
+  intent through the transfer's crash/final-write-failure window. No paid
+  feature or proxy permission expansion is approved by this review.
 
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
