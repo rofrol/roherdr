@@ -2229,6 +2229,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   5-second read timeout in the test). Reproduce each with the stress loop
   in AGENTS.md and fix the asynchronous cause (Rule 10), not the timeout.
 
+- [ ] The roherdr client on the owner's 2010 MacBook connects to the server [t-wtxc5taz]
+  on his M1 MacBook (the user, 2026-10-12: "make the roherdr client on the
+  2010 MacBook connect to the server on the M1 MacBook; ask the models").
+  Uses the existing `herdr --remote <ssh host>`. Round
+  20261012-052026-525b (sol, MiMo, DeepSeek agreeing), plan:
+  1. Facts first (the owner runs them on the old Mac): `sw_vers`,
+     `uname -m`, `sysctl -n machdep.cpu.brand_string
+     machdep.cpu.features`; a 2010 MacBook tops out at macOS 10.13 or
+     lower and may lack SSE4.2/AVX (Core 2 Duo).
+  2. Probe before building: tiny Rust and Zig programs built on the M1 for
+     x86_64 with `MACOSX_DEPLOYMENT_TARGET=10.13` (and Zig
+     `-Dtarget=x86_64-macos.10.13`, `-Dcpu=core2` or baseline), checked
+     with `otool -l`/`vtool -show-build` and run on the old Mac.
+  3. Then a client build of the same commit: x86_64, explicit deployment
+     target, `-C target-cpu` baseline (never native), the same settings
+     passed to libghostty-vt (no unconditional AVX) and SQLite; check the
+     binary with `otool` and `objdump` for AVX; test an attach (startup
+     alone does not exercise rendering).
+  4. The M1 side: Remote Login on and a key (the owner's steps); herdr on
+     the PATH of a non-interactive ssh session (or an absolute path);
+     `ssh m1 'command -v herdr; herdr --version'`; client and server on
+     the same commit (the handshake rejects other protocol versions).
+  5. If the old Mac runs 10.11 or older, or the build cannot avoid newer
+     instructions: Linux on the old Mac, or the fallback that works today,
+     `ssh -t <m1> herdr` from any terminal.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
