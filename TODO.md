@@ -119,6 +119,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   anchoring; (4) a finding's file:line is checked mechanically against the
   diff and the repository, not only required; (5) the decision rationale
   is written into the run history when the decision is made.
+  Slice 1 landed (2026-10-12, run r-onxx7w3b): the context pack
+  (`src/workers/runs/context_pack.rs`, about 40 KB, records its cuts),
+  never-cut generated and contract paths with an escalated approve of a
+  cut diff, `.herdr/review-checklist.md` (8 sourced lines, a test checks
+  the sources), findings must carry file, line and `verified_by`,
+  `[review] model`. Next: slice 2 (read-only repository tools for the
+  review, a mechanical check of each cited file:line, findings tagged by
+  origin), then slice 3 (the golden set with a dated cut-off).
 
 - [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
   [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
