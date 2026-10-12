@@ -63,6 +63,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   permission or classifier refusal, the user rejecting the call), not
   ordinary errors, with fixtures for both; the question is withdrawn when
   the agent's next turn starts; bump the integration version once.
+  Follow-up (todo-odherdr, 2026-10-12): the stale question makes every
+  later verdict wait on that request end at once with exit 6, so the
+  coordinator cannot bind the assignment at all; part of this fix: a
+  verdict wait ignores a "blocked tool calls" question older than the
+  worker's latest turn start.
 
 - [ ] A prompt to a busy agent is queued by herdr, never silently lost, and [t-jkcv5fiy]
   a failed delivery is reported by herdr itself (the user via
