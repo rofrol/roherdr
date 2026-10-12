@@ -302,6 +302,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   only warns. Attempt 3 (the last) fixes these four. Noted for later:
   raw API clients without `caller_pane_id` are not fenced, the fence is
   check-then-act, store reads under the registry lock, no fsync.
+  The live handoff waits for "Handoff fence and persistence edge cases"
+  (d-gr63towv).
 
 - [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
   2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
@@ -315,6 +317,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   its tests; no guest build.
   Decided by the user 2026-10-12 (d-incouunr): approved, right after the
   handoff slice.
+
+- [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
+  [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
+  the successor-started write only log a failed persist (after a restart
+  the handoff returns Frozen without its successor); a double failure in
+  the ack (state written, transfer failed, restore write failed) leaves
+  the file saying the live coordinator is superseded; a reused old pane
+  id whose session is still unknown is fenced; the pane-session map is
+  never pruned on pane close; raw API clients without `caller_pane_id`
+  are never fenced; the fence is check-then-act. Cost: small src slices
+  in src/workers/coordinator_handoff.rs with tests; no guest build.
+  Decided by the user 2026-10-12 (d-gr63towv): approved, to be fixed
+  before this coordinator's live handoff.
 
 - [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
   (the user, 2026-10-12, after the coordinator wrote "the existing
@@ -3364,17 +3379,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
-  [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
-  the successor-started write only log a failed persist (after a restart
-  the handoff returns Frozen without its successor); a double failure in
-  the ack (state written, transfer failed, restore write failed) leaves
-  the file saying the live coordinator is superseded; a reused old pane
-  id whose session is still unknown is fenced; the pane-session map is
-  never pruned on pane close; raw API clients without `caller_pane_id`
-  are never fenced; the fence is check-then-act. Cost: small src slices
-  in src/workers/coordinator_handoff.rs with tests; no guest build.
 
 ## Needs a decision
 
