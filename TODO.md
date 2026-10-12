@@ -2854,6 +2854,142 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - This is step 1 of [t-2k3ima2h]: the cap consumes the same fact, so
     this item lands before the cap's thresholds.
 
+- [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
+  Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
+  Checked (user 2026-10-10: "maybe test these open-source projects hands-on? ask the models"; round 20261010-115231-6369, sol + MiMo + DeepSeek): all three pick vibe-kanban (Rust + SQLite + worktrees, its restart marks orphans Failed) and mini-swe-agent (cheap baseline); LangGraph or Restate optional; skip Temporal, Inngest and the OpenHands resolver (heavy infra, documented semantics). Scenarios, same toy repo and fixed prompts (a scripted fake model where supported): success; kill the orchestrator mid-task and restart; kill the agent process; an agent stuck on a silent command; an agent asking a question (restart while it waits); a failed check then retry. Record state rows before and after, resume/duplicate/mark-failed, what the user sees, leftover processes and worktrees, cost, manual steps. Safety: a VM (not a container: agents run arbitrary shell and scan the environment), no host mounts, SSH agent, credentials or real remotes (a local bare repo), egress only to the model API, a spend-capped throwaway key (needs the user), snapshots. Estimate 6-10 h for the two.
+  Decided by the user 2026-10-10: VM plus the two projects. Needs from the
+  user: a throwaway, spend-capped API key for the agents (Anthropic or
+  OpenRouter) put in a file the coordinator names, never pasted into chat.
+  VM: OrbStack is installed here (`orb`), a fresh Linux machine without
+  host mounts or SSH agent forwarding; the worker runs inside it only.
+  Decided by the user 2026-10-10: no API key. mini-swe-agent runs with a
+  scripted fake model (no key). vibe-kanban's Claude Code logs in with the
+  user's subscription inside the VM (the user runs `claude login` there
+  himself; agents never handle the login); after the test: log out and
+  delete the VM. VM still to choose (OrbStack shares the Mac's files by
+  default; a fresh UTM VM without shared folders is the safe default).
+  Selection revisited 2026-10-10 (user asked why only two; round
+  20261010-120404-6a53): all three models: two test agent lifecycle but not
+  herdr's hard part, durable replay. Add Restate's durable coding-agent
+  example as the third (sol, DeepSeek; MiMo preferred LangGraph): a decision
+  call recorded once and not repeated on replay, a human wait surviving a
+  restart, bounded retries. vibe-kanban's "orphan -> Failed" is the naive
+  policy herdr should beat. Add a seventh scenario for every project: a
+  side effect done (or a decision recorded), crash before the next
+  transition, restart: reused, repeated or reconciled?
+  Changed by the user 2026-10-10: drop vibe-kanban and mini-swe-agent;
+  test only projects with durable resume. Nothing had started yet. The
+  set, decided by the coordinator from the earlier rounds: Restate (single
+  binary; its durable coding-agent example), Temporal through its
+  single-binary dev server (`temporal server start-dev`, not the full
+  deployment the models objected to), LangGraph with its SQLite
+  checkpointer and `interrupt()`, DBOS with SQLite if its current version
+  supports it (else skip). Each with a scripted fake model (no
+  subscription or key needed, so no login in the VM) and the seven
+  scenarios, the crash-between-effect-and-record window first. Same VM
+  rules.
+  Set revised with the models (round 20261010-120557-d572; licences checked
+  with gh): Restate (journaled side effects, durable waits; scenario 7
+  first) and Temporal's dev server (activity heartbeats, cancellation,
+  bounded retry policy; scenarios 3, 4, 6), all three agreeing; LangGraph
+  with SQLite only for the human-question wait across a restart (scenario
+  5); one Rust + SQLite engine to study as the closest model for herdr:
+  microsoft/duroxide (MIT, Rust, SQLite provider, event-sourced replay,
+  active) preferred over Obelisk (AGPL-3.0: concepts only). DBOS dropped
+  (Postgres-first). Lessons to carry, all three: durable execution does not
+  make external effects exactly-once; a step done before its record needs
+  an idempotency key or reconciliation, and an explicit "outcome unknown"
+  state; a command stuck silently is not a durable-execution feature
+  anywhere (it stays herdr's own process supervision, under the delay rule).
+  Corrected 2026-10-10 (user: "Postgres doesn't bother me; where do you get
+  artificial restrictions like AGPL or Postgres?"; rounds
+  20261010-120917-b641 and 20261010-121012-4292): the exclusions were
+  wrong. The coordinator mixed "could herdr embed it" with "can we learn
+  from crashing it". AGPL binds only copying or linking code into herdr
+  (or shipping Obelisk binaries or a modified networked Obelisk), not
+  running or reading it in a throwaway VM; Postgres in a VM is trivial.
+  Test set now: Temporal (event-history replay, signals, activity retries),
+  Restate (journal, durable promises, Rust core), DBOS (effects recorded in
+  the same Postgres transaction as the state), Obelisk (Rust + SQLite +
+  WASM, persisted execution history, run it), Inngest (step memoization,
+  event-resumed waits), duroxide (Rust + SQLite event-sourced replay);
+  LangGraph only if time remains. Judge what survives, what repeats, and
+  which guarantees still need herdr's own idempotency.
+  LangGraph joins the set unconditionally (user 2026-10-10: "only if time
+  remains: do we have little time?"; no deadline exists): SQLite
+  checkpointer, `interrupt()` for a human question across a restart, and
+  which node code reruns before an interrupt.
+  Expanded 2026-10-10 (user: "survey HN, Reddit, GitHub trending, X"; a web
+  survey, repos verified with gh; round 20261010-121933-62f8, sol + MiMo +
+  DeepSeek), grouped by recovery contract, one or two per group:
+  - history/journal replay: Temporal (all three: the baseline) and Golem
+    (transparent WASM replay: may it silently re-run host effects?);
+  - checkpoint-continuation without replay: Orch8 (Rust single binary +
+    SQLite, dead-letter state, approval gates; closest to herdr) and Sayiir
+    (Rust, no replay);
+  - transactional DB steps: DBOS (all three);
+  - LLM-decision journaling: Chidori (replay with zero model calls);
+  - an effect whose outcome is unknown: tool-journal (all three: stops
+    `indeterminate`) and kiso (coding-agent sessions; an unknown effect
+    goes to a human).
+  Deferred as overlapping: Restate, Obelisk, Inngest, duroxide, LangGraph,
+  Trigora, pg_durable, OpenWorkflow, Resonate, and the agent-session tools
+  (mjolnir, coven, acpus, Smithers); one joins later only for a specific
+  unanswered question. Test-plan corrections: the "effect done, crash
+  before the record" scenario uses an external fake-effect service with
+  its own durable log, so an unknown outcome is real; every test counts
+  model calls and external effects (otherwise replay tests show nothing).
+  Herdr's own failures as scenarios (user 2026-10-10: "can you run there
+  the scenarios that fail for us?"), added to every project's test, each
+  rebuilt in the project's terms with the fake model:
+  H1 the step owner ends its turn with a promise and starts nothing (a
+     task/agent that returns "will continue" without scheduling): does the
+     engine advance by itself?
+  H2 a step's own background job still runs when the step reports done
+     (turn end is not work end): does the engine wait for the real end?
+  H3 a step stuck on a silent command whose pipe orphaned children hold
+     (ssh with background processes keeping stderr): what does it see?
+  H4 the orchestrator restarts while a client waits on a step (our
+     EmptyResponse, exit 8): does the waiter reconnect and keep its place?
+  H5 an orphaned child holds a lock or file the next step needs (our
+     broker holding the job slot's flock): detected, cleaned, or hung?
+  H6 a human question pending while its asker's owner goes away (our
+     closed coordinator pane): where does the question go?
+  H7 a decision input that goes stale at a known instant (our usage
+     window reset): does it re-read at decision time or trust a cache?
+  H8 two drivers of one execution in one process after a resume (our run
+     lock race): fenced, or both proceed?
+  H9 a step "succeeds" but a later gate fails (our commit that broke the
+     v1 contract only at install): can it roll back or compensate?
+  Where each H scenario belongs (round 20261010-125427-0303, sol + MiMo +
+  DeepSeek): engines have no LLM coordinator and no "turn", so run them as
+  capability probes, not a ranking.
+  - In the eight engines: H7 (stale decision input: re-read or trust a
+    cache), H8 (two drivers: fencing or double execution), H9 (a later
+    gate fails: compensation), H4 as a durable client wait across a
+    restart, H6 as a durable signal or event sent while the asker is gone.
+  - As a generic subprocess harness in the same VM (all three: an engine
+    joins only what it spawned): H2 (work outliving its step), H3 (a pipe
+    held by orphans), H5 (an orphan holding a lock).
+  - In herdr's own deterministic tests and stress loops (all three): H1
+    (a promise with nothing scheduled), H4's transport errors
+    (EmptyResponse, exit 8), H6's pane ownership, H8's same-process race.
+  Classes added for every engine: an effect that succeeds but whose
+  acknowledgement is lost; duplicate delivery of a step (at-least-once
+  retries); cancellation racing completion; a poison step exhausting its
+  retries; code or schema changed under a running execution (replay
+  nondeterminism); a partial model output.
+  Decided 2026-10-10 (the user: "decide with the models"; round
+  20261010-142705-3267, all three): a fresh UTM Linux VM without shared
+  folders or credentials, snapshot before each scenario, discarded after.
+  Asked again 2026-10-12 (d-geajntlu): the user confirmed the throwaway
+  VM; still waits on the VM choice and the user's `claude login` there.
+  Re-triaged 2026-10-13: the latest approved plan uses scripted fake
+  models for every engine and a fresh UTM VM, so the earlier Claude login
+  prerequisite and VM-choice question no longer apply. No subscription or
+  credential is required for that plan. Moved back to approved work; the
+  worker must preserve VM isolation and validate setup before execution.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -3498,137 +3634,6 @@ user needs to decide or do.
   Asked 2026-10-12: the user creates the credential later; the item waits.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
-
-- [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
-  Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
-  Checked (user 2026-10-10: "maybe test these open-source projects hands-on? ask the models"; round 20261010-115231-6369, sol + MiMo + DeepSeek): all three pick vibe-kanban (Rust + SQLite + worktrees, its restart marks orphans Failed) and mini-swe-agent (cheap baseline); LangGraph or Restate optional; skip Temporal, Inngest and the OpenHands resolver (heavy infra, documented semantics). Scenarios, same toy repo and fixed prompts (a scripted fake model where supported): success; kill the orchestrator mid-task and restart; kill the agent process; an agent stuck on a silent command; an agent asking a question (restart while it waits); a failed check then retry. Record state rows before and after, resume/duplicate/mark-failed, what the user sees, leftover processes and worktrees, cost, manual steps. Safety: a VM (not a container: agents run arbitrary shell and scan the environment), no host mounts, SSH agent, credentials or real remotes (a local bare repo), egress only to the model API, a spend-capped throwaway key (needs the user), snapshots. Estimate 6-10 h for the two.
-  Decided by the user 2026-10-10: VM plus the two projects. Needs from the
-  user: a throwaway, spend-capped API key for the agents (Anthropic or
-  OpenRouter) put in a file the coordinator names, never pasted into chat.
-  VM: OrbStack is installed here (`orb`), a fresh Linux machine without
-  host mounts or SSH agent forwarding; the worker runs inside it only.
-  Decided by the user 2026-10-10: no API key. mini-swe-agent runs with a
-  scripted fake model (no key). vibe-kanban's Claude Code logs in with the
-  user's subscription inside the VM (the user runs `claude login` there
-  himself; agents never handle the login); after the test: log out and
-  delete the VM. VM still to choose (OrbStack shares the Mac's files by
-  default; a fresh UTM VM without shared folders is the safe default).
-  Selection revisited 2026-10-10 (user asked why only two; round
-  20261010-120404-6a53): all three models: two test agent lifecycle but not
-  herdr's hard part, durable replay. Add Restate's durable coding-agent
-  example as the third (sol, DeepSeek; MiMo preferred LangGraph): a decision
-  call recorded once and not repeated on replay, a human wait surviving a
-  restart, bounded retries. vibe-kanban's "orphan -> Failed" is the naive
-  policy herdr should beat. Add a seventh scenario for every project: a
-  side effect done (or a decision recorded), crash before the next
-  transition, restart: reused, repeated or reconciled?
-  Changed by the user 2026-10-10: drop vibe-kanban and mini-swe-agent;
-  test only projects with durable resume. Nothing had started yet. The
-  set, decided by the coordinator from the earlier rounds: Restate (single
-  binary; its durable coding-agent example), Temporal through its
-  single-binary dev server (`temporal server start-dev`, not the full
-  deployment the models objected to), LangGraph with its SQLite
-  checkpointer and `interrupt()`, DBOS with SQLite if its current version
-  supports it (else skip). Each with a scripted fake model (no
-  subscription or key needed, so no login in the VM) and the seven
-  scenarios, the crash-between-effect-and-record window first. Same VM
-  rules.
-  Set revised with the models (round 20261010-120557-d572; licences checked
-  with gh): Restate (journaled side effects, durable waits; scenario 7
-  first) and Temporal's dev server (activity heartbeats, cancellation,
-  bounded retry policy; scenarios 3, 4, 6), all three agreeing; LangGraph
-  with SQLite only for the human-question wait across a restart (scenario
-  5); one Rust + SQLite engine to study as the closest model for herdr:
-  microsoft/duroxide (MIT, Rust, SQLite provider, event-sourced replay,
-  active) preferred over Obelisk (AGPL-3.0: concepts only). DBOS dropped
-  (Postgres-first). Lessons to carry, all three: durable execution does not
-  make external effects exactly-once; a step done before its record needs
-  an idempotency key or reconciliation, and an explicit "outcome unknown"
-  state; a command stuck silently is not a durable-execution feature
-  anywhere (it stays herdr's own process supervision, under the delay rule).
-  Corrected 2026-10-10 (user: "Postgres doesn't bother me; where do you get
-  artificial restrictions like AGPL or Postgres?"; rounds
-  20261010-120917-b641 and 20261010-121012-4292): the exclusions were
-  wrong. The coordinator mixed "could herdr embed it" with "can we learn
-  from crashing it". AGPL binds only copying or linking code into herdr
-  (or shipping Obelisk binaries or a modified networked Obelisk), not
-  running or reading it in a throwaway VM; Postgres in a VM is trivial.
-  Test set now: Temporal (event-history replay, signals, activity retries),
-  Restate (journal, durable promises, Rust core), DBOS (effects recorded in
-  the same Postgres transaction as the state), Obelisk (Rust + SQLite +
-  WASM, persisted execution history, run it), Inngest (step memoization,
-  event-resumed waits), duroxide (Rust + SQLite event-sourced replay);
-  LangGraph only if time remains. Judge what survives, what repeats, and
-  which guarantees still need herdr's own idempotency.
-  LangGraph joins the set unconditionally (user 2026-10-10: "only if time
-  remains: do we have little time?"; no deadline exists): SQLite
-  checkpointer, `interrupt()` for a human question across a restart, and
-  which node code reruns before an interrupt.
-  Expanded 2026-10-10 (user: "survey HN, Reddit, GitHub trending, X"; a web
-  survey, repos verified with gh; round 20261010-121933-62f8, sol + MiMo +
-  DeepSeek), grouped by recovery contract, one or two per group:
-  - history/journal replay: Temporal (all three: the baseline) and Golem
-    (transparent WASM replay: may it silently re-run host effects?);
-  - checkpoint-continuation without replay: Orch8 (Rust single binary +
-    SQLite, dead-letter state, approval gates; closest to herdr) and Sayiir
-    (Rust, no replay);
-  - transactional DB steps: DBOS (all three);
-  - LLM-decision journaling: Chidori (replay with zero model calls);
-  - an effect whose outcome is unknown: tool-journal (all three: stops
-    `indeterminate`) and kiso (coding-agent sessions; an unknown effect
-    goes to a human).
-  Deferred as overlapping: Restate, Obelisk, Inngest, duroxide, LangGraph,
-  Trigora, pg_durable, OpenWorkflow, Resonate, and the agent-session tools
-  (mjolnir, coven, acpus, Smithers); one joins later only for a specific
-  unanswered question. Test-plan corrections: the "effect done, crash
-  before the record" scenario uses an external fake-effect service with
-  its own durable log, so an unknown outcome is real; every test counts
-  model calls and external effects (otherwise replay tests show nothing).
-  Herdr's own failures as scenarios (user 2026-10-10: "can you run there
-  the scenarios that fail for us?"), added to every project's test, each
-  rebuilt in the project's terms with the fake model:
-  H1 the step owner ends its turn with a promise and starts nothing (a
-     task/agent that returns "will continue" without scheduling): does the
-     engine advance by itself?
-  H2 a step's own background job still runs when the step reports done
-     (turn end is not work end): does the engine wait for the real end?
-  H3 a step stuck on a silent command whose pipe orphaned children hold
-     (ssh with background processes keeping stderr): what does it see?
-  H4 the orchestrator restarts while a client waits on a step (our
-     EmptyResponse, exit 8): does the waiter reconnect and keep its place?
-  H5 an orphaned child holds a lock or file the next step needs (our
-     broker holding the job slot's flock): detected, cleaned, or hung?
-  H6 a human question pending while its asker's owner goes away (our
-     closed coordinator pane): where does the question go?
-  H7 a decision input that goes stale at a known instant (our usage
-     window reset): does it re-read at decision time or trust a cache?
-  H8 two drivers of one execution in one process after a resume (our run
-     lock race): fenced, or both proceed?
-  H9 a step "succeeds" but a later gate fails (our commit that broke the
-     v1 contract only at install): can it roll back or compensate?
-  Where each H scenario belongs (round 20261010-125427-0303, sol + MiMo +
-  DeepSeek): engines have no LLM coordinator and no "turn", so run them as
-  capability probes, not a ranking.
-  - In the eight engines: H7 (stale decision input: re-read or trust a
-    cache), H8 (two drivers: fencing or double execution), H9 (a later
-    gate fails: compensation), H4 as a durable client wait across a
-    restart, H6 as a durable signal or event sent while the asker is gone.
-  - As a generic subprocess harness in the same VM (all three: an engine
-    joins only what it spawned): H2 (work outliving its step), H3 (a pipe
-    held by orphans), H5 (an orphan holding a lock).
-  - In herdr's own deterministic tests and stress loops (all three): H1
-    (a promise with nothing scheduled), H4's transport errors
-    (EmptyResponse, exit 8), H6's pane ownership, H8's same-process race.
-  Classes added for every engine: an effect that succeeds but whose
-  acknowledgement is lost; duplicate delivery of a step (at-least-once
-  retries); cancellation racing completion; a poison step exhausting its
-  retries; code or schema changed under a running execution (replay
-  nondeterminism); a partial model output.
-  Decided 2026-10-10 (the user: "decide with the models"; round
-  20261010-142705-3267, all three): a fresh UTM Linux VM without shared
-  folders or credentials, snapshot before each scenario, discarded after.
-  Asked again 2026-10-12 (d-geajntlu): the user confirmed the throwaway
-  VM; still waits on the VM choice and the user's `claude login` there.
 
 ### Decide
 
