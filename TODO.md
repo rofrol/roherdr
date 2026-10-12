@@ -3079,6 +3079,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - First step: the queue-mode trial already decided (d-amwperuu), one
     approved item, credits only, mandatory review, small spend cap; the
     ladder and automatic analysis come after the trial's numbers.
+  (The "reviewed" state above is [t-ktz7l3hl].)
 
 ## Proposed
 
