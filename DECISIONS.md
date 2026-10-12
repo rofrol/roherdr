@@ -1453,3 +1453,19 @@ preferred. Agents never answer trust dialogs or write trust config.
 ## todo run --help lists --agent (t-okqf5ugr, 2026-10-12)
 
 herdr todo run --help lists --agent (2026-10-12): done inside run r-3djse6sx of [t-s6lkxb4v] (commit 16274844), which lists the agent values in the help text.
+
+## Workers default to the API credits (t-s6lkxb4v, 2026-10-12)
+
+The user (2026-10-12: "94% of the subscription used and only $0.50 of
+$200; do we finally move to the $200? ask the models") moved workers to
+the Anthropic API credits; coordinators stay on Claude Code. Landed in two
+slices: `[workers] default_agent` (`claude`, `pi`, `pi-anthropic`; default
+`claude` until the user's config sets it), `--agent` for `--draft`,
+`--next-agent`, `worker start --agent` through the new `worker.start_choice`
+method (the frozen `worker.start` keeps its shape), one fallback to `pi`
+on a credit refusal, `agent` and `model` in `todo status` (b124c8c55); a
+credit run's draft, review and auto-answer calls go through the credit
+proxy in-process, ledgered under the run, with one fallback to `claude -p`
+on a refusal (`claude -p` cannot use the proxy: it sends beta headers the
+proxy refuses) (run r-vddcm5rd). Rejected: moving coordinators to pi now
+(porting herdr's hooks and skills is a migration, piloted later).

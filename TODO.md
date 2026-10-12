@@ -83,37 +83,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   [t-s6lkxb4v] and the deeper review item, which the user's queue-mode
   trial (d-amwperuu) waits on.
 
-- [ ] Workers default to the API credits, coordinators stay on Claude Code [t-s6lkxb4v]
-  (the user, 2026-10-12: "94% of the AN subscription used and only $0.50 of
-  $200; do we finally move to the $200? ask the models"; round of
-  2026-10-12, MiMo and DeepSeek; sol failed at capacity): `[workers]
-  default_agent` (default `pi-anthropic` once the credit path has run
-  clean) for every repository's `todo run`, falling back to `pi" (OpenAI)
-  on a proxy or credit failure, Claude Code only by explicit `--agent
-  claude`; each run records which agent and model actually ran; daily
-  credit spend visible. Coordinators are not moved off Claude Code now
-  (porting herdr's hooks and skills to pi is a migration, piloted later on
-  one non-critical repository).
-  Gap found 2026-10-12 (the roguix-vps coordinator): only `herdr todo run`
-  has the credit path (`--agent pi-anthropic`); `herdr worker start` starts
-  Claude Code only (`--model`), and a repository without
-  `.herdr/checks.toml` (roguix-vps has none) cannot use `todo run`, so its
-  workers stay on the subscription. This item must cover `worker start`
-  (or checks.toml for every coordinated repository) too.
-  Needed first for the queue-mode trial (d-amwperuu, 2026-10-12): queue
-  runs and `todo run --draft` take the default agent too, and the
-  `--draft` and `--auto-review` model calls can go through the API
-  credits instead of `claude -p` on the subscription.
-  Slice 1 landed (2026-10-12, run r-3djse6sx on the API credits; the first
-  attempt r-aq4lmj5r on pi/OpenAI ended on a Codex server error with no
-  commit): `[workers] default_agent` (default `claude` until the user's
-  config sets it), `--agent` for `--draft`, `--next-agent`, `worker start
-  --agent` through the new `worker.start_choice` method, one fallback to
-  `pi` on a credit refusal, `agent` and `model` in `todo status`. Still
-  open: slice 2, the `--draft` and `--auto-review` model calls through the
-  API credits; setting `default_agent = "pi-anthropic"` in the user's
-  config once installed.
-
 - [ ] Stopping a worker whose process just exited fails with EPERM on macOS [t-4lgrokip]
   (follow-up of [t-nwxujise], found by the coordinator 2026-10-12: run
   r-uucamlb4's full `tests` check failed in
