@@ -251,6 +251,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (a stale file would hijack a plain `/todo`). herdr, not the prompt,
   enforces safety: worker starts and other mutations check the epoch, the
   old session is frozen at `ready`.
+  Decided by the user 2026-10-12 (d-jsob4ehk): set `[workers]
+  default_agent = "pi-anthropic"` in the user's herdr config for the
+  queue-mode trial; done by the coordinator in the dotfiles (014a48d).
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
