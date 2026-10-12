@@ -315,6 +315,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   is never pruned; raw API clients without caller_pane_id are not fenced;
   the fence is check-then-act. Next: the todo skill's `--handoff` branch,
   then one live handoff of this coordinator.
+  The todo skill takes the handoff (dotfiles 9a46c57, workers w286 and
+  w288; w286's own str.replace missed its anchor and it still reported
+  done). Left: one live handoff of this coordinator.
 
 - [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
   [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
