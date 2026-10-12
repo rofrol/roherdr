@@ -261,6 +261,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   names), then one live handoff of this coordinator tests it.
   Asked 2026-10-12 (the user: "does herdr have to close the tab? can it
   not do /new in the window? and an automatic handoff? ask the models").
+  Round 20261012-203231-d79f (sol, MiMo, DeepSeek agreeing): the tab is
+  never closed; the successor opens in a new pane of the same tab and
+  only the old pane's session is retired after the ack. Keep the new
+  pane for the first slice: same-pane `/clear` (pi `/new`) destroys the
+  live fallback before the successor proves itself (after a failed start
+  "unfreeze" would mean `claude --resume <old id>`, a new process without
+  the old runtime, shells and waits), wipes the scrollback the user
+  reads to check the handoff, and makes pane identity ambiguous (the
+  existing "clear follows the tenure" rule would have to treat the
+  cleared session as a candidate, not an owner). Same pane stays a later
+  optimization once failure paths are tested; its sequence with positive
+  events only: `ready` and Stop, freeze, type `/clear`, wait for
+  SessionStart source=clear with a new session id in that pane (pi needs
+  an equivalent new-session event), register it as candidate, deliver
+  the `--handoff` prompt with confirmed delivery, commit on the ack.
+  Automatic handoff: on Stop, at [t-2k3ima2h]'s retire threshold, with no
+  unanswered user question and no pending handoff; turned on only after
+  injected pre-ack failures show the rollback works, with a user-visible
+  notice and a switch to turn it off; one automatic handoff per tenure
+  (no loops after a resume). The in-flight new-pane slice lands as is.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
