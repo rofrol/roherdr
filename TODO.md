@@ -2245,6 +2245,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   from 95%, plus a `!` marker so it reads without color; the expiry turns
   amber within 7 days, red within 2, and `expired` after.
 
+- [ ] Headless workers on the owner's Google AI subscription through the [t-dnqkeub6]
+  Antigravity CLI (the user, 2026-10-12: "check using Gemini for tasks too;
+  I have a subscription there but they give few tokens"). Checked by the
+  coordinator: pi has an `antigravity` login but lists no Antigravity models
+  (only OpenRouter's Gemini, paid); the Antigravity CLI `agy` (already
+  read by herdr's usage widget, `agy -p /quota`) runs headless
+  (`--print`, `--input-format/--output-format stream-json`, `--model`,
+  `--effort`, `--sandbox`) and its quota has two weekly groups, both at
+  100% left now: "Gemini models" (gemini-3.8-flash, gemini-3.1-pro) and
+  "Claude and GPT models" (claude-sonnet-4-6, claude-opus-4-6, gpt-oss);
+  quota is consumed in proportion to token cost. Plan: `todo run --agent
+  agy` with a model setting, the same folder slot, verify and WORKER line
+  contract; the usage gate reads that agy group's weekly limit; agy's own
+  `--sandbox` plus herdr's sandbox (check what agy's sandbox enforces; never
+  `--dangerously-skip-permissions` without herdr's sandbox around it);
+  prefer it for small items since the quota is small.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
