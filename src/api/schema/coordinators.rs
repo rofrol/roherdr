@@ -171,6 +171,11 @@ pub struct CoordinatorInfo {
     /// tenure is frozen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<CoordinatorHandoffInfo>,
+    /// The last failure to write the handoff state to disk that the server
+    /// could not refuse (an event aborted or advanced the handoff): a
+    /// restart may restore an older state. Absent once a write succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_persist_error: Option<String>,
 }
 
 /// Records an exception to a coordinator tab's command allowlist: one tool

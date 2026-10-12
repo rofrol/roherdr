@@ -168,6 +168,12 @@ fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), WorkerError> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: each state write takes the first entry; `true` fails it.
+    static WRITE_FAILURES: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl WorkerSupervisor {
     fn handoffs_dir(&self) -> Result<PathBuf, WorkerError> {
         let dir = self.shared.dir.join("handoffs");
@@ -196,6 +202,13 @@ impl WorkerSupervisor {
         pending: Vec<Handoff>,
         superseded: Vec<Superseded>,
     ) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        if WRITE_FAILURES.with(|failures| {
+            let mut failures = failures.borrow_mut();
+            !failures.is_empty() && failures.remove(0)
+        }) {
+            return Err(io_error("injected write failure"));
+        }
         let path = self.state_path();
         if pending.is_empty() && superseded.is_empty() && !path.exists() {
             return Ok(());
@@ -210,11 +223,19 @@ impl WorkerSupervisor {
         write_whole(&path, &bytes)
     }
 
-    /// [`Self::persist_locked`] for a change that is made already: a write
-    /// that fails is logged, and the state in memory goes on.
-    fn persist_or_warn(&self, registry: &Registry) {
-        if let Err(error) = self.persist_locked(registry) {
-            warn!(%error, "cannot write the pending coordinator handoffs");
+    /// [`Self::persist_locked`] for a change that is made already: the
+    /// state in memory goes on when the write fails, and the failure is
+    /// logged and recorded for tenure `tenure_id` (`coordinator status`
+    /// shows it as `handoff_persist_error`) until a write succeeds.
+    fn persist_or_warn(&self, registry: &mut Registry, tenure_id: &str) {
+        match self.persist_locked(registry) {
+            Ok(()) => registry.handoff_persist_errors.clear(),
+            Err(error) => {
+                warn!(%error, "cannot write the pending coordinator handoffs");
+                registry
+                    .handoff_persist_errors
+                    .insert(tenure_id.to_owned(), error.to_string());
+            }
         }
     }
 
@@ -241,8 +262,26 @@ impl WorkerSupervisor {
             }
         };
         let mut registry = lock(&self.shared.registry);
-        registry.superseded = state.superseded;
-        let mut dropped = false;
+        // A record whose tenure is still active at its epoch claims a
+        // supersession that never happened (an ack whose transfer failed
+        // and whose restoring write failed too): it is not restored.
+        let mut superseded = state.superseded;
+        let before = superseded.len();
+        superseded.retain(|record| {
+            !self
+                .tenure_store()
+                .ok()
+                .and_then(|store| store.coordinator(&record.coordinator_id).ok().flatten())
+                .is_some_and(|tenure| tenure.ended_at.is_none() && tenure.epoch == record.epoch)
+        });
+        let mut dropped = superseded.len() != before;
+        registry.superseded = superseded;
+        // A handoff whose recorded phase no live successor can match is
+        // aborted below: a successor-started phase without a pane, or a
+        // prepared one (the successor's start was not recorded; the write
+        // may have failed). A successor pane that is gone is aborted by
+        // [`Self::owners_at_start`].
+        let mut inconsistent = Vec::new();
         for handoff in state.pending {
             let active = self
                 .tenure_store()
@@ -250,6 +289,13 @@ impl WorkerSupervisor {
                 .and_then(|store| store.coordinator(&handoff.coordinator_id).ok().flatten())
                 .is_some_and(|tenure| tenure.ended_at.is_none() && tenure.epoch == handoff.epoch);
             if active {
+                if handoff.successor_pane.is_none()
+                    && (handoff.phase == Phase::SuccessorStarted
+                        || handoff.kind.is_some()
+                        || handoff.snapshot_sha256.is_some())
+                {
+                    inconsistent.push(handoff.coordinator_id.clone());
+                }
                 registry
                     .handoffs
                     .insert(handoff.coordinator_id.clone(), handoff);
@@ -258,16 +304,28 @@ impl WorkerSupervisor {
             }
         }
         if dropped {
-            self.persist_or_warn(&registry);
+            self.persist_or_warn(&mut registry, "");
+        }
+        drop(registry);
+        for coordinator_id in inconsistent {
+            self.handoff_abort(
+                &coordinator_id,
+                "no live successor matches its recorded phase after a restart",
+            );
         }
     }
 
     /// `info` with the tenure's pending handoff.
     pub(crate) fn with_handoff(&self, mut info: CoordinatorInfo) -> CoordinatorInfo {
-        info.handoff = lock(&self.shared.registry)
+        let registry = lock(&self.shared.registry);
+        info.handoff = registry
             .handoffs
             .get(&info.coordinator_id)
             .map(Handoff::info);
+        info.handoff_persist_error = registry
+            .handoff_persist_errors
+            .get(&info.coordinator_id)
+            .cloned();
         info
     }
 
@@ -508,7 +566,7 @@ impl WorkerSupervisor {
                 pending.kind = Some(kind.to_owned());
                 pending.snapshot_sha256 = Some(snapshot_sha);
             }
-            self.persist_or_warn(&registry);
+            self.persist_or_warn(&mut registry, &tenure.coordinator_id);
         }
         Ok(Prepared {
             coordinator_id: tenure.coordinator_id,
@@ -532,7 +590,7 @@ impl WorkerSupervisor {
             handoff.phase = Phase::SuccessorStarted;
             handoff.successor_pane = Some(successor_pane.to_owned());
             let old_pane = handoff.old_pane.clone();
-            self.persist_or_warn(&registry);
+            self.persist_or_warn(&mut registry, coordinator_id);
             old_pane
         };
         self.shared.changed.notify_all();
@@ -577,8 +635,11 @@ impl WorkerSupervisor {
                     Err(error) if strict => return Err(error),
                     Err(error) => {
                         tracing::error!(%error, "cannot write the aborted coordinator handoff; a restart may restore it");
+                        registry
+                            .handoff_persist_errors
+                            .insert(coordinator_id.to_owned(), error.to_string());
                     }
-                    Ok(()) => {}
+                    Ok(()) => registry.handoff_persist_errors.clear(),
                 }
                 registry.handoffs.remove(coordinator_id)
             } else {
@@ -737,8 +798,15 @@ impl WorkerSupervisor {
             Ok(tenure) => tenure,
             Err(error) => {
                 // Nothing moved: the file goes back to what memory holds.
+                // When that write fails too, the file names a supersession
+                // memory does not hold: the failure is recorded for the
+                // tenure, and a restart does not restore a record whose
+                // tenure is still active ([`Self::restore_handoffs`]).
                 if let Err(write) = self.persist_locked(&registry) {
                     tracing::error!(%write, "cannot restore the coordinator handoff state after a refused ack");
+                    registry
+                        .handoff_persist_errors
+                        .insert(handoff.coordinator_id.clone(), write.to_string());
                 }
                 return Err(error);
             }
@@ -751,7 +819,7 @@ impl WorkerSupervisor {
         registry.superseded = superseded;
         // The names are complete now; a failure here leaves the first
         // write, which fences the same pane and session.
-        self.persist_or_warn(&registry);
+        self.persist_or_warn(&mut registry, &tenure.coordinator_id);
         drop(registry);
         self.shared.changed.notify_all();
         super::notify_clients();
@@ -765,15 +833,16 @@ impl WorkerSupervisor {
     /// any more, and its id is free again.
     pub(crate) fn handoff_old_pane_closed(&self, pane_id: &str) {
         let mut registry = lock(&self.shared.registry);
-        let mut changed = false;
+        registry.pane_sessions.remove(pane_id);
+        let mut changed = None;
         for superseded in &mut registry.superseded {
             if superseded.pane_id.as_deref() == Some(pane_id) {
                 superseded.pane_id = None;
-                changed = true;
+                changed = Some(superseded.successor_coordinator_id.clone());
             }
         }
-        if changed {
-            self.persist_or_warn(&registry);
+        if let Some(tenure_id) = changed {
+            self.persist_or_warn(&mut registry, &tenure_id);
         }
     }
 
@@ -886,6 +955,14 @@ impl WorkerSupervisor {
         }
     }
 
+    /// Forgets the sessions of panes that are not in `live` (the public ids
+    /// of the panes that exist at startup).
+    pub(crate) fn prune_pane_sessions(&self, live: &[String]) {
+        lock(&self.shared.registry)
+            .pane_sessions
+            .retain(|pane, _| live.contains(pane));
+    }
+
     /// [`Self::fence_pane`] for a caller whose session the app knows.
     pub(crate) fn fence_pane_session(
         &self,
@@ -911,13 +988,14 @@ impl WorkerSupervisor {
         let registry = lock(&self.shared.registry);
         let session = registry.pane_sessions.get(pane_id).map(String::as_str);
         // The record matches the pane and the agent session: the session
-        // wherever it runs (`--resume` elsewhere), and the pane while its
-        // session is the old one or not known yet; never a new session that
-        // reuses the pane id.
+        // wherever it runs (`--resume` elsewhere), and the pane only while
+        // its current session is the old one (any session when the record
+        // knows none); never a new or an unknown session on a pane id that
+        // was closed and reopened.
         if let Some(superseded) = registry.superseded.iter().find(|superseded| {
             let same_session = session.is_some() && superseded.session_id.as_deref() == session;
             let same_pane = superseded.pane_id.as_deref() == Some(pane_id)
-                && (session.is_none() || superseded.session_id.is_none() || same_session);
+                && (superseded.session_id.is_none() || same_session);
             same_session || same_pane
         }) {
             return Err(Self::superseded_error(superseded));
@@ -1565,6 +1643,149 @@ mod tests {
         let aborted = supervisor.handoff_abort_request(Some("p1"), None).unwrap();
         assert_eq!(aborted.close_pane, None);
         supervisor.fence_pane(Some("p1")).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A write that fails on an event path is shown on the tenure.
+    #[test]
+    fn a_failed_event_write_is_shown_on_the_tenure() {
+        let (root, supervisor, note) = scratch("event-write");
+        supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        supervisor.handoff_ready("p1", &note).unwrap();
+        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
+        WRITE_FAILURES.with(|f| *f.borrow_mut() = vec![true]);
+        let info = supervisor
+            .handoff_successor_started(&prepared.coordinator_id, "p2")
+            .unwrap();
+        assert!(info.handoff_persist_error.is_some());
+        WRITE_FAILURES.with(|f| *f.borrow_mut() = vec![true]);
+        supervisor.handoff_owner_event("p2", OwnerEvent::PaneClosed);
+        let tenure = supervisor.with_handoff(supervisor.coordinator_of_pane("p1").unwrap());
+        assert!(tenure.handoff.is_none());
+        assert!(tenure.handoff_persist_error.is_some());
+        // The next write that succeeds clears it.
+        supervisor.handoff_ready("p1", &note).unwrap();
+        supervisor.handoff_prepare("p1", "claude").unwrap();
+        supervisor
+            .handoff_successor_started(&prepared.coordinator_id, "p3")
+            .unwrap();
+        let tenure = supervisor.with_handoff(supervisor.coordinator_of_pane("p1").unwrap());
+        assert_eq!(tenure.handoff_persist_error, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A restart aborts a handoff whose phase no live successor matches.
+    #[test]
+    fn a_restored_handoff_without_its_recorded_successor_aborts() {
+        let (root, supervisor, note) = scratch("restore-lost-start");
+        supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        supervisor.handoff_ready("p1", &note).unwrap();
+        supervisor.handoff_prepare("p1", "claude").unwrap();
+        // The successor-started write failed: the file stays `frozen`.
+        drop(supervisor);
+        let _ = crate::workers::take_user_notices();
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        assert_eq!(state(&supervisor, "p1"), None);
+        supervisor.fence_pane(Some("p1")).unwrap();
+        assert_eq!(
+            crate::workers::take_user_notices()
+                .into_iter()
+                .filter(|notice| notice.title == "Coordinator handoff aborted")
+                .count(),
+            1
+        );
+        drop(supervisor);
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        assert_eq!(state(&supervisor, "p1"), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The ack's transfer fails and so does the write that restores the
+    /// file: memory keeps the old tenure and a restart does not fence it.
+    #[test]
+    fn a_double_failure_in_the_ack_never_supersedes_the_live_coordinator() {
+        let (root, supervisor, note) = scratch("ack-double");
+        let (tenure, sha) = started(&supervisor, &note);
+        // The successor's pane coordinates another repository: the
+        // transfer is refused.
+        supervisor.coordinator_start("/other", "p2", None).unwrap();
+        WRITE_FAILURES.with(|f| *f.borrow_mut() = vec![false, true]);
+        assert!(supervisor.handoff_ack("p2", 1, &sha, None, None).is_err());
+        assert!(lock(&supervisor.shared.registry).superseded.is_empty());
+        supervisor.coordinator_of_pane("p1").unwrap();
+        let shown = supervisor.with_handoff(supervisor.coordinator_of_pane("p1").unwrap());
+        assert!(shown.handoff_persist_error.is_some());
+        // The file claims the supersession; a restart ignores it.
+        let text = std::fs::read_to_string(supervisor.state_path()).unwrap();
+        assert!(text.contains("successor_coordinator_id"));
+        drop(supervisor);
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        assert!(lock(&supervisor.shared.registry).superseded.is_empty());
+        supervisor.fence_pane(Some("p1")).unwrap();
+        assert_eq!(
+            supervisor.coordinator_of_pane("p1").unwrap().coordinator_id,
+            tenure.coordinator_id
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An unknown session on the old pane id is not fenced; the old
+    /// session is.
+    #[test]
+    fn an_unknown_session_on_a_reused_old_pane_is_not_fenced() {
+        let (root, supervisor, note) = scratch("unknown-session");
+        supervisor
+            .coordinator_start("/repo", "p1", Some("s1"))
+            .unwrap();
+        supervisor.handoff_ready("p1", &note).unwrap();
+        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
+        supervisor
+            .handoff_successor_started(&prepared.coordinator_id, "p2")
+            .unwrap();
+        let sha = supervisor
+            .with_handoff(supervisor.coordinator_of_pane("p1").unwrap())
+            .handoff
+            .unwrap()
+            .snapshot_sha256
+            .unwrap();
+        supervisor
+            .handoff_ack("p2", 1, &sha, Some("s2"), None)
+            .unwrap();
+        supervisor.note_pane_session("p1", Some("s1"));
+        assert_eq!(
+            code(supervisor.fence_pane(Some("p1"))),
+            "coordinator_superseded"
+        );
+        supervisor.note_pane_session("p1", None);
+        supervisor.fence_pane(Some("p1")).unwrap();
+        supervisor.fence_pane_session(Some("p1"), None).unwrap();
+        assert_eq!(
+            code(supervisor.fence_pane_session(Some("p1"), Some("s1"))),
+            "coordinator_superseded"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A closed pane's session entry goes, and startup drops the rest.
+    #[test]
+    fn the_pane_session_map_is_pruned() {
+        let (root, supervisor, _) = scratch("prune");
+        supervisor.note_pane_session("p1", Some("s1"));
+        supervisor.note_pane_session("p2", Some("s2"));
+        supervisor.note_pane_session("p3", Some("s3"));
+        supervisor.owner_event("p1", OwnerEvent::PaneClosed, "");
+        supervisor.handoff_old_pane_closed("p2");
+        let keys = |s: &WorkerSupervisor| -> Vec<String> {
+            lock(&s.shared.registry)
+                .pane_sessions
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(keys(&supervisor), vec!["p3".to_owned()]);
+        supervisor.note_pane_session("p4", Some("s4"));
+        supervisor.prune_pane_sessions(&["p4".to_owned()]);
+        assert_eq!(keys(&supervisor), vec!["p4".to_owned()]);
         let _ = std::fs::remove_dir_all(root);
     }
 }

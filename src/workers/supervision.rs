@@ -3316,6 +3316,7 @@ mod tests {
             headless: false,
             worker_id: None,
             handoff: None,
+            handoff_persist_error: None,
         }
     }
 

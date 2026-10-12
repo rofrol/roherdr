@@ -316,6 +316,7 @@ pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
         headless: tenure.headless,
         worker_id: tenure.worker_id,
         handoff: None,
+        handoff_persist_error: None,
     }
 }
 

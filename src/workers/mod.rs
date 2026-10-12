@@ -613,6 +613,20 @@ pub(crate) fn note_pane_session(pane_id: &str, session: Option<&str>) {
     }
 }
 
+/// Forgets the agent session `pane_id` ran: the pane closed.
+pub(crate) fn forget_pane_session(pane_id: &str) {
+    if let Some(supervisor) = coordinators::installed() {
+        supervisor.note_pane_session(pane_id, None);
+    }
+}
+
+/// Forgets the sessions of every pane not in `live`, at startup.
+pub(crate) fn prune_pane_sessions(live: &[String]) {
+    if let Some(supervisor) = coordinators::installed() {
+        supervisor.prune_pane_sessions(live);
+    }
+}
+
 /// Re-evaluates every owner when herdr starts: the panes and agents of a
 /// previous server may be gone, idle or blocked without any event this one
 /// will see. `state` tells, for an owner pane, what it finds there now

@@ -1052,13 +1052,21 @@ frozen or superseded, worker and todo mutations carry the sender's pane in an
 optional `caller_pane_id` (`owner_pane_id` on `worker.start`, `todo.run`,
 `todo.run_anthropic`, `todo.next`, `todo.queue_set` and `todo.draft_run`) and
 are refused for that pane; a caller without a pane, such as the user's shell,
-is never fenced. `worker.answer` and `worker.deny_and_stop` keep their
+is never fenced: the fence applies to calls that carry a caller pane, so a raw
+API client that sends no `caller_pane_id` is not fenced, while the CLI that
+agents run always sends it (from `HERDR_PANE_ID`). A superseded pane is fenced
+only while the agent session it runs is the superseded one: a session that is
+unknown on a pane that closed and reopened is not. `worker.answer` and `worker.deny_and_stop` keep their
 advertised shapes and are the user's own answers, never fenced; a coordinator's
 CLI sends `worker.answer_from_pane` (`caller_pane_id` and the `worker.answer`
 parameters) instead, which is. They answer `coordinator`; its
 `handoff` object (`state`: `frozen` or `successor_started`, `epoch`,
 `successor_pane_id`, `agent_kind`, `note_sha256`, `snapshot_sha256`) is also
-in `coordinator.status` while a handoff is pending. Refusals are
+in `coordinator.status` while a handoff is pending. When the server could not
+write its handoff state while an event aborted or advanced the handoff, the
+tenure carries `handoff_persist_error` (the last failure, until a write
+succeeds); a restart aborts, with one notice, a restored handoff whose
+recorded phase has no live successor pane. Refusals are
 `coordinator_frozen` (a mutation of a frozen tenure) and `handoff_refused`.
 `worker.events` (`owner`, a tenure id, else `owner_pane_id`, the tenure bound
 to that pane; optional `after`, `wait`, `limit` and `snapshot`) is one

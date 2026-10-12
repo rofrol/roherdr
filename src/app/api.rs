@@ -859,6 +859,9 @@ impl App {
             self.sync_worker_owner_panes();
             self.sync_coordinator_roles();
         }
+        if let EventData::PaneClosed { pane_id, .. } = &event.data {
+            crate::workers::forget_pane_session(pane_id);
+        }
         if let EventData::PaneUpdated { pane } = &event.data {
             crate::workers::note_pane_session(
                 &pane.pane_id,
@@ -885,14 +888,17 @@ impl App {
     pub(crate) fn reevaluate_worker_owners_at_start(&self) {
         use crate::workers::OwnerEvent;
         // Which session each pane runs, for the superseded-session fence.
+        let mut live = Vec::new();
         for ws_idx in 0..self.state.workspaces.len() {
             for tab_idx in 0..self.state.workspaces[ws_idx].tabs.len() {
                 for pane in self.tab_public_pane_ids(ws_idx, tab_idx) {
                     let session = self.pane_agent_session(&pane);
                     crate::workers::note_pane_session(&pane, session.as_deref());
+                    live.push(pane);
                 }
             }
         }
+        crate::workers::prune_pane_sessions(&live);
         crate::workers::owners_at_start(|pane| {
             let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
                 return Some(OwnerEvent::PaneClosed);

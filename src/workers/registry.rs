@@ -89,6 +89,10 @@ pub(super) struct Registry {
     /// The agent session each pane runs now, as the app last told
     /// ([`WorkerSupervisor::note_pane_session`]); not persisted.
     pub(super) pane_sessions: BTreeMap<String, String>,
+    /// The last failed write of the handoff state file per tenure id,
+    /// cleared by the next write that succeeds. Shown as
+    /// `handoff_persist_error` on the tenure.
+    pub(super) handoff_persist_errors: BTreeMap<String, String>,
 }
 
 /// What drains, and since when ([`WorkerSupervisor::drain`]).

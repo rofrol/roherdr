@@ -12825,6 +12825,13 @@
               ],
               "description": "The tenure's pending self-service handoff: while it is there the\ntenure is frozen."
             },
+            "handoff_persist_error": {
+              "description": "The last failure to write the handoff state to disk that the server\ncould not refuse (an event aborted or advanced the handoff): a\nrestart may restore an older state. Absent once a write succeeded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "headless": {
               "description": "A headless item coordinator's tenure (`todo.next`): no pane binds it,\nit runs as worker `worker_id`.",
               "type": "boolean"
