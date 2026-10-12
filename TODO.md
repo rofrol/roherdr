@@ -33,6 +33,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   4. A deployed fix replays every linked dispute and closes those it
      resolves, notifying each owner. No timers: visibility and delivery on
      events are the forcing function.
+  Also (the user, 2026-10-12: "why did the supervisor not contact the herdr
+  coordinator, or should the herdr coordinator file these itself? ask the
+  models"; round of 2026-10-12, MiMo and DeepSeek; sol preferred a
+  per-predicate summary only): f-114's digest to the herdr coordinator was
+  dropped because the owner's ack resolved it first. (5) Digests to the
+  herdr coordinator are delivered for every finding regardless of its
+  state (the owner's ack settles the instance, not the predicate), with a
+  per-predicate summary on top; (6) the herdr coordinator's handling of a
+  digest item is a disposition, never a bare ack: true, false or unclear,
+  plus whether the predicate is sound; false or unclear opens or joins a
+  dispute it files itself; "out of scope" is not a value. The todo skill
+  and the herdr AGENTS.md say so once this lands; until then the herdr
+  coordinator judges each digest item before acking.
 
 - [ ] A worker waiting on its own registered job is not stopped (follows from [t-b6t3flyq]
   the correction-loop item; f-114, round of 2026-10-12, sol, MiMo,
