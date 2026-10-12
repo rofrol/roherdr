@@ -11,6 +11,40 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A false finding starts a correction loop (the user, 2026-10-12: "the [t-w5scj5ka]
+  supervisor contacted the coordinator; and then what? why is this not in a
+  correction loop? ask the models"; f-114, a worker waiting on its own
+  herdr-job reported as stopped). Round 20261012-134259-648f (sol, MiMo,
+  DeepSeek agreeing):
+  1. `herdr supervise dispute <id> --reason <text> --evidence <handle>`,
+     separate from ack; the handle must be a record herdr holds (a job, a
+     run, a transcript slice, an event), never prose; herdr dereferences
+     it and replays the predicate over the finding's recorded facts plus
+     the evidence: reproduced -> the dispute is rejected at once (logged,
+     counted against the disputer); contradicted -> a verified dispute;
+     missing history -> "unverified", not false.
+  2. Disputes aggregate per predicate, version and fact class into one item
+     delivered to the herdr coordinator (counts, finding ids, owners,
+     evidence); the finding stays visible, never suppressed.
+  3. The herdr coordinator resolves each: a predicate fix with a regression
+     test from the disputed facts that still fires on a known-true case, or
+     a rejection with its reason sent back; a rejected rejection goes to
+     the owner.
+  4. A deployed fix replays every linked dispute and closes those it
+     resolves, notifying each owner. No timers: visibility and delivery on
+     events are the forcing function.
+
+- [ ] A worker waiting on its own registered job is not stopped (follows from [t-b6t3flyq]
+  the correction-loop item; f-114, round of 2026-10-12, sol, MiMo,
+  DeepSeek): `stopped_without_verdict` and `unaccounted_assignment` treat a
+  wait edge as "something resumes it" only while it is live, herdr itself
+  supervises it (a herdr-job job, a todo run, a worker wait; never an
+  agent's self-registration) and its completion is delivered to that
+  worker's pane, which is alive; when that job ends and no new turn of
+  the worker follows (ordering of events, no grace window), the finding
+  fires; a gone pane fires at once; the finding names the suppressing
+  edge. A regression test from f-114's facts and a known-true case.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
