@@ -240,6 +240,9 @@ pub(super) struct RunFinish {
     pub(super) anthropic_credits: bool,
     #[serde(default)]
     pub(super) credit_ledger: Option<PathBuf>,
+    /// Pin the configured tariff/model for all attempts of this run.
+    #[serde(default)]
+    pub(super) credit_model: Option<String>,
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -397,6 +400,20 @@ impl PathCheck {
 }
 
 impl RunFinish {
+    /// The same model drives dispatch and the journal. Older credit runs keep
+    /// their original model, not the new installation's default.
+    fn worker_model(&self) -> Option<&str> {
+        if self.anthropic_credits {
+            Some(
+                self.credit_model
+                    .as_deref()
+                    .unwrap_or("herdr-anthropic/claude-sonnet-4-5-20250929"),
+            )
+        } else {
+            (self.agent.unwrap_or_default() == WorkerAgent::Pi).then_some(super::pi::DEFAULT_MODEL)
+        }
+    }
+
     /// The grants the run runs with, as clients see them.
     pub(super) fn run_grants(&self) -> Vec<crate::api::schema::TodoRunGrant> {
         self.prepare
@@ -1800,6 +1817,18 @@ impl WorkerSupervisor {
         };
         #[cfg(not(unix))]
         let credit_ledger = None;
+        let credit_model = if anthropic_credits {
+            let config = crate::config::load_live_config()
+                .map_err(|_| WorkerError::Preflight("cannot load credit configuration".into()))?
+                .config
+                .workers;
+            config
+                .validate_anthropic_model()
+                .map_err(|e| WorkerError::Preflight(e.into()))?;
+            Some(super::pi::anthropic_model(&config))
+        } else {
+            None
+        };
         let mut run = Run {
             info: TodoRunInfo {
                 run_id: run_id.clone(),
@@ -1867,6 +1896,7 @@ impl WorkerSupervisor {
                 prepare: preflighted.prepare.clone(),
                 agent: params.agent,
                 anthropic_credits,
+                credit_model: credit_model.clone(),
                 credit_ledger,
                 pending_usage: pending_reason.is_some(),
                 usage_dispatch: wait_usage,
@@ -1897,7 +1927,7 @@ impl WorkerSupervisor {
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
             "agent": agent.as_str(),
-            "model": (agent == WorkerAgent::Pi).then_some(if anthropic_credits { super::pi::ANTHROPIC_MODEL } else { super::pi::DEFAULT_MODEL }),
+            "model": run.finish.worker_model(),
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
             "draft": draft,
@@ -3296,10 +3326,11 @@ impl WorkerSupervisor {
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
             prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
-            model: run
-                .finish
-                .anthropic_credits
-                .then(|| super::pi::ANTHROPIC_MODEL.to_owned()),
+            model: if run.finish.anthropic_credits {
+                run.finish.worker_model().map(str::to_owned)
+            } else {
+                None
+            },
             agent: run.finish.agent,
             name: None,
             workspace_id: run.workspace.clone(),
@@ -4390,6 +4421,35 @@ mod tests {
         // An unregistered path check is not added.
         let bare: ChecksFile = toml::from_str("[checks]\nok = [\"true\"]\n").unwrap();
         assert!(path_checks_of(&bare, &named(&["ok"])).is_empty());
+    }
+
+    #[test]
+    fn credit_run_model_survives_storage_and_configuration_changes() {
+        let config = crate::config::WorkersConfig {
+            anthropic_api_model: "claude-sonnet-4-6".into(),
+            ..Default::default()
+        };
+        let finish = RunFinish {
+            anthropic_credits: true,
+            credit_model: Some(super::super::pi::anthropic_model(&config)),
+            ..Default::default()
+        };
+        let stored = serde_json::to_value(&finish).unwrap();
+        assert_eq!(stored["credit_model"], "herdr-anthropic/claude-sonnet-4-6");
+        let restored: RunFinish = serde_json::from_value(stored).unwrap();
+        assert_eq!(restored.credit_model, finish.credit_model);
+        let created_event = json!({"type":"run_created", "model":restored.worker_model()});
+        assert_eq!(created_event["model"], "herdr-anthropic/claude-sonnet-4-6");
+        assert_ne!(
+            restored.credit_model.unwrap(),
+            super::super::pi::anthropic_model(&crate::config::WorkersConfig::default())
+        );
+        let old: RunFinish = serde_json::from_value(json!({"anthropic_credits":true})).unwrap();
+        assert!(old.credit_model.is_none());
+        assert_eq!(
+            old.worker_model(),
+            Some("herdr-anthropic/claude-sonnet-4-5-20250929")
+        );
     }
 
     #[test]

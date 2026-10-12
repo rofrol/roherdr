@@ -213,7 +213,10 @@ impl WorkerSupervisor {
         let enabled = |name: &str| {
             std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
         };
-        let paid_pi = agent == WorkerAgent::Pi && model.as_deref() == Some(pi::ANTHROPIC_MODEL);
+        let paid_pi = agent == WorkerAgent::Pi
+            && model
+                .as_deref()
+                .is_some_and(|model| model.starts_with(pi::ANTHROPIC_PREFIX));
         let bedrock = !paid_pi && enabled("CLAUDE_CODE_USE_BEDROCK");
         let vertex = !paid_pi && enabled("CLAUDE_CODE_USE_VERTEX");
         let mut removed_env = Vec::new();
@@ -251,6 +254,12 @@ impl WorkerSupervisor {
                 .map_err(|_| std::io::Error::other("cannot load credit configuration"))?
                 .config
                 .workers;
+            let mut config = config;
+            config.anthropic_api_model = model
+                .as_deref()
+                .and_then(|model| model.strip_prefix(pi::ANTHROPIC_PREFIX))
+                .ok_or_else(|| std::io::Error::other("missing credit model"))?
+                .to_owned();
             let ledger = ledger_path(&config)?;
             std::fs::create_dir_all(crate::config::state_dir())?;
             let proxy = AnthropicProxy::open(&config, &ledger)?;
@@ -270,7 +279,7 @@ impl WorkerSupervisor {
             std::fs::create_dir(&agent_dir)?;
             std::fs::write(
                 agent_dir.join("models.json"),
-                pi::anthropic_models(&proxy.address).to_string(),
+                pi::anthropic_models(&proxy.address, &config.anthropic_api_model).to_string(),
             )?;
             env_set.push(("PI_CODING_AGENT_DIR", agent_dir));
             env_set.push(("HERDR_ANTHROPIC_PROXY_TOKEN", PathBuf::from(&proxy.token)));

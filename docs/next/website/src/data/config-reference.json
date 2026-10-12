@@ -1696,6 +1696,12 @@
           "description": "Persistent local Anthropic API spend ceiling in USD per confirmed credit cycle. Zero disables spending. Admission reserves a conservative request upper bound; unavailable or incomplete accounting refuses more spend across restarts. No automatic billing-cycle reset. Keep an independent Console workspace spend limit."
         },
         {
+          "key": "workers.anthropic_api_model",
+          "type": "string",
+          "default": "\"claude-sonnet-5-5\"",
+          "description": "The sole model admitted by each credit worker's proxy, pinned in the run journal across retries. Supported standard Sonnet tariffs: claude-sonnet-5-5, claude-sonnet-4-6, claude-sonnet-4-5-20250929. Unknown models refuse starts rather than applying an incorrect cap tariff. Does not change subscription workers."
+        },
+        {
           "key": "workers.anthropic_api_cycle",
           "type": "string",
           "default": "\"\"",

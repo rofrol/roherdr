@@ -5,7 +5,7 @@ description: Run headless pi workers against capped Anthropic API credits.
 
 Use `herdr todo run <item> --agent pi-anthropic --task <file> --message <subject> --paths <paths> --check <checks>` to spend API credits rather than Claude Code or ChatGPT subscription allowance. This uses the new advertised `todo.run_anthropic` method; existing run methods and agent enum values are unchanged.
 
-The worker runs pi in RPC mode on `claude-sonnet-4-5-20250929`. It requires pi 1.1's custom `models.json` providers and `PI_CODING_AGENT_DIR`, and Herdr's existing pi shell sandbox (currently macOS). Windows refuses this transport. No real API request is made by the offline tests.
+The worker runs pi in RPC mode on `[workers] anthropic_api_model`, defaulting to `claude-sonnet-5-5`. The setting is pinned for the run and its retries; the proxy admits only that model. Supported models are `claude-sonnet-5-5`, `claude-sonnet-4-6` and `claude-sonnet-4-5-20250929`, which share the ledger's standard Sonnet tariff. Unknown models refuse starts rather than silently applying incorrect prices. It requires pi 1.1's custom `models.json` providers and `PI_CODING_AGENT_DIR`, and Herdr's existing pi shell sandbox (currently macOS). Windows refuses this transport. No real API request is made by the offline tests.
 
 Configure the existing worker key file and cap, plus an explicit cycle identifier:
 
@@ -13,16 +13,19 @@ Configure the existing worker key file and cap, plus an explicit cycle identifie
 [workers]
 anthropic_api_key_file = "~/.config/herdr/worker-api-key"
 anthropic_api_cap_usd = 200.0
+anthropic_api_model = "claude-sonnet-5-5"
 anthropic_api_cycle = "cycle-2026-11"
 ```
 
 The upstream key file must be owned by the user and mode 0600. Keep the Console workspace's own spending limit enabled: the Console is the billing authority. Herdr's local counter covers only requests through its proxy, not other applications or previous Console spend. Set the local cap to the amount actually available for these workers.
 
-Herdr creates a private pi agent directory with a custom `herdr-anthropic` provider. Its `baseUrl` points to a per-worker `127.0.0.1` ephemeral listener. Its `apiKey` is `${HERDR_ANTHROPIC_PROXY_TOKEN}`: the file contains only the environment reference. The worker receives an opaque per-run grant, never the upstream key. Inherited Anthropic and Claude Code credentials are removed. The proxy authenticates the grant (Anthropic's `x-api-key` or a bearer header), strips all client headers, and forwards only allowlisted requests to the fixed Anthropic destination. Shell commands remain confined and cannot access the key or contact Anthropic directly.
+Herdr creates a private pi agent directory with a custom `herdr-anthropic` provider. Its `baseUrl` points to a per-worker `127.0.0.1` ephemeral listener. Its `apiKey` is `${HERDR_ANTHROPIC_PROXY_TOKEN}`: the file contains only the environment reference. The worker receives an opaque per-run grant, never the upstream key. Inherited Anthropic and Claude Code credentials are removed. The proxy authenticates the grant (Anthropic's `x-api-key` or a bearer header), strips client authentication and destination headers (allowlisted `anthropic-beta` features are preserved), and forwards only allowlisted requests to the fixed Anthropic destination. Shell commands remain confined and cannot access the key or contact Anthropic directly.
 
 The usage gate reads the durable proxy accounting before creating a run, before dispatch and on retries. Reaching the cap, a pending/unaccountable request, a kill switch or unreadable accounting closes spending. Each request reserves its worst-case cost before sending upstream bytes. `--ignore-usage` cannot override the credit cap. Subscription auto-review and auto-answer are not supported for this worker kind; the coordinator still reviews and approves results.
 
-The run journal records `run_credit_accounting` with cumulative `run_spent_usd`, attempt and worker identity. Worker results also record accounting-derived cost, not pi's estimate. The usage widget adds **Anthropic · API credits**, showing cycle spend against the local cap. An incomplete or unavailable ledger is shown as an error, never as available credit.
+The run journal names the selected provider/model in `run_created` and `run_started`, and records `run_credit_accounting` with cumulative `run_spent_usd`, attempt and worker identity. Worker results also record accounting-derived cost, not pi's estimate. The usage widget adds **Anthropic · API credits**, showing cycle spend against the local cap. An incomplete or unavailable ledger is shown as an error, never as available credit.
+
+Proxy refusals return a JSON reason and log only normalized method, path, model, the failed check and upstream status when available—never keys, grant tokens or request bodies. Statuses distinguish invalid grants (401), non-allowlisted requests (403), local credit caps (402), upstream credit/rate limits (402/429), and upstream or accounting failures (502). A failed stream ends by EOF, with its reason in the server log, rather than appending an HTTP error to SSE. Only POST `/v1/messages` and `/v1/messages/count_tokens`, optionally with exactly `?beta=true`, are routed to the fixed Anthropic destination. Token counting is authenticated but incurs no message charge.
 
 Cycle rollover is deliberately manual, not clock-driven. Keep the same `anthropic_api_cycle` throughout a credit cycle; only change it after confirming the new credit allocation in the Console, with no active credit worker. Each identifier selects a separate durable ledger in Herdr's state directory. Reusing an identifier retains its spend. Do not delete ledgers to reopen spending. Expiry and automatic subscription fallback are not implemented in this slice.
 

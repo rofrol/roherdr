@@ -7,12 +7,14 @@ The first API-worker slice supplies an internal Unix transport and accounting
 service. It does **not** switch subscription workers to the API, add a new worker
 kind, or start spending automatically. Worker lifecycle integration, fallback,
 and the usage widget are separate work. No advertised client method or frozen
-client codec changes in this slice.
+client codec changes in this slice. For the integrated worker lifecycle and
+current configuration, see [Anthropic API credit workers](/docs/anthropic-api-workers/).
 
 ```toml
 [workers]
 anthropic_api_key_file = "~/.config/herdr/worker-api-key"
 anthropic_api_cap_usd = 200.0
+anthropic_api_model = "claude-sonnet-5-5"
 ```
 
 The key file must be owned by the server's user and have mode `0600`.
@@ -34,10 +36,13 @@ The next worker slice must give the API client only its run token and transport
 address, never the real API key. This infrastructure does not yet distribute
 tokens to workers or publish control methods.
 
-Only `POST /v1/messages` with `claude-sonnet-4-5-20250929` is accepted. Absolute
-URLs, query strings, CONNECT, chunked request bodies, duplicate authentication
-or length headers, unknown models, premium service tiers, and server-side tools
-are refused. Bodies are limited to 150,000 bytes and output to 64,000 tokens.
+Only `POST /v1/messages` and `POST /v1/messages/count_tokens`, optionally with
+exactly `?beta=true`, are accepted. Each proxy admits only its configured
+`anthropic_api_model` (default `claude-sonnet-5-5`), validated against the
+supported standard Sonnet tariffs. Token counting is authenticated but does not
+create billed message rows. Absolute URLs, other query strings, CONNECT,
+chunked request bodies, duplicate authentication or length headers, unknown
+models, premium service tiers, and server-side tools are refused. Bodies are limited to 150,000 bytes and output to 64,000 tokens.
 Only text and ordinary client-tool content are supported. Images, documents,
 remote/file sources and thinking replay are refused: their expanded
 input cannot safely be reserved from the submitted byte count. Tool schemas
@@ -49,11 +54,18 @@ or token-limit interpretation. The server forces `service_tier = "standard_only"
 rather than allowing the API's default automatic priority-tier selection.
 Extended thinking is disabled; opaque/summarized thinking replay cannot be
 safely bounded from submitted bytes in this slice.
-All client headers are discarded. The server supplies API version, content type
+Client authentication and destination headers are discarded; only allowlisted
+`anthropic-beta` features are preserved. The server supplies API version, content type
 and `x-api-key` to the fixed HTTPS destination `api.anthropic.com`. Curl receives
 its configuration through an anonymous pipe, with curlrc, HTTP proxy routing,
 redirects, stderr, and core dumps disabled. The server also disables its own core
 dumps before reading the credential. Neither credential nor headers are logged.
+Refusals name a safe check in the JSON response and server log, along with
+normalized method, path, model and upstream status when known. Statuses are 401
+for invalid run tokens, 403 for non-allowlisted requests, 402 for credit caps,
+402/429 for upstream limits and 502 for upstream or accounting failure. Once SSE
+has started, a failure is logged and the stream ends instead of appending an
+HTTP response.
 
 Responses stream through without buffering the entire SSE response. Usage is
 parsed incrementally; JSON responses are bounded. The ledger records run, item,

@@ -45,16 +45,20 @@ use serde_json::{json, Value};
 /// The program a pi worker runs.
 pub(super) const PROGRAM: &str = "pi";
 
-pub(super) const ANTHROPIC_MODEL: &str = "herdr-anthropic/claude-sonnet-4-5-20250929";
+pub(super) const ANTHROPIC_PREFIX: &str = "herdr-anthropic/";
+
+pub(super) fn anthropic_model(config: &crate::config::WorkersConfig) -> String {
+    format!("{ANTHROPIC_PREFIX}{}", config.anthropic_api_model)
+}
 
 /// pi 1.1's custom provider, isolated from the user's auth.json. Only the
 /// opaque grant is interpolated; neither credential is written to this file.
 #[cfg(unix)]
-pub(super) fn anthropic_models(address: &str) -> Value {
+pub(super) fn anthropic_models(address: &str, model: &str) -> Value {
     json!({"providers": {"herdr-anthropic": {
         "baseUrl": address, "api": "anthropic-messages",
         "apiKey": "${HERDR_ANTHROPIC_PROXY_TOKEN}",
-        "models": [{"id": "claude-sonnet-4-5-20250929", "contextWindow": 200000, "maxTokens": 8192}]
+        "models": [{"id": model, "contextWindow": 200000, "maxTokens": 8192}]
     }}})
 }
 
@@ -593,16 +597,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn anthropic_provider_file_contains_only_proxy_address_and_environment_reference() {
-        let config = anthropic_models("http://127.0.0.1:12345");
+        let config = anthropic_models(
+            "http://127.0.0.1:12345",
+            &crate::config::WorkersConfig::default().anthropic_api_model,
+        );
         let provider = &config["providers"]["herdr-anthropic"];
         assert_eq!(provider["api"], "anthropic-messages");
         assert_eq!(provider["baseUrl"], "http://127.0.0.1:12345");
         assert_eq!(provider["apiKey"], "${HERDR_ANTHROPIC_PROXY_TOKEN}");
-        assert_eq!(provider["models"][0]["id"], "claude-sonnet-4-5-20250929");
+        assert_eq!(provider["models"][0]["id"], "claude-sonnet-5-5");
         assert!(!config.to_string().contains("sk-ant-"));
-        assert!(
-            args(ANTHROPIC_MODEL, "extension", "contract").contains(&ANTHROPIC_MODEL.to_owned())
-        );
+        let model = anthropic_model(&crate::config::WorkersConfig::default());
+        assert_eq!(model, "herdr-anthropic/claude-sonnet-5-5");
+        assert!(args(&model, "extension", "contract").contains(&model));
     }
 
     #[test]

@@ -11,19 +11,92 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
-const MODEL: &str = "claude-sonnet-4-5-20250929";
+#[cfg(test)]
+const MODEL: &str = "claude-sonnet-5-5";
 const BODY_MAX: usize = 150_000;
 const LINE_MAX: usize = 1_000_000;
 
+#[derive(Debug)]
+struct Refusal {
+    status: u16,
+    check: &'static str,
+    upstream: Option<u16>,
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Anthropic proxy refusal: {}", self.check)
+    }
+}
+impl std::error::Error for Refusal {}
+fn deny(status: u16, check: &'static str) -> io::Error {
+    io::Error::other(Refusal {
+        status,
+        check,
+        upstream: None,
+    })
+}
 fn refused() -> io::Error {
-    // Never include credentials, upstream diagnostics, or request text.
-    io::Error::other("Anthropic proxy refused the request or accounting is unavailable")
+    deny(502, "accounting unavailable")
+}
+fn with_upstream(error: io::Error, status: u16) -> io::Error {
+    let refusal = error.get_ref().and_then(|e| e.downcast_ref::<Refusal>());
+    io::Error::other(Refusal {
+        status: refusal.map_or(502, |r| r.status),
+        check: refusal.map_or("upstream transport failure", |r| r.check),
+        upstream: Some(status),
+    })
+}
+
+#[derive(Default)]
+struct RequestContext {
+    method: &'static str,
+    path: &'static str,
+    model: String,
+}
+struct Request {
+    token: String,
+    body: Vec<u8>,
+    streaming: bool,
+    reserve: f64,
+    path: &'static str,
+    beta: Option<String>,
+    count: bool,
+}
+impl std::ops::Deref for Request {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+fn report_refusal(
+    error: &io::Error,
+    context: &RequestContext,
+    output: &mut impl Write,
+    wrote: bool,
+) {
+    let refusal = error.get_ref().and_then(|e| e.downcast_ref::<Refusal>());
+    let status = refusal.map_or(502, |r| r.status);
+    let check = refusal.map_or("transport failure", |r| r.check);
+    let upstream = refusal.and_then(|r| r.upstream);
+    // Only normalized allowlisted metadata; never arbitrary URLs, headers or bodies.
+    tracing::warn!(method = context.method, path = context.path, model = %context.model,
+        check, status, upstream_status = ?upstream, "Anthropic proxy refused request");
+    if !wrote {
+        let body =
+            serde_json::json!({"type":"error", "error": {"type":"proxy_refusal", "message":check},
+            "method":context.method, "path":context.path, "model":context.model,
+            "upstream_status":upstream})
+            .to_string();
+        let _ = write!(output, "HTTP/1.1 {status} Refused\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    }
 }
 
 /// No Debug implementation: neither the key nor run tokens are printable.
 pub(crate) struct AnthropicProxy {
     key: String,
     cap: f64,
+    model: String,
     ledger: Connection,
     grants: HashMap<String, (String, String)>,
     killed: bool,
@@ -31,6 +104,9 @@ pub(crate) struct AnthropicProxy {
 
 impl AnthropicProxy {
     pub(crate) fn open(config: &crate::config::WorkersConfig, ledger: &Path) -> io::Result<Self> {
+        config
+            .validate_anthropic_model()
+            .map_err(|_| deny(403, "configured model tariff not allowlisted"))?;
         if !config.anthropic_api_cap_usd.is_finite() || config.anthropic_api_cap_usd < 0.0 {
             return Err(refused());
         }
@@ -67,6 +143,7 @@ impl AnthropicProxy {
         Ok(Self {
             key,
             cap: config.anthropic_api_cap_usd,
+            model: config.anthropic_api_model.clone(),
             ledger: db,
             grants: HashMap::new(),
             killed: false,
@@ -104,8 +181,14 @@ impl AnthropicProxy {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|_| refused())?;
-        if self.killed || pending != 0 || cost >= self.cap || cost + reserve > self.cap {
-            return Err(refused());
+        if self.killed {
+            return Err(deny(403, "kill switch"));
+        }
+        if pending != 0 {
+            return Err(deny(402, "pending unaccounted request"));
+        }
+        if cost >= self.cap || cost + reserve > self.cap {
+            return Err(deny(402, "credit cap or reservation limit"));
         }
         Ok(())
     }
@@ -117,29 +200,84 @@ impl AnthropicProxy {
         &mut self,
         client: R,
         output: &mut W,
-        upstream: impl FnOnce(&str, &[u8], &mut dyn Write) -> io::Result<()>,
+        upstream: impl FnOnce(&str, &Request, &mut dyn Write) -> io::Result<()>,
     ) -> io::Result<()> {
-        let (token, body, streaming, reserve) = request(client)?;
-        let (run, item) = self.grants.get(&token).cloned().ok_or_else(refused)?;
+        let mut context = RequestContext {
+            model: self.model.clone(),
+            ..Default::default()
+        };
+        let mut output = TrackedWriter {
+            inner: output,
+            wrote: false,
+        };
+        let result = self.serve_inner(client, &mut output, upstream, &mut context);
+        if let Err(error) = &result {
+            let wrote = output.wrote;
+            report_refusal(error, &context, &mut output, wrote);
+        }
+        result
+    }
+
+    fn serve_inner<R: Read, W: Write>(
+        &mut self,
+        client: R,
+        output: &mut W,
+        upstream: impl FnOnce(&str, &Request, &mut dyn Write) -> io::Result<()>,
+        context: &mut RequestContext,
+    ) -> io::Result<()> {
+        let request = request(client, &self.model, context).map_err(|error| {
+            if error
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<Refusal>())
+                .is_some_and(|r| r.status != 502)
+            {
+                error
+            } else {
+                deny(403, "request shape or content not allowlisted")
+            }
+        })?;
+        let (run, item) = self
+            .grants
+            .get(&request.token)
+            .cloned()
+            .ok_or_else(|| deny(401, "invalid or revoked run token"))?;
+        if request.count {
+            // count_tokens does not generate tokens or incur a message charge.
+            // It still requires an active grant and an open spending gate.
+            self.available(0.0)?;
+            let mut bytes = Vec::new();
+            upstream(&self.key, &request, &mut bytes)?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| with_upstream(deny(502, "invalid count_tokens response"), 200))?;
+            if value["input_tokens"].as_u64().is_none() {
+                return Err(with_upstream(
+                    deny(502, "invalid count_tokens response"),
+                    200,
+                ));
+            }
+            write!(output, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len())?;
+            return output.write_all(&bytes);
+        }
         self.ledger
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| refused())?;
         let admission =
             (|| {
-                self.available(reserve)?;
+                self.available(request.reserve)?;
                 self.ledger.execute(
                 "INSERT INTO anthropic_requests(run,item,model,pending) VALUES (?1,?2,?3,1)",
-                params![run, item, MODEL]).map_err(|_| refused())?;
+                params![run, item, self.model]).map_err(|_| refused())?;
                 self.ledger.execute_batch("COMMIT").map_err(|_| refused())
             })();
-        if admission.is_err() {
+        if let Err(error) = admission {
             let _ = self.ledger.execute_batch("ROLLBACK");
-            return Err(refused());
+            return Err(error);
         }
         let id = self.ledger.last_insert_rowid();
         let mut response = Response {
             output,
-            streaming,
+            streaming: request.streaming,
+            model: &self.model,
             line: Vec::new(),
             json: Vec::new(),
             usage: Usage::default(),
@@ -148,8 +286,8 @@ impl AnthropicProxy {
             delta: false,
             header: false,
         };
-        upstream(&self.key, &body, &mut response)?;
-        let usage = response.finish()?;
+        upstream(&self.key, &request, &mut response)?;
+        let usage = response.finish().map_err(|e| with_upstream(e, 200))?;
         self.ledger.execute(
             "UPDATE anthropic_requests SET input=?1,output=?2,cache_read=?3,cache_write=?4,cost=?5,pending=0 WHERE id=?6",
             params![usage.input as i64, usage.output as i64, usage.read as i64, usage.write as i64, usage.cost(), id])
@@ -183,11 +321,7 @@ impl AnthropicProxy {
                     .lock()
                     .map_err(|_| refused())?
                     .serve(input, &mut output, curl);
-                if result.is_err() && !output.wrote {
-                    let _ = output.write_all(
-                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                }
+                let _ = result;
                 // A failed stream ends by EOF, not an HTTP status appended to
                 // its body. Its pending ledger entry keeps admission closed.
             }
@@ -224,7 +358,7 @@ impl LoopbackProxy {
         ledger: std::path::PathBuf,
         run: &str,
         item: &str,
-        upstream: fn(&str, &[u8], &mut dyn Write) -> io::Result<()>,
+        upstream: fn(&str, &Request, &mut dyn Write) -> io::Result<()>,
     ) -> io::Result<Self> {
         let token = proxy.register(run, item)?;
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -246,11 +380,7 @@ impl LoopbackProxy {
                     inner: &mut client,
                     wrote: false,
                 };
-                if proxy.serve(input, &mut output, upstream).is_err() && !output.wrote {
-                    let _ = output.write_all(
-                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                }
+                let _ = proxy.serve(input, &mut output, upstream);
                 let _ = client.shutdown(std::net::Shutdown::Both);
             }
             proxy.kill();
@@ -320,32 +450,61 @@ fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
-fn request(input: impl Read) -> io::Result<(String, Vec<u8>, bool, f64)> {
+fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::Result<Request> {
     let mut input = BufReader::new(input);
     let mut head = Vec::new();
     loop {
-        let line = bounded_line(&mut input, 8192)?;
+        let line = bounded_line(&mut input, 8192)
+            .map_err(|_| deny(403, "invalid request header framing"))?;
         head.extend_from_slice(&line);
         if head.len() > 8192 {
-            return Err(refused());
+            return Err(deny(403, "request headers too large"));
         }
         if line == b"\r\n" {
             break;
         }
     }
-    let head = std::str::from_utf8(&head).map_err(|_| refused())?;
+    let head =
+        std::str::from_utf8(&head).map_err(|_| deny(403, "invalid request header encoding"))?;
     let mut lines = head.split("\r\n");
-    if lines.next() != Some("POST /v1/messages HTTP/1.1") {
-        return Err(refused());
+    let first = lines.next().unwrap_or_default();
+    let mut parts = first.split(' ');
+    let method = parts.next().unwrap_or_default();
+    context.method = match method {
+        "POST" => "POST",
+        "GET" => "GET",
+        "CONNECT" => "CONNECT",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "OPTIONS" => "OPTIONS",
+        _ => "not allowlisted",
+    };
+    let path = match parts.next() {
+        Some("/v1/messages") => "/v1/messages",
+        Some("/v1/messages?beta=true") => "/v1/messages?beta=true",
+        Some("/v1/messages/count_tokens") => "/v1/messages/count_tokens",
+        Some("/v1/messages/count_tokens?beta=true") => "/v1/messages/count_tokens?beta=true",
+        _ => {
+            context.path = "not allowlisted";
+            return Err(deny(403, "path not allowlisted"));
+        }
+    };
+    context.path = path;
+    if method != "POST" || parts.next() != Some("HTTP/1.1") || parts.next().is_some() {
+        return Err(deny(403, "method or HTTP version not allowlisted"));
     }
+    let count_request = path.starts_with("/v1/messages/count_tokens");
+    let mut beta = None;
     let mut token = None;
     let mut length = None;
     for line in lines.filter(|line| !line.is_empty()) {
-        let (name, value) = line.split_once(':').ok_or_else(refused)?;
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| deny(403, "malformed request header"))?;
         match name.to_ascii_lowercase().as_str() {
             "x-api-key" | "authorization" => {
                 if token.is_some() {
-                    return Err(refused());
+                    return Err(deny(401, "duplicate authentication headers"));
                 }
                 token = Some(if name.eq_ignore_ascii_case("x-api-key") {
                     value.trim().to_owned()
@@ -353,28 +512,70 @@ fn request(input: impl Read) -> io::Result<(String, Vec<u8>, bool, f64)> {
                     value
                         .trim()
                         .strip_prefix("Bearer ")
-                        .ok_or_else(refused)?
+                        .ok_or_else(|| deny(401, "invalid bearer authentication"))?
                         .to_owned()
                 });
             }
             "content-length" => {
                 if length.is_some() {
-                    return Err(refused());
+                    return Err(deny(403, "duplicate content-length"));
                 }
-                length = Some(value.trim().parse::<usize>().map_err(|_| refused())?);
+                length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| deny(403, "invalid content-length"))?,
+                );
             }
-            "transfer-encoding" | "expect" => return Err(refused()),
+            "anthropic-beta" => {
+                let value = value.trim();
+                if beta.is_some()
+                    || value.len() > 1024
+                    || !value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b',' || b == b' ')
+                {
+                    return Err(deny(403, "invalid anthropic-beta header"));
+                }
+                // pi's tools/cache beta headers, never server-side paid features.
+                if !value.split(',').all(|v| {
+                    matches!(
+                        v.trim(),
+                        "interleaved-thinking-2025-05-14"
+                            | "fine-grained-tool-streaming-2025-05-14"
+                            | "prompt-caching-2024-07-31"
+                            | "token-counting-2024-11-01"
+                    )
+                }) {
+                    return Err(deny(403, "anthropic-beta feature not allowlisted"));
+                }
+                beta = Some(value.to_owned());
+            }
+            "transfer-encoding" | "expect" => return Err(deny(403, "unsupported HTTP framing")),
             _ => {} // No client headers are forwarded, including x-api-key and Host.
         }
     }
-    let length = length.filter(|n| *n <= BODY_MAX).ok_or_else(refused)?;
+    let token = token.ok_or_else(|| deny(401, "missing run token"))?;
+    let length = length
+        .filter(|n| *n <= BODY_MAX)
+        .ok_or_else(|| deny(403, "content-length missing or too large"))?;
     let mut body = vec![0; length];
-    input.read_exact(&mut body)?;
-    let mut data: Value = serde_json::from_slice(&body).map_err(|_| refused())?;
-    if data["model"].as_str() != Some(MODEL) {
-        return Err(refused());
+    input
+        .read_exact(&mut body)
+        .map_err(|_| deny(403, "incomplete request body"))?;
+    let mut data: Value =
+        serde_json::from_slice(&body).map_err(|_| deny(403, "invalid request JSON"))?;
+    context.model = if data["model"].as_str() == Some(model) {
+        model.to_owned()
+    } else {
+        "not allowlisted".into()
+    };
+    if data["model"].as_str() != Some(model) {
+        return Err(deny(403, "model not allowlisted"));
     }
-    let object = data.as_object().ok_or_else(refused)?;
+    let object = data
+        .as_object()
+        .ok_or_else(|| deny(403, "request must be an object"))?;
     for field in object.keys() {
         if ![
             "model",
@@ -393,55 +594,76 @@ fn request(input: impl Read) -> io::Result<(String, Vec<u8>, bool, f64)> {
         ]
         .contains(&field.as_str())
         {
-            return Err(refused());
+            return Err(deny(403, "request field not allowlisted"));
         }
     }
     if let Some(thinking) = data.get("thinking") {
         if thinking["type"].as_str() != Some("disabled") {
-            return Err(refused());
+            return Err(deny(403, "thinking must be disabled"));
         }
     }
     if let Some(system) = data.get("system") {
-        text_content(system, false)?;
+        text_content(system, false).map_err(|_| deny(403, "system content not allowlisted"))?;
     }
-    for message in data["messages"].as_array().ok_or_else(refused)? {
-        let message = message.as_object().ok_or_else(refused)?;
+    for message in data["messages"]
+        .as_array()
+        .ok_or_else(|| deny(403, "messages must be an array"))?
+    {
+        let message = message
+            .as_object()
+            .ok_or_else(|| deny(403, "message must be an object"))?;
         if message
             .keys()
             .any(|key| !["role", "content"].contains(&key.as_str()))
         {
-            return Err(refused());
+            return Err(deny(403, "message field not allowlisted"));
         }
-        text_content(message.get("content").ok_or_else(refused)?, true)?;
+        text_content(
+            message
+                .get("content")
+                .ok_or_else(|| deny(403, "missing message content"))?,
+            true,
+        )
+        .map_err(|_| deny(403, "message content not allowlisted"))?;
     }
     // Server-side tools and premium service tiers carry non-token charges.
     // Only ordinary client-defined tools are accepted in this first slice.
     if let Some(tools) = data.get("tools") {
-        for tool in tools.as_array().ok_or_else(refused)? {
+        for tool in tools
+            .as_array()
+            .ok_or_else(|| deny(403, "tools must be an array"))?
+        {
             if tool.get("type").is_some() || !tool["input_schema"].is_object() {
-                return Err(refused());
+                return Err(deny(403, "server tool or schema not allowlisted"));
             }
-            inline_schema(&tool["input_schema"])?;
+            inline_schema(&tool["input_schema"])
+                .map_err(|_| deny(403, "schema references not allowlisted"))?;
         }
     }
-    let max = data["max_tokens"]
-        .as_u64()
-        .filter(|n| *n > 0 && *n <= 64_000)
-        .ok_or_else(refused)?;
+    let max = if count_request {
+        0
+    } else {
+        data["max_tokens"]
+            .as_u64()
+            .filter(|n| *n > 0 && *n <= 64_000)
+            .ok_or_else(|| deny(403, "max_tokens not allowlisted"))?
+    };
     let streaming = match data.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        _ => return Err(refused()),
+        _ => return Err(deny(403, "stream must be boolean")),
     };
     // The API's default `auto` tier may consume priority capacity. Force the
     // standard tier whose prices the ledger and reservation actually know.
-    data["service_tier"] = Value::String("standard_only".into());
-    data["thinking"] = serde_json::json!({"type": "disabled"});
+    if !count_request {
+        data["service_tier"] = Value::String("standard_only".into());
+        data["thinking"] = serde_json::json!({"type": "disabled"});
+    }
     // Re-encode the validated value: duplicate JSON keys cannot cause the
     // upstream to interpret a different model or token ceiling than we did.
     let body = serde_json::to_vec(&data).map_err(|_| refused())?;
     if body.len() > BODY_MAX {
-        return Err(refused());
+        return Err(deny(403, "normalized body too large"));
     }
     // Plaintext tokens cannot exceed bytes plus protocol framing. Reserve a
     // deliberately generous 1024 tokens per message/tool/system block, not
@@ -450,11 +672,19 @@ fn request(input: impl Read) -> io::Result<(String, Vec<u8>, bool, f64)> {
     let input_bound =
         body.len() + 1024 * (1 + count("messages") + count("tools") + count("system"));
     if input_bound >= 200_000 {
-        return Err(refused());
+        return Err(deny(403, "long-context pricing not allowlisted"));
     } // Exclude long-context premium pricing.
       // 6 USD/M covers even one-hour cache writes; output is standard tier.
     let reserve = input_bound as f64 * 6.0 / 1_000_000.0 + max as f64 * 15.0 / 1_000_000.0;
-    Ok((token.ok_or_else(refused)?, body, streaming, reserve))
+    Ok(Request {
+        token,
+        body,
+        streaming,
+        reserve,
+        path,
+        beta,
+        count: count_request,
+    })
 }
 
 fn inline_schema(value: &Value) -> io::Result<()> {
@@ -539,13 +769,13 @@ impl Usage {
             .get("service_tier")
             .is_some_and(|tier| tier.as_str() != Some("standard"))
         {
-            return Err(refused());
+            return Err(deny(502, "upstream service tier not standard"));
         }
         let count = |name: &str| {
             value[name]
                 .as_u64()
                 .filter(|n| *n <= 1_000_000)
-                .ok_or_else(refused)
+                .ok_or_else(|| deny(502, "upstream billed token counts missing or invalid"))
         };
         if initial {
             self.input = count("input_tokens")?;
@@ -553,12 +783,14 @@ impl Usage {
             self.read = count("cache_read_input_tokens")?;
             self.write = count("cache_creation_input_tokens")?;
             self.hour = match value.pointer("/cache_creation/ephemeral_1h_input_tokens") {
-                Some(hour) => hour.as_u64().ok_or_else(refused)?,
+                Some(hour) => hour
+                    .as_u64()
+                    .ok_or_else(|| deny(502, "invalid upstream cache usage"))?,
                 None if self.write == 0 => 0,
-                None => return Err(refused()), // Unknown cache pricing must not undercount.
+                None => return Err(deny(502, "upstream cache tariff unavailable")),
             };
             if self.hour > self.write {
-                return Err(refused());
+                return Err(deny(502, "upstream cache counts inconsistent"));
             }
         }
         self.output = count("output_tokens")?;
@@ -577,6 +809,7 @@ impl Usage {
 struct Response<'a, W> {
     output: &'a mut W,
     streaming: bool,
+    model: &'a str,
     line: Vec<u8>,
     json: Vec<u8>,
     usage: Usage,
@@ -588,25 +821,32 @@ struct Response<'a, W> {
 impl<W: Write> Response<'_, W> {
     fn finish(mut self) -> io::Result<Usage> {
         if !self.streaming {
-            let value: Value = serde_json::from_slice(&self.json).map_err(|_| refused())?;
-            if value["model"].as_str() != Some(MODEL) {
-                return Err(refused());
+            let value: Value = serde_json::from_slice(&self.json)
+                .map_err(|_| deny(502, "invalid upstream message JSON"))?;
+            if value["model"].as_str() != Some(self.model) {
+                return Err(deny(502, "upstream model mismatch"));
             }
             self.usage.parse(&value["usage"], true)?;
             self.finished = true;
         }
         if !self.finished || !self.line.is_empty() || (self.streaming && !self.delta) {
-            return Err(refused());
+            return Err(deny(502, "incomplete upstream message or usage"));
+        }
+        if !self.streaming {
+            write!(self.output, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", self.json.len())?;
+            self.output.write_all(&self.json)?;
+            self.output.flush()?;
         }
         Ok(self.usage)
     }
     fn event(&mut self) -> io::Result<()> {
         if let Some(data) = self.line.strip_prefix(b"data: ") {
-            let event: Value = serde_json::from_slice(data).map_err(|_| refused())?;
+            let event: Value = serde_json::from_slice(data)
+                .map_err(|_| deny(502, "invalid upstream stream JSON"))?;
             match event["type"].as_str() {
                 Some("message_start") if !self.started => {
-                    if event["message"]["model"].as_str() != Some(MODEL) {
-                        return Err(refused());
+                    if event["message"]["model"].as_str() != Some(self.model) {
+                        return Err(deny(502, "upstream stream model mismatch"));
                     }
                     self.usage.parse(&event["message"]["usage"], true)?;
                     self.started = true;
@@ -616,7 +856,14 @@ impl<W: Write> Response<'_, W> {
                     self.delta = true;
                 }
                 Some("message_stop") if self.started => self.finished = true,
-                Some("error") => return Err(refused()),
+                Some("error") => {
+                    let status = match event["error"]["type"].as_str() {
+                        Some("rate_limit_error") => 429,
+                        Some("billing_error") => 402,
+                        _ => 502,
+                    };
+                    return Err(deny(status, "upstream stream error"));
+                }
                 _ => {}
             }
         }
@@ -629,7 +876,7 @@ impl<W: Write> Write for Response<'_, W> {
             for byte in bytes {
                 self.line.push(*byte);
                 if self.line.len() > LINE_MAX {
-                    return Err(refused());
+                    return Err(deny(502, "upstream stream line too large"));
                 }
                 if *byte == b'\n' {
                     self.event()?;
@@ -638,9 +885,11 @@ impl<W: Write> Write for Response<'_, W> {
             }
         } else {
             if self.json.len() + bytes.len() > 16_000_000 {
-                return Err(refused());
+                return Err(deny(502, "upstream message too large"));
             }
             self.json.extend_from_slice(bytes);
+            // Validate complete JSON/model/usage before publishing a 200.
+            return Ok(bytes.len());
         }
         if !self.header && !bytes.is_empty() {
             let content_type = if self.streaming {
@@ -663,7 +912,7 @@ impl<W: Write> Write for Response<'_, W> {
     }
 }
 
-fn curl_config(key: &str, body: &[u8]) -> io::Result<String> {
+fn curl_config(key: &str, request: &Request) -> io::Result<String> {
     let quote = |value: &str| {
         value
             .replace('\\', "\\\\")
@@ -671,25 +920,83 @@ fn curl_config(key: &str, body: &[u8]) -> io::Result<String> {
             .replace('\n', "\\n")
             .replace('\r', "\\r")
     };
-    let data = std::str::from_utf8(body).map_err(|_| refused())?;
-    Ok(format!("url = \"https://api.anthropic.com/v1/messages\"\nrequest = \"POST\"\nheader = \"x-api-key: {}\"\nheader = \"anthropic-version: 2023-06-01\"\nheader = \"content-type: application/json\"\ndata = \"{}\"\n", quote(key), quote(data)))
+    let data = std::str::from_utf8(&request.body).map_err(|_| refused())?;
+    let beta = request
+        .beta
+        .as_deref()
+        .map(|value| format!("header = \"anthropic-beta: {}\"\n", quote(value)))
+        .unwrap_or_default();
+    Ok(format!("url = \"https://api.anthropic.com{}\"\nrequest = \"POST\"\nheader = \"x-api-key: {}\"\nheader = \"anthropic-version: 2023-06-01\"\nheader = \"content-type: application/json\"\n{beta}data = \"{}\"\n", request.path, quote(key), quote(data)))
 }
 
-fn curl(key: &str, body: &[u8], output: &mut dyn Write) -> io::Result<()> {
+fn forward_upstream(input: &mut impl BufRead, output: &mut dyn Write) -> io::Result<()> {
+    // Bound informational responses and header bytes. Neither error bodies nor
+    // upstream diagnostics (which may echo input) are exposed or logged.
+    for _ in 0..4 {
+        let status_line =
+            bounded_line(input, 8192).map_err(|_| deny(502, "upstream HTTP status unavailable"))?;
+        let status = std::str::from_utf8(&status_line)
+            .ok()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .ok_or_else(|| deny(502, "invalid upstream HTTP status"))?;
+        let mut size = status_line.len();
+        loop {
+            let line = bounded_line(input, 8192).map_err(|_| {
+                with_upstream(deny(502, "upstream headers incomplete or invalid"), status)
+            })?;
+            size += line.len();
+            if size > 32768 {
+                return Err(with_upstream(
+                    deny(502, "upstream headers too large"),
+                    status,
+                ));
+            }
+            if line == b"\r\n" {
+                break;
+            }
+        }
+        if (100..200).contains(&status) {
+            continue;
+        }
+        if status != 200 {
+            let local = match status {
+                402 => 402,
+                429 => 429,
+                _ => 502,
+            };
+            return Err(io::Error::other(Refusal {
+                status: local,
+                check: if local == 502 {
+                    "upstream HTTP failure"
+                } else {
+                    "upstream credit or rate limit"
+                },
+                upstream: Some(status),
+            }));
+        }
+        io::copy(input, output).map_err(|e| with_upstream(e, status))?;
+        return Ok(());
+    }
+    Err(deny(502, "too many upstream informational responses"))
+}
+
+fn curl(key: &str, request: &Request, output: &mut dyn Write) -> io::Result<()> {
     // Config goes over stdin, never argv, env, a file, or diagnostics. -q
     // disables user curlrc; proxy env is disabled and redirects are not enabled.
-    let config = curl_config(key, body)?;
+    let config = curl_config(key, request)?;
     let mut command = crate::noninteractive_process::curl_command();
     command
         .args([
             "-q",
             "--silent",
-            "--fail",
+            "--include",
             "--no-buffer",
             "--proto",
             "=https",
             "--proxy",
             "",
+            "--suppress-connect-headers",
             "--config",
             "-",
         ])
@@ -697,25 +1004,37 @@ fn curl(key: &str, body: &[u8], output: &mut dyn Write) -> io::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     // Inherits the server's zero core hard limit, installed before key read.
-    let mut child = command.spawn().map_err(|_| refused())?;
+    let mut child = command
+        .spawn()
+        .map_err(|_| deny(502, "cannot start upstream transport"))?;
     let result: io::Result<()> = (|| {
         child
             .stdin
             .take()
-            .ok_or_else(refused)?
-            .write_all(config.as_bytes())?;
-        let mut stdout = child.stdout.take().ok_or_else(refused)?;
-        // No upstream headers or errors are reflected to the caller.
-        io::copy(&mut stdout, output)?;
+            .ok_or_else(|| deny(502, "upstream transport stdin unavailable"))?
+            .write_all(config.as_bytes())
+            .map_err(|_| deny(502, "upstream transport config write failed"))?;
+        let mut stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| deny(502, "upstream transport stdout unavailable"))?,
+        );
+        forward_upstream(&mut stdout, output)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = child.kill();
     }
-    let status = child.wait().map_err(|_| refused())?;
+    let status = child
+        .wait()
+        .map_err(|_| deny(502, "cannot reap upstream transport"))?;
     result?;
     if !status.success() {
-        return Err(refused());
+        return Err(with_upstream(
+            deny(502, "upstream transport process failed"),
+            200,
+        ));
     }
     Ok(())
 }

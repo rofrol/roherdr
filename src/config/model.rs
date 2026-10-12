@@ -941,6 +941,21 @@ pub struct WorkersConfig {
     /// Operator-confirmed billing cycle. Never reset accounting from a timer.
     #[serde(default)]
     pub anthropic_api_cycle: String,
+    /// The sole model admitted by the credit proxy (standard Sonnet pricing).
+    pub anthropic_api_model: String,
+}
+
+pub(crate) const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+
+impl WorkersConfig {
+    pub(crate) fn validate_anthropic_model(&self) -> Result<(), &'static str> {
+        // These models share the ledger's standard Sonnet tariff. Unknown
+        // models need an audited tariff before they can spend capped credits.
+        match self.anthropic_api_model.as_str() {
+            "claude-sonnet-5-5" | "claude-sonnet-4-6" | "claude-sonnet-4-5-20250929" => Ok(()),
+            _ => Err("anthropic_api_model has no supported standard Sonnet tariff"),
+        }
+    }
 }
 
 fn anthropic_default_cap() -> f64 {
@@ -955,6 +970,7 @@ impl Default for WorkersConfig {
             anthropic_api_key_file: String::new(),
             anthropic_api_cap_usd: anthropic_default_cap(),
             anthropic_api_cycle: String::new(),
+            anthropic_api_model: ANTHROPIC_DEFAULT_MODEL.into(),
         }
     }
 }
