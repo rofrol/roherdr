@@ -152,6 +152,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `installed_pi_anthropic_messages_request_shape_offline` (loopback is
   denied in the sandbox): the coordinator runs it outside, then one real
   credit run. The first real credit run (before this) ended with a bare 403.
+  Slice 4 landed 2026-10-12 (ae25dd21, a pi worker): upstream error type and
+  message shown in the proxy's log and response; definite rejections release
+  their reservation; `herdr credits status` and `herdr credits release`. Left:
+  the real 400 of the first credit run, readable once this is installed.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
