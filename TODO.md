@@ -111,7 +111,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the Console, create the workspace with a spend limit and an API key in it,
   store the key in the Keychain.
   Done 2026-10-12: Console workspace `herdr-workers`
-  (<workspace id>) with a $200 monthly spend limit (the
+  with a $200 monthly spend limit (the
   limit resets on the 1st of the calendar month, the credits on the 8th);
   the organization's own limit is $200,000, so only the workspace limit
   caps spending. The org shows US$209.86 of credits. Left for the user: an
@@ -119,7 +119,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Key storage decided 2026-10-12 (the user: "no Keychain, it may run on
   the VPS without one; ask the models"; round 20261012-005401-f62e, sol,
   MiMo, DeepSeek agreeing): a static `herdr-workers` workspace key in a
-  0600 file `<key file>` (config
+  0600 key file under herdr's config directory (config
   `anthropic_api_key_file`, read with `read_secret_file`, same on the Mac
   and the VPS; on Guix never declarative: the store is world-readable);
   the key never reaches the worker: herdr keeps it in memory and proxies
@@ -132,7 +132,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   key on disk instead of an API key). Workload Identity Federation only
   if a real identity provider appears.
   Done 2026-10-12: the user created the key `herdr-worker` in
-  `herdr-workers` and stored it in `<key file>`
+  `herdr-workers` and stored it in a 0600 key file under herdr's config directory
   (checked: 0600, owned by the user, `sk-ant-` prefix; the contents were
   not read). Ready for a worker.
   Moved to the front 2026-10-12 (the user: "we need these credits, only
@@ -149,7 +149,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   fallback at the subscription limit, the usage widget. The coordinator
   itself (Claude Code) cannot use the credits.
   Confirmed by Anthropic's email (the user pasted it, 2026-10-12): $200
-  received by <Console organization>, expiring 2026-11-09; covers the
+  received by the owner's Console organization, expiring 2026-11-09; covers the
   Claude API, Managed Agents, the Agent SDK and the Playground, not
   Claude Code.
 
@@ -319,7 +319,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the request against the owner-click record, mints the grant and
   enforces it; the worker checks herdr, not the text. Only something new
   or wider (a new host, credential, path, destructive action) needs the
-  owner's click. Example: "Rebuild and deploy <a friend>'s box" lets the
+  owner's click. Example: "Rebuild and deploy <a friend's box>" lets the
   coordinator grant a worker "run deploy.sh on host X" with ssh to X, not
   ssh to host Y.
 
@@ -1813,7 +1813,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
 
 - [ ] The driver's task suffix asks the worker to verify the task's facts [t-c5bni564]
   (the owner via the roguix-vps coordinator, 2026-10-11: a task said
-  `ssh root@<domain>` without the repository's documented port <ssh port>; the
+  `ssh root@<domain>` without the repository's documented port; the
   worker did not check, the coordinator's review did not either, the run
   failed). `herdr todo run` appends the contract to every task; add one line:
   verify each concrete fact the task gives (host, port, user, path,
@@ -2587,7 +2587,7 @@ user needs to decide or do.
   the VPS to <new IP>, 11 Porkbun A records had to move; the owner
   said "change the records, you have Porkbun API access", but the
   classifier's DNS category denied even reading the variable names in
-  <DNS provider env file>; the agent handed a script to run with `!`. An
+  the DNS provider's env file; the agent handed a script to run with `!`. An
   in-session request does not lift a classifier category; only a
   permission rule does, and permission changes need your approval of the
   whole patch (AGENTS.md); a peer coordinator cannot grant it.

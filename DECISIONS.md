@@ -1297,7 +1297,7 @@ a raw IP; a move is handled by a one-off search reporting only file names
 (roguix-vps, d-kvgwjhpr) tells each repository's coordinator; no host
 registry beside DNS, no supervisor scan of config files, no edits across
 repositories. The herdr coordinator ran that search on 2026-10-11 (.env
-files naming the old IP: cometolight, <domain>, <domain>/matchalove,
+files naming the old IP: cometolight, <domain>, <site>/<subsite>,
 matterz/deploy, matchalove/project1, earn-money-bot/deploy,
 work-effects-dashboard/deploy, violai/deploy) and sent it to roguix-vps.
 
@@ -1315,7 +1315,7 @@ Correction of "A moved host" (2026-10-11, d-g7ops7qr, the user):
 <service host> is the roguix service subdomain (substitutes, channel),
 not the machine's name; the VPS got its own A record <vps host>
 (<new IP>, created by roguix-vps's reviewed script) and every host
-setting moved to it (<domain> dfba82d).
+setting moved to it (the site repository).
 
 ## A verdict wait never ends on a prompt absorbed mid-turn, and the
 
