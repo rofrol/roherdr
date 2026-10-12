@@ -2324,6 +2324,30 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `--dangerously-skip-permissions` without herdr's sandbox around it);
   prefer it for small items since the quota is small.
 
+- [ ] What each project costs: usage per space over time and per TODO item [t-twmvyrnk]
+  (the user, 2026-10-12: "a summary of how many tokens each herdr space
+  used, over time, maybe per TODO item"; "so I can say: this project uses
+  a lot, is it worth it for me? or: this project cost me this much";
+  rounds 20261012-140238-ec7f and the next, sol, MiMo, DeepSeek).
+  1. A persistent per-session usage ledger written as transcripts are read
+     (session id, agent kind, model, space, day, input/output/cache tokens,
+     source; keyed by session, kind and transcript offset, deltas only),
+     so forgotten sessions keep counting; the report states its coverage
+     start date.
+  2. Per TODO item: worker runs exact (their sessions, all attempts); the
+     coordinator's usage shown separately, an optional "during this run"
+     column labelled as an overlap estimate, never summed into the item;
+     unattributed usage shown so totals reconcile.
+  3. Money, never blended: share of plan capacity ("38% of your Claude
+     weekly windows this month") as the headline; exact metered spend
+     (API credits via the proxy, DeepSeek, OpenRouter) as "actual cash";
+     allocated subscription cost (monthly fee x the project's share of the
+     consumed capacity) labelled "attributed, not incremental"; list-price
+     equivalent only as a muted "API-equivalent value", never as spend.
+  4. `herdr usage report` (spaces x days, `--by todo`, `--json`) and a TUI
+     Usage view rendering the same query (spaces x days, drill into
+     models and items).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
