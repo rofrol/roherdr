@@ -235,6 +235,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ("message content not allowlisted"); messages and system now pass to the
   API unvalidated, and refusal logs carry no request values (checked: the
   earlier refusal line in herdr's log held no conversation text).
+  Slice 10 landed 2026-10-12 (ecf4f0c0, a pi worker): $0.50 spent before a
+  150 kB body limit refused a long conversation; now 32 MiB requests, bounded
+  chunked decoding, larger response guards, the byte-based long-context
+  refusal removed (premium accounting kept); the remaining checks and their
+  reasons are documented in anthropic-api-workers.mdx.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
