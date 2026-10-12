@@ -156,6 +156,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   message shown in the proxy's log and response; definite rejections release
   their reservation; `herdr credits status` and `herdr credits release`. Left:
   the real 400 of the first credit run, readable once this is installed.
+  Slice 5 landed 2026-10-12 (a93639e1, a pi worker): the real cause of the
+  credit runs' 400 was pi sending thinking disabled, which claude-sonnet-5-5
+  rejects; the model is now marked reasoning and pi starts with `--thinking`
+  from `[workers] anthropic_api_thinking` (default medium).
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
