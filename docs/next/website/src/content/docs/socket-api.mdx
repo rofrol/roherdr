@@ -115,7 +115,7 @@ Raw socket method names use dot notation:
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
 | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
 | Reports | `report.record`, `report.list`, `report.close` |
-| Supervision | `supervise.report`, `supervise.acknowledge` |
+| Supervision | `supervise.report`, `supervise.acknowledge`, `supervise.ack` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -1174,7 +1174,11 @@ without a verdict, a question of its pane nor a later turn start accounts
 for it, whatever herdr found in the transcript (a start it did not find, a
 missing or unreadable transcript, a turn ended on an error), with the last
 lifecycle fact in `evidence`; a prompt still queued when the turn before it
-closed counts once its agent rests with no turn started; all three belong
+closed counts once its agent rests with no turn started; it also holds for
+an open assignment whose sending coordinator rests with no registered handle
+on it (no `agent.wait_verdict` waiting, no running herdr-job job of its
+pane, no background task at its last turn end; a wait written only in its
+transcript is not a handle), for assignments sent during that tenure; all three belong
 to the coordinator whose pane sent the prompt (`coordinator_id`), and are
 checked on the events that change them (a
 verdict recorded, a waiter's end, a turn end or start, an acknowledgement)
@@ -1184,7 +1188,7 @@ unknown one as `unknown`), `severity` (`warning`, `critical`), `status`
 `coordinator_id`, `pane_id`, `run_id`, `job_ids`, `evidence` (`observed_ms`,
 `event_ids`, `facts`), `first_seen_ms`, `last_seen_ms`, `acknowledged_ms`,
 `acknowledged_by` (`user` or `coordinator <id>`), `coordinator_seen_ms`,
-`coordinator_seen_by`, `resolved_ms` and `resolution`. When `pane_id` holds
+`coordinator_seen_by`, `resolved_ms`, `resolution` and `deliveries`. When `pane_id` holds
 the herdr repository's tenure, the findings that hold are marked seen by it
 after the reply, which shows the marks as they were before; when it holds
 another coordinator's tenure, only the findings that belong to that
@@ -1202,6 +1206,37 @@ with `finding_ack_refused` unless `pane_id` is bound to the herdr
 repository's active tenure. `worker.answer` and `worker.deny_and_stop` on a
 finding's `?` entry through this API are refused with `finding_ack_refused`
 too: a worker or another agent never acknowledges a finding.
+Herdr delivers each new or escalated finding state as a notice to the
+coordinators it concerns: the tenure the finding names (`owner`), and the
+herdr repository's coordinator, as a `digest` of another owner's finding or,
+when no tenure herdr can prompt owns it, as the `unowned` queue (the user is
+notified at once as well). Tenure is the registered one (`coordinator.start`),
+never inferred from what a pane shows. One notice is queued per finding state
+(its id and severity, `state_key`) and recipient; the server types a
+recipient's queued notices together into its pane through `agent.prompt`
+(no assignment is registered for them) only at a turn boundary, when its
+agent rests, on events only: a sweep's end and the coordinator's turn end.
+The text is a fixed template: each finding's id, severity, predicate, its
+one-line `summary` and its evidence references quoted as JSON strings (data,
+not instructions), and how to acknowledge. A finding's `deliveries` list each
+notice's `coordinator_id`, `role`, `state_key`, `queued_ms`,
+`dispatched_ms`, `pane_id`, `prompt_request_id`, `dispatch_error` (a prompt
+refused before typing stays queued; a failed typing is never repeated and
+notifies the user), `turn_started_ms`, `acknowledged_ms`, `alerted_ms` and
+`dropped_ms` with `drop_reason` (the finding resolved, a newer state
+superseded it, the tenure ended). `supervise.ack` (`finding_id`, `pane_id`)
+acknowledges the notices of the finding addressed to the tenure `pane_id`
+holds, queued ones included, and answers `supervision_finding`; from the
+herdr repository's coordinator it also acknowledges the finding, as
+`supervise.acknowledge` does, while an owner's acknowledgement leaves the
+finding's status to the user. It is refused with `finding_ack_refused` from
+a pane without a tenure or from one no notice was addressed to. When the
+recipient's turn after a typed notice ends without that acknowledgement, the
+user is notified once. A notice queued for a coordinator that never reaches a
+turn boundary (one hung while reported working) shows in the finding's `?`
+entry as `queued for <coordinator>, not delivered`. No timer, deadline or
+backoff moves a notice. An older server refuses `supervise.ack` as
+`invalid_request`.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

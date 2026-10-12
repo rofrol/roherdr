@@ -607,6 +607,18 @@ pub(crate) fn undelivered_unwatched() -> Vec<Assignment> {
         .collect()
 }
 
+/// The open assignments no `agent.wait_verdict` waits for: the supervision sweep reports those
+/// whose coordinator rests with no other registered handle on them (`unaccounted_assignment`).
+pub(crate) fn open_unwatched() -> Vec<Assignment> {
+    let waiting: BTreeSet<String> = lock(&WAITERS).keys().cloned().collect();
+    store()
+        .records
+        .values()
+        .filter(|record| record.is_open() && !waiting.contains(&record.request_id))
+        .cloned()
+        .collect()
+}
+
 /// The open assignments a turn end left without a verdict, while no turn started since.
 pub(crate) fn stopped_open() -> Vec<Assignment> {
     store()

@@ -285,6 +285,10 @@ pub enum Method {
     /// coordinator pane (the user acknowledges in their client's `?` list).
     #[serde(rename = "supervise.acknowledge")]
     SuperviseAcknowledge(SuperviseAcknowledgeParams),
+    /// Acknowledges a finding's notice by the finding's id, from the pane of
+    /// the coordinator it was addressed to.
+    #[serde(rename = "supervise.ack")]
+    SuperviseAck(SuperviseAckParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

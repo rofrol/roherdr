@@ -587,6 +587,14 @@ fn supervise_command() -> Command {
         .arg(option("ack", "FINDING_ID"))
         .arg(flag("all"))
         .arg(flag("json"))
+        .subcommand(
+            id_command(
+                "ack",
+                "finding_id",
+                "Acknowledge a finding's notice addressed to your coordination tenure",
+            )
+            .arg(flag("json")),
+        )
 }
 
 fn usage_command() -> Command {

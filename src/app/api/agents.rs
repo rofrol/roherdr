@@ -385,17 +385,68 @@ impl App {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
-        let validated = match self.validate_agent_prompt(request.id, &params) {
-            Ok(validated) => validated,
-            Err(response) => {
-                let _ = respond_to.send(response);
-                return true;
-            }
+        if let Err(response) =
+            self.start_agent_prompt(request.id, &params, respond_to.clone(), true)
+        {
+            let _ = respond_to.send(response);
+        }
+        true
+    }
+
+    /// Types a supervision notice (`crate::workers::supervision`) into the agent of `pane` as
+    /// `agent.prompt` does, without registering an assignment: a notice is herdr's, not a
+    /// coordinator's task to a worker, so no verdict is expected of it. A refusal before
+    /// anything was typed is `Err` with its code and message; otherwise the receiver gets the
+    /// prompt's reply once the text was submitted (or its submission failed).
+    pub(crate) fn submit_supervision_notice(
+        &mut self,
+        pane: &str,
+        text: String,
+    ) -> Result<std::sync::mpsc::Receiver<String>, String> {
+        let params = AgentPromptParams {
+            target: pane.to_owned(),
+            prefer_workspace_id: None,
+            text,
+            caller_pane_id: None,
+            wait: None,
+            follow_turn: false,
         };
+        let (respond_to, reply) = std::sync::mpsc::channel();
+        self.start_agent_prompt(
+            "herdr:supervision-notice".into(),
+            &params,
+            respond_to,
+            false,
+        )
+        .map_err(|response| {
+            let value: serde_json::Value =
+                serde_json::from_str(&response).unwrap_or(serde_json::Value::Null);
+            format!(
+                "{}: {}",
+                value["error"]["code"]
+                    .as_str()
+                    .unwrap_or("agent_prompt_failed"),
+                value["error"]["message"].as_str().unwrap_or(&response)
+            )
+        })?;
+        Ok(reply)
+    }
+
+    /// Validates and submits a prompt; a refusal before anything was typed is returned, the
+    /// prompt's reply after its submission goes to `respond_to`. `register` records the
+    /// prompt as an assignment of the pane's agent.
+    fn start_agent_prompt(
+        &mut self,
+        id: String,
+        params: &AgentPromptParams,
+        respond_to: std::sync::mpsc::Sender<String>,
+        register: bool,
+    ) -> Result<(), String> {
+        let validated = self.validate_agent_prompt(id, params)?;
         // Start the completion waiter before submitting, so a refused thread
         // fails the request while nothing has been sent yet.
         let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<QueuedAgentPrompt>();
-        let waiter_respond_to = respond_to.clone();
+        let waiter_respond_to = respond_to;
         let spawned = crate::thread_spawn::spawn_named("herdr-agent-prompt", move || {
             let Ok((id, agent, prompt_request, completion)) = handoff_rx.recv() else {
                 return;
@@ -418,22 +469,15 @@ impl App {
         });
         if let Err(err) = spawned {
             tracing::warn!(err = %err, "failed to spawn agent prompt thread");
-            let _ = respond_to.send(encode_error(
+            return Err(encode_error(
                 validated.id,
                 "agent_prompt_failed",
                 format!("could not start prompt completion waiter: {err}"),
             ));
-            return true;
         }
-        match self.submit_agent_prompt(validated, &params) {
-            Ok(submission) => {
-                let _ = handoff_tx.send(submission);
-            }
-            Err(response) => {
-                let _ = respond_to.send(response);
-            }
-        }
-        true
+        let submission = self.submit_agent_prompt(validated, params, register)?;
+        let _ = handoff_tx.send(submission);
+        Ok(())
     }
 
     /// Runs every check that can reject a prompt without touching the pane.
@@ -526,6 +570,7 @@ impl App {
         &mut self,
         validated: ValidatedAgentPrompt,
         params: &AgentPromptParams,
+        register: bool,
     ) -> Result<QueuedAgentPrompt, String> {
         let ValidatedAgentPrompt {
             id,
@@ -609,13 +654,15 @@ impl App {
             .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
         // Registered with the request, before the agent can take the prompt, so its verdict
         // is recorded even when nothing waits for it then.
-        self.register_assignment(
-            ws_idx,
-            pane_id,
-            &prompt_request.request_id,
-            &params.text,
-            params.caller_pane_id.as_deref(),
-        );
+        if register {
+            self.register_assignment(
+                ws_idx,
+                pane_id,
+                &prompt_request.request_id,
+                &params.text,
+                params.caller_pane_id.as_deref(),
+            );
+        }
         self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
         Ok((id, agent, prompt_request, completion))
     }
@@ -1313,6 +1360,42 @@ mod tests {
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A supervision notice is typed like `agent.prompt`, but it is herdr's, not a task: no
+    /// assignment is registered for it, so its turn never becomes an assignment finding.
+    #[tokio::test]
+    async fn a_supervision_notice_is_typed_without_registering_an_assignment() {
+        let mut app = app_with_agent();
+        let (pane, mut rx) = claude_with_runtime(&mut app);
+        let reply = app
+            .submit_supervision_notice(&pane, "herdr supervision notice".into())
+            .expect("an idle agent takes the notice");
+        // The prompt's waiter sends the reply once the PTY actor wrote the text and Enter.
+        let reply = reply.recv().expect("the notice's prompt replies");
+        let request = prompt_request_of(&reply);
+        assert!(crate::assignments::get(&request.request_id).is_none());
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"herdr supervision notice")
+        );
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
+
+        // The same text through `agent.prompt` is an assignment.
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("herdr supervision notice", false),
+        ));
+        assert!(crate::assignments::get(&request.request_id).is_some());
+        while rx.try_recv().is_ok() {}
+
+        // A refusal before typing is the notice's error, nothing is typed.
+        let refused = app
+            .submit_supervision_notice("w9:p9", "lost".into())
+            .unwrap_err();
+        assert!(refused.starts_with("agent_not_found: "), "{refused}");
         assert!(rx.try_recv().is_err());
     }
 

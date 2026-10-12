@@ -214,6 +214,9 @@ pub struct HeadlessServer {
     pty_usage_seen: u64,
     /// When the next timed supervision sweep is due; never without one.
     supervision_due: Option<Instant>,
+    /// The supervision notices typed into coordinators' panes whose prompt
+    /// replies have not come yet.
+    supervision_prompts: Vec<crate::workers::supervision::SupervisionPrompt>,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
@@ -369,6 +372,7 @@ impl HeadlessServer {
             pty_alerts: Default::default(),
             pty_usage_seen: 0,
             supervision_due: Some(Instant::now()),
+            supervision_prompts: Vec::new(),
             popup_owner_tab_id: None,
             client_shell_boot_id: format!(
                 "{}-{}",
@@ -563,6 +567,7 @@ impl HeadlessServer {
 
             self.forward_pty_usage_alerts();
             self.start_supervision_sweep_if_due(now);
+            self.deliver_supervision_notices_if_requested();
             self.forward_worker_notices();
 
             self.poll_pending_alt_screen_reads(now);

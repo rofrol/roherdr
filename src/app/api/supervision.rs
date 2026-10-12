@@ -6,7 +6,9 @@
 //! because they name the caller's pane by its canonical public id.
 
 use super::responses::{encode_error, encode_success};
-use crate::api::schema::{ResponseResult, SuperviseAcknowledgeParams, SuperviseReportParams};
+use crate::api::schema::{
+    ResponseResult, SuperviseAckParams, SuperviseAcknowledgeParams, SuperviseReportParams,
+};
 use crate::app::App;
 use crate::workers::supervision::PaneFacts;
 use crate::workers::WorkerError;
@@ -112,6 +114,79 @@ impl App {
             Ok(finding) => encode_success(id, ResponseResult::SupervisionFinding { finding }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
+    }
+
+    /// `supervise.ack`: the recipient coordinator's pane, named by its
+    /// canonical public id, acknowledges the notices of a finding addressed
+    /// to its tenure.
+    pub(super) fn handle_supervise_ack(
+        &mut self,
+        id: String,
+        params: SuperviseAckParams,
+    ) -> String {
+        let Some(supervisor) = crate::workers::coordinators() else {
+            let error = unavailable();
+            return encode_error(id, error.code(), error.to_string());
+        };
+        let pane = params
+            .pane_id
+            .as_deref()
+            .map(|pane| self.canonical_pane_id(pane));
+        match supervisor.supervision_ack_from_pane(&params.finding_id, pane.as_deref()) {
+            Ok(finding) => encode_success(id, ResponseResult::SupervisionFinding { finding }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// Types the supervision notices whose recipient's agent rests (a turn
+    /// boundary) into its pane, one batch per recipient. Runs on the server's
+    /// loop when an event asked for it
+    /// ([`crate::workers::supervision::take_delivery_request`]); a recipient
+    /// that works keeps its notices queued until its next event.
+    /// Returns the replies of the prompts typed, which the loop reads as they
+    /// come ([`crate::workers::supervision::SupervisionPrompt`]).
+    pub(crate) fn deliver_supervision_notices(
+        &mut self,
+    ) -> Vec<crate::workers::supervision::SupervisionPrompt> {
+        let Some(supervisor) = crate::workers::coordinators() else {
+            return Vec::new();
+        };
+        let batches = match supervisor.pending_delivery_batches() {
+            Ok(batches) => batches,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the queued supervision notices");
+                return Vec::new();
+            }
+        };
+        if batches.is_empty() {
+            return Vec::new();
+        }
+        let panes = self.supervision_pane_facts();
+        let mut prompts = Vec::new();
+        for batch in batches {
+            let pane = self.canonical_pane_id(&batch.pane_id);
+            let ready = panes
+                .iter()
+                .find(|facts| facts.pane_id == pane)
+                .is_some_and(crate::workers::supervision::at_turn_boundary);
+            if !ready {
+                continue;
+            }
+            let text = crate::workers::supervision::notice_text(&batch);
+            match self.submit_supervision_notice(&pane, text) {
+                Ok(reply) => {
+                    supervisor.record_dispatched(&batch.delivery_ids(), &pane);
+                    prompts.push(crate::workers::supervision::SupervisionPrompt {
+                        delivery_ids: batch.delivery_ids(),
+                        reply,
+                    });
+                }
+                Err(refusal) => {
+                    supervisor.record_dispatch_refused(&batch.delivery_ids(), &refusal);
+                }
+            }
+        }
+        prompts
     }
 }
 

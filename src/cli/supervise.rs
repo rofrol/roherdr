@@ -1,16 +1,20 @@
 //! `herdr supervise --report`: the server's supervision findings over the
 //! coordinators and their workers (`supervise.report`), as text or, with
 //! `--json`, as the server's reply; `herdr supervise --ack`
-//! (`supervise.acknowledge`) for the herdr repository's coordinator.
+//! (`supervise.acknowledge`) for the herdr repository's coordinator; `herdr
+//! supervise ack` (`supervise.ack`) for a coordinator a finding's notice was
+//! addressed to.
 
 use crate::api::schema::{
-    AgentStatus, Method, Request, SuperviseAcknowledgeParams, SuperviseReportParams,
-    SupervisionFinding, SupervisionReport, SupervisionSeverity, SupervisionStatus,
+    AgentStatus, Method, Request, SuperviseAckParams, SuperviseAcknowledgeParams,
+    SuperviseReportParams, SupervisionDelivery, SupervisionFinding, SupervisionReport,
+    SupervisionSeverity, SupervisionStatus,
 };
 
 const USAGE: &str = "usage:
   herdr supervise --report [--all] [--json]
   herdr supervise --ack FINDING_ID [--json]
+  herdr supervise ack FINDING_ID [--json]
       What herdr's supervision sweep (on the server's timer, and when a
       coordinator's pane reports a turn or changes state) saw of each active
       coordinator, and the findings that hold (open or acknowledged; with
@@ -21,17 +25,29 @@ const USAGE: &str = "usage:
       coordinator whose turn ended with background tasks and no wait edge; a
       repository's disk below the build guard's 15 GiB. A coordinator without
       one shows \"cannot establish progress\": quiet output is never a
-      finding. The sweep only reports: it never waits, retries, prompts,
-      kills, restarts, clears a state or marks work done.
+      finding. The sweep only reports: it never waits, retries, kills,
+      restarts, clears a state or marks work done.
       Each new or escalated finding notifies the herdr repository's
       coordinator (its pane), whose inbox this report is: read from that
       pane, it marks the findings that hold seen by its tenure, and shows
-      `new` beside those it had not seen.
+      `new` beside those it had not seen. Herdr also types a notice of each
+      new or escalated finding (a fixed template; the finding's text quoted
+      as data) into the pane of the coordinator that owns it, and a digest
+      of every owner's findings, or the unowned ones, into the herdr
+      repository's coordinator's pane, only when that agent rests (a turn
+      boundary); the notices wait while it works. A finding without an owner
+      herdr can prompt also notifies you at once.
   --ack FINDING_ID
       Acknowledges an open finding: only from the pane that holds the herdr
       repository's coordination tenure, refused otherwise with
       finding_ack_refused. You acknowledge yours in the `?` list; a worker
-      or another agent never does.";
+      or another agent never does.
+  ack FINDING_ID
+      Acknowledges the notices of a finding addressed to your coordination
+      tenure, from the pane that holds it (reading the report does not). If
+      your turn after a notice ends without it, herdr alerts the user once.
+      From the herdr repository's coordinator it also acknowledges the
+      finding, as --ack does.";
 
 pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
     let (command, json) = match parse(args) {
@@ -56,8 +72,15 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
             finding_id,
             pane_id,
         }),
+        Supervise::AckNotice(finding_id) => Method::SuperviseAck(SuperviseAckParams {
+            finding_id,
+            pane_id,
+        }),
     };
-    let ack = matches!(method, Method::SuperviseAcknowledge(_));
+    let ack = matches!(
+        method,
+        Method::SuperviseAcknowledge(_) | Method::SuperviseAck(_)
+    );
     let response = super::send_request(&Request {
         id: "cli:supervise".into(),
         method,
@@ -91,12 +114,35 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
 /// What `herdr supervise` asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Supervise {
-    Report { all: bool },
+    Report {
+        all: bool,
+    },
     Ack(String),
+    /// `ack FINDING_ID`: the notices addressed to the caller's tenure.
+    AckNotice(String),
 }
 
 /// `Ok(None)` asks for help; the flag says `--json`.
 fn parse(args: &[String]) -> Result<Option<(Supervise, bool)>, String> {
+    if args.first().map(String::as_str) == Some("ack") {
+        let mut finding = None;
+        let mut json = false;
+        for arg in &args[1..] {
+            match arg.as_str() {
+                "--json" => json = true,
+                "help" | "--help" | "-h" => return Ok(None),
+                other if other.starts_with("--") => {
+                    return Err(format!("unexpected argument: {other}"))
+                }
+                other if finding.is_none() => finding = Some(other.to_owned()),
+                other => return Err(format!("unexpected argument: {other}")),
+            }
+        }
+        return match finding {
+            Some(finding) => Ok(Some((Supervise::AckNotice(finding), json))),
+            None => Err("ack takes a finding id (f-N)".into()),
+        };
+    }
     let mut report = false;
     let mut ack = None;
     let mut all = false;
@@ -199,7 +245,39 @@ fn finding_text(
     if let Some(resolution) = &finding.resolution {
         out.push_str(&format!("    resolved: {resolution}\n"));
     }
+    for delivery in &finding.deliveries {
+        out.push_str(&format!("    notice: {}\n", delivery_text(delivery, when)));
+    }
     out
+}
+
+/// Where one notice of a finding stands.
+fn delivery_text(delivery: &SupervisionDelivery, when: &impl Fn(u64) -> String) -> String {
+    let role = serde_json::to_value(delivery.role)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let who = format!("{} ({role})", delivery.coordinator_id);
+    if let (Some(ms), Some(reason)) = (delivery.dropped_ms, &delivery.drop_reason) {
+        return format!("{who} dropped {}: {reason}", when(ms));
+    }
+    let mut text = match delivery.dispatched_ms {
+        Some(ms) => format!("{who} delivered {}", when(ms)),
+        None => format!("{who} queued {}, not delivered", when(delivery.queued_ms)),
+    };
+    if let Some(error) = &delivery.dispatch_error {
+        text.push_str(&format!(", prompt failed: {error}"));
+    }
+    match (delivery.acknowledged_ms, delivery.alerted_ms) {
+        (Some(ms), _) => text.push_str(&format!(", acknowledged {}", when(ms))),
+        (None, Some(ms)) => text.push_str(&format!(
+            ", its next turn ended without an ack (user alerted {})",
+            when(ms)
+        )),
+        (None, None) if delivery.dispatched_ms.is_some() => text.push_str(", not acknowledged"),
+        _ => {}
+    }
+    text
 }
 
 fn report_text(report: &SupervisionReport, offset: i64) -> String {
@@ -274,7 +352,14 @@ mod tests {
             parse(&args(&["--ack", "f-3"])),
             Ok(Some((Supervise::Ack("f-3".into()), false)))
         );
+        assert_eq!(
+            parse(&args(&["ack", "f-3", "--json"])),
+            Ok(Some((Supervise::AckNotice("f-3".into()), true)))
+        );
         for bad in [
+            &["ack"][..],
+            &["ack", "f-3", "f-4"],
+            &["ack", "f-3", "--all"],
             &["--ack"][..],
             &["--ack", "--json"],
             &["--ack", "f-3", "--report"],
@@ -326,6 +411,21 @@ mod tests {
                 coordinator_seen_by: None,
                 resolved_ms: None,
                 resolution: None,
+                deliveries: vec![SupervisionDelivery {
+                    coordinator_id: "c-bbbbbbbb".into(),
+                    role: crate::api::schema::SupervisionDeliveryRole::Unowned,
+                    state_key: "f-1:warning".into(),
+                    queued_ms: 0,
+                    dispatched_ms: None,
+                    pane_id: None,
+                    prompt_request_id: None,
+                    dispatch_error: None,
+                    turn_started_ms: None,
+                    acknowledged_ms: None,
+                    alerted_ms: None,
+                    dropped_ms: None,
+                    drop_reason: None,
+                }],
             }],
         };
         let text = report_text(&report, 0);
@@ -336,6 +436,11 @@ mod tests {
         assert!(text.contains("herdr coordinator c-aaaaaaaa"), "{text}");
         assert!(text.contains("f-1  new  open  warning  disk_low"), "{text}");
         assert!(text.contains("    free_bytes: 1"), "{text}");
+        assert!(
+            text.contains("    notice: c-bbbbbbbb (unowned) queued ")
+                && text.contains(", not delivered\n"),
+            "{text}"
+        );
         assert!(
             text.contains("not seen by the herdr coordinator yet"),
             "{text}"

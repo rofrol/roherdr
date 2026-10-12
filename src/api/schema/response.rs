@@ -255,7 +255,7 @@ pub enum ResponseResult {
     SupervisionReport {
         report: SupervisionReport,
     },
-    /// `supervise.acknowledge`'s reply.
+    /// `supervise.acknowledge`'s and `supervise.ack`'s reply.
     SupervisionFinding {
         finding: SupervisionFinding,
     },

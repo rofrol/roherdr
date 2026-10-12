@@ -5624,6 +5624,26 @@
             }
           ]
         },
+        "SuperviseAckParams": {
+          "description": "`supervise.ack`: the coordinator a finding's notice was delivered to\nacknowledges it by the finding's id, from the pane that holds its tenure.\nIt acknowledges that tenure's notices of the finding (queued or\ndelivered); from the herdr repository's coordinator it also acknowledges\nthe finding as `supervise.acknowledge` does. Refused with\n`finding_ack_refused` from a pane without a tenure, and from a tenure no\nnotice of the finding was addressed to (other than the herdr one).",
+          "properties": {
+            "finding_id": {
+              "description": "`f-` and the finding's number.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The acknowledging coordinator's pane (the CLI sends its\n`HERDR_PANE_ID`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "finding_id"
+          ],
+          "type": "object"
+        },
         "SuperviseAcknowledgeParams": {
           "description": "`supervise.acknowledge`: acknowledges an open finding, from the pane that\nholds the herdr repository's coordination tenure. The user acknowledges\nwith a click in the `?` list of their own client; nobody else does.",
           "properties": {
@@ -9016,6 +9036,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/SuperviseAcknowledgeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Acknowledges a finding's notice by the finding's id, from the pane of\nthe coordinator it was addressed to.",
+          "properties": {
+            "method": {
+              "const": "supervise.ack",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SuperviseAckParams"
             }
           },
           "required": [
@@ -16509,7 +16546,7 @@
               "type": "object"
             },
             {
-              "description": "`supervise.acknowledge`'s reply.",
+              "description": "`supervise.acknowledge`'s and `supervise.ack`'s reply.",
               "properties": {
                 "finding": {
                   "$ref": "#/schemas/success_response/$defs/SupervisionFinding"
@@ -18176,6 +18213,132 @@
           ],
           "type": "object"
         },
+        "SupervisionDelivery": {
+          "description": "One notice of a finding's state (its id and severity) to one coordinator:\nqueued at once, typed into the coordinator's pane with `agent.prompt` only\nat a turn boundary (its agent rests), then acknowledged by the coordinator\n(`supervise.ack`). Dispatch and acknowledgement are recorded apart; no\ntimer moves any of them.",
+          "properties": {
+            "acknowledged_ms": {
+              "description": "When the recipient acknowledged it (`supervise.ack`).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "alerted_ms": {
+              "description": "When herdr alerted the user that the recipient's turn after the notice\nended without the acknowledgement (once).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "coordinator_id": {
+              "description": "The recipient's coordination tenure.",
+              "type": "string"
+            },
+            "dispatch_error": {
+              "description": "Why the latest dispatch failed: the prompt refused before typing\n(still queued), or the typing failed (not sent again).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dispatched_ms": {
+              "description": "When herdr typed the notice into the recipient's pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "drop_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dropped_ms": {
+              "description": "When herdr dropped it undelivered, and why (the finding resolved, the\ntenure ended).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt_request_id": {
+              "description": "The `agent.prompt` request that typed it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "queued_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "role": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionDeliveryRole"
+            },
+            "state_key": {
+              "description": "The idempotency key: the finding's id and severity, one notice per\nfinding state and recipient.",
+              "type": "string"
+            },
+            "turn_started_ms": {
+              "description": "When the recipient's turn after the notice started.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "coordinator_id",
+            "role",
+            "state_key",
+            "queued_ms"
+          ],
+          "type": "object"
+        },
+        "SupervisionDeliveryRole": {
+          "description": "Why a coordinator receives a finding's notice.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "owner",
+              "description": "The finding names its tenure (it sent the prompt, or it is the\ncoordinator the predicate is about).",
+              "type": "string"
+            },
+            {
+              "const": "digest",
+              "description": "The herdr repository's coordinator, which fixes the processes, gets\nevery other owner's findings as a digest.",
+              "type": "string"
+            },
+            {
+              "const": "unowned",
+              "description": "No active tenure that herdr can prompt owns the finding: the herdr\nrepository's coordinator gets it, and the user is notified at once.",
+              "type": "string"
+            }
+          ]
+        },
         "SupervisionEvidence": {
           "description": "What a sweep saw that makes a predicate hold.",
           "properties": {
@@ -18245,6 +18408,13 @@
                 "integer",
                 "null"
               ]
+            },
+            "deliveries": {
+              "description": "Its notices to coordinators, the oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionDelivery"
+              },
+              "type": "array"
             },
             "evidence": {
               "$ref": "#/schemas/success_response/$defs/SupervisionEvidence",

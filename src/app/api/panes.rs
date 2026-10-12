@@ -1774,8 +1774,10 @@ impl App {
         if finished {
             changed |= self.state.release_held_completion(ws_idx, pane_id);
         }
-        // A coordinator's turn report is a supervision sweep's event.
+        // A coordinator's turn report is a supervision sweep's event, and a boundary for the
+        // findings' notices to it.
         if let Some(public) = self.public_pane_id(ws_idx, pane_id) {
+            crate::workers::supervision::coordinator_turn_reported(&public, !finished);
             crate::workers::supervision::request_sweep_for_pane(&public, "turn");
         }
         if changed {

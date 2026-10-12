@@ -3,8 +3,10 @@
 //! and when a coordinator's pane reports a turn or changes state) checks
 //! named predicates against facts the server already has; each predicate
 //! that holds is a finding, stored once per fingerprint while it holds. The
-//! sweep never acts: it does not wait, retry, prompt, kill, restart, clear a
-//! state or mark work done.
+//! sweep never acts: it does not wait, retry, kill, restart, clear a state or
+//! mark work done. Herdr delivers each finding's notice to the coordinator
+//! that owns it (and a digest to the herdr repository's coordinator) by
+//! typing it into its pane at a turn boundary (`supervise.ack`).
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,85 @@ pub struct SuperviseAcknowledgeParams {
     /// `HERDR_PANE_ID`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+}
+
+/// `supervise.ack`: the coordinator a finding's notice was delivered to
+/// acknowledges it by the finding's id, from the pane that holds its tenure.
+/// It acknowledges that tenure's notices of the finding (queued or
+/// delivered); from the herdr repository's coordinator it also acknowledges
+/// the finding as `supervise.acknowledge` does. Refused with
+/// `finding_ack_refused` from a pane without a tenure, and from a tenure no
+/// notice of the finding was addressed to (other than the herdr one).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SuperviseAckParams {
+    /// `f-` and the finding's number.
+    pub finding_id: String,
+    /// The acknowledging coordinator's pane (the CLI sends its
+    /// `HERDR_PANE_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+}
+
+/// Why a coordinator receives a finding's notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisionDeliveryRole {
+    /// The finding names its tenure (it sent the prompt, or it is the
+    /// coordinator the predicate is about).
+    Owner,
+    /// The herdr repository's coordinator, which fixes the processes, gets
+    /// every other owner's findings as a digest.
+    Digest,
+    /// No active tenure that herdr can prompt owns the finding: the herdr
+    /// repository's coordinator gets it, and the user is notified at once.
+    Unowned,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One notice of a finding's state (its id and severity) to one coordinator:
+/// queued at once, typed into the coordinator's pane with `agent.prompt` only
+/// at a turn boundary (its agent rests), then acknowledged by the coordinator
+/// (`supervise.ack`). Dispatch and acknowledgement are recorded apart; no
+/// timer moves any of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionDelivery {
+    /// The recipient's coordination tenure.
+    pub coordinator_id: String,
+    pub role: SupervisionDeliveryRole,
+    /// The idempotency key: the finding's id and severity, one notice per
+    /// finding state and recipient.
+    pub state_key: String,
+    /// Unix milliseconds.
+    pub queued_ms: u64,
+    /// When herdr typed the notice into the recipient's pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatched_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// The `agent.prompt` request that typed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_request_id: Option<String>,
+    /// Why the latest dispatch failed: the prompt refused before typing
+    /// (still queued), or the typing failed (not sent again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_error: Option<String>,
+    /// When the recipient's turn after the notice started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_ms: Option<u64>,
+    /// When the recipient acknowledged it (`supervise.ack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_ms: Option<u64>,
+    /// When herdr alerted the user that the recipient's turn after the notice
+    /// ended without the acknowledgement (once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerted_ms: Option<u64>,
+    /// When herdr dropped it undelivered, and why (the finding resolved, the
+    /// tenure ended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_reason: Option<String>,
 }
 
 /// The predicate a finding names: a positive fact and the event that did
@@ -166,6 +247,9 @@ pub struct SupervisionFinding {
     /// Why it was resolved: what the sweep saw instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    /// Its notices to coordinators, the oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<SupervisionDelivery>,
 }
 
 /// What the latest sweep saw of one active coordination tenure.
