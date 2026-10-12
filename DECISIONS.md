@@ -1356,3 +1356,16 @@ still hold. Decided: herdr keeps one install argv; rormpc's
 pinned tag itself (compares the installed tag, reinstalls and restarts
 only on mismatch, records it only after success, prints both versions).
 That is rormpc's work, not herdr's.
+
+## A pane worker's verdict was never recorded and nothing flagged it
+
+A pane worker's verdict was lost and the supervisor stayed silent (try-roguix,
+2026-10-12). Slice 1 (1be739ce): the Stop hook sends the turn's last message
+(`final_text`), because Claude Code writes it to the transcript after Stop;
+paste tags ignored; a new server re-reads open assignments; `wait-agent`
+exits 8 on lost tracking. Slice 2 (ae55938b): the `unaccounted_assignment`
+invariant over the accepted-assignment ledger on Stop, every sweep and at
+startup/handoff, with fixtures and a supervisor self-test; `prompt_turns`
+carried across a live handoff. The design flaw (round
+20261012-010450-e610): predicates fired only on parsed facts, so missing
+evidence meant silence; a requested predicate had been dropped.

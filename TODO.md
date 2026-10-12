@@ -1949,55 +1949,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   item, keeping per-repository checks and verify; releases stay by hand
   with a checklist; the two-repository feature is split now.
 
-- [ ] A pane worker's verdict was never recorded and nothing flagged it [t-276mtaqw]
-  (follows from [t-i3p3apqh]; the user via todo-try-roguix, 2026-10-12:
-  "the supervisor did not catch a missed worker verdict"). Worker
-  capture-doc (wB2:p1) got prompt_1a12cc5bb91_1 at 23:02 (`agent prompt`
-  returned working), printed `WORKER-DONE 220dd3dd` and ended its turn the
-  same minute; `herdr agent verdict` still shows the assignment with no
-  verdict, and its `wait-agent --until verdict` waited 102 min. The server
-  then ran a3836343 (slice 1); 6931ee21 (slice 2, `stopped_without_verdict`,
-  reconciliation) was installed a few minutes later by a handoff, and its
-  reconciliation did not flag the open assignment either. Also reported:
-  after a handoff `wait-agent` retried forever on `prompt_request_not_found`
-  (r-10), and two panes answered "the agent does not report turns".
-  Find, with the transcript of wB2:p1, why the Stop did not record the
-  verdict (a turn that ends in the minute the prompt was accepted, the
-  anchor, the transcript record shape) and why reconciliation at server
-  start or handoff misses an open assignment whose worker's turn already
-  ended; `prompt_request_not_found` after a handoff ends the wait at once
-  with a distinct exit code; fix each with a test reproducing it. No
-  timers.
-  Decided 2026-10-12 (the user: "very bad that the supervisor did not
-  catch it; discuss with the models"; round 20261012-010450-e610, sol,
-  MiMo, DeepSeek agreeing): the flaw is that both predicates fire only on
-  facts the transcript parser produced, so an unparsed start meant
-  silence, and the "anchor never resolved" predicate the earlier report
-  asked for was never built. Slice 2 adds a total-accounting invariant over
-  the accepted-assignment ledger (not over parsed starts): every open
-  assignment whose worker's turn closed causally after its acceptance
-  (turn ids/sequence, not elapsed time; no later turn start, queued
-  prompt or tool use) has a verdict, a stop, an open question tied to it,
-  or a causally linked continuation (a merely newer turn does not excuse
-  it); otherwise `unaccounted_assignment` (with the last lifecycle fact),
-  checked on Stop events, every sweep and at startup/handoff; missing or
-  unreadable transcript evidence is a finding, never silence. Fixtures:
-  pasted_content, queued_command, multiline, missing and truncated
-  transcript, restart/handoff, plus a supervisor self-test injecting an
-  assignment with no parseable start.
-  Slice 1 landed 2026-10-12 (e97a3fea). The real cause was not the
-  pasted_content wrapper (the coordinator's lead was wrong): Claude Code
-  writes the turn's last assistant message to the transcript after the Stop
-  hook fires, so the Stop-time scan missed `WORKER-DONE`. Fixed: the Stop
-  hook sends `last_assistant_message` as `final_text` in `pane.report_turn`,
-  used when the transcript lacks it; paste tags ignored when matching;
-  the first sweep of a new server re-reads open assignments
-  (`turn_duration` marks a turn end); `wait-agent --until verdict` exits 8
-  (tracking lost) on an untracked request. Left for slice 2: the
-  `unaccounted_assignment` invariant decided above, and the
-  `prompt_turns` state (who reports turns, tracked requests) carried
-  across a handoff, which caused "the agent does not report turns".
-
 - [ ] Requirements from reports are traced to tests before an item closes [t-jyicwrb4]
   (follows from [t-276mtaqw]; round 20261012-010450-e610: the supervisor
   predicate "an assignment whose waiter's anchor never resolved" was
