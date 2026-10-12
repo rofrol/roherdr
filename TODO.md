@@ -214,6 +214,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   for the retry after a failed attempt; `--model` on `todo run --agent
   pi-anthropic` chooses per run, both models in the proxy's allowlist;
   record cost per accepted item, retries included.
+  Slice 8 landed 2026-10-12 (6f278c2b, a pi worker): Anthropic answered that
+  claude-sonnet-5-5 needs thinking.type adaptive with output_config.effort; pi
+  does that only for a model with `compat.forceAdaptiveThinking`, now set in
+  the generated models.json.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
