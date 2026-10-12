@@ -110,6 +110,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   received by the owner's Console organization, expiring 2026-11-09; covers the
   Claude API, Managed Agents, the Agent SDK and the Playground, not
   Claude Code.
+  Slice 1 landed 2026-10-12 (2b852699, a pi worker): the key read from its
+  0600 file into memory (core dumps off), a private Unix-socket proxy with
+  per-run bearer tokens, a fixed endpoint and model allowlist, client
+  headers dropped, the key passed to curl over stdin; per-run SQLite
+  accounting, a $200 default cap with reservation and a fail-closed kill
+  switch; worker policies deny the key file. Not yet wired to any worker:
+  slice 2 does that (pi with an Anthropic model through the proxy, then
+  the fallback at the subscription limit and the usage widget).
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
