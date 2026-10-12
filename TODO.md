@@ -282,6 +282,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   notice and a switch to turn it off; one automatic handoff per tenure
   (no loops after a resume). The in-flight new-pane slice lands as is.
 
+- [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
+  2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
+  5.5) ran `pkill -f "herdr-"` and `pkill -f nextest` in the folder slot;
+  it killed the coordinator's herdr-job waits twice (`todo.wait`
+  client_disconnected at 18:25:26 and 18:41:00 UTC) and another
+  session's `agent.wait_verdict`. Proposed: the worker policy (pre-tool
+  checks) denies `pkill`, `killall` and `kill` by pattern or of a PID the
+  worker did not start; `todo run`'s task suffix states it; a test with
+  these exact commands. Cost: small src change in the worker policy plus
+  its tests; no guest build.
+  Decided by the user 2026-10-12 (d-incouunr): approved, right after the
+  handoff slice.
+
 - [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
   (the user, 2026-10-12, after the coordinator wrote "the existing
   5-minute sweep only catches missed events and a wedged session" into
@@ -3303,17 +3316,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
-  2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
-  5.5) ran `pkill -f "herdr-"` and `pkill -f nextest` in the folder slot;
-  it killed the coordinator's herdr-job waits twice (`todo.wait`
-  client_disconnected at 18:25:26 and 18:41:00 UTC) and another
-  session's `agent.wait_verdict`. Proposed: the worker policy (pre-tool
-  checks) denies `pkill`, `killall` and `kill` by pattern or of a PID the
-  worker did not start; `todo run`'s task suffix states it; a test with
-  these exact commands. Cost: small src change in the worker policy plus
-  its tests; no guest build.
 
 ## Needs a decision
 
