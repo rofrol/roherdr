@@ -6609,6 +6609,17 @@
         "TodoRunParams": {
           "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent CLI the run's workers run (`pi`: headless pi with\n`openai-codex/gpt-6.1-sol` on the owner's ChatGPT plan, in the same\nfolder slot, sandbox, checks and verify). The usage gate reads the\nusage of that agent's provider: Claude's, or OpenAI's ChatGPT plan\nfor pi. Claude when absent."
+            },
             "auto_answer": {
               "description": "The server answers each question the worker policy leaves (a\n`question` event) itself with a bounded, stateless model call that\nreturns `allow`, `deny` (with a message), `answer` (an\n`AskUserQuestion`'s answers) or `escalate` (a question for the user,\nwhich also enters the user's `?` list). A request herdr's policy\nleaves to the user (a classifier escalation, a path outside the\nworker's folders, a tool it does not know) is only escalated. The\nreply's `auto_answer` says whether the server took it.",
               "type": "boolean"
@@ -6816,6 +6827,21 @@
             "seq"
           ],
           "type": "object"
+        },
+        "WorkerAgent": {
+          "description": "The agent CLI a headless worker runs.",
+          "oneOf": [
+            {
+              "const": "claude",
+              "description": "Claude Code (`claude -p` over stream-json), on the Anthropic plan.",
+              "type": "string"
+            },
+            {
+              "const": "pi",
+              "description": "pi in RPC mode (`pi --mode rpc`), by default with\n`openai-codex/gpt-6.1-sol` on the owner's ChatGPT plan.",
+              "type": "string"
+            }
+          ]
         },
         "WorkerAnswerAsParams": {
           "description": "`worker.answer` sent by a coordination tenure (`worker.answer_as`):\napplied only while that tenure owns the worker. Once the worker has moved\nto another tenure the answer is refused with `ownership_transferred`,\nnaming the owner, and kept in the owner's inbox as a `late_answer`; it is\nnever applied. The check and the answer's record share one hold of the\nregistry, as a handoff's move does: an answer lands before the move (and\nthe move carries it) or after it (and is refused).",
@@ -7223,8 +7249,19 @@
           "type": "object"
         },
         "WorkerStartParams": {
-          "description": "Starts a headless Claude worker: `claude -p` over stream-json pipes, no\nterminal. The server owns the process; clients only ask about it.",
+          "description": "Starts a headless worker: `claude -p` over stream-json pipes (or `pi\n--mode rpc` with `agent: pi`), no terminal. The server owns the process;\nclients only ask about it.",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent CLI the worker runs; Claude when absent."
+            },
             "base": {
               "description": "With `folder_slot`: what the branch starts from; `master` when absent.",
               "type": [
@@ -7269,7 +7306,7 @@
               ]
             },
             "model": {
-              "description": "Passed to `claude --model`; the CLI's default when absent.",
+              "description": "Passed to `claude --model` (or `pi --model`); the CLI's default when\nabsent (for pi, `openai-codex/gpt-6.1-sol`).",
               "type": [
                 "string",
                 "null"

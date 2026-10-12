@@ -2,17 +2,45 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Starts a headless Claude worker: `claude -p` over stream-json pipes, no
-/// terminal. The server owns the process; clients only ask about it.
+/// The agent CLI a headless worker runs.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkerAgent {
+    /// Claude Code (`claude -p` over stream-json), on the Anthropic plan.
+    #[default]
+    Claude,
+    /// pi in RPC mode (`pi --mode rpc`), by default with
+    /// `openai-codex/gpt-6.1-sol` on the owner's ChatGPT plan.
+    Pi,
+}
+
+impl WorkerAgent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Pi => "pi",
+        }
+    }
+}
+
+/// Starts a headless worker: `claude -p` over stream-json pipes (or `pi
+/// --mode rpc` with `agent: pi`), no terminal. The server owns the process;
+/// clients only ask about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerStartParams {
     /// Working directory; file tools are allowed only inside its real path.
     pub cwd: String,
     /// The first user message.
     pub prompt: String,
-    /// Passed to `claude --model`; the CLI's default when absent.
+    /// Passed to `claude --model` (or `pi --model`); the CLI's default when
+    /// absent (for pi, `openai-codex/gpt-6.1-sol`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The agent CLI the worker runs; Claude when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<WorkerAgent>,
     /// The worker's task, as the sidebar names it; the prompt's first line
     /// when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]

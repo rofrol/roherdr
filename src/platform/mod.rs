@@ -648,6 +648,26 @@ pub(crate) fn confined_command(_confinement: &Confinement<'_>) -> Option<std::pr
     None
 }
 
+/// What a headless pi worker's shell commands may touch: they write only
+/// under `write_paths` (and the null and terminal devices), read none of
+/// `deny_read` (credential files and directories) nor any environment file
+/// (`.env`, `.env.*`, `.envrc`), and have no network.
+// Read only where a platform can sandbox the shell (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct ShellSandbox<'a> {
+    /// Canonical paths, so they match what the kernel resolves.
+    pub(crate) write_paths: &'a [std::path::PathBuf],
+    pub(crate) deny_read: &'a [std::path::PathBuf],
+}
+
+/// The shell text that runs one command, appended to it shell-quoted, in
+/// [`ShellSandbox`]; none where the platform cannot sandbox a shell (the
+/// caller refuses the worker then).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn sandboxed_shell_prefix(_sandbox: &ShellSandbox<'_>) -> Option<String> {
+    None
+}
+
 /// Quick Look exists only on macOS.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn quick_look(_path: &std::path::Path) -> Option<std::io::Result<std::process::Child>> {

@@ -46,6 +46,13 @@ pub struct TodoRunParams {
     /// unknown), on the user's word; recorded in the run's events.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub ignore_usage: bool,
+    /// The agent CLI the run's workers run (`pi`: headless pi with
+    /// `openai-codex/gpt-6.1-sol` on the owner's ChatGPT plan, in the same
+    /// folder slot, sandbox, checks and verify). The usage gate reads the
+    /// usage of that agent's provider: Claude's, or OpenAI's ChatGPT plan
+    /// for pi. Claude when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::workers::WorkerAgent>,
     /// The server reviews each `review` event itself with a bounded,
     /// stateless model call (`claude -p`, structured output, no tools) and
     /// applies its typed decision: `approve` (bound to the event's commit

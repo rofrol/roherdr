@@ -502,6 +502,7 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
         cwd: repo.display().to_string(),
         prompt: prompt.to_owned(),
         model: model.map(str::to_owned),
+        agent: None,
         name: None,
         workspace_id: None,
         folder_slot: None,
@@ -738,6 +739,7 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
         "~/.kube",
         "~/.cargo/credentials",
         "~/.cargo/credentials.toml",
+        "~/.pi/agent/auth.json",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -758,6 +760,7 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
         "~/.kube/**",
         "~/.cargo/credentials",
         "~/.cargo/credentials.toml",
+        "~/.pi/agent/auth.json",
         "**/.env",
         "**/.env.*",
         "**/.envrc",
@@ -6247,7 +6250,7 @@ mod todo_runs {
     /// `b` (b.txt exists), `never`, `tests` (src/api/a.txt exists), which
     /// the verify adds to a diff under `src/api/`, and `maintenance`
     /// (docs/next/a.txt exists), which it adds to a diff under `docs/next/`.
-    fn todo_repo(name: &str) -> Fixture {
+    pub(super) fn todo_repo(name: &str) -> Fixture {
         let fixture = Fixture::new(name);
         let repo = &fixture.repo;
         git_in(repo, &["init", "-q", "-b", "master"]);
@@ -6282,7 +6285,7 @@ mod todo_runs {
         fixture
     }
 
-    fn params(fixture: &Fixture, task: &str, check: &str) -> TodoRunParams {
+    pub(super) fn params(fixture: &Fixture, task: &str, check: &str) -> TodoRunParams {
         TodoRunParams {
             cwd: fixture.repo.display().to_string(),
             item: ITEM.into(),
@@ -6295,6 +6298,7 @@ mod todo_runs {
             workspace_id: Some("ws-coordinator".into()),
             env: Some(caller_env()),
             ignore_usage: false,
+            agent: None,
             auto_review: false,
             auto_answer: false,
         }
@@ -6384,7 +6388,7 @@ mod todo_runs {
             .collect()
     }
 
-    fn approve_to_done(fixture: &Fixture, run_id: &str) -> (TodoRunEvent, TodoRunInfo) {
+    pub(super) fn approve_to_done(fixture: &Fixture, run_id: &str) -> (TodoRunEvent, TodoRunInfo) {
         let (review, _) = wait(fixture, run_id, None);
         assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
         resume(fixture, run_id, review.event_id, TodoAction::Approve, None).unwrap();
@@ -6440,7 +6444,10 @@ mod todo_runs {
         usage
     }
 
-    fn fresh_usage(five_hour: u8, weekly: u8) -> Result<crate::api::schema::ProviderUsage, String> {
+    pub(super) fn fresh_usage(
+        five_hour: u8,
+        weekly: u8,
+    ) -> Result<crate::api::schema::ProviderUsage, String> {
         Ok(claude_usage(&[
             ("five_hour", five_hour),
             ("seven_day", weekly),
@@ -6514,23 +6521,34 @@ mod todo_runs {
             WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
         restarted.set_usage_for_test(fresh_usage(80, 10));
         assert_eq!(
-            restarted.usage_gate(&repo, false).unwrap_err().code(),
+            restarted
+                .usage_gate(&repo, WorkerAgent::Claude, false)
+                .unwrap_err()
+                .code(),
             "usage_gate"
         );
         restarted.set_usage_for_test(fresh_usage(79, 79));
-        let admitted = restarted.usage_gate(&repo, false).unwrap();
+        let admitted = restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .unwrap();
         assert_eq!(admitted["decision"], "admit");
         assert_eq!(admitted["reopened"], true);
         // Open again: 89 admits, 90 closes it.
         restarted.set_usage_for_test(fresh_usage(89, 89));
         assert_eq!(
-            restarted.usage_gate(&repo, false).unwrap()["reopened"],
+            restarted
+                .usage_gate(&repo, WorkerAgent::Claude, false)
+                .unwrap()["reopened"],
             false
         );
         restarted.set_usage_for_test(fresh_usage(90, 0));
-        assert!(restarted.usage_gate(&repo, false).is_err());
+        assert!(restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .is_err());
         restarted.set_usage_for_test(fresh_usage(85, 0));
-        assert!(restarted.usage_gate(&repo, false).is_err());
+        assert!(restarted
+            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .is_err());
     }
 
     #[test]
@@ -9451,7 +9469,11 @@ mod todo_runs {
         abort(&fixture, &next_id, review.event_id);
     }
 
-    fn run_events(fixture: &Fixture, run_id: &str, kind: &str) -> Vec<serde_json::Value> {
+    pub(super) fn run_events(
+        fixture: &Fixture,
+        run_id: &str,
+        kind: &str,
+    ) -> Vec<serde_json::Value> {
         fixture
             .supervisor
             .shared
@@ -13026,5 +13048,376 @@ mod inbox_events {
         let (snapshot, _) = fixture.attention(&id, None, || {});
         assert_eq!(snapshot.reason, WorkerAttentionReason::TurnEnd);
         supervisor.kill(&id, false).unwrap();
+    }
+}
+
+/// Headless pi workers ([`pi`]) against a stub `pi` that speaks pi's RPC
+/// protocol: `get_state` (answered after the gate extension's `notify`
+/// when the `-e` file is herdr's), and prompts chosen by their first line:
+/// `finish` (a reply ending with `WORKER-DONE`), `tool <tool> <json>` (a
+/// gate request for that call, then a reply naming herdr's answer),
+/// `commit <file> <subject...>` (as the Claude stub's) and `fail` (a model
+/// error). The `nogate` stub never reports the extension and prints
+/// `GOT-PROMPT` if a prompt reaches it.
+mod pi_workers {
+    use super::*;
+
+    const PI_STUB: &str = r#"#!/usr/bin/env python3
+import json, os, subprocess, sys
+
+NO_GATE = sys.argv[0].endswith("nogate")
+args = sys.argv[1:]
+extension = args[args.index("-e") + 1] if "-e" in args else None
+gate = (not NO_GATE and extension is not None and os.path.exists(extension)
+        and "herdr-gate-ready" in open(extension).read())
+model = args[args.index("--model") + 1] if "--model" in args else "none/none"
+provider, model_id = model.split("/", 1)
+
+def emit(event):
+    sys.stdout.write(json.dumps(event) + "\n")
+    sys.stdout.flush()
+
+def read():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    return json.loads(line)
+
+def reply(text, stop="stop", error=None):
+    message = {"role": "assistant", "model": model_id, "stopReason": stop,
+               "content": [{"type": "text", "text": text}]}
+    if error:
+        message["errorMessage"] = error
+    emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": text}})
+    emit({"type": "message_end", "message": message})
+    emit({"type": "agent_end", "messages": [], "willRetry": False})
+    emit({"type": "agent_settled", "aborted": False})
+
+def tool(name, tool_input):
+    emit({"type": "message_end", "message": {"role": "assistant", "stopReason": "toolUse",
+          "content": [{"type": "toolCall", "id": "call-1", "name": name, "arguments": tool_input}]}})
+    emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": name, "args": tool_input})
+    emit({"type": "extension_ui_request", "id": "gate-1", "method": "input",
+          "title": "herdr-tool-call", "placeholder": json.dumps(
+              {"tool_call_id": "call-1", "tool_name": name, "input": tool_input})})
+    while True:
+        answer = read()
+        if answer.get("type") == "extension_ui_response" and answer.get("id") == "gate-1":
+            break
+    if answer.get("cancelled"):
+        outcome = "blocked: cancelled"
+    else:
+        decision = json.loads(answer["value"])
+        outcome = "allowed" if decision.get("allow") is True else "blocked: " + decision.get("reason", "")
+    emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": name,
+          "isError": outcome != "allowed",
+          "result": {"content": [{"type": "text", "text": outcome}]}})
+    reply("tool " + outcome)
+
+def commit(path, subject):
+    with open(path, "a") as f:
+        f.write("change\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+           "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+    subprocess.run(git + ["add", path], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", subject], check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    reply("committed\nWORKER-DONE " + sha + " | summary")
+
+while True:
+    command = read()
+    kind = command.get("type")
+    if kind == "get_state":
+        if gate:
+            emit({"type": "extension_ui_request", "id": "n-1", "method": "notify",
+                  "message": "herdr-gate-ready", "notifyType": "info"})
+        emit({"id": command.get("id"), "type": "response", "command": "get_state", "success": True,
+              "data": {"sessionId": "pi-session", "isStreaming": False,
+                       "model": {"provider": provider, "id": model_id}}})
+    elif kind == "prompt":
+        if NO_GATE:
+            sys.stdout.write("GOT-PROMPT\n")
+            sys.stdout.flush()
+        emit({"type": "response", "command": "prompt", "success": True,
+              "data": {"disposition": "started"}})
+        emit({"type": "agent_start"})
+        words = command["message"].splitlines()[0].split(" ", 2)
+        if words[0] == "finish":
+            reply("done\nWORKER-DONE abcdef1 | summary")
+        elif words[0] == "tool":
+            tool(words[1], json.loads(words[2]))
+        elif words[0] == "commit":
+            commit(words[1], words[2])
+        elif words[0] == "fail":
+            reply("", stop="error", error="429 usage limit reached")
+        else:
+            reply("unknown prompt")
+    elif kind == "abort":
+        emit({"type": "response", "command": "abort", "success": True})
+"#;
+
+    /// Writes the stub as `name` (`pi` or `nogate`) and makes it the
+    /// supervisor's pi.
+    fn use_pi_stub(fixture: &Fixture, name: &str) {
+        let stub = fixture.root.join(name);
+        std::fs::write(&stub, PI_STUB).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *lock(&fixture.supervisor.shared.pi_program) = stub;
+    }
+
+    fn pi_params(repo: &Path, prompt: &str) -> WorkerStartParams {
+        WorkerStartParams {
+            agent: Some(WorkerAgent::Pi),
+            ..start_params(repo, prompt, None)
+        }
+    }
+
+    fn reply(worker: &WorkerInfo) -> String {
+        worker
+            .last_result
+            .as_ref()
+            .and_then(|result| result.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// R1, R2 and R4: a pi worker starts with the default model, gets its
+    /// prompt only after its gate proved itself, its tool calls go through
+    /// herdr's policy (allowed inside its folder, denied outside), and its
+    /// turns end with the reply's `WORKER-DONE` line, as a Claude worker's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pi_worker_runs_its_turns_through_herdrs_gate_and_policy() {
+        let fixture = Fixture::new("pi-turns");
+        use_pi_stub(&fixture, "pi");
+        let id = fixture
+            .supervisor
+            .start(&pi_params(
+                &fixture.repo,
+                r#"tool write {"path": "inside.txt"}"#,
+            ))
+            .unwrap()
+            .worker_id;
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.state, WorkerState::Finished, "{worker:#?}");
+        assert_eq!(worker.model.as_deref(), Some(pi::DEFAULT_MODEL));
+        // pi keeps no session file: nothing for a takeover to resume.
+        assert_eq!(worker.session_id, None);
+        let refused = fixture.supervisor.begin_takeover(&id, false).unwrap_err();
+        assert!(refused.to_string().contains("pi worker"), "{refused}");
+        assert_eq!(reply(&worker), "tool allowed");
+
+        let journal = fixture.journal(&id);
+        let started = &journal[0]["event"];
+        assert_eq!(started["agent"], "pi");
+        assert!(started["program"].as_str().unwrap().ends_with("/pi"));
+        let args: Vec<&str> = started["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        for flag in ["rpc", "--no-extensions", "-e", pi::DEFAULT_MODEL] {
+            assert!(args.contains(&flag), "{flag} missing from {args:?}");
+        }
+        // The extension sandboxes bash with the worker's folder writable.
+        let extension = args[args.iter().position(|arg| *arg == "-e").unwrap() + 1];
+        let source = std::fs::read_to_string(extension).unwrap();
+        assert!(source.contains("sandbox-exec"), "{source}");
+        let cwd = fixture.repo.canonicalize().unwrap();
+        assert!(
+            source.contains(&format!("(subpath \\\"{}\\\")", cwd.display())),
+            "{source}"
+        );
+        // The gate's report came before pi's answer to herdr's first
+        // command, which released the prompt.
+        let position = |find: &dyn Fn(&Value) -> bool| journal.iter().position(find).unwrap();
+        let ready = position(&|record| record["event"]["subtype"] == "herdr_gate_ready");
+        let init = position(&|record| record["event"]["subtype"] == "init");
+        assert!(ready < init, "{journal:#?}");
+        // The call went through the policy as Claude's Write tool.
+        let request = journal
+            .iter()
+            .find(|record| record["event"]["type"] == "control_request")
+            .unwrap();
+        assert_eq!(request["event"]["request"]["tool_name"], "Write");
+        let permissions = fixture.herdr_events(&id, "permission");
+        assert_eq!(permissions[0]["decision"], "allow", "{permissions:#?}");
+
+        fixture
+            .supervisor
+            .prompt(&id, r#"tool edit {"path": "/etc/hosts"}"#)
+            .unwrap();
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert!(
+            reply(&worker).starts_with("tool blocked: herdr worker policy"),
+            "{worker:#?}"
+        );
+        assert_eq!(
+            fixture.herdr_events(&id, "permission")[1]["decision"],
+            "deny"
+        );
+
+        fixture.supervisor.prompt(&id, "finish").unwrap();
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.turns, 3);
+        assert_eq!(worker.state, WorkerState::Finished);
+        assert!(
+            reply(&worker).ends_with("WORKER-DONE abcdef1 | summary"),
+            "{worker:#?}"
+        );
+        let number = worker_number(&id).unwrap();
+        assert_eq!(
+            lock(&fixture.supervisor.shared.registry).workers[&number]
+                .status
+                .done_commits,
+            ["abcdef1"]
+        );
+
+        fixture.supervisor.prompt(&id, "fail").unwrap();
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.state, WorkerState::Failed, "{worker:#?}");
+        assert_eq!(reply(&worker), "429 usage limit reached");
+
+        fixture.supervisor.stop(&id).unwrap();
+        fixture.wait(&id, WorkerWaitUntil::Exit);
+        assert!(
+            !Path::new(extension).exists(),
+            "the extension outlived its worker"
+        );
+    }
+
+    /// A pi worker survives its server as a Claude worker does: the next
+    /// server knows it is pi by its extension, and writes its prompts
+    /// translated at once (its gate was proven before the first one).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_new_server_reattaches_a_pi_worker_and_prompts_it_at_once() {
+        let fixture = Fixture::with_broker();
+        use_pi_stub(&fixture, "pi");
+        let id = fixture
+            .supervisor
+            .start(&pi_params(&fixture.repo, "finish"))
+            .unwrap()
+            .worker_id;
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.state, WorkerState::Finished, "{worker:#?}");
+        let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+        live.sever();
+
+        let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+        let number = worker_number(&id).unwrap();
+        {
+            // Woken by the new server's registry changes; the interval only
+            // checks the hang guard.
+            let started = Instant::now();
+            let mut registry = lock(&next.shared.registry);
+            while registry.workers[&number].live.is_none() {
+                assert!(started.elapsed() < HANG_GUARD, "the re-attach hung");
+                registry = next
+                    .shared
+                    .changed
+                    // delay: not a wait, the hang-guard check interval.
+                    .wait_timeout(registry, Duration::from_millis(100))
+                    .unwrap()
+                    .0;
+            }
+        }
+        next.prompt(&id, r#"tool read {"path": "inside.txt"}"#)
+            .unwrap();
+        let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.turns, 2, "{worker:#?}");
+        assert_eq!(reply(&worker), "tool allowed");
+        next.stop(&id).unwrap();
+        wait_on(&next, &id, WorkerWaitUntil::Exit);
+        assert!(!pi_extension_path(&fixture.root.join("workers"), &id).exists());
+    }
+
+    /// Fail closed: a pi that started without herdr's extension is ended
+    /// before it gets its prompt.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pi_without_herdrs_gate_is_ended_before_its_prompt() {
+        let fixture = Fixture::new("pi-nogate");
+        use_pi_stub(&fixture, "nogate");
+        let id = fixture
+            .supervisor
+            .start(&pi_params(&fixture.repo, "finish"))
+            .unwrap()
+            .worker_id;
+        let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+        assert_eq!(worker.turns, 0, "{worker:#?}");
+        assert_eq!(fixture.herdr_events(&id, "pi_gate_missing").len(), 1);
+        let journal = fixture.journal(&id);
+        assert!(
+            !journal.iter().any(|record| record["raw"] == "GOT-PROMPT"),
+            "the prompt reached a pi without its gate: {journal:#?}"
+        );
+    }
+
+    /// Where herdr has no shell sandbox, a pi worker is refused.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_pi_worker_is_refused_without_a_shell_sandbox() {
+        let fixture = Fixture::new("pi-unsupported");
+        use_pi_stub(&fixture, "pi");
+        let refused = fixture
+            .supervisor
+            .start(&pi_params(&fixture.repo, "finish"))
+            .unwrap_err();
+        assert_eq!(refused.code(), "unsupported", "{refused}");
+    }
+
+    /// R1, R3 and R4 through `todo run --agent pi`: the gate reads OpenAI's
+    /// usage, not Claude's, the run records the agent and model, and the pi
+    /// worker's commit goes through the same verify to `master`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_todo_run_with_pi_reads_openai_usage_and_lands_its_commit() {
+        use crate::api::schema::{TodoEventKind, TodoRunParams};
+        let fixture = todo_runs::todo_repo("todo-pi");
+        use_pi_stub(&fixture, "pi");
+        let pi_run = |task: &str| TodoRunParams {
+            agent: Some(WorkerAgent::Pi),
+            ..todo_runs::params(&fixture, task, "ok")
+        };
+        // Claude's windows full, OpenAI's low: a pi run is admitted.
+        fixture
+            .supervisor
+            .set_usage_for_test(todo_runs::fresh_usage(95, 95));
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(95, 10));
+        let refused = fixture
+            .supervisor
+            .todo_run(pi_run("commit a.txt feat: add a"))
+            .unwrap_err();
+        assert_eq!(refused.code(), "usage_gate");
+        assert!(
+            refused.to_string().contains("OpenAI (ChatGPT plan)"),
+            "{refused}"
+        );
+        // The Claude gate is not the pi gate: OpenAI below 80 admits.
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(10, 10));
+        let run = fixture
+            .supervisor
+            .todo_run(pi_run("commit a.txt feat: add a"))
+            .unwrap();
+        let created = todo_runs::run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["agent"], "pi");
+        assert_eq!(created[0]["model"], pi::DEFAULT_MODEL);
+        assert_eq!(created[0]["usage_gate"]["provider"], "openai");
+        let (done, finished) = todo_runs::approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let started = todo_runs::run_events(&fixture, &run.run_id, "run_started");
+        assert_eq!(started[0]["agent"], "pi");
+        assert_eq!(started[0]["model"], pi::DEFAULT_MODEL);
+        let worker_id = finished.worker_id.unwrap();
+        assert_eq!(
+            fixture.herdr_events(&worker_id, "started")[0]["agent"],
+            "pi"
+        );
     }
 }

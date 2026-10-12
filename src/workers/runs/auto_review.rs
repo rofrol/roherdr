@@ -684,18 +684,19 @@ impl WorkerSupervisor {
                 vec!["approve this attempt".into(), "abort the run".into()],
             ));
         }
-        let usage = match self.usage_gate(&run.info.repo, false) {
-            Ok(usage) => usage,
-            Err(refused) => {
-                return Ok(Outcome::Escalate(
-                    format!(
-                        "The automatic review asks for another attempt, but the usage gate \
+        let usage =
+            match self.usage_gate(&run.info.repo, run.finish.agent.unwrap_or_default(), false) {
+                Ok(usage) => usage,
+                Err(refused) => {
+                    return Ok(Outcome::Escalate(
+                        format!(
+                            "The automatic review asks for another attempt, but the usage gate \
                          refuses it ({refused}). Its review:\n{review}"
-                    ),
-                    review_options(),
-                ))
-            }
-        };
+                        ),
+                        review_options(),
+                    ))
+                }
+            };
         let body = json!({
             "type": APPLIED, "event": seq, "decision_id": record.decision_id,
             "action": "retry", "task": review, "usage_gate": usage,

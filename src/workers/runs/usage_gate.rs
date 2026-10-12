@@ -9,10 +9,57 @@
 //! the repository's runs in the worker store, so a restart keeps it.
 //! `--ignore-usage`, on the user's word, admits anyway and is recorded in
 //! the run's events. A run already started is never touched.
+//!
+//! The gate reads the provider of the agent the run's worker runs
+//! ([`GateProvider`]): Claude's windows for a Claude worker, the ChatGPT
+//! plan's (as Codex reads them) for a pi worker on `openai-codex`. Each
+//! provider has its own gate state per repository, so a Claude gate closed
+//! at 90% leaves pi runs to OpenAI's usage.
 
 use serde_json::{json, Value};
 
-use crate::api::schema::ProviderUsage;
+use crate::api::schema::{ProviderUsage, WorkerAgent};
+
+/// Whose usage the gate reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::workers) enum GateProvider {
+    Claude,
+    /// OpenAI's ChatGPT plan, which `openai-codex` models run on.
+    OpenAi,
+}
+
+impl GateProvider {
+    pub(in crate::workers) fn of(agent: WorkerAgent) -> Self {
+        match agent {
+            WorkerAgent::Claude => Self::Claude,
+            WorkerAgent::Pi => Self::OpenAi,
+        }
+    }
+
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::OpenAi => "openai",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::OpenAi => "OpenAI (ChatGPT plan)",
+        }
+    }
+
+    /// The gate's row in the store: the repository for Claude, as before
+    /// pi workers; `openai:` and the repository (an absolute path, so the
+    /// two never collide) for OpenAI.
+    pub(super) fn store_key(self, repo: &str) -> String {
+        match self {
+            Self::Claude => repo.to_owned(),
+            Self::OpenAi => format!("openai:{repo}"),
+        }
+    }
+}
 
 /// A window at or above this many percent used closes the gate.
 pub(super) const CLOSE_AT: u8 = 90;
@@ -51,15 +98,20 @@ fn unknown(why: String) -> Decision {
     }
 }
 
-/// The gate's decision on `answer`, Claude's usage as the provider gave it
-/// just now (or the read's failure), for a gate that is `closed` or open.
-pub(super) fn decide(answer: Result<&ProviderUsage, &str>, closed: bool) -> Decision {
+/// The gate's decision on `answer`, `provider`'s usage as it gave it just
+/// now (or the read's failure), for a gate that is `closed` or open.
+pub(super) fn decide(
+    provider: GateProvider,
+    answer: Result<&ProviderUsage, &str>,
+    closed: bool,
+) -> Decision {
+    let name = provider.label();
     let usage = match answer {
         Ok(usage) => usage,
-        Err(failure) => return unknown(format!("reading Claude's usage failed: {failure}")),
+        Err(failure) => return unknown(format!("reading {name}'s usage failed: {failure}")),
     };
     if usage.windows.is_empty() {
-        return unknown("Claude's usage answer has no window".to_owned());
+        return unknown(format!("{name}'s usage answer has no window"));
     }
     let threshold = if closed { REOPEN_BELOW } else { CLOSE_AT };
     let blockers = usage
@@ -85,13 +137,14 @@ pub(super) fn decide(answer: Result<&ProviderUsage, &str>, closed: bool) -> Deci
 
 /// The refusal as the `usage_gate` error's message: each window with its
 /// value, or the read's failure.
-pub(super) fn refusal_message(blockers: &[Blocker]) -> String {
+pub(super) fn refusal_message(provider: GateProvider, blockers: &[Blocker]) -> String {
+    let name = provider.label();
     let windows = blockers
         .iter()
         .map(|blocker| {
             let mut text = match &blocker.window {
-                Some((id, label)) => format!("Claude window {id} ({label})"),
-                None => "Claude".to_owned(),
+                Some((id, label)) => format!("{name} window {id} ({label})"),
+                None => name.to_owned(),
             };
             if let Some(used) = blocker.used_percent {
                 text.push_str(&format!(": {used}% used"));
@@ -102,8 +155,8 @@ pub(super) fn refusal_message(blockers: &[Blocker]) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "usage gate: no new run while Claude's usage is high or unknown: {windows}. It admits \
-         again once Claude's usage, read when a run is asked for, shows every window below \
+        "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It admits \
+         again once {name}'s usage, read when a run is asked for, shows every window below \
          {REOPEN_BELOW}%; --ignore-usage, on the user's word, overrides"
     )
 }
@@ -166,12 +219,12 @@ mod tests {
     #[test]
     fn an_open_gate_admits_89_and_refuses_90_and_91() {
         assert_eq!(
-            decide(Ok(&answer(89, 89)), false),
+            decide(GateProvider::Claude, Ok(&answer(89, 89)), false),
             Decision::Admit { reopened: false }
         );
         for used in [90, 91] {
             assert_eq!(
-                refused(&decide(Ok(&answer(40, used)), false)),
+                refused(&decide(GateProvider::Claude, Ok(&answer(40, used)), false)),
                 [Some("seven_day".into())]
             );
         }
@@ -181,12 +234,15 @@ mod tests {
     fn a_closed_gate_reopens_only_below_80() {
         for used in [80, 85, 89] {
             assert!(
-                matches!(decide(Ok(&answer(used, 10)), true), Decision::Refuse { .. }),
+                matches!(
+                    decide(GateProvider::Claude, Ok(&answer(used, 10)), true),
+                    Decision::Refuse { .. }
+                ),
                 "{used}"
             );
         }
         assert_eq!(
-            decide(Ok(&answer(79, 79)), true),
+            decide(GateProvider::Claude, Ok(&answer(79, 79)), true),
             Decision::Admit { reopened: true }
         );
     }
@@ -194,16 +250,21 @@ mod tests {
     #[test]
     fn a_failed_read_or_an_answer_without_windows_refuses() {
         for closed in [false, true] {
-            let decision = decide(Err("Claude login expired"), closed);
+            let decision = decide(GateProvider::Claude, Err("Claude login expired"), closed);
             assert_eq!(refused(&decision), [None]);
             let Decision::Refuse { blockers } = decision else {
                 unreachable!();
             };
-            assert!(refusal_message(&blockers).contains("Claude login expired"));
+            assert!(
+                refusal_message(GateProvider::Claude, &blockers).contains("Claude login expired")
+            );
         }
         let mut empty = answer(0, 0);
         empty.windows.clear();
-        assert_eq!(refused(&decide(Ok(&empty), false)), [None]);
+        assert_eq!(
+            refused(&decide(GateProvider::Claude, Ok(&empty), false)),
+            [None]
+        );
     }
 
     #[test]
@@ -221,11 +282,14 @@ mod tests {
             window.observed_at = Some(1);
             window.resets_at = Some(2);
         }
-        assert_eq!(decide(Ok(&old), false), Decision::Admit { reopened: false });
+        assert_eq!(
+            decide(GateProvider::Claude, Ok(&old), false),
+            Decision::Admit { reopened: false }
+        );
         old.windows[0].used_percent = 90;
         old.windows[0].freshness = Some(UsageFreshness::Failed);
         assert_eq!(
-            refused(&decide(Ok(&old), false)),
+            refused(&decide(GateProvider::Claude, Ok(&old), false)),
             [Some("five_hour".into())]
         );
     }
@@ -241,6 +305,7 @@ mod tests {
         let end = runs[start..].find("fn load_run(").unwrap() + start;
         let gate = format!("{module}{}", &runs[start..end]);
         assert!(gate.contains("crate::usage::read_claude_now()"));
+        assert!(gate.contains("crate::usage::read_chatgpt_plan_now()"));
         for cached in [
             "UsageReport",
             "published",
@@ -257,11 +322,37 @@ mod tests {
     }
 
     #[test]
-    fn the_message_names_the_window_and_its_value() {
-        let Decision::Refuse { blockers } = decide(Ok(&answer(91, 10)), false) else {
+    fn a_pi_worker_reads_openai_with_a_gate_of_its_own() {
+        assert_eq!(GateProvider::of(WorkerAgent::Pi), GateProvider::OpenAi);
+        assert_eq!(GateProvider::of(WorkerAgent::Claude), GateProvider::Claude);
+        assert_eq!(GateProvider::Claude.store_key("/r"), "/r");
+        assert_eq!(GateProvider::OpenAi.store_key("/r"), "openai:/r");
+        let Decision::Refuse { blockers } =
+            decide(GateProvider::OpenAi, Ok(&answer(95, 10)), false)
+        else {
             panic!("admitted");
         };
-        let message = refusal_message(&blockers);
+        let message = refusal_message(GateProvider::OpenAi, &blockers);
+        assert!(
+            message.contains("OpenAI (ChatGPT plan) window five_hour"),
+            "{message}"
+        );
+        assert!(!message.contains("Claude"), "{message}");
+        let failed = decide(GateProvider::OpenAi, Err("no login"), false);
+        let Decision::Refuse { blockers } = failed else {
+            panic!("admitted");
+        };
+        assert!(refusal_message(GateProvider::OpenAi, &blockers).contains("OpenAI"));
+    }
+
+    #[test]
+    fn the_message_names_the_window_and_its_value() {
+        let Decision::Refuse { blockers } =
+            decide(GateProvider::Claude, Ok(&answer(91, 10)), false)
+        else {
+            panic!("admitted");
+        };
+        let message = refusal_message(GateProvider::Claude, &blockers);
         for part in ["five_hour", "91% used", "--ignore-usage"] {
             assert!(message.contains(part), "{part:?} not in {message}");
         }

@@ -40,6 +40,7 @@ mod item_coordinators;
 mod journal;
 mod live;
 mod log;
+mod pi;
 mod policy;
 mod pre_tool_checks;
 mod registry;
@@ -88,12 +89,13 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::api::schema::{
-    WorkerAnswerAsParams, WorkerAnswerParams, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerHeldOutput,
-    WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport,
-    WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail,
-    WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunsParams, WorkerStartParams,
-    WorkerState, WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
+    WorkerAgent, WorkerAnswerAsParams, WorkerAnswerParams, WorkerChoiceQuestion,
+    WorkerCommandTarget, WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction,
+    WorkerHeldOutput, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
+    WorkerKillReport, WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion,
+    WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunsParams,
+    WorkerStartParams, WorkerState, WorkerVerification, WorkerVerifyParams,
+    WorkerWaitDrainedParams, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -108,7 +110,7 @@ use registry::{worker_number, Drain, Entry, Registry, StartAdmission};
 #[cfg(unix)]
 use status::BrokerRecord;
 use status::{Before, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
-use supervisor::lifecycle::{remove_temp_dir, temp_dir_path};
+use supervisor::lifecycle::{pi_extension_path, remove_temp_dir, temp_dir_path};
 use supervisor::questions::{control_response, question_from_request};
 #[cfg(all(test, unix))]
 use supervisor::takeover::ProcessProbe;
@@ -158,6 +160,9 @@ const HOME_CREDENTIALS: &[(&str, bool)] = &[
     ("~/.kube", true),
     ("~/.cargo/credentials", false),
     ("~/.cargo/credentials.toml", false),
+    // pi's logins, the ChatGPT plan's among them (a pi worker's own CLI
+    // reads it outside the sandbox).
+    ("~/.pi/agent/auth.json", false),
 ];
 
 /// Environment files in the worktree, at any depth. The sandbox's `denyRead`
@@ -401,6 +406,8 @@ fn command_params(params: &impl Serialize) -> Value {
 struct Shared {
     dir: PathBuf,
     program: PathBuf,
+    /// The `pi` a pi worker runs ([`pi`]); a test sets its stub.
+    pi_program: Mutex<PathBuf>,
     /// The worker store, or why it could not be opened; then every event's
     /// write fails and marks its worker degraded.
     store: Result<store::Store, String>,
@@ -425,6 +432,9 @@ struct Shared {
     /// Claude's provider, which the server asks.
     #[cfg(test)]
     claude_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
+    /// The same for a pi run's gate, in place of OpenAI's ChatGPT plan.
+    #[cfg(test)]
+    openai_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
     /// The program a test sets for a run's automatic review in place of
     /// `program`, which the server calls.
     #[cfg(test)]

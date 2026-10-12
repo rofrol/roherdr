@@ -487,7 +487,7 @@ fn remove_real_dir(path: &Path) -> Result<(), WorkerError> {
 }
 
 /// The repository's absolute common git directory, seen from `dir`.
-fn common_dir(dir: &Path) -> Result<PathBuf, WorkerError> {
+pub(super) fn common_dir(dir: &Path) -> Result<PathBuf, WorkerError> {
     let out = git(
         dir,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],

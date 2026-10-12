@@ -7,14 +7,14 @@ use crate::api::schema::{
     Method, Request, TodoAction, TodoDraftRunParams, TodoGrantParams, TodoGrantsParams,
     TodoNextParams, TodoNextRun, TodoQueueMode, TodoQueueSetParams, TodoQueueTarget,
     TodoResumeParams, TodoReviewParams, TodoRevokeParams, TodoRunParams, TodoRunTarget,
-    TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
+    TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerAgent, WorkerDecision,
 };
 
 use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
-                 [--ignore-usage] [--auto-review] [--auto-answer]
+                 [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi]
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
@@ -29,6 +29,16 @@ const USAGE: &str = "usage:
       task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
+      With --agent pi the run's workers run headless pi (pi --mode rpc) with
+      openai-codex/gpt-6.1-sol on your ChatGPT plan instead of Claude, in the
+      same folder slot, contract, checks and verify; herdr's own pi extension
+      sends every tool call to the worker policy and runs bash in herdr's
+      shell sandbox (macOS sandbox-exec: writes only to the slot, its temp
+      dir and caches, no network, no credential reads), and a pi without
+      that extension is ended before its prompt. The usage gate then reads
+      the ChatGPT plan's usage (as Codex reads it) with the same thresholds
+      and a gate state of its own. The run's events record the agent and
+      model.
       With --auto-review the server reviews each review event itself: one
       claude -p call (structured JSON output, no tools, no session) with
       the item, the task, the worker's last reply, the diff and the checks,
@@ -440,6 +450,15 @@ fn one_run_id(subcommand: &str, rest: &[String]) -> Result<String, String> {
 }
 
 /// Takes the switch `option` out of `args`: whether it was there.
+/// `--agent`'s value: the agent CLI a run's workers run.
+fn parse_agent(value: &str) -> Result<WorkerAgent, String> {
+    match value {
+        "claude" => Ok(WorkerAgent::Claude),
+        "pi" => Ok(WorkerAgent::Pi),
+        other => Err(format!("--agent takes claude or pi, not {other}")),
+    }
+}
+
 fn take_switch(args: &[String], option: &str) -> Result<(bool, Vec<String>), String> {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != option).cloned().collect();
     match args.len() - rest.len() {
@@ -547,6 +566,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             }
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
+            let (agent, rest) = take_string_option(&rest, "--agent")?;
+            let agent = agent.as_deref().map(parse_agent).transpose()?;
             let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -581,6 +602,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 workspace_id: super::target::caller_workspace_id(),
                 env: super::worker::caller_env(),
                 ignore_usage,
+                agent,
                 auto_review,
                 auto_answer,
             })
@@ -1017,6 +1039,36 @@ mod tests {
         assert!(params.ignore_usage);
         assert!(!params.auto_review);
         assert_eq!(params.paths, ["src/**"]);
+        assert_eq!(params.agent, None);
+        let with_agent = |agent: &str| {
+            parse(&args(&[
+                "run",
+                "t-abcd2345",
+                "--agent",
+                agent,
+                "--task",
+                &task,
+                "--message",
+                "feat: x",
+                "--paths",
+                "src/**",
+                "--check",
+                "workers",
+            ]))
+        };
+        let Ok(Some(Method::TodoRun(params))) = with_agent("pi") else {
+            panic!("run --agent pi did not parse");
+        };
+        assert_eq!(params.agent, Some(WorkerAgent::Pi));
+        assert_eq!(params.paths, ["src/**"]);
+        let Ok(Some(Method::TodoRun(params))) = with_agent("claude") else {
+            panic!("run --agent claude did not parse");
+        };
+        assert_eq!(params.agent, Some(WorkerAgent::Claude));
+        let Err(error) = with_agent("codex") else {
+            panic!("run --agent codex parsed");
+        };
+        assert!(error.contains("claude or pi"), "{error}");
         let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
             "run",
             "t-abcd2345",

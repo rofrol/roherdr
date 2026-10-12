@@ -63,9 +63,9 @@ use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervi
 use crate::api::schema::{
     TodoAction, TodoDraftRunParams, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun,
     TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep,
-    TodoWaitParams, WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerInfo,
-    WorkerKillParams, WorkerQuestion, WorkerQuestionState, WorkerStartParams, WorkerState,
-    WorkerVerdict, WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
+    TodoWaitParams, WorkerAgent, WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget,
+    WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState, WorkerStartParams,
+    WorkerState, WorkerVerdict, WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
 };
 
 pub(super) mod activity;
@@ -224,6 +224,9 @@ pub(super) struct RunFinish {
     /// lands there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) landing_approved: Option<String>,
+    /// The agent CLI the run's workers run; Claude when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent: Option<WorkerAgent>,
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -1381,16 +1384,27 @@ impl WorkerSupervisor {
             .map_err(|error| WorkerError::Io(std::io::Error::other(error.clone())))
     }
 
-    /// Claude's usage read from the provider now, in this call (a test's
-    /// injected answer instead); never the usage poller's cached report.
-    fn read_claude_usage(&self) -> Result<crate::api::schema::ProviderUsage, String> {
+    /// The usage of `agent`'s provider read from the provider now, in this
+    /// call (a test's injected answer instead); never the usage poller's
+    /// cached report: Claude's for Claude, the ChatGPT plan's (Codex's
+    /// reading) for pi.
+    fn read_claude_usage(
+        &self,
+        agent: WorkerAgent,
+    ) -> Result<crate::api::schema::ProviderUsage, String> {
         #[cfg(test)]
         {
-            lock(&self.shared.claude_usage).clone()
+            match agent {
+                WorkerAgent::Claude => lock(&self.shared.claude_usage).clone(),
+                WorkerAgent::Pi => lock(&self.shared.openai_usage).clone(),
+            }
         }
         #[cfg(not(test))]
         {
-            crate::usage::read_claude_now()
+            match agent {
+                WorkerAgent::Claude => crate::usage::read_claude_now(),
+                WorkerAgent::Pi => crate::usage::read_chatgpt_plan_now(),
+            }
         }
     }
 
@@ -1402,29 +1416,48 @@ impl WorkerSupervisor {
         *lock(&self.shared.claude_usage) = answer;
     }
 
-    /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`:
-    /// refused as `usage_gate` unless `ignore_usage`; otherwise the
-    /// decision the run's events record. A refusal closes the repository's
-    /// gate and an admission of a closed one reopens it, in the store; an
-    /// override changes nothing there.
-    pub(super) fn usage_gate(&self, repo: &str, ignore_usage: bool) -> Result<Value, WorkerError> {
+    /// The answer a test sets for pi's provider (OpenAI's ChatGPT plan).
+    #[cfg(all(test, unix))]
+    pub(super) fn set_openai_usage_for_test(
+        &self,
+        answer: Result<crate::api::schema::ProviderUsage, String>,
+    ) {
+        *lock(&self.shared.openai_usage) = answer;
+    }
+
+    /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`
+    /// whose worker runs `agent`: refused as `usage_gate` unless
+    /// `ignore_usage`; otherwise the decision the run's events record. A
+    /// refusal closes the repository's gate of that agent's provider and an
+    /// admission of a closed one reopens it, in the store; an override
+    /// changes nothing there.
+    pub(super) fn usage_gate(
+        &self,
+        repo: &str,
+        agent: WorkerAgent,
+        ignore_usage: bool,
+    ) -> Result<Value, WorkerError> {
         let store = self.run_store()?;
-        let closed = store.usage_gate_closed(repo).map_err(store_error)?;
-        let answer = self.read_claude_usage();
-        let decision = usage_gate::decide(answer.as_ref().map_err(String::as_str), closed);
-        let recorded = usage_gate::decision_json(&decision, ignore_usage);
+        let provider = usage_gate::GateProvider::of(agent);
+        let key = provider.store_key(repo);
+        let closed = store.usage_gate_closed(&key).map_err(store_error)?;
+        let answer = self.read_claude_usage(agent);
+        let decision =
+            usage_gate::decide(provider, answer.as_ref().map_err(String::as_str), closed);
+        let mut recorded = usage_gate::decision_json(&decision, ignore_usage);
+        recorded["provider"] = json!(provider.id());
         match decision {
             usage_gate::Decision::Refuse { .. } if ignore_usage => {}
             usage_gate::Decision::Refuse { blockers } => {
                 store
-                    .set_usage_gate(repo, true, &recorded, now_ms())
+                    .set_usage_gate(&key, true, &recorded, now_ms())
                     .map_err(store_error)?;
                 return Err(WorkerError::UsageGate(usage_gate::refusal_message(
-                    &blockers,
+                    provider, &blockers,
                 )));
             }
             usage_gate::Decision::Admit { reopened: true } => store
-                .set_usage_gate(repo, false, &recorded, now_ms())
+                .set_usage_gate(&key, false, &recorded, now_ms())
                 .map_err(store_error)?,
             usage_gate::Decision::Admit { reopened: false } => {}
         }
@@ -1464,6 +1497,7 @@ impl WorkerSupervisor {
             workspace_id: params.workspace_id,
             env: params.env,
             ignore_usage: params.ignore_usage,
+            agent: None,
             auto_review: true,
             auto_answer: true,
         };
@@ -1495,7 +1529,8 @@ impl WorkerSupervisor {
             return Err(Self::run_active(&active));
         }
         let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
-        let usage = self.usage_gate(&repo, params.ignore_usage)?;
+        let agent = params.agent.unwrap_or_default();
+        let usage = self.usage_gate(&repo, agent, params.ignore_usage)?;
         // The item as the claim records it: its text and every id in TODO.md
         // now, which the close compares with to name the follow-ups.
         let todo = std::fs::read_to_string(Path::new(&repo).join(TODO_FILE)).unwrap_or_default();
@@ -1574,6 +1609,7 @@ impl WorkerSupervisor {
                 draft,
                 queued: queue.is_some(),
                 prepare: preflighted.prepare.clone(),
+                agent: params.agent,
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1599,6 +1635,8 @@ impl WorkerSupervisor {
             "workspace": params.workspace_id,
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
+            "agent": agent.as_str(),
+            "model": (agent == WorkerAgent::Pi).then_some(super::pi::DEFAULT_MODEL),
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
             "draft": draft,
@@ -2236,7 +2274,11 @@ impl WorkerSupervisor {
                 // the run). The run itself is not touched by a refusal: it
                 // keeps waiting on the same event.
                 if run.info.attempt < MAX_ATTEMPTS {
-                    usage = Some(self.usage_gate(&run.info.repo, params.ignore_usage)?);
+                    usage = Some(self.usage_gate(
+                        &run.info.repo,
+                        run.finish.agent.unwrap_or_default(),
+                        params.ignore_usage,
+                    )?);
                 }
             }
             // The kill follows the recorded resume: the driver waiting for
@@ -2944,6 +2986,7 @@ impl WorkerSupervisor {
             cwd: run.info.repo.clone(),
             prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
             model: None,
+            agent: run.finish.agent,
             name: None,
             workspace_id: run.workspace.clone(),
             folder_slot: Some(SLOT.to_owned()),
@@ -2955,23 +2998,34 @@ impl WorkerSupervisor {
             item: Some(run.info.item.clone()),
             command_id: Some(command_id.clone()),
         };
-        let worker_id = match self.start(&params) {
-            Ok(worker) => worker.worker_id,
+        let (worker_id, model) = match self.start(&params) {
+            Ok(worker) => (worker.worker_id, worker.model),
             // A start a crash cut off: the receipt names its worker when
             // it got that far.
-            Err(error @ WorkerError::CommandInterrupted(_)) => self
-                .run_store()
-                .ok()
-                .and_then(|store| store.receipt(&command_id).ok().flatten())
-                .and_then(|receipt| receipt.worker_id)
-                .ok_or_else(|| format!("starting the worker: {error}"))?,
+            Err(error @ WorkerError::CommandInterrupted(_)) => (
+                self.run_store()
+                    .ok()
+                    .and_then(|store| store.receipt(&command_id).ok().flatten())
+                    .and_then(|receipt| receipt.worker_id)
+                    .ok_or_else(|| format!("starting the worker: {error}"))?,
+                None,
+            ),
             Err(error) => return Err(format!("starting the worker: {error}")),
         };
         run.info.worker_id = Some(worker_id.clone());
         run.info.step = TodoStep::Attention;
+        // The agent and model the attempt's worker runs (R4 of the pi
+        // workers item): the model as the worker recorded it.
+        let agent = run.finish.agent.unwrap_or_default();
         self.run_step(
             run,
-            json!({"type": "run_started", "worker_id": worker_id, "step": run.info.step}),
+            json!({
+                "type": "run_started",
+                "worker_id": worker_id,
+                "step": run.info.step,
+                "agent": agent.as_str(),
+                "model": model,
+            }),
         )?;
         Ok(())
     }

@@ -16,7 +16,7 @@ use tracing::warn;
 use super::broker;
 use super::status::{Direction, Status};
 use super::{
-    control_response, lock, notify_clients, policy, pre_tool_checks, question_from_request,
+    control_response, lock, notify_clients, pi, policy, pre_tool_checks, question_from_request,
     remove_temp_dir, store, Receipt, Registry, WorkerError, WorkerSupervisor,
 };
 
@@ -93,10 +93,21 @@ pub(super) fn input_id(event: &Value, receipt: Option<&Receipt>, seq: i64) -> St
     }
 }
 
+/// A pi worker's input beside its pipe ([`pi`]): whether herdr's extension
+/// proved itself, and the prompt lines held back until it does.
+#[derive(Debug, Default)]
+struct PiInput {
+    ready: bool,
+    /// Each line's [`input_id`] and text.
+    held: Vec<(String, String)>,
+}
+
 /// A running worker's input; absent for one loaded from the store.
 pub(super) struct Live {
     pub(super) number: u64,
     stdin: Arc<Mutex<Option<Input>>>,
+    /// Set for a pi worker, whose lines herdr translates ([`pi::input_line`]).
+    pi: Option<Mutex<PiInput>>,
     /// This server let go of the worker's broker, handing the worker to the
     /// next server (a live handoff), or a test cut it off as a server that
     /// died would be: its reader ends without recording an exit.
@@ -115,9 +126,27 @@ pub(super) struct Live {
 
 impl Live {
     pub(super) fn new(number: u64, stdin: Input) -> Self {
+        Self::with_pi(number, stdin, None)
+    }
+
+    /// A pi worker's input: its prompts wait until herdr's extension proved
+    /// itself, unless `ready` (a worker re-attached after that).
+    pub(super) fn new_pi(number: u64, stdin: Input, ready: bool) -> Self {
+        Self::with_pi(
+            number,
+            stdin,
+            Some(PiInput {
+                ready,
+                held: Vec::new(),
+            }),
+        )
+    }
+
+    fn with_pi(number: u64, stdin: Input, pi: Option<PiInput>) -> Self {
         Self {
             number,
             stdin: Arc::new(Mutex::new(Some(stdin))),
+            pi: pi.map(Mutex::new),
             #[cfg(unix)]
             detached: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -195,9 +224,20 @@ impl Live {
             notify_clients();
         }
         let seq = committed.seq.unwrap_or_default();
-        let mut line = event.to_string();
-        line.push('\n');
-        if let Err(error) = self.write_line(pipe, &input_id(event, receipt, seq), &line) {
+        // A pi worker gets the line translated, or nothing for an event it
+        // has no use for; its prompt waits for the gate.
+        let Some(line) = self.line_for(event) else {
+            return Ok(seq);
+        };
+        let id = input_id(event, receipt, seq);
+        if let Some(pi) = &self.pi {
+            let mut pi = lock(pi);
+            if !pi.ready && pi::is_prompt(event) {
+                pi.held.push((id, line));
+                return Ok(seq);
+            }
+        }
+        if let Err(error) = self.write_line(pipe, &id, &line) {
             supervisor.record(
                 self.number,
                 Direction::Herdr,
@@ -221,9 +261,44 @@ impl Live {
                 "the worker's input is closed",
             ));
         };
-        let mut line = event.to_string();
+        match self.line_for(event) {
+            Some(line) => self.write_line(pipe, id, &line),
+            None => Ok(()),
+        }
+    }
+
+    /// The line the worker's CLI gets for `event`, with its newline.
+    fn line_for(&self, event: &Value) -> Option<String> {
+        let mut line = match &self.pi {
+            None => event.to_string(),
+            Some(_) => pi::input_line(event)?.to_string(),
+        };
         line.push('\n');
-        self.write_line(pipe, id, &line)
+        Some(line)
+    }
+
+    /// Writes a pi worker's held prompts now that herdr's extension proved
+    /// itself, and every later one at once.
+    pub(super) fn release_held(&self) -> std::io::Result<()> {
+        let mut stdin = lock(&self.stdin);
+        let held = match &self.pi {
+            Some(pi) => {
+                let mut pi = lock(pi);
+                pi.ready = true;
+                std::mem::take(&mut pi.held)
+            }
+            None => return Ok(()),
+        };
+        let Some(pipe) = stdin.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the worker's input is closed",
+            ));
+        };
+        for (id, line) in held {
+            self.write_line(pipe, &id, &line)?;
+        }
+        Ok(())
     }
 
     pub(super) fn close_input(&self) {
@@ -306,11 +381,11 @@ impl WorkerSupervisor {
     pub(super) fn spawn_worker(
         &self,
         worker_id: &str,
+        program: &Path,
         args: &[String],
         cwd: &Path,
         configure: impl Fn(&mut Command),
     ) -> Result<Spawned, WorkerError> {
-        let program = &self.shared.program;
         #[cfg(not(unix))]
         let _ = worker_id;
         #[cfg(unix)]
@@ -400,6 +475,10 @@ pub(super) struct Reader {
     pub(super) live: Arc<Live>,
     /// This server's lock on the journal, let go once the exit is stored.
     pub(super) owner_lock: File,
+    /// A pi worker's output translator ([`pi`]) and the file of herdr's
+    /// extension, removed with the temp dir; none for Claude.
+    pub(super) pi: Option<std::cell::RefCell<pi::Translator>>,
+    pub(super) pi_extension: Option<PathBuf>,
 }
 
 impl Reader {
@@ -526,6 +605,33 @@ impl Reader {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             return self.record_line(broker_seq, Direction::Out, store::Recorded::Raw(line));
         };
+        let event = match &self.pi {
+            None => event,
+            Some(translator) => {
+                let out = translator.borrow_mut().output(&event);
+                match out {
+                    pi::Out::Skip => return Spooled::Skipped,
+                    pi::Out::Record(event) => event,
+                    pi::Out::Cancel(input) => {
+                        if let Err(error) = self.live.send(&self.supervisor, &input) {
+                            warn!(%error, "pi dialog cancellation not delivered");
+                        }
+                        return Spooled::Skipped;
+                    }
+                    pi::Out::Init { event, gate_ready } => {
+                        let spooled = self.record_line(
+                            broker_seq,
+                            Direction::Out,
+                            store::Recorded::Event(&event),
+                        );
+                        if spooled != Spooled::Duplicate {
+                            self.open_gate(gate_ready);
+                        }
+                        return spooled;
+                    }
+                }
+            }
+        };
         // Held output waiting for its tool call goes into the turn it
         // happened in, before the turn's end.
         if event["type"].as_str() == Some("result") {
@@ -575,6 +681,39 @@ impl Reader {
             );
         }
         spooled
+    }
+
+    /// Once pi answered herdr's first command: writes the held prompt when
+    /// herdr's extension reported itself before that answer; otherwise ends
+    /// the worker before it gets any prompt, since its tools would run
+    /// without herdr's gate and sandbox.
+    fn open_gate(&self, gate_ready: bool) {
+        if gate_ready {
+            if let Err(error) = self.live.release_held() {
+                warn!(%error, "pi worker prompt not delivered");
+                self.supervisor.record(
+                    self.number,
+                    Direction::Herdr,
+                    &json!({"type": "input_failed", "error": error.to_string()}),
+                );
+            }
+            return;
+        }
+        self.supervisor.record(
+            self.number,
+            Direction::Herdr,
+            &json!({
+                "type": "pi_gate_missing",
+                "error": "pi started without herdr's tool gate extension, so its tools would run \
+                          unchecked and unsandboxed; the worker is ended before its prompt",
+            }),
+        );
+        self.live.close_input();
+        if let Err(error) =
+            crate::platform::signal_process_group(self.pid, crate::platform::Signal::Kill)
+        {
+            warn!(%error, "pi worker without its gate not signalled");
+        }
     }
 
     /// Answers a `can_use_tool` request through the policy, or a
@@ -779,6 +918,9 @@ impl Reader {
         // The temp dir goes first, so a worker shown exited has none; the
         // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);
+        if let Some(extension) = &self.pi_extension {
+            let _ = std::fs::remove_file(extension);
+        }
         self.supervisor.flush_held_output(self.number, true);
         let spooled =
             self.record_line(broker_seq, Direction::Herdr, store::Recorded::Event(exited));

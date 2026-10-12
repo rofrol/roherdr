@@ -115,6 +115,7 @@ impl WorkerSupervisor {
             shared: Arc::new(Shared {
                 dir,
                 program,
+                pi_program: Mutex::new(PathBuf::from(pi::PROGRAM)),
                 store,
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
@@ -126,6 +127,8 @@ impl WorkerSupervisor {
                 pre_tool_checks: Mutex::new(Vec::new()),
                 #[cfg(test)]
                 claude_usage: Mutex::new(Ok(runs::low_usage_for_test())),
+                #[cfg(test)]
+                openai_usage: Mutex::new(Ok(runs::low_usage_for_test())),
                 #[cfg(test)]
                 review_program: Mutex::new(None),
             }),
@@ -528,7 +531,7 @@ impl WorkerSupervisor {
         number: u64,
         owner_lock: File,
     ) -> Option<File> {
-        let (worker_id, record, pid, cwd_real, after) = {
+        let (worker_id, record, pid, cwd_real, after, is_pi) = {
             let registry = lock(&self.shared.registry);
             let Some(entry) = registry.workers.get(&number) else {
                 return Some(owner_lock);
@@ -541,6 +544,9 @@ impl WorkerSupervisor {
                     pid,
                     PathBuf::from(&status.cwd),
                     status.broker_seq,
+                    // A pi worker's extension stays beside its journal
+                    // until its exit is stored.
+                    pi_extension_path(&self.shared.dir, &status.worker_id).exists(),
                 ),
                 (Some(record), _) if status.is_gone() => {
                     // Left by a server that stored the exit and ended
@@ -583,7 +589,13 @@ impl WorkerSupervisor {
             }
         };
         let temp_dir = temp_dir_path(&self.shared.dir, &worker_id);
-        let live = Arc::new(Live::new(number, Input::Broker(input)));
+        // A pi worker's gate was proven before its first prompt (or the
+        // worker ended), so its next prompts go at once.
+        let live = Arc::new(if is_pi {
+            Live::new_pi(number, Input::Broker(input), true)
+        } else {
+            Live::new(number, Input::Broker(input))
+        });
         let reader = Reader {
             supervisor: self.clone(),
             number,
@@ -594,6 +606,8 @@ impl WorkerSupervisor {
             spool: Some(broker::spool_path(&record.socket)),
             live: Arc::clone(&live),
             owner_lock,
+            pi: is_pi.then(Default::default),
+            pi_extension: is_pi.then(|| pi_extension_path(&self.shared.dir, &worker_id)),
         };
         {
             let mut registry = lock(&self.shared.registry);

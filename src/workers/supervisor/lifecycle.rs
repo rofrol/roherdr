@@ -67,6 +67,25 @@ impl WorkerSupervisor {
                     .into(),
             ));
         }
+        let agent = params.agent.unwrap_or_default();
+        if agent == WorkerAgent::Pi {
+            if role.is_some() {
+                return Err(WorkerError::Invalid(
+                    "a headless item coordinator runs Claude only".into(),
+                ));
+            }
+            let probe = crate::platform::ShellSandbox {
+                write_paths: &[],
+                deny_read: &[],
+            };
+            if crate::platform::sandboxed_shell_prefix(&probe).is_none() {
+                return Err(WorkerError::Unsupported(
+                    "a pi worker's shell commands run in herdr's shell sandbox (sandbox-exec), \
+                     which this platform does not have; refusing to start it without one"
+                        .into(),
+                ));
+            }
+        }
         // Counted until the worker is registered, so a drain that starts
         // meanwhile waits for its first turn.
         let _admission = self.admit_start()?;
@@ -119,7 +138,7 @@ impl WorkerSupervisor {
         let owner_lock = own_journal(&journal_path, &worker_id)?;
         let temp_dir = self.create_temp_dir(&worker_id)?;
         let mut settings = worker_settings(&cwd_real, &temp_dir, &slot_caches);
-        let (contract, checks, check_errors) = match role {
+        let (contract, mut checks, mut check_errors) = match role {
             Some(role) => {
                 role.restrict_settings(&mut settings);
                 let (mut checks, errors) = self.configured_pre_tool_checks();
@@ -135,6 +154,7 @@ impl WorkerSupervisor {
         };
         let settings = settings.to_string();
 
+        let mut pi_extension = None;
         let mut args: Vec<String> = [
             "-p",
             "--input-format",
@@ -158,6 +178,27 @@ impl WorkerSupervisor {
         if let Some(model) = model {
             args.push("--model".into());
             args.push(model.to_owned());
+        }
+        let mut program = self.shared.program.clone();
+        let mut model = model.map(str::to_owned);
+        if agent == WorkerAgent::Pi {
+            let pi_model = model
+                .get_or_insert_with(|| pi::DEFAULT_MODEL.to_owned())
+                .clone();
+            let extension = self
+                .write_pi_extension(&worker_id, &cwd_real, &temp_dir, &slot_caches)
+                .inspect_err(|_| remove_temp_dir(&temp_dir))?;
+            args = pi::args(&pi_model, &extension.display().to_string(), &contract);
+            program = lock(&self.shared.pi_program).clone();
+            pi_extension = Some(extension);
+            if !checks.is_empty() {
+                check_errors.push(
+                    "the pre-tool checks run for Claude workers only; none runs for this pi \
+                     worker"
+                        .to_owned(),
+                );
+            }
+            checks.clear();
         }
 
         // The worker's hooks and herdr CLI calls must not act on the
@@ -203,8 +244,13 @@ impl WorkerSupervisor {
             }
         };
         let spawned = self
-            .spawn_worker(&worker_id, &args, &cwd_real, configure)
-            .inspect_err(|_| remove_temp_dir(&temp_dir))?;
+            .spawn_worker(&worker_id, &program, &args, &cwd_real, configure)
+            .inspect_err(|_| {
+                remove_temp_dir(&temp_dir);
+                if let Some(extension) = &pi_extension {
+                    let _ = std::fs::remove_file(extension);
+                }
+            })?;
         let pid = spawned.pid;
 
         let policy = policy::Policy::new(&cwd_path, &cwd_real, &temp_dir);
@@ -228,6 +274,7 @@ impl WorkerSupervisor {
             "workspace_id": params.workspace_id,
             "cwd": cwd_real.display().to_string(),
             "model": model,
+            "agent": agent.as_str(),
             "temp_dir": temp_dir.display().to_string(),
             "removed_env": removed_env,
             "pid": pid,
@@ -238,7 +285,7 @@ impl WorkerSupervisor {
                 "pre_tool_checks": checks,
             })),
             "pre_tool_checks": checks,
-            "program": self.shared.program.display().to_string(),
+            "program": program.display().to_string(),
             "args": args,
             "owner": params.owner_pane_id.as_ref().map(|pane_id| json!({
                 "pane_id": pane_id,
@@ -258,7 +305,10 @@ impl WorkerSupervisor {
                 "killed_leftover_pids": slot_killed,
             })),
         });
-        let live = Arc::new(Live::new(number, spawned.input));
+        let live = Arc::new(match agent {
+            WorkerAgent::Claude => Live::new(number, spawned.input),
+            WorkerAgent::Pi => Live::new_pi(number, spawned.input, false),
+        });
         {
             let mut registry = lock(&self.shared.registry);
             let mut entry = Entry::new(Status::new(worker_id.clone()), journal_path);
@@ -311,6 +361,8 @@ impl WorkerSupervisor {
             spool,
             live: Arc::clone(&live),
             owner_lock,
+            pi: (agent == WorkerAgent::Pi).then(Default::default),
+            pi_extension,
         };
         let reading = match spawned.source {
             Source::Pipes {
@@ -358,12 +410,65 @@ impl WorkerSupervisor {
 
         // The CLI buffers input written before `system/init` (trial 1). The
         // hook is registered before the prompt, so it covers the first call;
-        // every worker has it, for the rule against background waits.
-        live.send(self, &pre_tool_checks::initialize_request())?;
+        // every worker has it, for the rule against background waits. A pi
+        // worker gets `get_state` instead, whose answer releases the prompt
+        // once herdr's extension proved itself.
+        match agent {
+            WorkerAgent::Claude => live.send(self, &pre_tool_checks::initialize_request())?,
+            WorkerAgent::Pi => live.send(self, &pi::init_request())?,
+        };
         let turn_seq = live.send(self, &user_message(prompt))?;
         let mut info = self.status(&worker_id)?;
         info.turn_seq = Some(turn_seq);
         Ok(info)
+    }
+
+    /// Writes herdr's extension for pi worker `worker_id` ([`pi`]) and
+    /// returns its path: beside the worker's journal, which its sandboxed
+    /// shell cannot write, unlike its temp dir. Its shell may write the
+    /// worker's folder, its temp dir, the slot's caches and the
+    /// repository's git directory (a commit in a worktree writes there),
+    /// and read none of [`HOME_CREDENTIALS`].
+    fn write_pi_extension(
+        &self,
+        worker_id: &str,
+        cwd_real: &Path,
+        temp_dir: &Path,
+        slot_caches: &[PathBuf],
+    ) -> Result<PathBuf, WorkerError> {
+        let mut write_paths = vec![cwd_real.to_owned(), temp_dir.canonicalize()?];
+        write_paths.extend(
+            slot_caches
+                .iter()
+                .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.clone())),
+        );
+        if let Ok(common) = slot::common_dir(cwd_real) {
+            if !common.starts_with(cwd_real) {
+                write_paths.push(common);
+            }
+        }
+        let home = home_repo::home_dir();
+        let deny_read: Vec<PathBuf> = home
+            .iter()
+            .flat_map(|home| {
+                HOME_CREDENTIALS
+                    .iter()
+                    .filter_map(|(path, _)| path.strip_prefix("~/"))
+                    .map(|path| home.join(path))
+            })
+            .collect();
+        let prefix = crate::platform::sandboxed_shell_prefix(&crate::platform::ShellSandbox {
+            write_paths: &write_paths,
+            deny_read: &deny_read,
+        })
+        .ok_or_else(|| {
+            WorkerError::Unsupported("this platform has no shell sandbox for pi workers".into())
+        })?;
+        let path = pi_extension_path(&self.shared.dir, worker_id);
+        let staged = path.with_extension("js.tmp");
+        std::fs::write(&staged, pi::extension_source(&prefix))?;
+        std::fs::rename(&staged, &path)?;
+        Ok(path)
     }
 
     /// The `[workers] pre_tool_checks` for a worker that starts now, with
@@ -885,6 +990,12 @@ pub(in crate::workers) fn describe_kill(plan: &WorkerKillReport) -> String {
 /// Where a worker's temp dir lives, beside the journals.
 pub(in crate::workers) fn temp_dir_path(dir: &Path, worker_id: &str) -> PathBuf {
     dir.join("tmp").join(worker_id)
+}
+
+/// Where a pi worker's extension is ([`pi`]): beside its journal, until its
+/// exit is stored, which also tells a re-attaching server the worker is pi.
+pub(in crate::workers) fn pi_extension_path(dir: &Path, worker_id: &str) -> PathBuf {
+    dir.join(format!("{worker_id}.pi-gate.js"))
 }
 
 /// Fails unless `path` itself (not a symlink's target) is a directory.

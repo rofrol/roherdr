@@ -36,8 +36,8 @@ use super::store::{NewHistory, NewTenure, RunOwner, StoredChain};
 use super::WorkerSupervisor;
 use super::{lock, notify_clients, now_ms, repository_of, todo_titles, WorkerError};
 use crate::api::schema::{
-    CoordinatorInfo, HistoryEventKind, TodoChainInfo, TodoNextParams, WorkerCommandTarget,
-    WorkerInfo, WorkerStartParams, WorkerWaitUntil,
+    CoordinatorInfo, HistoryEventKind, TodoChainInfo, TodoNextParams, WorkerAgent,
+    WorkerCommandTarget, WorkerInfo, WorkerStartParams, WorkerWaitUntil,
 };
 
 /// Why an item coordinator's question is the user's from the start: it
@@ -418,7 +418,7 @@ impl WorkerSupervisor {
         if let Some(active) = store.active_coordinator_of(repo).map_err(store_error)? {
             return Err(Self::refusal(repo, "none", active));
         }
-        self.usage_gate(repo, false)?;
+        self.usage_gate(repo, WorkerAgent::Claude, false)?;
         let id = new_tenure_id(repo, &item);
         let at = now_ms();
         let claimed = store.transaction(|tx| {
@@ -487,6 +487,7 @@ impl WorkerSupervisor {
                 cwd: repo.to_owned(),
                 prompt: prompt(repo, &item, &item_text),
                 model: None,
+                agent: None,
                 name: Some(format!("coordinator {item}")),
                 workspace_id: owner.workspace.clone(),
                 folder_slot: None,

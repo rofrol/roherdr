@@ -837,6 +837,8 @@ impl WorkerSupervisor {
             workspace_id: run.workspace.clone(),
             env,
             ignore_usage: false,
+            // The next run's worker runs the closed one's agent.
+            agent: run.finish.agent,
             // The next run is reviewed and answered as the closed one was.
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,

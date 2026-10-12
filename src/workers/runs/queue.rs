@@ -655,6 +655,7 @@ impl WorkerSupervisor {
             workspace_id: queue.workspace.clone(),
             env: Some(env),
             ignore_usage: false,
+            agent: None,
             auto_review: true,
             auto_answer: true,
         };

@@ -50,6 +50,12 @@ impl WorkerSupervisor {
             if status.takeover_unfinished && !force {
                 return Err(WorkerError::Busy(unfinished_takeover_refusal(worker_id)));
             }
+            if pi_extension_path(&self.shared.dir, worker_id).exists() {
+                return Err(WorkerError::Unsupported(format!(
+                    "worker {worker_id} is a pi worker, which runs without a session file: \
+                     there is no session to resume in a tab"
+                )));
+            }
             let session_id = status.session_id.clone().ok_or_else(|| {
                 WorkerError::NotRunning(format!("worker {worker_id} has no session yet"))
             })?;

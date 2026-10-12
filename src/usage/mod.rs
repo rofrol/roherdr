@@ -432,7 +432,19 @@ fn record_fetched(
 // Test builds inject the gate's answer in place of this read.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn read_claude_now() -> Result<ProviderUsage, String> {
-    let provider = Provider::Claude;
+    read_now(Provider::Claude)
+}
+
+/// The ChatGPT plan's usage (Codex's rate limits, the plan `openai-codex`
+/// models run on) read now, as [`read_claude_now`] reads Claude's: the
+/// usage gate of a run whose worker is pi.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn read_chatgpt_plan_now() -> Result<ProviderUsage, String> {
+    read_now(Provider::Codex)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn read_now(provider: Provider) -> Result<ProviderUsage, String> {
     let fetched = provider.fetch(&UsageConfig::default());
     let now = now_unix();
     let mut result = Err(String::new());

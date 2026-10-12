@@ -748,6 +748,7 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         cwd: cwd.display().to_string(),
         prompt,
         model,
+        agent: None,
         name,
         workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
         owner_pane_id: super::target::caller_pane_id(),
