@@ -218,6 +218,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   claude-sonnet-5-5 needs thinking.type adaptive with output_config.effort; pi
   does that only for a model with `compat.forceAdaptiveThinking`, now set in
   the generated models.json.
+  Slice 9 landed 2026-10-12 (bf07eb22, a pi worker): the first real credit run
+  spent $0.21, then the proxy refused tool_use/tool_result/thinking blocks
+  ("message content not allowlisted"); messages and system now pass to the
+  API unvalidated, and refusal logs carry no request values (checked: the
+  earlier refusal line in herdr's log held no conversation text).
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
