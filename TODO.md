@@ -102,6 +102,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   all three models in round 20261012-155246-e730 want an Opus-class model
   for the review, so this item sets the review's model separately.
 
+- [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
+  [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
+  `AN!$14.20/$200 spend` while run r-onxx7w3b's worker had one request in
+  flight). `credit_report` (src/usage/mod.rs:534) sets status `Error`,
+  `limit_enforcing` and "Incomplete accounting: spending is closed" for any
+  `pending != 0`, so every refresh during a request paints the red `!`.
+  Show an in-flight request as normal (its own state, e.g. "1 in flight"),
+  and keep the red closed state for a pending row whose request has ended
+  without settling (the proxy's fail-closed case) and for the cap.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
@@ -2859,6 +2869,20 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
+
+- [ ] Concurrent credit workers refuse each other (found by the coordinator [t-alwaqkn5]
+  2026-10-12 while answering the user's "AN spend in red"): the credit
+  proxy admits a request only when no ledger row is pending
+  (src/platform/anthropic_proxy.rs:242, "pending unaccounted request",
+  402), so while one worker's request streams, every other credit
+  request (another repository's worker, a run's review call) is refused
+  and falls back to pi or `claude -p`; the server log shows one such
+  refusal so far. Six coordinators were told on 2026-10-12 to use
+  `--agent pi-anthropic`, which makes this common. Fail-closed accounting
+  is the point (an unsettled row may be an interrupted response), so the
+  fix must keep it: reserve each request's worst-case cost against the cap
+  instead of closing on any pending row, and close only for a pending row
+  whose request has ended unsettled. Touches the money boundary.
 
 ## Needs a decision
 
