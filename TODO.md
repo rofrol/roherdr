@@ -104,6 +104,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   runs and `todo run --draft` take the default agent too, and the
   `--draft` and `--auto-review` model calls can go through the API
   credits instead of `claude -p` on the subscription.
+  Slice 1 landed (2026-10-12, run r-3djse6sx on the API credits; the first
+  attempt r-aq4lmj5r on pi/OpenAI ended on a Codex server error with no
+  commit): `[workers] default_agent` (default `claude` until the user's
+  config sets it), `--agent` for `--draft`, `--next-agent`, `worker start
+  --agent` through the new `worker.start_choice` method, one fallback to
+  `pi` on a credit refusal, `agent` and `model` in `todo status`. Still
+  open: slice 2, the `--draft` and `--auto-review` model calls through the
+  API credits; setting `default_agent = "pi-anthropic"` in the user's
+  config once installed.
 
 - [ ] Stopping a worker whose process just exited fails with EPERM on macOS [t-4lgrokip]
   (follow-up of [t-nwxujise], found by the coordinator 2026-10-12: run
