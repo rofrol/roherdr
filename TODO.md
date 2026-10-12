@@ -78,6 +78,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      reported with `herdr report` before any claim to the user and never
      called pending or queued unless herdr says so.
 
+- [ ] The supervisor reports a process that shows no progress (the user, [t-7zaelcgk]
+  2026-10-12: "can the supervisor also check that a process is not
+  working? ask the models"; worker metal sat 1h30m in one tool call while
+  detected as working). Round of 2026-10-12 (sol, MiMo, DeepSeek), decided:
+  herdr never concludes "not working" (a cause it cannot compute); it
+  reports observed facts and asks the owning coordinator.
+  1. Contradiction facts, each its own finding: an open tool call
+     (PreToolUse without PostToolUse) whose child process has exited or
+     is a zombie, once an authoritative boundary shows no completion can
+     arrive; a registered wait whose target pid is dead or a zombie; a lock
+     file whose owner pid is dead. Not a single D-state sample.
+  2. `no_observed_progress` (a question, low severity): between two
+     consecutive sweeps (a periodic measurement, not a timeout), for an
+     agent reported working: no CPU growth in its process tree, no child
+     in R, no PTY output, no transcript write, and no open registered wait
+     whose target progressed (checked one level deep). A long build (CPU
+     grows) or a registered wait on a live, progressing job never fires;
+     a silent network wait without a registered target may, which is why
+     it is a question with the evidence, never a verdict.
+  3. Findings name the missing positive event and the evidence (open
+     tool call, pids, last progress sweep) and go to the owning
+     coordinator through supervision delivery; herdr never kills.
+
 - [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
   (the user via the chat-hosted coordinator, 2026-10-12: "the process is
   failing here; ask the models"): a TUI worker refused an approved
