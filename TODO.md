@@ -3097,6 +3097,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
 - [ ] The coordinator's tab shows its context size in tokens (the user, [t-gpnmlys3]
   2026-10-12: "on the coordinator's tab I want to see how many tokens its
   context has; ask the models").
+  Round 20261012-205835-a0b3 (sol, MiMo, DeepSeek agreeing; all Timing:
+  none; decided by the coordinator):
+  - The number: the latest completed request's input context, normalized
+    per agent (Claude: input + cache creation + cache read, since its
+    `input_tokens` excludes cache traffic; pi's provider may already
+    include cache in input, never add blindly), output excluded. Shown as
+    `ctx 312k` with a hover/help text "input of the last request, not
+    cost or cumulative"; exact integers kept for the cap. No percentage
+    until the model's window is a known fact.
+  - The server's shared transcript reader (persisted cursor keyed by
+    session and transcript identity, reconciled on transcript writes,
+    startup, handoff and turn end) stores `last_request_input_tokens` with
+    its provenance (session id, request sequence) on the agent's state,
+    exposed in the JSON API and an agent-updated event; computed for
+    every supported agent, shown first on the coordinator's tab line
+    beside the crown (TUI decides placement and colour). Not a metadata
+    badge with expiry. No file I/O in render.
+  - After `/clear`, resume of another session, a handoff or a rewritten
+    transcript the value becomes unknown until the new session's first
+    completed request; unknown is shown as unknown, never 0. Mid-turn it
+    stays "last request".
+  - This is step 1 of [t-2k3ima2h]: the cap consumes the same fact, so
+    this item lands before the cap's thresholds.
 
 ## Proposed
 
