@@ -208,6 +208,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   thinking object's shape to the API, allowlists pi's `output_config`, logs
   an offending field's JSON on refusal; the capture test runs pi with
   `--thinking medium`.
+  Model decided 2026-10-12 (d-ktxcvdey, the user): claude-sonnet-5-5 at
+  medium by default; claude-opus-5-5 at medium for hard items (unsafe or
+  FFI, lifetimes, async, cross-cutting refactors, design-heavy work) and
+  for the retry after a failed attempt; `--model` on `todo run --agent
+  pi-anthropic` chooses per run, both models in the proxy's allowlist;
+  record cost per accepted item, retries included.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
