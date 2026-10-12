@@ -2961,6 +2961,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Order (coordinator): the receipt goes into queue mode's dispatch
     after the trial starts, not before it.
 
+- [ ] Audit what the supervisor's 5-minute sweep catches that an event [t-ybzw6mhn]
+  should (follow-up of [t-2k3ima2h], round 20261012-203001-263e: a sweep
+  that catches missed events is a Rule 10 workaround). List each
+  predicate the timer sweep evaluates; for each, name the event and
+  durable cursor that should drive it, or label it external
+  reconciliation with its source; then move the event-driven ones off the
+  timer. Cost: one worker audit (text) plus small src slices; no build of
+  guests.
+  Decided by the user 2026-10-12 (d-nwqqrjxw): approved, queued at the
+  end of "Next, in order".
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -3183,15 +3194,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Audit what the supervisor's 5-minute sweep catches that an event [t-ybzw6mhn]
-  should (follow-up of [t-2k3ima2h], round 20261012-203001-263e: a sweep
-  that catches missed events is a Rule 10 workaround). List each
-  predicate the timer sweep evaluates; for each, name the event and
-  durable cursor that should drive it, or label it external
-  reconciliation with its source; then move the event-driven ones off the
-  timer. Cost: one worker audit (text) plus small src slices; no build of
-  guests.
 
 ## Needs a decision
 
