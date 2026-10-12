@@ -1567,6 +1567,29 @@ fn sysctl_u32_by_name(name: &std::ffi::CStr) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
+/// Whether `pid` has exited (zombie) or no longer exists.
+pub(super) fn process_is_zombie_or_gone(pid: u32) -> bool {
+    const SZOMB: u32 = 5;
+    // SAFETY: proc_bsdinfo is plain data and proc_pidinfo writes at most the
+    // size given.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written == size {
+        return info.pbi_status == SZOMB;
+    }
+    // No entry: gone. Any other failure is unknown, so not "gone".
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

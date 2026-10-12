@@ -471,9 +471,12 @@ fn signal_number(signal: super::Signal) -> libc::c_int {
     }
 }
 
+/// `leader_exited` tells whether the leader is verifiably a zombie or gone;
+/// it is the OS-specific part and is supplied by the platform module.
 pub(crate) fn signal_process_group(
     leader_pid: u32,
     signal: super::Signal,
+    leader_exited: impl FnOnce(u32) -> bool,
 ) -> std::io::Result<bool> {
     if leader_pid <= 1 {
         return Err(std::io::Error::new(
@@ -485,10 +488,12 @@ pub(crate) fn signal_process_group(
         return Ok(true);
     }
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(false)
-    } else {
-        Err(error)
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        // macOS answers EPERM for a group whose members are all zombies; only
+        // a leader that is verifiably a zombie or gone makes that "gone".
+        Some(libc::EPERM) if leader_exited(leader_pid) => Ok(false),
+        _ => Err(error),
     }
 }
 
@@ -1039,5 +1044,43 @@ mod shared_ssh_tests {
             std::io::ErrorKind::PermissionDenied
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod zombie_group_tests {
+    use std::os::unix::process::CommandExt as _;
+
+    #[test]
+    fn signalling_a_group_whose_leader_exited_unreaped_is_gone_not_an_error() {
+        let mut command = std::process::Command::new("true");
+        command.process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        // Wait for the exit without reaping it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(rc, 0);
+        let raw = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        let raw_errno = if raw == 0 {
+            None
+        } else {
+            std::io::Error::last_os_error().raw_os_error()
+        };
+        let result = crate::platform::signal_process_group(pid, crate::platform::Signal::Kill);
+        match raw_errno {
+            Some(libc::EPERM) => assert!(!result.unwrap()),
+            _ => {
+                result.unwrap();
+            }
+        }
+        child.wait().unwrap();
     }
 }

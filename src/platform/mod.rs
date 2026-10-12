@@ -308,7 +308,23 @@ pub(crate) fn signal_process_group(leader_pid: u32, signal: Signal) -> std::io::
 
 #[cfg(unix)]
 fn signal_process_group_platform(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {
-    unix_common::signal_process_group(leader_pid, signal)
+    unix_common::signal_process_group(leader_pid, signal, leader_exited_platform)
+}
+
+/// Whether a process is verifiably a zombie or gone (see `signal_process_group`).
+#[cfg(target_os = "macos")]
+fn leader_exited_platform(pid: u32) -> bool {
+    macos::process_is_zombie_or_gone(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn leader_exited_platform(pid: u32) -> bool {
+    linux::process_is_zombie_or_gone(pid)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn leader_exited_platform(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(not(unix))]

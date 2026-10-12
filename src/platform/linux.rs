@@ -1458,6 +1458,17 @@ pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
     })
 }
 
+/// Whether `pid` has exited (zombie) or no longer exists.
+pub(super) fn process_is_zombie_or_gone(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // The state follows the parenthesised command name.
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with(['Z', 'X'])),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
