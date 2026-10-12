@@ -2373,6 +2373,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      runs ("paused, 2 turns finishing, 4 starts held"); its right-click
      menu sets the reason; `herdr todo queue pause` maps onto it; the state
      survives restarts and handoffs.
+  Confirmation decided (the user, 2026-10-12: "and a confirmation whether
+  I want to pause or resume? or a context menu? ask the models"; sol,
+  MiMo, DeepSeek agreeing): pause is instant (reversible, loses nothing;
+  a confirm would only train dismissing dialogs); resume confirms in a small
+  dialog with the real counts ("Resume rormpc? 4 held starts launch now",
+  Resume/Cancel), skipped when nothing is held; the header icon is both
+  status and action (distinct pause/resume icons, a dimmed paused state);
+  the space's context menu offers the same actions as a second path, never
+  the only one.
 
 ## Proposed
 
