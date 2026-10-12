@@ -28,6 +28,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   for each, and the existing false findings resolve at the next sweep.
   Another instance, f-77: rormpc-tools' coordinator (c-x3kbyxpu) messaged
   todo-rormpc (w1M:p25), prompt_1a12d5d1bb1_8.
+  Also (the user, 2026-10-12: "who is pasting text here?", "why does the
+  supervisor open notifications and ...", his own message cut off by a
+  notice typed into his pane): the notices are typed with `agent prompt`
+  into the coordinator's pane, look like the user's pastes and interleave
+  with what the user is typing; an ack only resolves a finding until the
+  next sweep reopens it (f-85 -> f-87 -> f-89), so the same notice repeats
+  for every message between coordinators. Part of this item: a false
+  assignment closes for good (nothing else can close one today: only a
+  verdict or a newer prompt); a notice is never typed while the user is
+  typing in or focused on that pane: it waits for the next turn boundary
+  the agent reaches without user input, or goes through a channel that
+  is not typing (the hook's additional context); and a notice says
+  "herdr supervision" in its first words.
 
 - [ ] The usage gate tells "unknown" from "high", and a refused run waits [t-mzj67zon]
   for the gate instead of stopping the queue (the user via the rormpc
