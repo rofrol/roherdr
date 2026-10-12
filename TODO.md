@@ -2994,6 +2994,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-12 (d-nwqqrjxw): approved, queued at the
   end of "Next, in order".
 
+- [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
+  (the user, 2026-10-12, after the coordinator wrote "the existing
+  5-minute sweep only catches missed events and a wedged session" into
+  [t-2k3ima2h] and then admitted it was a workaround: "you are right, it
+  was a workaround — why again? ask the models. fix the process").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
