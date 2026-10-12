@@ -3377,6 +3377,13 @@ user needs to decide or do.
   The todo skill takes the handoff (dotfiles 9a46c57, workers w286 and
   w288; w286's own str.replace missed its anchor and it still reported
   done). Left: one live handoff of this coordinator.
+  Blocked 2026-10-13: the remaining live handoff depends on the funding
+  choice in t-x2jbucrm; the credit successor run was aborted after three
+  attempts failed the real offline CLI compatibility check.
+  Which live handoff should be tested after the successor funding decision?
+  Options: follow the funding choice in t-x2jbucrm (Recommended) | test a pi successor on the ChatGPT login now without claiming a credit-funded handoff passed
+  Checked: slice 1, the edge-case fix and the todo skill branch are landed;
+  no credit-successor implementation was installed by the failed run.
 
 - [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
   user, 2026-10-12: "but it has to be on Anthropic credits already,
