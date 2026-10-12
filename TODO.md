@@ -146,6 +146,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-12 (d-ugtj6hag): yes, a per-request
   worst-case reservation against the cap.
 
+- [ ] Tag every credit call with its stage (from the user's question [t-x46qpegh]
+  2026-10-12 on Managed Agents dynamic workflows; round in [t-ic5rrxn3],
+  all three models naming it the first step): the credit ledger records
+  item, run and stage (draft, worker, review, answer) per request, and
+  `herdr credits status` sums per item and stage, so the queue-mode A/B
+  and a later fan-out review experiment are measured for free. Small, no
+  build of an image, touches the ledger schema (a migration).
+  Decided by the user 2026-10-12 (d-n55a6wj5): yes, queue it.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
@@ -2925,14 +2934,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Tag every credit call with its stage (from the user's question [t-x46qpegh]
-  2026-10-12 on Managed Agents dynamic workflows; round in [t-ic5rrxn3],
-  all three models naming it the first step): the credit ledger records
-  item, run and stage (draft, worker, review, answer) per request, and
-  `herdr credits status` sums per item and stage, so the queue-mode A/B
-  and a later fan-out review experiment are measured for free. Small, no
-  build of an image, touches the ledger schema (a migration).
 
 ## Needs a decision
 
