@@ -64,6 +64,7 @@ use tracing::warn;
 use super::coordinators::store_error;
 use super::reports::is_herdr_repository;
 use super::store::{EventRow, Recorded, StoreResult, Tx};
+use super::supervision_rules::{self, ExpectedEvent, HoldEnd};
 use super::{lock, notify_clients, now_ms, Direction, PendingWorkerQuestion};
 use super::{WorkerError, WorkerSupervisor};
 use crate::api::schema::{
@@ -109,6 +110,33 @@ BEGIN SELECT RAISE(ABORT, 'supervision findings are never deleted'); END;
 CREATE TRIGGER supervision_findings_resolved_final BEFORE UPDATE ON supervision_findings
 WHEN OLD.status = 'resolved'
 BEGIN SELECT RAISE(ABORT, 'a resolved supervision finding is final'); END;
+"#;
+
+/// The findings kept back by a rule's counter-evidence.
+pub(super) const SUPERVISION_HOLDS_MIGRATION: &str = r#"
+-- A finding whose predicate's counter-evidence held (`supervision_rules`) is
+-- kept here as `pending` instead of being delivered; it ends `delivered` (the
+-- finding is then recorded and notified), `retracted` (the expected event
+-- happened: a false positive, counted per predicate and rule version) or
+-- `resolved` (the predicate stopped holding some other way). Rows are never
+-- deleted. Times are Unix milliseconds; `job_ids` is JSON.
+CREATE TABLE supervision_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    rule_version INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    counter_evidence TEXT NOT NULL,
+    job_ids TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'retracted', 'resolved')),
+    opened_ms INTEGER NOT NULL,
+    ended_ms INTEGER,
+    reason TEXT
+);
+CREATE UNIQUE INDEX supervision_holds_pending
+    ON supervision_holds (fingerprint) WHERE state = 'pending';
+CREATE TRIGGER supervision_holds_no_delete BEFORE DELETE ON supervision_holds
+BEGIN SELECT RAISE(ABORT, 'supervision holds are never deleted'); END;
 "#;
 
 /// Who acknowledged a finding, and the herdr coordinator's reads of it.
@@ -264,6 +292,19 @@ struct Candidate {
     run_id: Option<String>,
     job_ids: Vec<String>,
     evidence: SupervisionEvidence,
+    /// Set when its predicate's counter-evidence holds: the finding is pending, not delivered.
+    hold: Option<Hold>,
+}
+
+/// Why a finding is pending: the rule entry that holds and what it rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Hold {
+    rule_version: u32,
+    expected_event: ExpectedEvent,
+    counter_evidence: String,
+    /// The assignment whose continuation is awaited.
+    request_id: String,
+    job_ids: Vec<String>,
 }
 
 fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
@@ -412,11 +453,14 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
         let Some(owner) = owner_of(assignment, facts) else {
             continue;
         };
-        candidates.extend(stopped_without_verdict(
-            assignment,
-            Some(owner),
-            facts.observed_ms,
-        ));
+        let pane = facts
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == assignment.pane_id);
+        candidates.extend(
+            stopped_without_verdict(assignment, Some(owner), facts.observed_ms)
+                .map(|candidate| apply_rule(candidate, assignment, pane)),
+        );
     }
     for assignment in &facts.unaccounted {
         let Some(owner) = owner_of(assignment, facts) else {
@@ -426,12 +470,10 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
             .panes
             .iter()
             .find(|pane| pane.pane_id == assignment.pane_id);
-        candidates.extend(unaccounted_assignment(
-            assignment,
-            pane,
-            Some(owner),
-            facts.observed_ms,
-        ));
+        candidates.extend(
+            unaccounted_assignment(assignment, pane, Some(owner), facts.observed_ms)
+                .map(|candidate| apply_rule(candidate, assignment, pane)),
+        );
     }
     for assignment in &facts.unwatched {
         let Some(owner) = owner_of(assignment, facts) else {
@@ -450,6 +492,32 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
         }
     }
     candidates
+}
+
+/// Checks the predicate's rule: when an entry's counter-evidence holds for the worker's pane,
+/// the candidate is pending (kept, not delivered) while that continuation is live.
+fn apply_rule(
+    mut candidate: Candidate,
+    assignment: &crate::assignments::Assignment,
+    pane: Option<&PaneFacts>,
+) -> Candidate {
+    let Some(rule) = supervision_rules::rule_for(candidate.predicate) else {
+        return candidate;
+    };
+    if let Some((entry, job_ids)) = supervision_rules::counter_evidence(rule, pane) {
+        candidate
+            .evidence
+            .facts
+            .push(format!("pending: live job {}", job_ids.join(", ")));
+        candidate.hold = Some(Hold {
+            rule_version: rule.version,
+            expected_event: rule.expected_event,
+            counter_evidence: format!("{entry:?}"),
+            request_id: assignment.request_id.clone(),
+            job_ids,
+        });
+    }
+    candidate
 }
 
 /// Closes for good the open prompt records that are messages, not workers' assignments
@@ -573,6 +641,7 @@ fn coordinator_idle(coordinator: &CoordinatorFacts, observed_ms: u64) -> Option<
             event_ids,
             facts,
         },
+        hold: None,
     })
 }
 
@@ -631,6 +700,7 @@ fn untracked_shell(coordinator: &CoordinatorFacts, observed_ms: u64) -> Option<C
             event_ids,
             facts,
         },
+        hold: None,
     })
 }
 
@@ -665,6 +735,7 @@ fn working_after_stop(pane: &PaneFacts, observed_ms: u64) -> Option<Candidate> {
             event_ids,
             facts,
         },
+        hold: None,
     })
 }
 
@@ -721,6 +792,7 @@ fn verdict_undelivered(
             )],
             facts,
         },
+        hold: None,
     })
 }
 
@@ -770,6 +842,7 @@ fn stopped_without_verdict(
             )],
             facts,
         },
+        hold: None,
     })
 }
 
@@ -848,6 +921,7 @@ fn unaccounted_assignment(
             )],
             facts,
         },
+        hold: None,
     })
 }
 
@@ -937,6 +1011,7 @@ fn unhandled_assignment(
             event_ids,
             facts,
         },
+        hold: None,
     })
 }
 
@@ -978,6 +1053,7 @@ fn disk_low(disk: &DiskFacts, observed_ms: u64) -> Option<Candidate> {
                 format!("guard_bytes: {DISK_GUARD_BYTES}"),
             ],
         },
+        hold: None,
     })
 }
 
@@ -1169,6 +1245,66 @@ struct Changes {
 /// escalated, open again, when its severity rose), and every holding
 /// finding the sweep no longer saw is resolved.
 fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResult<Changes> {
+    record_sweep_with(tx, candidates, at_ms, &|expected, request_id| {
+        supervision_rules::hold_end(expected, request_id)
+    })
+}
+
+/// Appends a `supervision.hold` event for one change of a pending finding.
+fn hold_event(
+    tx: &Tx<'_>,
+    fingerprint: &str,
+    state: &str,
+    reason: Option<&str>,
+    at_ms: u64,
+) -> StoreResult<()> {
+    let event = json!({
+        "type": "supervision.hold",
+        "fingerprint": fingerprint,
+        "state": state,
+        "reason": reason,
+    });
+    tx.event(&EventRow {
+        worker_id: &format!("supervision-hold:{fingerprint}"),
+        direction: Direction::Herdr,
+        record: &Recorded::Event(&event),
+        ts_ms: at_ms,
+    })?;
+    Ok(())
+}
+
+/// Moves the pending hold of `fingerprint`, if any, to `state`; whether there was one.
+fn end_hold(
+    tx: &Tx<'_>,
+    fingerprint: &str,
+    state: &str,
+    reason: &str,
+    at_ms: u64,
+) -> StoreResult<bool> {
+    let changed = tx.connection().execute(
+        "UPDATE supervision_holds SET state = ?2, ended_ms = ?3, reason = ?4
+         WHERE fingerprint = ?1 AND state = 'pending'",
+        params![fingerprint, state, at_ms as i64, reason],
+    )?;
+    if changed > 0 {
+        hold_event(tx, fingerprint, state, Some(reason), at_ms)?;
+    }
+    Ok(changed > 0)
+}
+
+/// [`record_sweep`] with the judgement of an ended hold (`hold_end`) given.
+///
+/// A candidate with a [`Hold`] that no finding holds yet is `pending`: it is recorded in
+/// `supervision_holds` and nothing is delivered. A pending one whose candidate holds again
+/// without a hold (its job ended, its worker did not continue) is `delivered`: the finding
+/// opens now. A pending one whose candidate is gone is `retracted` when its expected event
+/// happened, else `resolved`.
+fn record_sweep_with(
+    tx: &Tx<'_>,
+    candidates: &[Candidate],
+    at_ms: u64,
+    hold_end: &dyn Fn(ExpectedEvent, &str) -> HoldEnd,
+) -> StoreResult<Changes> {
     let conn = tx.connection();
     let mut changes = Changes::default();
     let mut seen = BTreeSet::new();
@@ -1186,6 +1322,52 @@ fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResul
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        if let (None, Some(hold)) = (&holding, &candidate.hold) {
+            let pending: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM supervision_holds
+                     WHERE fingerprint = ?1 AND state = 'pending'",
+                    [&candidate.fingerprint],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let jobs = serde_json::to_string(&hold.job_ids).unwrap_or_else(|_| "[]".into());
+            match pending {
+                Some(id) => {
+                    conn.execute(
+                        "UPDATE supervision_holds SET job_ids = ?2 WHERE id = ?1",
+                        params![id, jobs],
+                    )?;
+                }
+                None => {
+                    conn.execute(
+                        "INSERT INTO supervision_holds (fingerprint, predicate, rule_version,
+                             request_id, counter_evidence, job_ids, state, opened_ms)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                        params![
+                            candidate.fingerprint,
+                            predicate_name(candidate.predicate),
+                            hold.rule_version,
+                            hold.request_id,
+                            hold.counter_evidence,
+                            jobs,
+                            at_ms as i64,
+                        ],
+                    )?;
+                    hold_event(tx, &candidate.fingerprint, "pending", None, at_ms)?;
+                }
+            }
+            continue;
+        }
+        if holding.is_none() {
+            end_hold(
+                tx,
+                &candidate.fingerprint,
+                "delivered",
+                "the continuation ended without the expected event",
+                at_ms,
+            )?;
+        }
         match holding {
             None => {
                 conn.execute(
@@ -1248,6 +1430,30 @@ fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResul
                 }
             }
         }
+    }
+    let pending: Vec<(String, String, u32)> = {
+        let mut statement = conn.prepare(
+            "SELECT fingerprint, request_id, rule_version FROM supervision_holds
+             WHERE state = 'pending' ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<StoreResult<_>>()?
+    };
+    for (fingerprint, request_id, _version) in pending {
+        if seen.contains(&fingerprint) {
+            continue;
+        }
+        let expected = ExpectedEvent::WorkerNextTurnOnAssignment;
+        match hold_end(expected, &request_id) {
+            HoldEnd::Retracted(reason) => end_hold(tx, &fingerprint, "retracted", reason, at_ms)?,
+            HoldEnd::Resolved => end_hold(
+                tx,
+                &fingerprint,
+                "resolved",
+                "the predicate stopped holding without the expected event",
+                at_ms,
+            )?,
+        };
     }
     let holding: Vec<(i64, String)> = {
         let mut statement = conn.prepare(
@@ -4195,5 +4401,147 @@ mod tests {
             assert_eq!(parse_status(name), status);
             assert_eq!(serde_json::to_value(status).unwrap(), name);
         }
+    }
+
+    /// R3 (f-114, f-115, f-116): a worker ended its turn while its own herdr-job
+    /// `make app (upgrade test)` ran, then resumed. No finding was due.
+    fn stopped_upgrade_facts(running_jobs: &[&str]) -> Facts {
+        let mut assignment = assignment(None);
+        assignment.stopped_ms = Some(900);
+        let mut worker = pane("w1:p2", AgentStatus::Idle);
+        worker.turn_closed = true;
+        worker.running_jobs = running_jobs.iter().map(|job| (*job).to_owned()).collect();
+        let mut facts = facts(vec![coordinator(AgentStatus::Working)], vec![worker]);
+        facts.stopped = vec![assignment];
+        facts
+            .tenure_of_pane
+            .insert("w1:p1".into(), "c-aaaaaaaa".into());
+        facts
+    }
+
+    fn record_with(
+        supervisor: &WorkerSupervisor,
+        candidates: &[Candidate],
+        at_ms: u64,
+        end: HoldEnd,
+    ) -> Changes {
+        supervisor
+            .supervision_store()
+            .unwrap()
+            .transaction(|tx| record_sweep_with(tx, candidates, at_ms, &|_, _| end))
+            .unwrap()
+    }
+
+    fn hold_states(supervisor: &WorkerSupervisor) -> Vec<String> {
+        supervisor
+            .supervision_store()
+            .unwrap()
+            .read(|conn| {
+                let mut statement =
+                    conn.prepare("SELECT state FROM supervision_holds ORDER BY id")?;
+                let rows = statement.query_map([], |row| row.get(0))?;
+                rows.collect::<StoreResult<Vec<String>>>()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_stop_while_the_workers_own_job_runs_is_pending_then_retracted_on_its_return() {
+        let (supervisor, root) = supervisor("hold-retract");
+        let running = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"]));
+        assert_eq!(running.len(), 1, "{running:?}");
+        assert_eq!(
+            running[0].predicate,
+            SupervisionPredicate::StoppedWithoutVerdict
+        );
+        let hold = running[0].hold.as_ref().expect("pending");
+        assert_eq!(hold.job_ids, vec!["make app (upgrade test)".to_owned()]);
+        assert_eq!(hold.rule_version, 1);
+
+        let changes = record_with(&supervisor, &running, 1000, HoldEnd::Resolved);
+        assert!(changes.opened.is_empty());
+        assert!(supervisor.supervision_findings(true).unwrap().is_empty());
+        assert_eq!(hold_states(&supervisor), ["pending"]);
+        // A second sweep while the job lives changes nothing.
+        record_with(&supervisor, &running, 1100, HoldEnd::Resolved);
+        assert_eq!(hold_states(&supervisor), ["pending"]);
+
+        // The worker resumed: the candidate is gone and its next turn happened.
+        let changes = record_with(
+            &supervisor,
+            &[],
+            1200,
+            HoldEnd::Retracted("the worker's next turn on the assignment started"),
+        );
+        assert!(changes.opened.is_empty());
+        assert!(supervisor.supervision_findings(true).unwrap().is_empty());
+        assert_eq!(hold_states(&supervisor), ["retracted"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_pending_finding_is_delivered_when_the_job_ends_and_the_worker_does_not_continue() {
+        let (supervisor, root) = supervisor("hold-deliver");
+        let running = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"]));
+        record_with(&supervisor, &running, 1000, HoldEnd::Resolved);
+        let ended = evaluate(&stopped_upgrade_facts(&[]));
+        assert!(ended[0].hold.is_none());
+        let changes = record_with(&supervisor, &ended, 1100, HoldEnd::Resolved);
+        assert_eq!(changes.opened.len(), 1);
+        assert_eq!(hold_states(&supervisor), ["delivered"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_stop_without_a_live_job_or_with_a_gone_pane_fires_at_once() {
+        let (supervisor, root) = supervisor("hold-known-true");
+        let none = evaluate(&stopped_upgrade_facts(&[]));
+        assert_eq!(none.len(), 1);
+        assert!(none[0].hold.is_none());
+        assert_eq!(
+            record_with(&supervisor, &none, 1000, HoldEnd::Resolved)
+                .opened
+                .len(),
+            1
+        );
+        assert!(hold_states(&supervisor).is_empty());
+
+        // The pane is gone: its job's completion has nowhere to go.
+        let mut gone = stopped_upgrade_facts(&["make app (upgrade test)"]);
+        gone.panes.retain(|pane| pane.pane_id != "w1:p2");
+        let found = evaluate(&gone);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].hold.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unaccounted_assignment_waits_for_the_workers_own_job_too() {
+        let mut facts = stopped_upgrade_facts(&["make app (upgrade test)"]);
+        let mut open = assignment(None);
+        open.turn_closed = Some(crate::assignments::ClosedTurn {
+            at_ms: 950,
+            fact: "turn end".into(),
+            queued: false,
+        });
+        facts.stopped.clear();
+        facts.unaccounted = vec![open];
+        let found = evaluate(&facts);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].predicate,
+            SupervisionPredicate::UnaccountedAssignment
+        );
+        assert!(found[0].hold.is_some());
+    }
+
+    #[test]
+    fn a_pending_finding_whose_predicate_stops_holding_otherwise_resolves() {
+        let (supervisor, root) = supervisor("hold-resolve");
+        let running = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"]));
+        record_with(&supervisor, &running, 1000, HoldEnd::Resolved);
+        record_with(&supervisor, &[], 1100, HoldEnd::Resolved);
+        assert_eq!(hold_states(&supervisor), ["resolved"]);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -742,6 +742,7 @@ ALTER TABLE workers ADD COLUMN end_by_owner INTEGER NOT NULL DEFAULT 0;
     super::supervision::SUPERVISION_MIGRATION,
     super::supervision::SUPERVISION_INBOX_MIGRATION,
     super::supervision::SUPERVISION_DELIVERY_MIGRATION,
+    super::supervision::SUPERVISION_HOLDS_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3368,6 +3369,7 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
@@ -3438,10 +3440,11 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 29
+                MIGRATIONS.len() - 30
             ))
             .unwrap();
         drop(store);
@@ -3504,10 +3507,11 @@ mod tests {
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
                  ALTER TABLE workers DROP COLUMN end_by_owner;
+                 DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 18
+                MIGRATIONS.len() - 19
             ))
             .unwrap();
         drop(store);

@@ -51,6 +51,7 @@ mod slot;
 mod status;
 mod store;
 pub(crate) mod supervision;
+mod supervision_rules;
 mod supervisor;
 #[cfg(test)]
 mod tests;
