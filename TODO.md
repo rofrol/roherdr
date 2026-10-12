@@ -56,6 +56,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   is not typing (the hook's additional context); and a notice says
   "herdr supervision" in its first words.
 
+- [ ] Rewrite the fork's history to remove the owner's private details (the [t-y54wm4hy]
+  user, 2026-10-12: "you put private things into the repo?", "rewrite the
+  history of my changes", "as TODO 4"). The coordinator wrote host IPs,
+  the owner's domains and host names, an ssh port, a Console workspace id,
+  the API key file's path, the DNS provider env file's path and a
+  friend's name into TODO.md and DECISIONS.md, and `todo run` pushed them
+  to the public rofrol/roherdr; 498ca52f removes them from the current
+  files (not pushed). Checked by the coordinator: the first affected
+  commit is 4c4ac407 (2026-10-01), 972 commits up to origin/master; no tag
+  contains it. Do: with git filter-repo `--replace-text` on the fork's own
+  commits only (upstream commits unchanged), in a fresh clone, the same
+  replacements as 498ca52f plus a search of every file for the owner's
+  paths, IPs and names; check the result (`git log -G` finds none,);
+  force-push only `refs/heads/master` with
+  `--force-with-lease=refs/heads/master:<reviewed sha>` after the owner's
+  look at the replacement list; then reset the shared checkout, rebase the
+  open worktree branches (the worker slot, fix/quiet-supervision) and
+  delete the stale todo/* branches; never touch tags. Also stop the cause:
+  the todo skill and AGENTS.md say private details (hosts, IPs, account
+  ids, people, personal paths) never go into a public repository's
+  files, only into the ignored `.local/`, and a pre-push check refuses a
+  push whose diff adds such patterns.
+
 - [ ] The usage gate tells "unknown" from "high", and a refused run waits [t-mzj67zon]
   for the gate instead of stopping the queue (the user via the rormpc
   coordinator, 2026-10-12: one DNS timeout in the usage read closed the
