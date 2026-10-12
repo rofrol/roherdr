@@ -1384,3 +1384,10 @@ delivered / delivered, not acknowledged / acknowledged); open assignments
 without a registered handle are `unaccounted_assignment`. No timers.
 Decided with sol, MiMo, DeepSeek (round 20261012-012938-bf23) and the
 user (d-akvsmeyw: before the grants).
+
+## The usage gate's thresholds are settings (the user, 2026-10-12:
+
+The usage gate's 90/80 thresholds were constants; the user kept 90% and
+asked for a setting (2026-10-12). Now (6a6c3f6d) `[usage] gate_close_percent`
+and `gate_reopen_percent` (90/80) for every provider's gate, validated
+(defaults on an invalid pair), read at each check, named in the refusal.

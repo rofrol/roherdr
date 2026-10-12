@@ -42,15 +42,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tab; a handoff between pi's last message and its turn end loses the result
   text (to fix with the verdict recording of the Stop path).
 
-- [ ] The usage gate's thresholds are settings (the user, 2026-10-12: [t-wwb6f43m]
-  "move the work to GPT/API and make the threshold a configurable
-  setting"; he kept 90% rather than raising it to 95%, after the
-  coordinator noted that coordinators and his own Claude Code share the
-  window). `[usage] gate_close_percent` (default 90) and
-  `gate_reopen_percent` (default 80) replace `CLOSE_AT` and the reopen
-  constant in src/workers/runs/usage_gate.rs, validated (reopen below
-  close, 1-100), shown in the refusal message; read on each gate check.
-
 - [ ] A sound on/off button in herdr's UI (the user, 2026-10-12: "some [t-txlrolmj]
   icon in herdr, a button that turns off sounds"). A clickable icon (the
   sidebar footer or the top bar, following the existing UI patterns) that
