@@ -51,6 +51,18 @@ pub(super) fn command() -> Command {
         .subcommand(reports_command())
         .subcommand(supervise_command())
         .subcommand(usage_command())
+        .subcommand(
+            Command::new("credits")
+                .about("Inspect the local Anthropic credit ledger or release a pending entry")
+                .subcommand(
+                    Command::new("status").about("Show local credit spend and ledger entries"),
+                )
+                .subcommand(
+                    Command::new("release")
+                        .about("Owner attests the stopped request consumed no tokens")
+                        .arg(Arg::new("entry").required(true)),
+                ),
+        )
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())

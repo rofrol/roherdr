@@ -21,6 +21,8 @@ struct Refusal {
     status: u16,
     check: &'static str,
     upstream: Option<u16>,
+    upstream_error: Option<(String, String)>,
+    no_usage: bool,
 }
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,6 +35,8 @@ fn deny(status: u16, check: &'static str) -> io::Error {
         status,
         check,
         upstream: None,
+        upstream_error: None,
+        no_usage: false,
     })
 }
 fn refused() -> io::Error {
@@ -44,6 +48,8 @@ fn with_upstream(error: io::Error, status: u16) -> io::Error {
         status: refusal.map_or(502, |r| r.status),
         check: refusal.map_or("upstream transport failure", |r| r.check),
         upstream: Some(status),
+        upstream_error: refusal.and_then(|r| r.upstream_error.clone()),
+        no_usage: refusal.is_some_and(|r| r.no_usage),
     })
 }
 
@@ -79,12 +85,16 @@ fn report_refusal(
     let status = refusal.map_or(502, |r| r.status);
     let check = refusal.map_or("transport failure", |r| r.check);
     let upstream = refusal.and_then(|r| r.upstream);
-    // Only normalized allowlisted metadata; never arbitrary URLs, headers or bodies.
+    // Only selected error fields, never headers, credentials or request bodies.
+    let upstream_error = refusal.and_then(|r| r.upstream_error.as_ref());
+    let error_type = upstream_error.map_or("proxy_refusal", |e| e.0.as_str());
+    let error_message = upstream_error.map_or(check, |e| e.1.as_str());
     tracing::warn!(method = context.method, path = context.path, model = %context.model,
-        check, status, upstream_status = ?upstream, "Anthropic proxy refused request");
+        check, status, upstream_status = ?upstream, error_type, error_message,
+        "Anthropic proxy refused request");
     if !wrote {
         let body =
-            serde_json::json!({"type":"error", "error": {"type":"proxy_refusal", "message":check},
+            serde_json::json!({"type":"error", "error": {"type":error_type, "message":error_message},
             "method":context.method, "path":context.path, "model":context.model,
             "upstream_status":upstream})
             .to_string();
@@ -286,7 +296,20 @@ impl AnthropicProxy {
             delta: false,
             header: false,
         };
-        upstream(&self.key, &request, &mut response)?;
+        if let Err(error) = upstream(&self.key, &request, &mut response) {
+            // Only a definite HTTP rejection before any message bytes proves
+            // no usage. Transport loss, malformed success and partial streams
+            // remain fail-closed, even when no usage has yet been observed.
+            let no_usage = error
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<Refusal>())
+                .is_some_and(|r| r.no_usage);
+            if no_usage && !response.header && response.json.is_empty() && response.line.is_empty()
+            {
+                release_entry(&self.ledger, id)?;
+            }
+            return Err(error);
+        }
         let usage = response.finish().map_err(|e| with_upstream(e, 200))?;
         self.ledger.execute(
             "UPDATE anthropic_requests SET input=?1,output=?2,cache_read=?3,cache_write=?4,cost=?5,pending=0 WHERE id=?6",
@@ -420,6 +443,61 @@ pub(crate) fn ledger_path(config: &crate::config::WorkersConfig) -> io::Result<s
         ));
     }
     Ok(crate::config::state_dir().join(format!("anthropic-credits-{cycle}.sqlite")))
+}
+
+/// Owner-only local ledger inspection; never loads the API key.
+pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({"spent_usd":0.0,"pending":0,"entries":[]}));
+        }
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| refused())?;
+    let mut query = db
+        .prepare("SELECT id,run,item,model,cost,pending,input FROM anthropic_requests ORDER BY id")
+        .map_err(|_| refused())?;
+    let entries = query.query_map([], |row| {
+        let pending: i64 = row.get(5)?;
+        let input: Option<i64> = row.get(6)?;
+        Ok(serde_json::json!({"id":row.get::<_,i64>(0)?,"run":row.get::<_,String>(1)?,
+            "item":row.get::<_,String>(2)?,"model":row.get::<_,String>(3)?,
+            "cost_usd":row.get::<_,Option<f64>>(4)?,
+            "state":if pending != 0 {"pending"} else if input.is_none() {"released"} else {"accounted"}}))
+    }).map_err(|_| refused())?.collect::<Result<Vec<_>,_>>().map_err(|_| refused())?;
+    // Totals come from the same SQLite statement snapshot as the entries.
+    let cost: f64 = entries
+        .iter()
+        .filter_map(|entry| entry["cost_usd"].as_f64())
+        .sum();
+    let pending = entries
+        .iter()
+        .filter(|entry| entry["state"] == "pending")
+        .count();
+    Ok(serde_json::json!({"spent_usd":cost,"pending":pending,"entries":entries}))
+}
+
+fn release_entry(db: &Connection, entry: i64) -> io::Result<()> {
+    let changed = db
+        .execute(
+            "UPDATE anthropic_requests SET pending=0,cost=0 WHERE id=?1 AND pending=1",
+            params![entry],
+        )
+        .map_err(|_| refused())?;
+    if changed != 1 {
+        return Err(io::Error::other("entry is missing or is not pending"));
+    }
+    Ok(())
+}
+
+/// The owner attests the stopped request did not consume tokens. This must
+/// never run automatically for an ambiguous or interrupted success response.
+pub(crate) fn credit_release(path: &Path, entry: i64) -> io::Result<()> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|_| refused())?;
+    release_entry(&db, entry)
 }
 
 struct TrackedWriter<W> {
@@ -862,7 +940,16 @@ impl<W: Write> Response<'_, W> {
                         Some("billing_error") => 402,
                         _ => 502,
                     };
-                    return Err(deny(status, "upstream stream error"));
+                    return Err(io::Error::other(Refusal {
+                        status,
+                        check: "upstream stream error",
+                        upstream: Some(200),
+                        upstream_error: event["error"]["type"]
+                            .as_str()
+                            .zip(event["error"]["message"].as_str())
+                            .map(|(kind, message)| (kind.to_owned(), message.to_owned())),
+                        no_usage: false,
+                    }));
                 }
                 _ => {}
             }
@@ -930,8 +1017,8 @@ fn curl_config(key: &str, request: &Request) -> io::Result<String> {
 }
 
 fn forward_upstream(input: &mut impl BufRead, output: &mut dyn Write) -> io::Result<()> {
-    // Bound informational responses and header bytes. Neither error bodies nor
-    // upstream diagnostics (which may echo input) are exposed or logged.
+    // Bound informational responses, headers and JSON error bodies. Expose
+    // only Anthropic's documented error.type and error.message fields.
     for _ in 0..4 {
         let status_line =
             bounded_line(input, 8192).map_err(|_| deny(502, "upstream HTTP status unavailable"))?;
@@ -960,19 +1047,37 @@ fn forward_upstream(input: &mut impl BufRead, output: &mut dyn Write) -> io::Res
             continue;
         }
         if status != 200 {
-            let local = match status {
-                402 => 402,
-                429 => 429,
-                _ => 502,
+            let local = if (400..600).contains(&status) {
+                status
+            } else {
+                502
+            };
+            let mut body = Vec::new();
+            // curl closes stdout after the response; a bounded read prevents
+            // an untrusted error body from exhausting memory.
+            let parsed = input.take(65537).read_to_end(&mut body).is_ok() && body.len() <= 65536;
+            let upstream_error = if parsed {
+                serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|value| {
+                        Some((
+                            value["error"]["type"].as_str()?.to_owned(),
+                            value["error"]["message"].as_str()?.to_owned(),
+                        ))
+                    })
+            } else {
+                None
             };
             return Err(io::Error::other(Refusal {
                 status: local,
-                check: if local == 502 {
-                    "upstream HTTP failure"
-                } else {
+                check: if matches!(status, 402 | 429) {
                     "upstream credit or rate limit"
+                } else {
+                    "upstream HTTP failure"
                 },
                 upstream: Some(status),
+                upstream_error,
+                no_usage: (400..600).contains(&status),
             }));
         }
         io::copy(input, output).map_err(|e| with_upstream(e, status))?;

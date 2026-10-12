@@ -26,6 +26,7 @@ mod agent;
 mod api;
 mod completion;
 mod coordinator;
+mod credits;
 mod decision;
 mod history;
 mod integration;
@@ -144,6 +145,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "reports" => report::run_reports_command(&args[2..])?,
         "supervise" => supervise::run_supervise_command(&args[2..])?,
         "usage" => usage::run_usage_command(&args[2..])?,
+        "credits" => credits::run(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,

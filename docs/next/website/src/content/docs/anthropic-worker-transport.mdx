@@ -61,9 +61,11 @@ its configuration through an anonymous pipe, with curlrc, HTTP proxy routing,
 redirects, stderr, and core dumps disabled. The server also disables its own core
 dumps before reading the credential. Neither credential nor headers are logged.
 Refusals name a safe check in the JSON response and server log, along with
-normalized method, path, model and upstream status when known. Statuses are 401
-for invalid run tokens, 403 for non-allowlisted requests, 402 for credit caps,
-402/429 for upstream limits and 502 for upstream or accounting failure. Once SSE
+normalized method, path, model and upstream status when known. Anthropic JSON
+errors expose only `error.type` and `error.message`, not the full response body;
+these fields are also logged. HTTP 4xx/5xx statuses are preserved. Local statuses
+are 401 for invalid run tokens, 403 for non-allowlisted requests, 402 for credit
+caps and 502 for transport or accounting failure. Once SSE
 has started, a failure is logged and the stream ends instead of appending an
 HTTP response.
 
@@ -79,10 +81,37 @@ Admission serializes through the ledger and reserves a conservative input/output
 upper bound before any upstream request. A durable pending row precedes network
 access. Missing or malformed usage, transport failure, interruption, a client
 that disconnects, or an unavailable counter fails closed. A pending request
-survives restart and refuses further spend, even with a higher cap. Completed
-cost also survives restart; there is no timer-based or automatic billing-cycle
-reset. Reconciliation and cycle-reset controls are not exposed in this slice.
-Do not delete the ledger to work around a refusal.
+survives restart and refuses further spend, even with a higher cap. A definite
+HTTP 4xx or 5xx rejection before any message response bytes releases its
+reservation at zero cost, including when its error JSON is absent or malformed.
+A broken transport, malformed 200 response, or SSE error remains uncertain and
+keeps the latch. Completed cost also survives restart; there is no timer-based
+or automatic billing-cycle reset. Do not delete the ledger to work around a refusal.
+
+## Owner reconciliation
+
+Run `herdr credits status` on the server host as its owner. It reads the local
+configured cycle's ledger without reading the API key and prints total recorded
+USD, pending count, and entries (id, run, item, model, cost and state). States
+are `pending`, `accounted`, or `released`; released entries remain in the ledger.
+This is a local owner command, not an advertised remote client method.
+
+Before running `herdr credits release <entry>`, stop the affected worker and
+verify through the upstream error or Console that its request consumed no
+tokens. Issuing release is the owner's explicit attestation of no usage: it
+clears that pending entry at zero cost, reopening admission only if no other
+pending entry or cap remains. Never release an active request or an uncertain
+request that may have consumed tokens. Release rejects missing and already
+settled entries and cannot erase accounted costs. It does not reset the cap or
+change the billing cycle.
+
+Offline tests replay Anthropic's documented 400 JSON error shape with pi's
+`?beta=true` and allowlisted `anthropic-beta` header intact. The proxy forwards
+these unchanged and exposes an upstream beta rejection message; it does not
+reject this pi request shape locally. A fake upstream cannot establish whether
+Anthropic rejected the real run's model, beta features or balance. The next real
+refusal's error type and message provide that evidence; no beta flag is removed
+or model changed speculatively.
 
 The default local lifetime ceiling is USD 200; zero disables spending. Keep a
 dedicated Anthropic workspace spend limit as the independent upstream ceiling.

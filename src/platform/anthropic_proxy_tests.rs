@@ -206,11 +206,11 @@ fn refusals_are_distinct_and_do_not_echo_secrets_or_upstream_bodies() {
         .is_err());
     assert!(String::from_utf8(output).unwrap().contains("402 Refused"));
     for (upstream, local) in [
-        (401, 502),
-        (403, 502),
+        (401, 401),
+        (403, 403),
         (402, 402),
         (429, 429),
-        (500, 502),
+        (500, 500),
         (302, 502),
     ] {
         let raw =
@@ -257,7 +257,7 @@ fn invalid_upstream_json_returns_502_before_success_and_preserves_pending_accoun
 }
 
 #[test]
-fn upstream_stream_limit_errors_keep_their_status_without_echoing_error_text() {
+fn upstream_stream_limit_errors_keep_status_and_documented_error_text() {
     for (kind, status) in [
         ("rate_limit_error", 429),
         ("billing_error", 402),
@@ -278,7 +278,7 @@ fn upstream_stream_limit_errors_keep_their_status_without_echoing_error_text() {
         let text = String::from_utf8(output).unwrap();
         assert!(text.starts_with(&format!("HTTP/1.1 {status}")));
         assert!(text.contains("\"upstream_status\":200"));
-        assert!(!text.contains("secret-upstream-diagnostics"));
+        assert!(text.contains("secret-upstream-diagnostics"));
         assert!(f.proxy.available(0.0).is_err());
     }
 }
@@ -307,6 +307,8 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
         status: 429,
         check: "upstream credit or rate limit",
         upstream: Some(429),
+        upstream_error: Some(("rate_limit_error".into(), "Too many requests".into())),
+        no_usage: true,
     });
     tracing::subscriber::with_default(subscriber, || {
         report_refusal(
@@ -326,6 +328,8 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
         "/v1/messages?beta=true",
         MODEL,
         "upstream credit or rate limit",
+        "rate_limit_error",
+        "Too many requests",
         "429",
     ] {
         assert!(log.contains(field), "{log}");
@@ -805,4 +809,150 @@ fn anthropic_proxy_real_socket_permissions_and_offline_http() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(!response.contains("sk-ant-"));
     thread.join().unwrap();
+}
+
+#[test]
+fn documented_http_rejections_release_reservations_and_expose_only_error_fields() {
+    for status in [400, 401, 402, 403, 404, 429, 500, 502, 529] {
+        for streaming in [false, true] {
+            let mut f = OfflineFixture::new(200.0);
+            let token = f.proxy.register("fake-run", "item").unwrap();
+            let raw_request = String::from_utf8(Fixture::request(&token, streaming))
+                .unwrap()
+                .replace("/v1/messages HTTP", "/v1/messages?beta=true HTTP")
+                .replace(
+                    "X-Untrusted:",
+                    "anthropic-beta: interleaved-thinking-2025-05-14\r\nX-Untrusted:",
+                );
+            let mut output = Vec::new();
+            let error_body = serde_json::json!({"type":"error", "error":{
+                "type":"invalid_request_error", "message":"Unsupported beta feature"},
+                "request_id":"not-exposed", "extra":"not-exposed"})
+            .to_string();
+            let raw = format!(
+                "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\n\r\n{error_body}"
+            );
+            assert!(f
+                .proxy
+                .serve(raw_request.as_bytes(), &mut output, |key, request, out| {
+                    let config = curl_config(key, request).unwrap();
+                    assert!(config.contains("/v1/messages?beta=true"));
+                    assert!(config.contains("anthropic-beta: interleaved-thinking-2025-05-14"));
+                    forward_upstream(&mut BufReader::new(raw.as_bytes()), out)
+                })
+                .is_err());
+            let text = String::from_utf8(output).unwrap();
+            assert!(text.starts_with(&format!("HTTP/1.1 {status}")));
+            assert!(
+                text.contains("invalid_request_error") && text.contains("Unsupported beta feature")
+            );
+            assert!(
+                !text.contains("not-exposed")
+                    && !text.contains(&token)
+                    && !text.contains("sk-ant-")
+            );
+            f.proxy.available(0.0).unwrap();
+            let (cost, pending): (f64, i64) = f
+                .proxy
+                .ledger
+                .query_row("SELECT cost,pending FROM anthropic_requests", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!((cost, pending), (0.0, 0));
+            f.proxy
+                .serve(
+                    Fixture::request(&token, false).as_slice(),
+                    &mut Vec::new(),
+                    |_, _, out| out.write_all(&Fixture::response()),
+                )
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn uncertain_transport_keeps_latch_until_owner_releases_the_entry() {
+    let mut f = Fixture::new(200.0);
+    let token = f.proxy.register("run", "item").unwrap();
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, true).as_slice(),
+            &mut Vec::new(),
+            |_, _, out| {
+                out.write_all(b"data: ")?;
+                Err(io::Error::other("transport lost"))
+            }
+        )
+        .is_err());
+    assert!(f.proxy.available(0.0).is_err());
+    let path = f.dir.join("ledger.sqlite");
+    let status = credit_status(&path).unwrap();
+    assert_eq!(status["pending"], 1);
+    assert_eq!(status["entries"][0]["state"], "pending");
+    assert!(credit_release(&path, 999).is_err());
+    credit_release(&path, 1).unwrap();
+    assert!(credit_release(&path, 1).is_err());
+    let status = credit_status(&path).unwrap();
+    assert_eq!(status["pending"], 0);
+    assert_eq!(status["entries"][0]["state"], "released");
+    f.proxy.available(0.0).unwrap();
+    // Accounted costs must never be erased by owner release.
+    f.proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, _, out| out.write_all(&Fixture::response()),
+        )
+        .unwrap();
+    assert!(credit_release(&path, 2).is_err());
+    assert!(credit_status(&path).unwrap()["spent_usd"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn offline_transport_loss_stays_closed_and_owner_release_is_selective() {
+    let mut f = OfflineFixture::new(200.0);
+    let token = f.proxy.register("run", "item").unwrap();
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, _, _| Err(io::Error::other("connection lost"))
+        )
+        .is_err());
+    assert!(f.proxy.available(0.0).is_err());
+    assert!(release_entry(&f.proxy.ledger, 99).is_err());
+    release_entry(&f.proxy.ledger, 1).unwrap();
+    assert!(release_entry(&f.proxy.ledger, 1).is_err());
+    f.proxy.available(0.0).unwrap();
+    f.proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, _, out| out.write_all(&Fixture::response()),
+        )
+        .unwrap();
+    assert!(release_entry(&f.proxy.ledger, 2).is_err());
+}
+
+#[test]
+fn http_rejection_without_valid_error_json_still_releases_reservation() {
+    for body in [String::new(), "not JSON".into(), "x".repeat(65537)] {
+        let mut f = OfflineFixture::new(200.0);
+        let token = f.proxy.register("run", "item").unwrap();
+        let raw = format!("HTTP/1.1 503 Error\r\n\r\n{body}");
+        let mut output = Vec::new();
+        assert!(f
+            .proxy
+            .serve(
+                Fixture::request(&token, true).as_slice(),
+                &mut output,
+                |_, _, out| forward_upstream(&mut BufReader::new(raw.as_bytes()), out)
+            )
+            .is_err());
+        assert!(String::from_utf8(output).unwrap().contains("proxy_refusal"));
+        f.proxy.available(0.0).unwrap();
+    }
 }
