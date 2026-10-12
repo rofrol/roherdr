@@ -1489,3 +1489,15 @@ the worker policy denies pkill, killall, kill $(...), xargs kill and
 process-group kills for Claude and pi workers, allows kill of literal
 PIDs and plain variable expansions (the AGENTS.md stress loop is tested
 verbatim), and the todo run task suffix states the rule.
+
+## Handoff fence and persistence edge cases (follow-up of
+
+Handoff fence and persistence edge cases (r-23475ciu attempt 2): a
+restored handoff with no live successor matching its phase aborts with
+one notice; failed persists show as `handoff_persist_error` in
+`coordinator status`; on an ack double failure restore ignores a
+superseded record whose tenure is still active at that epoch (chosen
+instead of reordering the ack); an unknown session on the old pane is no
+longer fenced; the pane-session map is pruned on pane close and at
+startup; socket-api docs say the fence applies to calls carrying a
+caller pane.

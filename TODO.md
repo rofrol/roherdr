@@ -339,19 +339,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   w288; w286's own str.replace missed its anchor and it still reported
   done). Left: one live handoff of this coordinator.
 
-- [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
-  [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
-  the successor-started write only log a failed persist (after a restart
-  the handoff returns Frozen without its successor); a double failure in
-  the ack (state written, transfer failed, restore write failed) leaves
-  the file saying the live coordinator is superseded; a reused old pane
-  id whose session is still unknown is fenced; the pane-session map is
-  never pruned on pane close; raw API clients without `caller_pane_id`
-  are never fenced; the fence is check-then-act. Cost: small src slices
-  in src/workers/coordinator_handoff.rs with tests; no guest build.
-  Decided by the user 2026-10-12 (d-gr63towv): approved, to be fixed
-  before this coordinator's live handoff.
-
 - [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
   (the user, 2026-10-12, after the coordinator wrote "the existing
   5-minute sweep only catches missed events and a wedged session" into
