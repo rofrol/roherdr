@@ -163,6 +163,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   build of an image, touches the ledger schema (a migration).
   Decided by the user 2026-10-12 (d-n55a6wj5): yes, queue it.
 
+- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
+  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
+  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
+  strong; ours is weak, so move acceptance onto checks, keep the model
+  review for intent and API shape). In `herdr todo run`'s verify:
+  (1) counterfactual tests: a test the commit adds or changes must fail
+  on the run's base and pass on the commit (a new test that already
+  passed on the base proves nothing), recorded per test; (2) tamper
+  guard: a commit that edits registered checks, `.herdr/checks.toml`,
+  frozen fixtures or the review checklist is flagged and cannot be
+  auto-approved. Later, by measurement: mutation testing of changed lines
+  only. Deterministic, no model.
+  Decided by the user 2026-10-12 (d-64mjmvju): yes, queue it.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
@@ -2972,19 +2986,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
-  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
-  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
-  strong; ours is weak, so move acceptance onto checks, keep the model
-  review for intent and API shape). In `herdr todo run`'s verify:
-  (1) counterfactual tests: a test the commit adds or changes must fail
-  on the run's base and pass on the commit (a new test that already
-  passed on the base proves nothing), recorded per test; (2) tamper
-  guard: a commit that edits registered checks, `.herdr/checks.toml`,
-  frozen fixtures or the review checklist is flagged and cannot be
-  auto-approved. Later, by measurement: mutation testing of changed lines
-  only. Deterministic, no model.
 
 ## Needs a decision
 
