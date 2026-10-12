@@ -2415,6 +2415,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the space's context menu offers the same actions as a second path, never
   the only one.
 
+- [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
+  2026-10-12: "replace this session with a fresh herdr coordinator, and make
+  such a handoff regular"; the herdr coordinator's own session had cost
+  ~$106 of list price in one day, mostly cache reads of a huge context).
+  herdr measures each coordinator session's context (tokens per turn read
+  from its transcript) and, at a configurable size (`[coordinator]
+  handoff_context_tokens`), raises a deterministic "handoff due" at the
+  coordinator's next turn boundary with nothing in flight it cannot hand
+  over: the coordinator writes `.local/coordinator-handoff.md` (runs in
+  flight with their waits, open questions, usage state), herdr starts a
+  fresh session in the same tab role with the todo skill, transfers the
+  tenure and the worker ownership, and ends the old session once the new
+  one has acknowledged the note; no timers.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
