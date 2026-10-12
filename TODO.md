@@ -2225,6 +2225,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   laptop never compiles (sol). Rejected: every crate as its own Guix
   package (weeks of churn for a fast-moving fork).
 
+- [ ] The usage widget groups a provider's API spend under its subscription [t-tvenbg7r]
+  line (the user, 2026-10-12: "the AN line with tokens should come after
+  the AN subscription line, I think; make visualizations with the models").
+  Round of 2026-10-12 (sol, MiMo, DeepSeek agreeing on grouping), chosen
+  mockup (sol's, with MiMo's marker):
+  ```
+  AN   7% 2h22m 91% 2d13h
+     API $0.00/$200 spend  exp28d
+  OA  14% 4h08m 24% 5d21h  exp10d
+     API $0.00 spend
+  GO            0% 6d23h
+  DS $7.09 balance
+  OR $9.81 balance
+  ```
+  The sub-line is indented under its provider with an `API` tag (no
+  repeated label); the credit expiry is its own clock, shown as a
+  countdown; only the amount is colored: amber from 80% of the cap, red
+  from 95%, plus a `!` marker so it reads without color; the expiry turns
+  amber within 7 days, red within 2, and `expired` after.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
