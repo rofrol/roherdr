@@ -42,6 +42,7 @@ pub use self::{
 };
 
 pub(crate) use self::keybinds::parse_key_combo;
+pub(crate) use self::model::WorkersConfig;
 pub(crate) use self::usage::UsageGateThresholds;
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{

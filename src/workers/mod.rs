@@ -170,6 +170,50 @@ const HOME_CREDENTIALS: &[(&str, bool)] = &[
 /// .env` and `cat sub/.env`).
 const ENV_FILE_GLOBS: &[&str] = &["**/.env", "**/.env.*", "**/.envrc"];
 
+/// Resolve the server-only key path without reading the credential. Require an
+/// absolute path so server and sandbox cannot disagree about relative roots.
+pub(crate) fn anthropic_key_path(
+    config: &crate::config::WorkersConfig,
+) -> std::io::Result<Option<PathBuf>> {
+    if !config.anthropic_api_cap_usd.is_finite() || config.anthropic_api_cap_usd < 0.0 {
+        return Err(std::io::Error::other("invalid Anthropic API spending cap"));
+    }
+    let raw = &config.anthropic_api_key_file;
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        home_repo::home_dir()
+            .ok_or_else(|| std::io::Error::other("key path requires HOME"))?
+            .join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    if !path.is_absolute() {
+        return Err(std::io::Error::other("key path must be absolute"));
+    }
+    Ok(Some(path.canonicalize()?))
+}
+
+fn deny_worker_api_key(settings: &mut Value, key: &Path) -> std::io::Result<()> {
+    let key = key.display().to_string();
+    settings["sandbox"]["filesystem"]["denyRead"]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::other("invalid worker settings"))?
+        .push(json!(key));
+    settings["permissions"]["deny"]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::other("invalid worker settings"))?
+        .extend([json!(format!("Read({key})")), json!(format!("Edit({key})"))]);
+    Ok(())
+}
+
+fn configured_anthropic_key_path() -> std::io::Result<Option<PathBuf>> {
+    let loaded = crate::config::load_live_config()
+        .map_err(|_| std::io::Error::other("cannot load worker credential policy"))?;
+    anthropic_key_path(&loaded.config.workers)
+}
+
 /// The worker's `--settings`: the user's CLAUDE.md, settings and login stay,
 /// the global hooks are off (trial 2, T2-1), the co-author trailer is off
 /// (T3-5), and Bash runs in Claude Code's sandbox: writes only to the

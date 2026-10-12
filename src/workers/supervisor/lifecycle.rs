@@ -138,6 +138,9 @@ impl WorkerSupervisor {
         let owner_lock = own_journal(&journal_path, &worker_id)?;
         let temp_dir = self.create_temp_dir(&worker_id)?;
         let mut settings = worker_settings(&cwd_real, &temp_dir, &slot_caches);
+        if let Some(key) = configured_anthropic_key_path()? {
+            deny_worker_api_key(&mut settings, &key)?;
+        }
         let (contract, mut checks, mut check_errors) = match role {
             Some(role) => {
                 role.restrict_settings(&mut settings);
@@ -448,7 +451,7 @@ impl WorkerSupervisor {
             }
         }
         let home = home_repo::home_dir();
-        let deny_read: Vec<PathBuf> = home
+        let mut deny_read: Vec<PathBuf> = home
             .iter()
             .flat_map(|home| {
                 HOME_CREDENTIALS
@@ -457,6 +460,9 @@ impl WorkerSupervisor {
                     .map(|path| home.join(path))
             })
             .collect();
+        if let Some(key) = configured_anthropic_key_path()? {
+            deny_read.push(key);
+        }
         let prefix = crate::platform::sandboxed_shell_prefix(&crate::platform::ShellSandbox {
             write_paths: &write_paths,
             deny_read: &deny_read,

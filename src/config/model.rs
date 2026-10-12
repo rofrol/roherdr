@@ -919,7 +919,7 @@ pub struct WorktreesConfig {
     pub directory: String,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WorkersConfig {
     /// Commands every headless worker runs before each Bash, Write, Edit and
@@ -933,6 +933,26 @@ pub struct WorkersConfig {
     /// at the home directory `worktrees` in herdr's state directory
     /// (`~/.local/state/herdr/worktrees/home/<slot>`), never beside HOME.
     pub folder_slots_dir: String,
+    /// Private credential file, read by the server only. Empty disables API workers.
+    pub anthropic_api_key_file: String,
+    /// Lifetime local spend ceiling in USD; zero explicitly disables spending.
+    #[serde(default = "anthropic_default_cap")]
+    pub anthropic_api_cap_usd: f64,
+}
+
+fn anthropic_default_cap() -> f64 {
+    200.0
+}
+
+impl Default for WorkersConfig {
+    fn default() -> Self {
+        Self {
+            pre_tool_checks: Vec::new(),
+            folder_slots_dir: String::new(),
+            anthropic_api_key_file: String::new(),
+            anthropic_api_cap_usd: anthropic_default_cap(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

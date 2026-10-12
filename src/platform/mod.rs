@@ -568,6 +568,11 @@ pub(crate) use unix_common::{close_inherited_descriptors, fork_death_guard, star
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 
+// The paid-worker lifecycle is a separate slice; keep this transport available
+// without silently enabling API spending for subscription workers.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) mod anthropic_proxy;
 mod secret_file;
 pub(crate) use secret_file::read_secret_file;
 

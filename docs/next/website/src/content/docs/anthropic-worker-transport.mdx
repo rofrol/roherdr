@@ -1,0 +1,84 @@
+---
+title: Anthropic worker transport
+description: Server-owned credentials and fail-closed API accounting infrastructure.
+---
+
+The first API-worker slice supplies an internal Unix transport and accounting
+service. It does **not** switch subscription workers to the API, add a new worker
+kind, or start spending automatically. Worker lifecycle integration, fallback,
+and the usage widget are separate work. No advertised client method or frozen
+client codec changes in this slice.
+
+```toml
+[workers]
+anthropic_api_key_file = "~/.config/herdr/worker-api-key"
+anthropic_api_cap_usd = 200.0
+```
+
+The key file must be owned by the server's user and have mode `0600`.
+An empty path disables API access. Paths must be absolute or start with `~/`;
+the server resolves symlinks before installing worker read denials. A configured
+file that cannot be resolved prevents new workers from starting, rather than
+silently omitting the denial. Do not place credentials in a declarative,
+world-readable configuration store.
+
+## Internal service contract
+
+The server calls `AnthropicProxy::open` with the workers configuration and a
+persistent SQLite ledger, registers a run and item to obtain an opaque random
+bearer token, and owns the socket accept loop. The socket's parent must be
+user-owned and private (`0700`); the socket is `0600`. An existing socket path
+is never replaced. The ledger belongs in server state outside worker writable
+roots. Tokens remain in memory and can be revoked; `kill` disables admission.
+The next worker slice must give the API client only its run token and transport
+address, never the real API key. This infrastructure does not yet distribute
+tokens to workers or publish control methods.
+
+Only `POST /v1/messages` with `claude-sonnet-4-5-20250929` is accepted. Absolute
+URLs, query strings, CONNECT, chunked request bodies, duplicate authentication
+or length headers, unknown models, premium service tiers, and server-side tools
+are refused. Bodies are limited to 150,000 bytes and output to 64,000 tokens.
+Only text and ordinary client-tool content are supported. Images, documents,
+remote/file sources and thinking replay are refused: their expanded
+input cannot safely be reserved from the submitted byte count. Tool schemas
+must be inline, without reference expansion. Conservative per-message/tool
+framing is reserved too; requests whose input bound reaches 200,000 tokens are
+refused to exclude long-context premium pricing. Validated JSON
+is re-encoded before forwarding so duplicate keys cannot change upstream model
+or token-limit interpretation. The server forces `service_tier = "standard_only"`
+rather than allowing the API's default automatic priority-tier selection.
+Extended thinking is disabled; opaque/summarized thinking replay cannot be
+safely bounded from submitted bytes in this slice.
+All client headers are discarded. The server supplies API version, content type
+and `x-api-key` to the fixed HTTPS destination `api.anthropic.com`. Curl receives
+its configuration through an anonymous pipe, with curlrc, HTTP proxy routing,
+redirects, stderr, and core dumps disabled. The server also disables its own core
+dumps before reading the credential. Neither credential nor headers are logged.
+
+Responses stream through without buffering the entire SSE response. Usage is
+parsed incrementally; JSON responses are bounded. The ledger records run, item,
+model, input/output and cache tokens, and USD cost computed from API usage using
+the allowlisted model's standard token prices, including one-hour cache writes.
+The Messages API does not return an authoritative dollar cost; Console billing
+remains the authority. New models or pricing tiers require an explicit pricing
+and allowlist change, not a guessed default.
+
+Admission serializes through the ledger and reserves a conservative input/output
+upper bound before any upstream request. A durable pending row precedes network
+access. Missing or malformed usage, transport failure, interruption, a client
+that disconnects, or an unavailable counter fails closed. A pending request
+survives restart and refuses further spend, even with a higher cap. Completed
+cost also survives restart; there is no timer-based or automatic billing-cycle
+reset. Reconciliation and cycle-reset controls are not exposed in this slice.
+Do not delete the ledger to work around a refusal.
+
+The default local lifetime ceiling is USD 200; zero disables spending. Keep a
+dedicated Anthropic workspace spend limit as the independent upstream ceiling.
+The worker shell sandbox continues to deny **all** direct network access,
+including Anthropic. Claude file-tool rules, pi's shell profile, and herdr's file
+policy deny the configured key, even when it is inside a worker root; directory
+and glob reads containing that key are denied too. The API client's access to
+the proxy is distinct from its sandboxed tools' network privileges.
+
+Tests use an injected offline upstream and synthetic credentials only. The Unix
+socket smoke test also uses an offline upstream; no test calls Anthropic.

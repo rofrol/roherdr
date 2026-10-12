@@ -1684,6 +1684,18 @@
           "description": "Commands every headless worker runs before each Bash, Write, Edit and MultiEdit call, each an argv list with `~` expanded, e.g. `[[\"python3\", \"~/.claude/hooks/delay-check.py\"]]`. Each gets Claude Code's PreToolUse hook input on stdin, like a command hook; one that denies (exit 0 with `permissionDecision` `deny`, or exit 2) refuses the call with its reason. A check that cannot run fails open and is reported in the worker's log. Read when a worker starts."
         },
         {
+          "key": "workers.anthropic_api_key_file",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Server-only Anthropic credential file for the internal API-worker transport. Empty disables API access. Use an absolute path or ~/; on Unix the file must be owned by the server user with mode 0600. Worker shell and file policies deny the resolved path. This infrastructure does not yet switch existing workers to paid API access."
+        },
+        {
+          "key": "workers.anthropic_api_cap_usd",
+          "type": "number",
+          "default": "200.0",
+          "description": "Persistent local Anthropic API spend ceiling in USD. Zero disables spending. Admission reserves a conservative request upper bound; unavailable or incomplete accounting refuses more spend across restarts. No automatic billing-cycle reset. Keep an independent Console workspace spend limit."
+        },
+        {
           "key": "workers.folder_slots_dir",
           "type": "string",
           "default": "\"\"",

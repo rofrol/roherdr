@@ -111,6 +111,20 @@ mod tests {
         assert!(!offline.contains("network-outbound"), "{offline}");
     }
 
+    #[test]
+    fn api_worker_shell_denies_the_key_and_all_direct_network() {
+        let key = PathBuf::from("/private/worker-api-key");
+        let deny = vec![key];
+        let text = shell_profile(&ShellSandbox {
+            write_paths: &[],
+            deny_read: &deny,
+        });
+        assert!(text.contains("(deny network*)"));
+        assert!(!text.contains("network-outbound"));
+        assert!(text.contains("(deny file-read*"));
+        assert!(text.contains("(subpath \"/private/worker-api-key\")"));
+    }
+
     /// Runs the job for real; inside another Seatbelt sandbox (an agent's)
     /// `sandbox_apply` is refused, and the test says so instead of failing.
     #[test]

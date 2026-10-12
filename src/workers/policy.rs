@@ -104,6 +104,8 @@ pub(super) struct Policy {
     /// Real paths the file tools may use: the worker's directory, then its
     /// temp dir.
     roots: Vec<PathBuf>,
+    /// None means credential policy was unreadable: fail closed for file tools.
+    api_key: Option<Option<PathBuf>>,
 }
 
 impl Policy {
@@ -113,6 +115,7 @@ impl Policy {
         Self {
             cwd: cwd.to_owned(),
             roots: vec![cwd_real.to_owned(), temp_real.to_owned()],
+            api_key: super::configured_anthropic_key_path().ok(),
         }
     }
 
@@ -135,6 +138,31 @@ impl Policy {
     ) -> Decision {
         if let Some(reason) = background_wait_denial(tool_name, input) {
             return Decision::Deny(reason.to_owned());
+        }
+        if let Some((field, _)) = file_tool_path_field(tool_name) {
+            let path = input.get(field).and_then(Value::as_str).unwrap_or(".");
+            let protected = match &self.api_key {
+                None => true,
+                Some(None) => false,
+                Some(Some(key)) => real_path_allowing_missing_tail(&self.cwd.join(path))
+                    .is_none_or(|real| key.starts_with(real)),
+            };
+            if matches!(self.api_key, Some(Some(_))) {
+                if let Some(pattern) = file_tool_pattern_field(tool_name)
+                    .and_then(|field| input.get(field))
+                    .and_then(Value::as_str)
+                {
+                    if let Err(message) = self.check_pattern(pattern, &self.cwd.join(path)) {
+                        return Decision::Deny(message);
+                    }
+                }
+            }
+            if protected {
+                // Credential boundaries cannot become user permission prompts.
+                return Decision::Deny(
+                    "herdr worker policy: credential access is forbidden.".into(),
+                );
+            }
         }
         if reason_type == Some("classifier") {
             return Decision::Ask(CLASSIFIER_ASK.into());
@@ -219,6 +247,16 @@ impl Policy {
     }
 
     fn inside_roots(&self, real: &Path) -> bool {
+        let Some(key) = &self.api_key else {
+            return false;
+        };
+        if key
+            .as_ref()
+            .is_some_and(|key| real == key || key.starts_with(real))
+        {
+            // Refuse directory/glob reads as well as the key itself.
+            return false;
+        }
         self.roots.iter().any(|root| real.starts_with(root))
     }
 
@@ -302,7 +340,7 @@ pub(super) fn real_path_allowing_missing_tail(path: &Path) -> Option<PathBuf> {
                 }
                 return Some(real);
             }
-            Err(_) => {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let name = existing.file_name()?;
                 match existing.components().next_back() {
                     Some(Component::Normal(_)) => tail.push(name.to_os_string()),
@@ -310,6 +348,10 @@ pub(super) fn real_path_allowing_missing_tail(path: &Path) -> Option<PathBuf> {
                 }
                 existing = existing.parent()?;
             }
+            // A denied canonicalization is not a missing file. In particular,
+            // never treat a symlink into a sandbox-denied credential as a new
+            // file inside an allowed root.
+            Err(_) => return None,
         }
     }
 }
@@ -390,6 +432,60 @@ mod tests {
                 "{tool} {input}"
             );
         }
+    }
+
+    #[test]
+    fn anthropic_key_is_denied_even_inside_a_worker_root_and_directory_scan() {
+        let dirs = Dirs::new("api-key");
+        let key = dirs.cwd.join("private-key");
+        std::fs::write(&key, "offline-test-credential").unwrap();
+        let mut policy = dirs.policy();
+        policy.api_key = Some(Some(key.canonicalize().unwrap()));
+        for (tool, input) in [
+            ("Read", json!({"file_path": key})),
+            ("Write", json!({"file_path": key})),
+            ("Read", json!({"file_path": dirs.cwd})),
+            ("Glob", json!({"pattern": "*"})),
+            ("Grep", json!({"pattern": "x", "path": dirs.cwd})),
+        ] {
+            assert!(matches!(
+                policy.decide(tool, &input, None, None),
+                Decision::Deny(_)
+            ));
+        }
+        assert!(matches!(
+            policy.decide("Read", &json!({"file_path": key}), Some("classifier"), None),
+            Decision::Deny(_)
+        ));
+        let src = dirs.cwd.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        assert!(matches!(
+            policy.decide(
+                "Glob",
+                &json!({"path":src,"pattern":key}),
+                Some("classifier"),
+                None
+            ),
+            Decision::Deny(_)
+        ));
+        let mut settings = super::super::worker_settings(&dirs.cwd, &dirs.temp, &[]);
+        super::super::deny_worker_api_key(&mut settings, &key).unwrap();
+        assert!(settings["sandbox"]["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(key)));
+        assert!(settings["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("Read({})", key.display()))));
+        assert_eq!(settings["sandbox"]["network"]["allowedDomains"], json!([]));
+        assert_eq!(settings["sandbox"]["network"]["strictAllowlist"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
+        policy.api_key = None;
+        assert!(matches!(
+            policy.decide("Read", &json!({"file_path": "new.txt"}), None, None),
+            Decision::Deny(_)
+        ));
     }
 
     #[test]
