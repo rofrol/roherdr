@@ -197,22 +197,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repositories' own coordinators, see the item on waiting on another
   coordinator.
 
-- [ ] `todo run` runs several install steps, some only when the landed [t-fpgkveff]
-  diff touches given paths (the user via the rormpc coordinator,
-  2026-10-12): rormpc's [install] runs `scripts/rormpc_install.sh install`,
-  but a commit that bumps the pinned rormpc-tools tag also needs
-  `scripts/rormpc_install.sh companions` (reinstalls mpd-player, musicdb,
-  hits at that tag, restarts their LaunchAgents); the run never runs it
-  and the allowlist blocks it by hand (run r-a7sefsnf installed ef27a12
-  pinning v0.2.54 while musicdb stayed old; the user approved one
-  override, d-b2ypouzq). Decided by the coordinator: `.herdr/checks.toml`
-  accepts an ordered list of named install steps, each an argv with an
-  optional `when_paths` glob list matched against the landed commit's
-  diff; the run executes the matching steps in order after the cherry-
-  pick with the coordinator's environment, records each, and a failed
-  step waits as `install_failed` naming it (`retry-install` resumes at
-  that step); the existing single [install] stays valid.
-
 - [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
   (the user, 2026-10-12, rejecting a herdr-managed cross-repository
   handover: "I don't like this; there is supposed to be a coordinator per
@@ -2014,6 +1998,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   never blank; Enter/Space opens it too; the right-click menu mirrors its
   actions (takeover where a worker allows it). Rule: a line that looks
   clickable never silently does nothing.
+
+- [ ] `todo run` takes its checks and install argv from the reviewed base, [t-zgrddkbc]
+  not from the landed commit (round 20261012-020315-c8e8, DeepSeek, while
+  rejecting multi-step installs): `.herdr/checks.toml` is read after the
+  worker's commit lands, so a commit can change the argv that runs with
+  the coordinator's environment. Read the checks and [install] from the
+  run's base commit (what the coordinator approved), and refuse a run
+  whose commit changes `.herdr/checks.toml` unless the item says so.
 
 ## Proposed
 
