@@ -51,6 +51,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   fixtures, the known-true cases, a hold-out set the fixer never sees, and
   a non-vacuity check (known-true coverage must not drop); (9) a predicate
   that keeps needing code changes is retired or redesigned by the owner.
+  Slice 1 landed (2026-10-12, run r-j6skmdbk, first full API-credit run,
+  $1.71): points 1-2 as a versioned rule table (`src/workers/supervision_rules.rs`)
+  and a `supervision_holds` table (pending/delivered/retracted/resolved),
+  with f-114..f-116 regression and known-true tests. Still open: point 1's
+  causal binding (a hold retracts on the worker's next turn or verdict, not
+  on "that job's end, then the next turn"; job ownership is checked per
+  pane, not per assignment); hold states are not in the supervision report
+  or API; points 3-9.
 
 - [ ] Workers default to the API credits, coordinators stay on Claude Code [t-s6lkxb4v]
   (the user, 2026-10-12: "94% of the AN subscription used and only $0.50 of
