@@ -2674,6 +2674,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   validates and owns sequencing. First step all three name: tag every
   credit call with item, run and stage (draft, worker, review) so the
   experiments cost nothing extra to measure.
+  Asked 2026-10-12 (the user: "maybe the coordinators of other spaces
+  should hand off? because of the large context; ask the models").
+  Measured by the coordinator from the transcripts at 19:05 (last call's
+  input context; cache reads since the session started): rormpc 739k
+  (829M), try-roguix 532k (667M), guix-x86 493k (512M), violai 386k
+  (335M), roguix-vps 352k (242M), herdr 348k (78M), chat-hosted 255k,
+  odherdr 215k, job-seeker 188k, classify-x-posts 165k; a fresh session
+  starts at about 75k. rormpc's space alone cost ~$72 list today.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
