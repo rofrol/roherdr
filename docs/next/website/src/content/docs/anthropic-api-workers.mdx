@@ -35,3 +35,7 @@ A definite HTTP 4xx/5xx rejection before response streaming releases its reserva
 Cycle rollover is deliberately manual, not clock-driven. Keep the same `anthropic_api_cycle` throughout a credit cycle; only change it after confirming the new credit allocation in the Console, with no active credit worker. Each identifier selects a separate durable ledger in Herdr's state directory. Reusing an identifier retains its spend. Do not delete ledgers to reopen spending. Expiry and automatic subscription fallback are not implemented in this slice.
 
 Keep the owning server running until the credit worker finishes: its listener and grant are scoped to that server's worker reader. A server exit/handoff interrupts this paid transport rather than falling back to a direct API credential. Uncertain upstream responses leave accounting pending and close subsequent spending for that cycle.
+
+## Making the credits the default
+
+Set `[workers] default_agent = "pi-anthropic"` to send every `todo run`, `todo run --draft`, queue start and `--next` chain start without `--agent` through the credits, and `worker start` without `--agent` too (it uses the new `worker.start_choice` method). An explicit `--agent claude|pi|pi-anthropic` wins. When the credit proxy or the credit cap refuses a `pi-anthropic` run's start, the run falls back to `pi` (ChatGPT plan) once; a `run_agent_fallback` event, or `agent_fallback` in `run_created`, names the refusal. `herdr todo status` shows the `agent` and `model` that ran. The `--draft` and `--auto-review` model calls still use `claude -p`.

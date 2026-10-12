@@ -937,6 +937,33 @@ resume_agents_on_restore = true
     }
 
     #[test]
+    fn workers_default_agent_is_claude_unless_the_config_names_one() {
+        use crate::api::schema::WorkerAgentChoice;
+        let loaded = load_live_config_from_str("").unwrap();
+        assert_eq!(
+            loaded.config.workers.default_agent,
+            WorkerAgentChoice::Claude
+        );
+        for (name, choice) in [
+            ("claude", WorkerAgentChoice::Claude),
+            ("pi", WorkerAgentChoice::Pi),
+            ("pi-anthropic", WorkerAgentChoice::PiAnthropic),
+        ] {
+            let loaded =
+                load_live_config_from_str(&format!("[workers]\ndefault_agent = \"{name}\"\n"))
+                    .unwrap();
+            assert_eq!(loaded.config.workers.default_agent, choice, "{name}");
+            assert!(loaded.invalid_sections.is_empty());
+        }
+        let loaded = load_live_config_from_str("[workers]\ndefault_agent = \"gpt\"\n").unwrap();
+        assert_eq!(loaded.invalid_sections, ["workers"]);
+        assert_eq!(
+            loaded.config.workers.default_agent,
+            WorkerAgentChoice::Claude
+        );
+    }
+
+    #[test]
     fn load_live_config_shows_the_supervision_tab_unless_turned_off() {
         let loaded = load_live_config_from_str("").unwrap();
         assert!(loaded.config.supervision.show_tab);

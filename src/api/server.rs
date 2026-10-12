@@ -919,6 +919,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ServerReloadAgentManifests(_) => "server.reload_agent_manifests",
         Method::ServerPtyUsage(_) => "server.pty_usage",
         Method::WorkerStart(_) => "worker.start",
+        Method::WorkerStartChoice(_) => "worker.start_choice",
         Method::WorkerStatus(_) => "worker.status",
         Method::WorkerList(_) => "worker.list",
         Method::WorkerWait(_) => "worker.wait",

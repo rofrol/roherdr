@@ -79,6 +79,9 @@ pub enum Method {
     ServerPtyUsage(EmptyParams),
     #[serde(rename = "worker.start")]
     WorkerStart(WorkerStartParams),
+    /// `worker.start` with the agent chosen by name (`pi-anthropic` too).
+    #[serde(rename = "worker.start_choice")]
+    WorkerStartChoice(WorkerStartChoiceParams),
     #[serde(rename = "worker.status")]
     WorkerStatus(WorkerTarget),
     #[serde(rename = "worker.list")]

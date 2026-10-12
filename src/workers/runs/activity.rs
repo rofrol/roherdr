@@ -271,6 +271,8 @@ mod tests {
             step_started_ms: None,
             step_command: None,
             step_log: None,
+            agent: None,
+            model: None,
         }
     }
 

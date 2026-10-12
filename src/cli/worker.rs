@@ -5,15 +5,22 @@ use crate::api::schema::{
     WorkerCommandTarget, WorkerDecision, WorkerDrainAction, WorkerDrainParams,
     WorkerEscalateParams, WorkerEventsParams, WorkerGeneratedFile, WorkerInterruptParams,
     WorkerKillParams, WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams,
-    WorkerStartParams, WorkerTarget, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams,
-    WorkerWaitUntil,
+    WorkerStartChoiceParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
+    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
     "usage: herdr worker <start|status|list|runs|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
-  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] [--item ID]
+  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--agent claude|pi|pi-anthropic]
+                     [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
+    --agent picks the agent: claude (Claude Code on the subscription), pi
+    (headless pi on the ChatGPT plan) or pi-anthropic (headless pi on the
+    Anthropic API credits; a refused credit path is an error). Without it
+    the worker uses [workers] default_agent (default claude), except that a
+    --model alone names a Claude model and keeps Claude; --model does not
+    combine with pi-anthropic, whose model is [workers] anthropic_api_model.
     --name names the worker's line in the sidebar (default: the prompt's first line);
     --workspace is the space it is listed under (default: the caller's space);
     --item is the TODO item it works on (its id, t-abcd2345), which `runs` lists it under.
@@ -250,10 +257,16 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         }
     };
     Ok(Some(match subcommand {
-        "start" => Method::WorkerStart(WorkerStartParams {
-            command_id,
-            ..parse_start(rest)?
-        }),
+        "start" => {
+            let (start, agent_choice) = parse_start(rest)?;
+            Method::WorkerStartChoice(WorkerStartChoiceParams {
+                start: WorkerStartParams {
+                    command_id,
+                    ..start
+                },
+                agent_choice,
+            })
+        }
         "status" => Method::WorkerStatus(target(rest)?),
         "list" if rest.is_empty() => Method::WorkerList(EmptyParams::default()),
         "wait" => Method::WorkerWait(parse_wait(rest)?),
@@ -666,7 +679,16 @@ fn parse_answer(args: &[String]) -> Result<WorkerAnswerParams, String> {
     })
 }
 
-fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
+fn parse_start(
+    args: &[String],
+) -> Result<
+    (
+        WorkerStartParams,
+        Option<crate::api::schema::WorkerAgentChoice>,
+    ),
+    String,
+> {
+    let mut agent_choice = None;
     let mut cwd = None;
     let mut model = None;
     let mut name = None;
@@ -691,6 +713,10 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
             }
             "--model" => {
                 model = Some(value()?);
+                index += 2;
+            }
+            "--agent" => {
+                agent_choice = Some(super::todo::parse_agent_choice("--agent", &value()?)?);
                 index += 2;
             }
             "--name" => {
@@ -744,24 +770,27 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
     let cwd = std::path::absolute(&cwd).map_err(|error| error.to_string())?;
-    Ok(WorkerStartParams {
-        cwd: cwd.display().to_string(),
-        prompt,
-        model,
-        agent: None,
-        name,
-        workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
-        owner_pane_id: super::target::caller_pane_id(),
-        owner_session_id: super::target::caller_pane_id()
-            .and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
-            .filter(|session| !session.trim().is_empty()),
-        folder_slot,
-        branch,
-        base,
-        fresh_build,
-        item,
-        command_id: None,
-    })
+    Ok((
+        WorkerStartParams {
+            cwd: cwd.display().to_string(),
+            prompt,
+            model,
+            agent: None,
+            name,
+            workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
+            owner_pane_id: super::target::caller_pane_id(),
+            owner_session_id: super::target::caller_pane_id()
+                .and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+                .filter(|session| !session.trim().is_empty()),
+            folder_slot,
+            branch,
+            base,
+            fresh_build,
+            item,
+            command_id: None,
+        },
+        agent_choice,
+    ))
 }
 
 /// `herdr worker wait-drained`: waits until no worker is in a turn, one
@@ -994,31 +1023,35 @@ mod tests {
 
     #[test]
     fn parses_start_with_options() {
-        let Ok(Some(Method::WorkerStart(params))) = parse_worker_args(&args(&[
-            "start",
-            "--cwd",
-            "/tmp/repo",
-            "--model",
-            "sonnet",
-            "do it",
-        ])) else {
+        let Ok(Some(Method::WorkerStartChoice(WorkerStartChoiceParams { start: params, .. }))) =
+            parse_worker_args(&args(&[
+                "start",
+                "--cwd",
+                "/tmp/repo",
+                "--model",
+                "sonnet",
+                "do it",
+            ]))
+        else {
             panic!("start must parse");
         };
         assert_eq!(params.cwd, "/tmp/repo");
         assert_eq!(params.model.as_deref(), Some("sonnet"));
         assert_eq!(params.prompt, "do it");
 
-        let Ok(Some(Method::WorkerStart(params))) = parse_worker_args(&args(&[
-            "start",
-            "--name",
-            "fix login",
-            "--cwd",
-            "/tmp/repo",
-            "--workspace",
-            "ws-1",
-            "--prompt",
-            "do it",
-        ])) else {
+        let Ok(Some(Method::WorkerStartChoice(WorkerStartChoiceParams { start: params, .. }))) =
+            parse_worker_args(&args(&[
+                "start",
+                "--name",
+                "fix login",
+                "--cwd",
+                "/tmp/repo",
+                "--workspace",
+                "ws-1",
+                "--prompt",
+                "do it",
+            ]))
+        else {
             panic!("start with --prompt must parse");
         };
         assert_eq!(params.name.as_deref(), Some("fix login"));
@@ -1027,20 +1060,48 @@ mod tests {
     }
 
     #[test]
+    fn start_takes_an_agent_by_name() {
+        use crate::api::schema::WorkerAgentChoice;
+        let choice = |extra: &[&str]| {
+            let mut words = vec!["start"];
+            words.extend_from_slice(extra);
+            words.push("do it");
+            let Ok(Some(Method::WorkerStartChoice(params))) = parse_worker_args(&args(&words))
+            else {
+                panic!("start must parse");
+            };
+            params.agent_choice
+        };
+        assert_eq!(choice(&[]), None);
+        assert_eq!(
+            choice(&["--agent", "pi-anthropic"]),
+            Some(WorkerAgentChoice::PiAnthropic)
+        );
+        assert_eq!(choice(&["--agent", "pi"]), Some(WorkerAgentChoice::Pi));
+        assert_eq!(
+            choice(&["--agent", "claude", "--model", "sonnet"]),
+            Some(WorkerAgentChoice::Claude)
+        );
+        assert!(parse_worker_args(&args(&["start", "--agent", "gpt", "x"])).is_err());
+    }
+
+    #[test]
     fn parses_start_in_a_folder_slot() {
-        let Ok(Some(Method::WorkerStart(params))) = parse_worker_args(&args(&[
-            "start",
-            "--cwd",
-            "/tmp/repo",
-            "--folder-slot",
-            "worker",
-            "--branch",
-            "w/fix",
-            "--base",
-            "main",
-            "--fresh-build",
-            "do it",
-        ])) else {
+        let Ok(Some(Method::WorkerStartChoice(WorkerStartChoiceParams { start: params, .. }))) =
+            parse_worker_args(&args(&[
+                "start",
+                "--cwd",
+                "/tmp/repo",
+                "--folder-slot",
+                "worker",
+                "--branch",
+                "w/fix",
+                "--base",
+                "main",
+                "--fresh-build",
+                "do it",
+            ]))
+        else {
             panic!("start with a folder slot must parse");
         };
         assert_eq!(params.folder_slot.as_deref(), Some("worker"));
@@ -1300,7 +1361,7 @@ mod tests {
 
     #[test]
     fn parses_start_with_an_item_and_runs() {
-        let Ok(Some(Method::WorkerStart(params))) =
+        let Ok(Some(Method::WorkerStartChoice(WorkerStartChoiceParams { start: params, .. }))) =
             parse_worker_args(&args(&["start", "--item", "t-abcd2345", "do it"]))
         else {
             panic!("start with --item must parse");

@@ -9350,6 +9350,7 @@ mod todo_runs {
     /// `todo.resume`'s next run of [`ITEM2`]: `b.txt` with the run's checks.
     fn next_of_item2() -> crate::api::schema::TodoNextRun {
         crate::api::schema::TodoNextRun {
+            agent: None,
             item: ITEM2.into(),
             task: "commit b.txt feat: add b".into(),
             message: "feat: add b".into(),
@@ -9429,6 +9430,7 @@ mod todo_runs {
         refused(TodoResumeParams {
             close: close.clone(),
             next: Some(crate::api::schema::TodoNextRun {
+                agent: None,
                 item: ITEM.into(),
                 ..next_of_item2()
             }),
@@ -9437,6 +9439,7 @@ mod todo_runs {
         refused(TodoResumeParams {
             close: close.clone(),
             next: Some(crate::api::schema::TodoNextRun {
+                agent: None,
                 message: "Add b".into(),
                 ..next_of_item2()
             }),
@@ -9581,6 +9584,7 @@ mod todo_runs {
             .unwrap();
         let (review, _) = wait(&fixture, &run.run_id, None);
         let same_item = || crate::api::schema::TodoNextRun {
+            agent: None,
             item: ITEM.into(),
             ..next_of_item2()
         };
@@ -11527,6 +11531,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             let run = fixture
                 .supervisor
                 .todo_draft_run(crate::api::schema::TodoDraftRunParams {
+                    agent: None,
                     cwd: fixture.repo.display().to_string(),
                     item: ITEM.into(),
                     owner_pane_id: Some("p-coordinator".into()),
@@ -13828,5 +13833,127 @@ while True:
             fixture.herdr_events(&worker_id, "started")[0]["agent"],
             "pi"
         );
+    }
+
+    /// Points the config at `[workers] default_agent = <agent>` (nextest runs
+    /// each test in its own process).
+    fn set_default_agent(fixture: &Fixture, agent: &str) {
+        let path = fixture.root.join("default-agent.toml");
+        std::fs::write(&path, format!("[workers]\ndefault_agent = \"{agent}\"\n")).unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+    }
+
+    /// S1 and S3: a run without `--agent` takes `[workers] default_agent`, an
+    /// explicit agent wins, and the status shows the agent and model that ran.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_run_without_an_agent_takes_the_configured_default_and_records_what_ran() {
+        use crate::api::schema::TodoEventKind;
+        let fixture = todo_runs::todo_repo("todo-default-agent");
+        use_pi_stub(&fixture, "pi");
+        set_default_agent(&fixture, "pi");
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(10, 10));
+        let run = fixture
+            .supervisor
+            .todo_run_wait(todo_runs::params(
+                &fixture,
+                "commit a.txt feat: add a",
+                "ok",
+            ))
+            .unwrap();
+        let created = todo_runs::run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["agent"], "pi");
+        assert_eq!(created[0]["agent_label"], "pi");
+        let (done, finished) = todo_runs::approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.agent.as_deref(), Some("pi"));
+        assert_eq!(finished.model.as_deref(), Some(pi::DEFAULT_MODEL));
+        let started = todo_runs::run_events(&fixture, &run.run_id, "run_started");
+        assert_eq!(started[0]["agent_label"], "pi");
+
+        use crate::api::schema::WorkerAgentChoice as Choice;
+        assert_eq!(WorkerSupervisor::choice_of(None, None), Choice::Pi);
+        assert_eq!(
+            WorkerSupervisor::choice_of(Some(WorkerAgent::Claude), None),
+            Choice::Claude
+        );
+        assert_eq!(
+            WorkerSupervisor::choice_of(None, Some(Choice::PiAnthropic)),
+            Choice::PiAnthropic
+        );
+        set_default_agent(&fixture, "pi-anthropic");
+        assert_eq!(WorkerSupervisor::choice_of(None, None), Choice::PiAnthropic);
+        assert_eq!(
+            WorkerSupervisor::choice_of(Some(WorkerAgent::Pi), None),
+            Choice::Pi
+        );
+    }
+
+    /// S2: a `pi-anthropic` run the credit path refuses (no credentials are
+    /// configured here) falls back to pi once and records the refusal.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refused_credit_run_falls_back_to_pi_and_records_the_refusal() {
+        use crate::api::schema::TodoEventKind;
+        let fixture = todo_runs::todo_repo("todo-credit-fallback");
+        use_pi_stub(&fixture, "pi");
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(10, 10));
+        let run = fixture
+            .supervisor
+            .todo_run_anthropic(todo_runs::params(
+                &fixture,
+                "commit a.txt feat: add a",
+                "ok",
+            ))
+            .unwrap();
+        let created = todo_runs::run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["agent"], "pi");
+        assert_eq!(created[0]["model"], pi::DEFAULT_MODEL);
+        assert_eq!(created[0]["usage_gate"]["provider"], "openai");
+        assert!(
+            created[0]["agent_fallback"].as_str().is_some(),
+            "{created:#?}"
+        );
+        let (done, finished) = todo_runs::approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.agent.as_deref(), Some("pi"));
+        assert_eq!(finished.model.as_deref(), Some(pi::DEFAULT_MODEL));
+    }
+
+    /// S4: `worker.start_choice` takes the default agent, a model alone
+    /// keeps Claude, an explicit `pi-anthropic` the credit path refuses is
+    /// an error and a defaulted one falls back to pi.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn worker_start_choice_takes_the_default_agent_and_falls_back_to_pi() {
+        use crate::api::schema::{WorkerAgentChoice as Choice, WorkerStartChoiceParams};
+        let fixture = Fixture::new("start-choice");
+        use_pi_stub(&fixture, "pi");
+        set_default_agent(&fixture, "pi-anthropic");
+        let choice = |agent_choice, model: Option<&str>| WorkerStartChoiceParams {
+            start: start_params(&fixture.repo, "finish", model),
+            agent_choice,
+        };
+        let refused = fixture
+            .supervisor
+            .start_choice(choice(Some(Choice::PiAnthropic), None))
+            .unwrap_err();
+        let _ = refused;
+        let invalid = fixture
+            .supervisor
+            .start_choice(choice(Some(Choice::PiAnthropic), Some("sonnet")))
+            .unwrap_err();
+        assert_eq!(invalid.code(), "invalid_request", "{invalid}");
+        let id = fixture
+            .supervisor
+            .start_choice(choice(None, None))
+            .unwrap()
+            .worker_id;
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.model.as_deref(), Some(pi::DEFAULT_MODEL));
     }
 }

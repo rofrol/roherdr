@@ -6272,6 +6272,17 @@
         "TodoDraftRunParams": {
           "description": "`todo.run` whose worker's task the server drafts itself: a bounded,\nstateless model call (`draft_task`) with the item's text, the\n`DECISIONS.md` sections it names, the repository's code and test rules\n(`AGENTS.md`), its registered checks, `git log -20` and the item's\nhistory returns the task text, the exact commit subject, the path globs\nand the check names, or a question for the user. The server checks the\ndraft (a lowercase conventional subject, relative globs inside the\nrepository, registered checks), records it and starts the run with it as\n`todo.run` with those parameters would; an invalid draft or a failed call\nis asked once more, then escalated. The run is reviewed and its worker's\nquestions answered by the server too (`auto_review`, `auto_answer`).",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgentChoice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent the run's workers run; `[workers] default_agent` when\nabsent."
+            },
             "cwd": {
               "description": "A directory in the repository (the CLI sends its working directory).",
               "type": "string"
@@ -6405,6 +6416,17 @@
         "TodoNextRun": {
           "description": "The run a closing approval starts when its run is done: `todo.run`'s\nparameters for the next item, in the closed run's repository.",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgentChoice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its agent; `[workers] default_agent` when absent."
+            },
             "checks": {
               "description": "Its checks; the closed run's checks when empty.",
               "items": {
@@ -6932,6 +6954,26 @@
             }
           ]
         },
+        "WorkerAgentChoice": {
+          "description": "The agent a caller may choose for a worker or run: `WorkerAgent` plus the\nAnthropic API credits path (pi through herdr's credit proxy). Used by\noptional fields and `[workers] default_agent`; `WorkerAgent` keeps its\nshape.",
+          "oneOf": [
+            {
+              "const": "claude",
+              "description": "Claude Code on the subscription.",
+              "type": "string"
+            },
+            {
+              "const": "pi",
+              "description": "Headless pi on the ChatGPT plan.",
+              "type": "string"
+            },
+            {
+              "const": "pi-anthropic",
+              "description": "Headless pi on the Anthropic API credits.",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerAnswerAsParams": {
           "description": "`worker.answer` sent by a coordination tenure (`worker.answer_as`):\napplied only while that tenure owns the worker. Once the worker has moved\nto another tenure the answer is refused with `ownership_transferred`,\nnaming the owner, and kept in the owner's inbox as a `late_answer`; it is\nnever applied. The check and the answer's record share one hold of the\nregistry, as a handoff's move does: an answer lands before the move (and\nthe move carries it) or after it (and is refused).",
           "properties": {
@@ -7335,6 +7377,30 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "WorkerStartChoiceParams": {
+          "description": "`worker.start_choice`: `worker.start` with the agent chosen by name, which\nmay be `pi-anthropic`. `worker.start` keeps its shape and meaning.",
+          "properties": {
+            "agent_choice": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgentChoice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent the caller chose; `[workers] default_agent` when absent\n(Claude when `start.model` is set, since a model names a Claude one)."
+            },
+            "start": {
+              "$ref": "#/schemas/request/$defs/WorkerStartParams",
+              "description": "The start; its `agent` is ignored in favour of `agent_choice`."
+            }
+          },
+          "required": [
+            "start"
+          ],
           "type": "object"
         },
         "WorkerStartParams": {
@@ -8180,6 +8246,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`worker.start` with the agent chosen by name (`pi-anthropic` too).",
+          "properties": {
+            "method": {
+              "const": "worker.start_choice",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerStartChoiceParams"
             }
           },
           "required": [
@@ -20115,6 +20198,13 @@
         },
         "TodoRunInfo": {
           "properties": {
+            "agent": {
+              "description": "The agent the run's current worker runs (`claude`, `pi` or\n`pi-anthropic`), as of its start; absent before a worker started.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "attempt": {
               "description": "1 for the first worker; each retry adds one, at most 3.",
               "format": "uint32",
@@ -20199,6 +20289,13 @@
             },
             "message": {
               "type": "string"
+            },
+            "model": {
+              "description": "The model that worker runs, as the worker recorded it; absent for\nClaude's default or before a worker started.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "next_item": {
               "description": "The item the close or note named to start next (`todo.resume`'s\n`next`).",

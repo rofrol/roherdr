@@ -1949,6 +1949,8 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             step_started_ms: None,
             step_command: None,
             step_log: None,
+            agent: finish.ran_agent.clone(),
+            model: finish.ran_model.clone(),
         },
         checks,
         finish,

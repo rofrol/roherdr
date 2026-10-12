@@ -11,6 +11,8 @@ use super::{
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
 
+pub use crate::api::schema::WorkerAgentChoice;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannelConfig {
@@ -922,6 +924,10 @@ pub struct WorktreesConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WorkersConfig {
+    /// The agent every `todo run`, `worker start`, queue start and `--next`
+    /// start uses when the caller names none: `claude`, `pi` or
+    /// `pi-anthropic`. Default: `claude`.
+    pub default_agent: WorkerAgentChoice,
     /// Commands every headless worker runs before each Bash, Write, Edit and
     /// MultiEdit call, each an argv list (`~` expanded), with Claude Code's
     /// PreToolUse hook input on stdin. A check that denies refuses the call.
@@ -967,6 +973,7 @@ fn anthropic_default_cap() -> f64 {
 impl Default for WorkersConfig {
     fn default() -> Self {
         Self {
+            default_agent: WorkerAgentChoice::default(),
             pre_tool_checks: Vec::new(),
             folder_slots_dir: String::new(),
             anthropic_api_key_file: String::new(),

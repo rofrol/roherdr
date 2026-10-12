@@ -839,17 +839,15 @@ impl WorkerSupervisor {
             workspace_id: run.workspace.clone(),
             env,
             ignore_usage: false,
-            // The next run's worker runs the closed one's agent.
-            agent: run.finish.agent,
+            // Set below from `next.agent` or `[workers] default_agent`.
+            agent: None,
             // The next run is reviewed and answered as the closed one was.
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
         };
-        let mut started = if run.finish.usage_dispatch {
-            self.todo_run_wait(params.clone())
-        } else {
-            self.todo_run(params.clone())
-        };
+        let choice = Self::choice_of(None, next.agent);
+        let wait_usage = run.finish.usage_dispatch;
+        let mut started = self.start_run_as(params.clone(), false, None, wait_usage, choice);
         // A disk the slot's own build artifacts filled: its sweep frees
         // them, then preflight looks once more.
         let mut swept = String::new();
@@ -860,11 +858,7 @@ impl WorkerSupervisor {
                 Ok(()) => " (after the folder slot's sweep)".to_owned(),
                 Err(error) => format!(" (after the folder slot's sweep: {error})"),
             };
-            started = if run.finish.usage_dispatch {
-                self.todo_run_wait(params)
-            } else {
-                self.todo_run(params)
-            };
+            started = self.start_run_as(params, false, None, wait_usage, choice);
         }
         match started {
             Ok(started) => self.next_started(run_id, &next.item, started.run_id, false),

@@ -63,9 +63,10 @@ use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervi
 use crate::api::schema::{
     TodoAction, TodoDraftRunParams, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun,
     TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep,
-    TodoWaitParams, WorkerAgent, WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget,
-    WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState, WorkerStartParams,
-    WorkerState, WorkerVerdict, WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
+    TodoWaitParams, WorkerAgent, WorkerAgentChoice, WorkerAnswerParams, WorkerAttentionReason,
+    WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState,
+    WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerification, WorkerVerifyParams,
+    WorkerWaitUntil,
 };
 
 pub(super) mod activity;
@@ -238,11 +239,27 @@ pub(super) struct RunFinish {
     pub(super) agent: Option<WorkerAgent>,
     #[serde(default)]
     pub(super) anthropic_credits: bool,
+    /// Why a `pi-anthropic` run fell back to `pi` (the credit refusal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent_fallback: Option<String>,
+    /// The agent and model the run's worker ran (S3): [`TodoRunInfo`]'s
+    /// `agent` and `model`, kept here so the store needs no new column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ran_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ran_model: Option<String>,
     #[serde(default)]
     pub(super) credit_ledger: Option<PathBuf>,
     /// Pin the configured tariff/model for all attempts of this run.
     #[serde(default)]
     pub(super) credit_model: Option<String>,
+}
+
+/// `[workers] default_agent` now; Claude when the config cannot be read.
+pub(super) fn default_agent() -> WorkerAgentChoice {
+    crate::config::load_live_config()
+        .map(|loaded| loaded.config.workers.default_agent)
+        .unwrap_or_default()
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -400,6 +417,25 @@ impl PathCheck {
 }
 
 impl RunFinish {
+    /// The agent as callers name it: `pi-anthropic` for the credits path.
+    fn agent_label(&self) -> &'static str {
+        if self.anthropic_credits {
+            WorkerAgentChoice::PiAnthropic.as_str()
+        } else {
+            self.agent.unwrap_or_default().as_str()
+        }
+    }
+
+    /// Switches a credit run to `pi` on the ChatGPT plan after the credit
+    /// path refused it.
+    fn fall_back_to_pi(&mut self, refusal: &str) {
+        self.anthropic_credits = false;
+        self.agent = Some(WorkerAgent::Pi);
+        self.credit_model = None;
+        self.credit_ledger = None;
+        self.agent_fallback = Some(refusal.to_owned());
+    }
+
     /// The same model drives dispatch and the journal. Older credit runs keep
     /// their original model, not the new installation's default.
     fn worker_model(&self) -> Option<&str> {
@@ -457,6 +493,8 @@ impl Run {
             kept_branches: self.info.kept_branches.clone(),
             next_run_id: self.info.next_run_id.clone(),
             next_refusal: self.info.next_refusal.clone(),
+            ran_agent: self.info.agent.clone(),
+            ran_model: self.info.model.clone(),
             ..self.finish.clone()
         }
     }
@@ -1665,7 +1703,10 @@ impl WorkerSupervisor {
 
     pub(super) fn run_usage_gate(&self, run: &Run, ignore: bool) -> Result<Value, WorkerError> {
         if run.finish.anthropic_credits {
-            self.credit_gate()
+            // A refusal is not an error here: the start falls back to pi.
+            Ok(self.credit_gate().unwrap_or_else(|refusal| {
+                json!({"provider": "anthropic_api", "decision": "fallback", "refusal": refusal.to_string()})
+            }))
         } else {
             self.usage_gate(&run.info.repo, run.finish.agent.unwrap_or_default(), ignore)
         }
@@ -1673,7 +1714,42 @@ impl WorkerSupervisor {
 
     /// Wait-capable start; the published `todo.run` contract remains unchanged.
     pub(crate) fn todo_run_wait(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
-        self.create_run_with_wait(params, false, None, true, false)
+        let choice = Self::choice_of(params.agent, None);
+        self.start_run_as(params, false, None, true, choice)
+    }
+
+    /// The agent a start uses: the caller's explicit choice, else
+    /// `[workers] default_agent`.
+    pub(super) fn choice_of(
+        agent: Option<WorkerAgent>,
+        choice: Option<WorkerAgentChoice>,
+    ) -> WorkerAgentChoice {
+        choice
+            .or_else(|| {
+                agent.map(|agent| match agent {
+                    WorkerAgent::Claude => WorkerAgentChoice::Claude,
+                    WorkerAgent::Pi => WorkerAgentChoice::Pi,
+                })
+            })
+            .unwrap_or_else(default_agent)
+    }
+
+    /// Creates the run with `choice` as its agent: `pi-anthropic` takes the
+    /// credit path (and falls back to `pi` when it refuses).
+    pub(in crate::workers::runs) fn start_run_as(
+        &self,
+        mut params: TodoRunParams,
+        draft: bool,
+        queue: Option<&queue::QueueStart>,
+        wait_usage: bool,
+        choice: WorkerAgentChoice,
+    ) -> Result<TodoRunInfo, WorkerError> {
+        params.agent = match choice {
+            WorkerAgentChoice::Claude => None,
+            WorkerAgentChoice::Pi | WorkerAgentChoice::PiAnthropic => Some(WorkerAgent::Pi),
+        };
+        let credits = choice == WorkerAgentChoice::PiAnthropic;
+        self.create_run_with_wait(params, draft, queue, wait_usage, credits)
     }
 
     /// Starts a run of `params.item` whose task, subject, paths and checks
@@ -1684,6 +1760,7 @@ impl WorkerSupervisor {
         &self,
         params: TodoDraftRunParams,
     ) -> Result<TodoRunInfo, WorkerError> {
+        let agent = params.agent;
         let params = TodoRunParams {
             cwd: params.cwd,
             item: params.item,
@@ -1700,7 +1777,8 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
         };
-        self.create_run(params, true, None)
+        let choice = Self::choice_of(None, agent);
+        self.start_run_as(params, true, None, false, choice)
     }
 
     /// Creates the run and starts its driver. A start of the repository's
@@ -1775,6 +1853,18 @@ impl WorkerSupervisor {
             return Err(Self::run_active(&active));
         }
         let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
+        let mut params = params;
+        let mut anthropic_credits = anthropic_credits;
+        // A credit proxy or cap refusal falls back to pi once, recorded in
+        // the run's created event.
+        let mut agent_fallback = None;
+        if anthropic_credits {
+            if let Err(refusal) = self.credit_gate() {
+                agent_fallback = Some(refusal.to_string());
+                anthropic_credits = false;
+                params.agent = Some(WorkerAgent::Pi);
+            }
+        }
         let agent = params.agent.unwrap_or_default();
         let gate = if anthropic_credits {
             self.credit_gate()
@@ -1880,6 +1970,8 @@ impl WorkerSupervisor {
                 step_started_ms: None,
                 step_command: None,
                 step_log: None,
+                agent: None,
+                model: None,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1899,8 +1991,9 @@ impl WorkerSupervisor {
                 credit_model: credit_model.clone(),
                 credit_ledger,
                 pending_usage: pending_reason.is_some(),
-                usage_dispatch: wait_usage,
+                usage_dispatch: wait_usage && !anthropic_credits,
                 ignore_usage: params.ignore_usage,
+                agent_fallback: agent_fallback.clone(),
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1927,6 +2020,8 @@ impl WorkerSupervisor {
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
             "agent": agent.as_str(),
+            "agent_label": run.finish.agent_label(),
+            "agent_fallback": agent_fallback,
             "model": run.finish.worker_model(),
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
@@ -3285,6 +3380,25 @@ impl WorkerSupervisor {
             .receipt(&command_id)
             .map_err(|error| error.to_string())?
             .is_some_and(|receipt| receipt.worker_id.is_some());
+        // A credit run the credit path refuses falls back to pi once; the
+        // usage gate below then reads the ChatGPT plan.
+        if run.finish.anthropic_credits && run.info.worker_id.is_none() && !recovering_worker {
+            if let Err(refusal) = self.credit_gate() {
+                let refusal = refusal.to_string();
+                run.finish.fall_back_to_pi(&refusal);
+                run.finish.usage_dispatch = true;
+                self.run_step(
+                    run,
+                    json!({
+                        "type": "run_agent_fallback",
+                        "from": "pi-anthropic",
+                        "to": "pi",
+                        "refusal": refusal,
+                        "model": run.finish.worker_model(),
+                    }),
+                )?;
+            }
+        }
         // Preparation may take time. Check at dispatch, but do not re-gate
         // the recovery of a worker that the durable start receipt already names.
         if run.finish.usage_dispatch && run.info.worker_id.is_none() && !recovering_worker {
@@ -3320,9 +3434,6 @@ impl WorkerSupervisor {
                 "command_id": command_id,
             }),
         )?;
-        if run.finish.anthropic_credits && !recovering_worker {
-            self.credit_gate().map_err(|e| e.to_string())?;
-        }
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
             prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
@@ -3362,6 +3473,10 @@ impl WorkerSupervisor {
         // The agent and model the attempt's worker runs (R4 of the pi
         // workers item): the model as the worker recorded it.
         let agent = run.finish.agent.unwrap_or_default();
+        run.info.agent = Some(run.finish.agent_label().to_owned());
+        run.info.model = model
+            .clone()
+            .or_else(|| run.finish.worker_model().map(str::to_owned));
         self.run_step(
             run,
             json!({
@@ -3369,6 +3484,7 @@ impl WorkerSupervisor {
                 "worker_id": worker_id,
                 "step": run.info.step,
                 "agent": agent.as_str(),
+                "agent_label": run.finish.agent_label(),
                 "model": model,
             }),
         )?;

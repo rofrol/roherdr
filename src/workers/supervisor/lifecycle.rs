@@ -29,6 +29,63 @@ impl WorkerSupervisor {
         )
     }
 
+    /// `worker.start_choice`: starts a worker with the agent the caller
+    /// named (`pi-anthropic` runs pi through the credit proxy), else
+    /// `[workers] default_agent`; a model without an agent names a Claude
+    /// model. A default `pi-anthropic` that the credit path refuses falls
+    /// back to `pi`; an explicit one is refused.
+    pub(crate) fn start_choice(
+        &self,
+        choice: crate::api::schema::WorkerStartChoiceParams,
+    ) -> Result<WorkerInfo, WorkerError> {
+        use crate::api::schema::WorkerAgentChoice;
+        let mut params = choice.start;
+        let defaulted = choice.agent_choice.is_none();
+        let picked = match choice.agent_choice {
+            Some(picked) => picked,
+            None if params.model.is_some() => WorkerAgentChoice::Claude,
+            None => crate::workers::runs::default_agent(),
+        };
+        match picked {
+            WorkerAgentChoice::Claude => params.agent = Some(WorkerAgent::Claude),
+            WorkerAgentChoice::Pi => params.agent = Some(WorkerAgent::Pi),
+            WorkerAgentChoice::PiAnthropic => {
+                if params.model.is_some() {
+                    return Err(WorkerError::Invalid(
+                        "--agent pi-anthropic takes its model from [workers] anthropic_api_model, \
+                         not --model"
+                            .into(),
+                    ));
+                }
+                match self.credit_model_for_start() {
+                    Ok(model) => {
+                        params.agent = Some(WorkerAgent::Pi);
+                        params.model = Some(model);
+                    }
+                    Err(refusal) if defaulted => {
+                        tracing::info!(%refusal, "default pi-anthropic worker falls back to pi");
+                        params.agent = Some(WorkerAgent::Pi);
+                    }
+                    Err(refusal) => return Err(refusal),
+                }
+            }
+        }
+        self.start(&params)
+    }
+
+    /// The credit model a worker start pins, when the credit path admits it.
+    fn credit_model_for_start(&self) -> Result<String, WorkerError> {
+        self.credit_gate()?;
+        let config = crate::config::load_live_config()
+            .map_err(|_| WorkerError::Preflight("cannot load credit configuration".into()))?
+            .config
+            .workers;
+        config
+            .validate_anthropic_model()
+            .map_err(|error| WorkerError::Preflight(error.into()))?;
+        Ok(pi::anthropic_model(&config))
+    }
+
     /// Starts a worker; with `role`, as a headless item coordinator
     /// ([`item_coordinators`]): its own contract, herdr's coordinator
     /// allowlist as its first pre-tool check, and the server's socket

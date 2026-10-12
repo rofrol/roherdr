@@ -1412,6 +1412,7 @@ impl App {
                 );
             }
             Method::WorkerStart(_)
+            | Method::WorkerStartChoice(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)

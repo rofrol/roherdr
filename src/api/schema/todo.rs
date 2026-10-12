@@ -107,6 +107,10 @@ pub struct TodoDraftRunParams {
     /// Start even while the usage gate refuses, on the user's word.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub ignore_usage: bool,
+    /// The agent the run's workers run; `[workers] default_agent` when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::workers::WorkerAgentChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -211,6 +215,9 @@ pub struct TodoNextRun {
     /// Its checks; the closed run's checks when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
+    /// Its agent; `[workers] default_agent` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::workers::WorkerAgentChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -539,6 +546,14 @@ pub struct TodoRunInfo {
     /// command ended, until the run moves to another step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_log: Option<String>,
+    /// The agent the run's current worker runs (`claude`, `pi` or
+    /// `pi-anthropic`), as of its start; absent before a worker started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The model that worker runs, as the worker recorded it; absent for
+    /// Claude's default or before a worker started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

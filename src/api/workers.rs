@@ -16,6 +16,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
     matches!(
         method,
         Method::WorkerStart(_)
+            | Method::WorkerStartChoice(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)
@@ -180,6 +181,7 @@ fn handle_immediate(
 ) -> Result<ResponseResult, WorkerError> {
     let worker = match method {
         Method::WorkerStart(params) => supervisor.start(&params)?,
+        Method::WorkerStartChoice(params) => supervisor.start_choice(params)?,
         Method::WorkerStatus(target) => supervisor.status(&target.worker_id)?,
         Method::WorkerList(_) => {
             return Ok(ResponseResult::WorkerList {

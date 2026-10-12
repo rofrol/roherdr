@@ -15,6 +15,13 @@ use super::worker::take_string_option;
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
                  [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi|pi-anthropic]
+      --agent names the agent of the run's workers: claude (Claude Code on
+      the subscription), pi (headless pi on the ChatGPT plan) or
+      pi-anthropic (headless pi on the Anthropic API credits). Without it
+      the run uses [workers] default_agent (default claude); an explicit
+      --agent wins. A pi-anthropic run the credit proxy or the credit cap
+      refuses falls back to pi once; its events record the refusal, and
+      todo status shows the agent and model that ran.
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
@@ -70,7 +77,7 @@ const USAGE: &str = "usage:
       worker store refuses the write), todo wait and todo status show the run
       blocked with that error, and the server writes it again once the store
       takes a write.
-  herdr todo run <item-id> --draft [--ignore-usage]
+  herdr todo run <item-id> --draft [--ignore-usage] [--agent claude|pi|pi-anthropic]
       The server drafts the task, SUBJECT, the GLOBs and the check NAMEs
       itself (todo.draft_run): one claude -p call (structured JSON output, no
       tools, no session) with the item's text, the DECISIONS.md sections it
@@ -101,7 +108,8 @@ const USAGE: &str = "usage:
                     [--keep-open | (--note FILE | --close FILE)
                      [--next ITEM --next-task FILE
                        --next-message SUBJECT --next-paths GLOB...
-                       [--next-check NAME...] | --stop-reason TEXT]]
+                       [--next-check NAME...] [--next-agent claude|pi|pi-anthropic]
+                       | --stop-reason TEXT]]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
@@ -466,6 +474,15 @@ fn parse_agent(value: &str) -> Result<WorkerAgent, String> {
     }
 }
 
+/// An agent choice by name, for `option` (`--agent`, `--next-agent`).
+pub(super) fn parse_agent_choice(
+    option: &str,
+    value: &str,
+) -> Result<crate::api::schema::WorkerAgentChoice, String> {
+    crate::api::schema::WorkerAgentChoice::parse(value)
+        .ok_or_else(|| format!("{option} takes claude, pi or pi-anthropic, not {value}"))
+}
+
 fn take_switch(args: &[String], option: &str) -> Result<(bool, Vec<String>), String> {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != option).cloned().collect();
     match args.len() - rest.len() {
@@ -495,13 +512,15 @@ fn next_run(
     message: Option<String>,
     paths: Option<Vec<String>>,
     checks: Option<Vec<String>>,
+    agent: Option<crate::api::schema::WorkerAgentChoice>,
     stop_reason: Option<&str>,
 ) -> Result<Option<TodoNextRun>, String> {
     let any_next = item.is_some()
         || task.is_some()
         || message.is_some()
         || paths.is_some()
-        || checks.is_some();
+        || checks.is_some()
+        || agent.is_some();
     if !close_or_note && (any_next || stop_reason.is_some()) {
         return Err("only --close or --note takes --next and --stop-reason".into());
     }
@@ -514,7 +533,7 @@ fn next_run(
     let (Some(item), Some(task), Some(message), Some(paths)) = (item, task, message, paths) else {
         return Err(
             "--next takes the item id with --next-task FILE, --next-message SUBJECT \
-                    and --next-paths GLOB... (--next-check NAME... is optional)"
+                    and --next-paths GLOB... (--next-check NAME... and --next-agent are optional)"
                 .into(),
         );
     };
@@ -524,6 +543,7 @@ fn next_run(
         message,
         paths,
         checks: checks.unwrap_or_default(),
+        agent,
     }))
 }
 
@@ -532,6 +552,11 @@ fn next_run(
 fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String> {
     let (_, rest) = take_switch(rest, "--auto-review")?;
     let (_, rest) = take_switch(&rest, "--auto-answer")?;
+    let (agent, rest) = take_string_option(&rest, "--agent")?;
+    let agent = agent
+        .as_deref()
+        .map(|value| parse_agent_choice("--agent", value))
+        .transpose()?;
     let item = match rest.as_slice() {
         [item] if !item.starts_with("--") => item.clone(),
         _ => {
@@ -555,6 +580,7 @@ fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String
         workspace_id: super::target::caller_workspace_id(),
         env: super::worker::caller_env(),
         ignore_usage,
+        agent,
     }))
 }
 
@@ -660,6 +686,11 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (next_task, rest) = take_string_option(&rest, "--next-task")?;
             let (next_message, rest) = take_string_option(&rest, "--next-message")?;
             let (next_item, rest) = take_string_option(&rest, "--next")?;
+            let (next_agent, rest) = take_string_option(&rest, "--next-agent")?;
+            let next_agent = next_agent
+                .as_deref()
+                .map(|value| parse_agent_choice("--next-agent", value))
+                .transpose()?;
             let (stop_reason, rest) = take_string_option(&rest, "--stop-reason")?;
             let event = event
                 .ok_or("resume takes --event EVENT_ID, the event it answers")?
@@ -716,6 +747,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 next_message,
                 next_paths,
                 next_checks,
+                next_agent,
                 stop_reason.as_deref(),
             )?;
             let note = note.map(|path| read_text("--note", &path)).transpose()?;
@@ -1318,6 +1350,84 @@ mod tests {
     }
 
     #[test]
+    fn the_help_names_every_option_run_parses_and_the_agent_values() {
+        for option in [
+            "--task",
+            "--message",
+            "--paths",
+            "--check",
+            "--ignore-usage",
+            "--auto-review",
+            "--auto-answer",
+            "--draft",
+            "--agent claude|pi|pi-anthropic",
+            "--next-agent claude|pi|pi-anthropic",
+            "default_agent",
+        ] {
+            assert!(USAGE.contains(option), "{option} missing from the help");
+        }
+    }
+
+    #[test]
+    fn a_draft_and_a_chain_take_an_optional_agent() {
+        use crate::api::schema::WorkerAgentChoice;
+        let Ok(Some(Method::TodoDraftRun(params))) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--draft",
+            "--agent",
+            "pi-anthropic",
+        ])) else {
+            panic!("draft --agent did not parse");
+        };
+        assert_eq!(params.agent, Some(WorkerAgentChoice::PiAnthropic));
+        let Ok(Some(Method::TodoDraftRun(params))) =
+            parse(&args(&["run", "t-abcd2345", "--draft"]))
+        else {
+            panic!("draft did not parse");
+        };
+        assert_eq!(params.agent, None);
+        assert!(parse(&args(&["run", "t-abcd2345", "--draft", "--agent", "gpt"])).is_err());
+
+        let dir = std::env::temp_dir().join(format!("herdr-cli-todo-next-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = dir.join("task.md");
+        std::fs::write(&task, "Do the next thing\n").unwrap();
+        let task = task.display().to_string();
+        let resume = |agent: &[&str]| {
+            let mut words = vec![
+                "resume",
+                "r-abcd2345",
+                "--event",
+                "9",
+                "--action",
+                "approve",
+                "--note",
+                &task,
+                "--next",
+                "t-bcde3456",
+                "--next-task",
+                &task,
+                "--next-message",
+                "feat: y",
+                "--next-paths",
+                "src/**",
+            ];
+            words.extend_from_slice(agent);
+            parse(&args(&words))
+        };
+        let Ok(Some(Method::TodoResume(params))) = resume(&["--next-agent", "pi"]) else {
+            panic!("--next-agent did not parse");
+        };
+        assert_eq!(params.next.unwrap().agent, Some(WorkerAgentChoice::Pi));
+        let Ok(Some(Method::TodoResume(params))) = resume(&[]) else {
+            panic!("--next did not parse");
+        };
+        assert_eq!(params.next.unwrap().agent, None);
+        assert!(resume(&["--next-agent", "gpt"]).is_err());
+    }
+
+    #[test]
     fn a_close_takes_the_next_run_or_a_stop_reason() {
         let dir = std::env::temp_dir().join(format!("herdr-cli-todo-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1357,6 +1467,7 @@ mod tests {
         assert_eq!(
             params.next,
             Some(TodoNextRun {
+                agent: None,
                 item: "t-bcde3456".into(),
                 task: "Do the next thing\n".into(),
                 message: "feat: y".into(),

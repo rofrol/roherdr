@@ -25,6 +25,57 @@ impl WorkerAgent {
     }
 }
 
+/// The agent a caller may choose for a worker or run: `WorkerAgent` plus the
+/// Anthropic API credits path (pi through herdr's credit proxy). Used by
+/// optional fields and `[workers] default_agent`; `WorkerAgent` keeps its
+/// shape.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub enum WorkerAgentChoice {
+    /// Claude Code on the subscription.
+    #[default]
+    #[serde(rename = "claude")]
+    Claude,
+    /// Headless pi on the ChatGPT plan.
+    #[serde(rename = "pi")]
+    Pi,
+    /// Headless pi on the Anthropic API credits.
+    #[serde(rename = "pi-anthropic")]
+    PiAnthropic,
+}
+
+impl WorkerAgentChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Pi => "pi",
+            Self::PiAnthropic => "pi-anthropic",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "pi" => Some(Self::Pi),
+            "pi-anthropic" => Some(Self::PiAnthropic),
+            _ => None,
+        }
+    }
+}
+
+/// `worker.start_choice`: `worker.start` with the agent chosen by name, which
+/// may be `pi-anthropic`. `worker.start` keeps its shape and meaning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerStartChoiceParams {
+    /// The start; its `agent` is ignored in favour of `agent_choice`.
+    pub start: WorkerStartParams,
+    /// The agent the caller chose; `[workers] default_agent` when absent
+    /// (Claude when `start.model` is set, since a model names a Claude one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_choice: Option<WorkerAgentChoice>,
+}
+
 /// Starts a headless worker: `claude -p` over stream-json pipes (or `pi
 /// --mode rpc` with `agent: pi`), no terminal. The server owns the process;
 /// clients only ask about it.

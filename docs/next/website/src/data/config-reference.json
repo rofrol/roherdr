@@ -1684,6 +1684,12 @@
           "description": "Commands every headless worker runs before each Bash, Write, Edit and MultiEdit call, each an argv list with `~` expanded, e.g. `[[\"python3\", \"~/.claude/hooks/delay-check.py\"]]`. Each gets Claude Code's PreToolUse hook input on stdin, like a command hook; one that denies (exit 0 with `permissionDecision` `deny`, or exit 2) refuses the call with its reason. A check that cannot run fails open and is reported in the worker's log. Read when a worker starts."
         },
         {
+          "key": "workers.default_agent",
+          "type": "string",
+          "default": "\"claude\"",
+          "description": "The agent that headless workers use when the caller names none: `claude` (Claude Code on the subscription), `pi` (headless pi on the ChatGPT plan) or `pi-anthropic` (headless pi on the Anthropic API credits, which needs the `anthropic_api_*` settings). It applies to `herdr todo run` without `--agent`, `todo run --draft`, the runs the queue starts and the runs a `--next` chain starts (`--next-agent` picks one), and to `herdr worker start` without `--agent` (a `--model` alone keeps Claude). An explicit `--agent` wins. A `pi-anthropic` run that the credit proxy or cap refuses falls back to `pi` once and records the refusal. `herdr todo status` shows the agent and model that ran."
+        },
+        {
           "key": "workers.anthropic_api_key_file",
           "type": "string",
           "default": "\"\"",
