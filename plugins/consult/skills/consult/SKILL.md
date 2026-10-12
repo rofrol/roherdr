@@ -39,7 +39,9 @@ scripts one by one for a default round: call only the command below.
    `"$D/../consult-stats/consult.py" round --brief <file> --caller-model <your model id or family> [--models a,b]`.
    It mints one round id, asks the models in parallel, and prints the round id, then each model's answer with its
    status and call id, then which models were asked, skipped (and why) and failed. It exits non-zero only when no
-   model answered.
+   model answered. The rule 10 preamble (`plugins/consult/rule10-preamble.md`) is added to the brief automatically
+   (`--no-preamble` skips it, for tests and rare non-design rounds); you still check each answer's `Timing:` list
+   before recording anything.
 4. Treat the answers as second opinions, not ground truth: verify each claim against the code, then report to the user
    in four buckets, each finding with the models that raised it and a one-line reason:
    - **Act on**: real issues for correctness, safety or maintainability given the actual goal; you do them.

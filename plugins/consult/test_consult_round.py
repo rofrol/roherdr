@@ -61,7 +61,7 @@ class RoundTests(unittest.TestCase):
                               capture_output=True, text=True, env={**self.env, **(env or {})}, timeout=60)
 
     def test_claude_caller_asks_the_whole_default_set_under_one_round(self):
-        r = self.run_round("--caller-model", "claude")
+        r = self.run_round("--caller-model", "claude", "--no-preamble")
         self.assertEqual(r.returncode, 0, r.stderr)
         rid = r.stdout.splitlines()[0].removeprefix("round: ")
         for n in ("sol", "mimo", "deepseek"):
@@ -69,6 +69,27 @@ class RoundTests(unittest.TestCase):
             self.assertIn(f"answer from {n} in round {rid}: Is this design sound?", r.stdout)
         self.assertIn("skipped: none", r.stdout)
         self.assertIn("failed: none", r.stdout)
+
+    def test_the_preamble_precedes_the_brief_for_every_model(self):
+        r = self.run_round("--caller-model", "claude")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for n in ("sol", "mimo", "deepseek"):
+            self.assertIn(f"answer from {n} in round", r.stdout)
+        self.assertEqual(r.stdout.count("# Added delay is a bug signal"), 3)
+        self.assertEqual(r.stdout.count("Timing: none"), 3)
+        for chunk in r.stdout.split("=== ")[1:]:
+            self.assertLess(chunk.index("# Added delay"), chunk.index("---\n\nIs this design sound?"))
+
+    def test_no_preamble_omits_it(self):
+        r = self.run_round("--caller-model", "claude", "--no-preamble")
+        self.assertNotIn("Added delay", r.stdout)
+        self.assertNotIn("Timing:", r.stdout)
+
+    def test_a_missing_preamble_file_is_a_clear_error(self):
+        r = self.run_round("--caller-model", "claude", env={"CONSULT_PREAMBLE": str(Path(self.tmp.name) / "none.md")})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Cannot read the rule 10 preamble", r.stderr)
+        self.assertNotIn("round ", r.stdout)
 
     def test_the_config_is_read_at_each_invocation(self):
         self.write_config(["sol", "deepseek"])

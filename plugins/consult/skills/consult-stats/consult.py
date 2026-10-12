@@ -5,7 +5,8 @@
                 [--answer-chars N] [--usage JSON] [--usage-raw JSON]
                 [--model-version V] [--fingerprint F]                      (round id from $CONSULT_ROUND)
                 [--error-kind K | --error-text-file PATH|-]                (errors only; the text is classified, never stored)
-  consult.py round --brief FILE|- [--models a,b] [--caller-model ID]      # ask the default set (or --models) in parallel
+  consult.py round --brief FILE|- [--models a,b] [--caller-model ID] [--no-preamble]  # ask the default set (or --models) in parallel
+                [--no-preamble]  (the rule 10 preamble, plugins/consult/rule10-preamble.md, precedes the brief unless given)
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
                 [--act N --consider N --noted N --dismissed N]            # what was done with each finding
@@ -26,6 +27,8 @@ from pathlib import Path
 
 LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log.jsonl"))
 SKILLS = Path(__file__).resolve().parent.parent  # the ask_* skills are this skill's siblings
+# Rule 10 text that `round` puts before the brief (CONSULT_PREAMBLE overrides the path, for tests).
+PREAMBLE = Path(os.environ.get("CONSULT_PREAMBLE", SKILLS.parent / "rule10-preamble.md"))
 # The one place that names the default model set (plugins/consult/consult-models.json); `round` reads it each time.
 MODELS = Path(os.environ.get("CONSULT_MODELS", SKILLS.parent / "consult-models.json"))
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
@@ -326,6 +329,11 @@ def cmd_round(a):
         sys.exit(f"Cannot read the brief: {e}")
     if not brief.strip():
         sys.exit("The brief is empty")
+    if not a.no_preamble:
+        try:
+            brief = PREAMBLE.read_text() + brief
+        except OSError as e:
+            sys.exit(f"Cannot read the rule 10 preamble {PREAMBLE}: {e} (use --no-preamble to skip it)")
     names, skipped, warnings = round_plan(cfg, a.models, a.caller_model or os.environ.get("PI_MODEL"))
     if not names:
         sys.exit("No model left to ask: " + "; ".join(f"{n} skipped, {why}" for n, why in skipped))
@@ -809,6 +817,7 @@ def main():
                                             "the text is not stored")
     sub.add_parser("new-round")
     rd = sub.add_parser("round", help="ask a round of models in parallel, under one new round id")
+    rd.add_argument("--no-preamble", action="store_true", help="do not put the rule 10 preamble before the brief")
     rd.add_argument("--brief", required=True, help="the prompt every model gets (- = stdin)")
     rd.add_argument("--models", help="comma-separated names from consult-models.json; replaces the default set")
     rd.add_argument("--caller-model", help="your model id or family, whose family is left out of the default set "
