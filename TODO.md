@@ -49,6 +49,35 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   rests and the transcript cannot be read, record `unaccounted_assignment`
   with the last lifecycle fact "transcript unreadable"; a test.
 
+- [ ] A prompt to a busy agent is queued by herdr, never silently lost, and [t-jkcv5fiy]
+  a failed delivery is reported by herdr itself (the user via
+  todo-try-roguix, 2026-10-12: "fix the process; ask the models"). Worker
+  metal (wB3:p1) was 1h30m into one turn; three `agent prompt` calls each
+  blocked over 2 minutes, exited 1, and none reached the transcript; a
+  fourth answered `unsupported` (no turn reports from that pane: turn
+  state lost across earlier handoffs, fixed in ae55938b); the coordinator
+  told the user "queued" and did not report it. Round of 2026-10-12 (sol,
+  MiMo, DeepSeek agreeing), decided:
+  1. A server-side queue per agent: a prompt to a busy agent returns at
+     once with a request id in state `queued` (not delivered), shows the
+     current turn's start and the queue position; herdr types it at the
+     agent's next turn boundary (its Stop report, reconciled after a
+     restart or handoff), then `typed` -> `accepted` -> turn tracked; each
+     prompt is its own request, in order, never merged; the sender can
+     follow or cancel it (saying whether it can still be prevented); the
+     agent's exit fails the queued requests loudly. No expiry timers.
+  2. Typed text cannot be untyped: herdr never answers `undelivered`
+     without proof; uncertainty is `delivery_unknown`.
+  3. Distinct exit codes and statuses (queued, busy/refused, undelivered,
+     delivery unknown), never success-looking output on failure; status on
+     stderr and in `--json` so a pipe cannot swallow it.
+  4. Any `agent prompt` that ends without delivery, including before a
+     request id exists, is a supervision finding routed to the sender's
+     coordinator and the herdr coordinator (with the delivery item).
+  5. The rule (todo skill, global CLAUDE.md): a failed herdr command is
+     reported with `herdr report` before any claim to the user and never
+     called pending or queued unless herdr says so.
+
 - [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
   (the user via the chat-hosted coordinator, 2026-10-12: "the process is
   failing here; ask the models"): a TUI worker refused an approved
