@@ -174,9 +174,10 @@ fn absent_thinking_is_not_rewritten_to_disabled() {
 }
 
 #[test]
-fn thinking_validation_keeps_shapes_and_output_ceiling_closed() {
+fn thinking_object_shape_is_left_to_the_api() {
     for thinking in [
-        serde_json::json!(null),
+        serde_json::json!({}),
+        serde_json::json!({"type":"adaptive", "display":"summarized"}),
         serde_json::json!({"type":"unknown"}),
         serde_json::json!({"type":"enabled"}),
         serde_json::json!({"type":"enabled", "budget_tokens":0}),
@@ -191,15 +192,52 @@ fn thinking_validation_keeps_shapes_and_output_ceiling_closed() {
     ] {
         let mut f = OfflineFixture::new(200.0);
         let token = f.proxy.register("thinking", "item").unwrap();
-        let request = thinking_request(&token, thinking, 4096);
-        let mut output = Vec::new();
-        assert!(f
-            .proxy
-            .serve(request.as_slice(), &mut output, |_, _, _| {
-                panic!("invalid thinking must not reach upstream")
+        let request = thinking_request(&token, thinking.clone(), 4096);
+        f.proxy
+            .serve(request.as_slice(), &mut Vec::new(), |_, req, out| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["thinking"], thinking);
+                assert!(req.reserve >= 4096.0 * 15.0 / 1_000_000.0);
+                out.write_all(&Fixture::response())
             })
-            .is_err());
-        assert!(output.starts_with(b"HTTP/1.1 403"));
+            .unwrap();
+    }
+}
+
+#[test]
+fn non_object_thinking_is_refused_with_exact_field_diagnostics() {
+    for thinking in [
+        serde_json::json!(null),
+        serde_json::json!("adaptive"),
+        serde_json::json!([]),
+        serde_json::json!(42),
+    ] {
+        let raw = thinking_request("synthetic-token", thinking.clone(), 4096);
+        let mut context = RequestContext::default();
+        assert!(request(raw.as_slice(), MODEL, &mut context).is_err());
+        assert_eq!(context.offending_field.as_deref(), Some("thinking"));
+        assert_eq!(context.offending_json, Some(thinking));
+    }
+}
+
+#[test]
+fn output_config_is_forwarded_but_unknown_top_level_fields_are_refused() {
+    for field in ["output_config", "unknown_option"] {
+        let value = serde_json::json!({"effort":"medium"});
+        let body =
+            serde_json::json!({"model": MODEL, "max_tokens":4096, "messages":[], field:value})
+                .to_string();
+        let raw = format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer synthetic-token\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let mut context = RequestContext::default();
+        let result = request(raw.as_bytes(), MODEL, &mut context);
+        if field == "output_config" {
+            let body: Value = serde_json::from_slice(&result.unwrap().body).unwrap();
+            assert_eq!(body[field], value);
+        } else {
+            assert!(result.is_err());
+            assert_eq!(context.offending_field.as_deref(), Some(field));
+            assert_eq!(context.offending_json, Some(value));
+        }
     }
 }
 
@@ -352,6 +390,7 @@ fn refusals_are_distinct_and_do_not_echo_secrets_or_upstream_bodies() {
                 method: "POST",
                 path: "/v1/messages",
                 model: MODEL.into(),
+                ..Default::default()
             },
             &mut output,
             false,
@@ -445,10 +484,19 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
                 method: "POST",
                 path: "/v1/messages?beta=true",
                 model: MODEL.into(),
+                ..Default::default()
             },
             &mut Vec::new(),
             false,
         );
+        let mut context = RequestContext::default();
+        let error = field_denial(
+            &mut context,
+            "thinking",
+            &serde_json::json!(["adaptive"]),
+            "thinking must be an object",
+        );
+        report_refusal(&error, &context, &mut Vec::new(), false);
     });
     let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     for field in [
@@ -459,10 +507,45 @@ fn refusal_log_names_the_check_and_safe_request_metadata() {
         "rate_limit_error",
         "Too many requests",
         "429",
+        "thinking must be an object",
+        "offending_field=Some(\"thinking\")",
+        "offending_json=[\"adaptive\"]",
     ] {
         assert!(log.contains(field), "{log}");
     }
     assert!(!log.contains("sk-ant-") && !log.contains("x-api-key"));
+}
+
+#[test]
+fn field_diagnostics_never_copy_prompts_or_credentials() {
+    for field in [
+        "messages",
+        "system",
+        "tools",
+        "metadata",
+        "apiKey",
+        "authorization",
+        "proxy_token",
+        "secret",
+    ] {
+        let mut context = RequestContext::default();
+        field_denial(
+            &mut context,
+            field,
+            &serde_json::json!("private-content"),
+            "request field not allowlisted",
+        );
+        assert_eq!(context.offending_field.as_deref(), Some(field));
+        assert!(context.offending_json.is_none());
+    }
+    let mut context = RequestContext::default();
+    field_denial(
+        &mut context,
+        "max_tokens",
+        &serde_json::json!(64001),
+        "max_tokens not allowlisted",
+    );
+    assert_eq!(context.offending_json, Some(serde_json::json!(64001)));
 }
 
 #[test]
@@ -845,6 +928,26 @@ fn installed_pi_anthropic_messages_request_shape_offline() {
             "pi body field names: {:?}",
             data.as_object().unwrap().keys().collect::<Vec<_>>()
         );
+        // Record configuration exactly, but never prompts, tools, metadata or
+        // authentication. The names above cover every top-level field.
+        for field in [
+            "thinking",
+            "output_config",
+            "max_tokens",
+            "stream",
+            "temperature",
+            "top_p",
+            "top_k",
+            "model",
+        ] {
+            if let Some(value) = data.get(field) {
+                eprintln!("pi body configuration: {field}={value}");
+            }
+        }
+        assert!(
+            data["thinking"].is_object(),
+            "medium thinking must be captured"
+        );
         raw.extend_from_slice(&body);
         let mut upstream = std::net::TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
         upstream.write_all(&raw).unwrap();
@@ -855,7 +958,7 @@ fn installed_pi_anthropic_messages_request_shape_offline() {
     std::fs::create_dir(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("models.json"), serde_json::json!({"providers":{"offline":{
         "baseUrl":capture_address,"api":"anthropic-messages","apiKey":"${HERDR_ANTHROPIC_PROXY_TOKEN}",
-        "models":[{"id":MODEL,"contextWindow":200000,"maxTokens":8192}]
+        "models":[{"id":MODEL,"reasoning":true,"contextWindow":200000,"maxTokens":8192}]
     }}}).to_string()).unwrap();
     let mut child = std::process::Command::new("pi")
         .args([
@@ -863,6 +966,8 @@ fn installed_pi_anthropic_messages_request_shape_offline() {
             "rpc",
             "--model",
             &format!("offline/{MODEL}"),
+            "--thinking",
+            "medium",
             "--no-session",
             "--no-extensions",
             "--no-skills",

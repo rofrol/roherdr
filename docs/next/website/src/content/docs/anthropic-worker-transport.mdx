@@ -52,10 +52,10 @@ refused to exclude long-context premium pricing. Validated JSON
 is re-encoded before forwarding so duplicate keys cannot change upstream model
 or token-limit interpretation. The server forces `service_tier = "standard_only"`
 rather than allowing the API's default automatic priority-tier selection.
-Thinking configuration accepts `disabled`, `enabled` with `budget_tokens`,
-`adaptive`, and `between_tools` (with an optional `budget_tokens`). Explicit
-budgets must be integer token counts of at least 1,024 and below `max_tokens`.
-The proxy preserves the requested type; it does not inject disabled thinking.
+Thinking configuration must be a JSON object. Its fields, type and budgets
+are validated by the API, not by a proxy-maintained schema. The proxy preserves
+the object unchanged; it does not inject disabled thinking. The top-level
+`output_config` field is also forwarded; unknown top-level fields remain refused.
 `max_tokens` bounds thinking and visible output together, and the full ceiling
 is reserved at the output tariff before forwarding. API-reported
 `output_tokens`, including billed thinking, determine the settled cost. A
@@ -69,7 +69,9 @@ its configuration through an anonymous pipe, with curlrc, HTTP proxy routing,
 redirects, stderr, and core dumps disabled. The server also disables its own core
 dumps before reading the credential. Neither credential nor headers are logged.
 Refusals name a safe check in the JSON response and server log, along with
-normalized method, path, model and upstream status when known. Anthropic JSON
+normalized method, path, model and upstream status when known. Configuration
+field refusals also log the offending field name and JSON value, never messages,
+system prompts, tool definitions, metadata or authentication fields. Anthropic JSON
 errors expose only `error.type` and `error.message`, not the full response body;
 these fields are also logged. HTTP 4xx/5xx statuses are preserved. Local statuses
 are 401 for invalid run tokens, 403 for non-allowlisted requests, 402 for credit

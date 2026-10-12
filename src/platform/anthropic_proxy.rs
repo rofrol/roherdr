@@ -58,6 +58,31 @@ struct RequestContext {
     method: &'static str,
     path: &'static str,
     model: String,
+    offending_field: Option<String>,
+    offending_json: Option<Value>,
+}
+
+// Diagnostics are limited to configuration fields, never prompts or credentials.
+fn field_denial(
+    context: &mut RequestContext,
+    field: &str,
+    value: &Value,
+    check: &'static str,
+) -> io::Error {
+    context.offending_field = Some(field.to_owned());
+    let name = field.to_ascii_lowercase();
+    context.offending_json =
+        if matches!(name.as_str(), "messages" | "system" | "tools" | "metadata")
+            || ["key", "token", "auth", "secret", "credential"]
+                .iter()
+                .any(|part| name.contains(part))
+                && !matches!(name.as_str(), "max_tokens" | "top_k")
+        {
+            None
+        } else {
+            Some(value.clone())
+        };
+    deny(403, check)
 }
 struct Request {
     token: String,
@@ -91,6 +116,8 @@ fn report_refusal(
     let error_message = upstream_error.map_or(check, |e| e.1.as_str());
     tracing::warn!(method = context.method, path = context.path, model = %context.model,
         check, status, upstream_status = ?upstream, error_type, error_message,
+        offending_field = ?context.offending_field,
+        offending_json = %context.offending_json.as_ref().map(|value| value.to_string()).unwrap_or_default(),
         "Anthropic proxy refused request");
     if !wrote {
         let body =
@@ -649,7 +676,12 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         "not allowlisted".into()
     };
     if data["model"].as_str() != Some(model) {
-        return Err(deny(403, "model not allowlisted"));
+        return Err(field_denial(
+            context,
+            "model",
+            &data["model"],
+            "model not allowlisted",
+        ));
     }
     let object = data
         .as_object()
@@ -669,48 +701,83 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
             "top_p",
             "top_k",
             "thinking",
+            "output_config",
         ]
         .contains(&field.as_str())
         {
-            return Err(deny(403, "request field not allowlisted"));
+            return Err(field_denial(
+                context,
+                field,
+                &object[field],
+                "request field not allowlisted",
+            ));
         }
     }
     if let Some(system) = data.get("system") {
-        text_content(system, false).map_err(|_| deny(403, "system content not allowlisted"))?;
+        text_content(system, false).map_err(|_| {
+            field_denial(context, "system", system, "system content not allowlisted")
+        })?;
     }
-    for message in data["messages"]
-        .as_array()
-        .ok_or_else(|| deny(403, "messages must be an array"))?
-    {
-        let message = message
-            .as_object()
-            .ok_or_else(|| deny(403, "message must be an object"))?;
+    for message in data["messages"].as_array().ok_or_else(|| {
+        field_denial(
+            context,
+            "messages",
+            &data["messages"],
+            "messages must be an array",
+        )
+    })? {
+        let message = message.as_object().ok_or_else(|| {
+            field_denial(context, "messages", message, "message must be an object")
+        })?;
         if message
             .keys()
             .any(|key| !["role", "content"].contains(&key.as_str()))
         {
-            return Err(deny(403, "message field not allowlisted"));
+            return Err(field_denial(
+                context,
+                "messages",
+                &data["messages"],
+                "message field not allowlisted",
+            ));
         }
         text_content(
-            message
-                .get("content")
-                .ok_or_else(|| deny(403, "missing message content"))?,
+            message.get("content").ok_or_else(|| {
+                field_denial(
+                    context,
+                    "messages",
+                    &data["messages"],
+                    "missing message content",
+                )
+            })?,
             true,
         )
-        .map_err(|_| deny(403, "message content not allowlisted"))?;
+        .map_err(|_| {
+            field_denial(
+                context,
+                "messages",
+                &data["messages"],
+                "message content not allowlisted",
+            )
+        })?;
     }
     // Server-side tools and premium service tiers carry non-token charges.
     // Only ordinary client-defined tools are accepted in this first slice.
     if let Some(tools) = data.get("tools") {
         for tool in tools
             .as_array()
-            .ok_or_else(|| deny(403, "tools must be an array"))?
+            .ok_or_else(|| field_denial(context, "tools", tools, "tools must be an array"))?
         {
             if tool.get("type").is_some() || !tool["input_schema"].is_object() {
-                return Err(deny(403, "server tool or schema not allowlisted"));
+                return Err(field_denial(
+                    context,
+                    "tools",
+                    tools,
+                    "server tool or schema not allowlisted",
+                ));
             }
-            inline_schema(&tool["input_schema"])
-                .map_err(|_| deny(403, "schema references not allowlisted"))?;
+            inline_schema(&tool["input_schema"]).map_err(|_| {
+                field_denial(context, "tools", tools, "schema references not allowlisted")
+            })?;
         }
     }
     let max = if count_request {
@@ -719,15 +786,38 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         data["max_tokens"]
             .as_u64()
             .filter(|n| *n > 0 && *n <= 64_000)
-            .ok_or_else(|| deny(403, "max_tokens not allowlisted"))?
+            .ok_or_else(|| {
+                field_denial(
+                    context,
+                    "max_tokens",
+                    &data["max_tokens"],
+                    "max_tokens not allowlisted",
+                )
+            })?
     };
     if let Some(thinking) = data.get("thinking") {
-        validate_thinking(thinking, (!count_request).then_some(max))?;
+        if !thinking.is_object() {
+            return Err(field_denial(
+                context,
+                "thinking",
+                thinking,
+                "thinking must be an object",
+            ));
+        }
+        // The API owns thinking's evolving shape. All generated thinking is
+        // already bounded and reserved by max_tokens, like visible output.
     }
     let streaming = match data.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        _ => return Err(deny(403, "stream must be boolean")),
+        Some(value) => {
+            return Err(field_denial(
+                context,
+                "stream",
+                value,
+                "stream must be boolean",
+            ))
+        }
     };
     // The API's default `auto` tier may consume priority capacity. Force the
     // standard tier whose prices the ledger and reservation actually know.
@@ -762,35 +852,6 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         beta,
         count: count_request,
     })
-}
-
-/// Thinking consumes the same output ceiling and tariff as visible output.
-/// Keep its shape closed so future unaccounted options cannot pass through.
-fn validate_thinking(value: &Value, max: Option<u64>) -> io::Result<()> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| deny(403, "thinking must be an object"))?;
-    let kind = value["type"].as_str();
-    let budget_allowed = matches!(kind, Some("enabled" | "between_tools"));
-    if !matches!(
-        kind,
-        Some("disabled" | "enabled" | "adaptive" | "between_tools")
-    ) || object
-        .keys()
-        .any(|key| key != "type" && !(budget_allowed && key == "budget_tokens"))
-    {
-        return Err(deny(403, "thinking field or type not allowlisted"));
-    }
-    if kind == Some("enabled") || object.contains_key("budget_tokens") {
-        let budget = value["budget_tokens"]
-            .as_u64()
-            .filter(|budget| *budget >= 1024 && *budget <= 64_000)
-            .ok_or_else(|| deny(403, "thinking budget not allowlisted"))?;
-        if max.is_some_and(|max| budget >= max) {
-            return Err(deny(403, "thinking budget must be below max_tokens"));
-        }
-    }
-    Ok(())
 }
 
 fn inline_schema(value: &Value) -> io::Result<()> {
