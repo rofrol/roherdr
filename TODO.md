@@ -282,6 +282,50 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   notice and a switch to turn it off; one automatic handoff per tenure
   (no loops after a resume). The in-flight new-pane slice lands as is.
 
+- [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
+  (the user, 2026-10-12, after the coordinator wrote "the existing
+  5-minute sweep only catches missed events and a wedged session" into
+  [t-2k3ima2h] and then admitted it was a workaround: "you are right, it
+  was a workaround — why again? ask the models. fix the process").
+  Round 20261012-203427-1545 (sol, MiMo, DeepSeek agreeing). Root causes,
+  ranked: (1) the rules contradict themselves: the global rules describe
+  the supervisor's "read-only 5-minute sweep" as normal, a sanctioned
+  precedent the coordinator leaned on; (2) the guard misses where the
+  decision is made: the delay hook skips TODO.md and DECISIONS.md and
+  never sees what is said to the user, and its vocabulary lacks "sweep",
+  "periodic", "safety net", "catch/recover missed"; (3) consult briefs do
+  not carry Rule 10, so models propose timers and only the caller's
+  attention filters them (this time it filtered "deadline" and "grace"
+  but copied "the sweep recovers missed events"); (4) the rule only
+  forbids and gives no replacement idiom; (5) the ~20 earlier
+  corrections never became regression cases. Fixes, decided by the
+  coordinator, each by a worker, cheapest first:
+  a. Consult round (plugins/consult): prepend Rule 10 and the positive
+     idiom (source of truth, persisted cursor, reconcile at named events,
+     notifications only wake) to every brief, and ask each model to end
+     with a "Timing:" list classifying every time-based element (event |
+     external reconciliation with its source | none); tested.
+  b. Rule text (global rules and canonical Rule 10, dotfiles and
+     agents.md): name "a periodic catch-up of one's own events" and
+     euphemisms (sweep, safety net, watchdog, catch-up) as violations, add
+     the positive idiom, and state that a caller synthesising a model's
+     answer lists every time-based element with its class before
+     recording it; rewrite the supervisor sentence so the sweep may only
+     reconcile external state until [t-ybzw6mhn] lands.
+  c. Delay hook (dotfiles `~/.claude/hooks/delay-check.py`, a safeguard:
+     the whole patch is prepared outside ~ and applied only after the
+     user's yes): add the vocabulary, check lines added to TODO.md and
+     DECISIONS.md (prose describing a removed timer stays allowed), and
+     accept `delay:` only with one of the rule's categories (external
+     deadline, rate limit, external polling, designed backoff, measured
+     slow hardware); event-triggered reconciles must not be flagged.
+  d. Regression cases in the hook's tests: this case and paraphrases of
+     the earlier corrections from DECISIONS.md, plus legitimate
+     counterexamples (external polling with its source).
+  Measure: owner-caught Rule 10 corrections per item, target zero; where
+  catches happen (hook, consult, record, owner); `delay:` reasons
+  counted. No periodic audit timer.
+
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
   "why is this not in a correction loop?", "why did the supervisor not
@@ -2993,12 +3037,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   guests.
   Decided by the user 2026-10-12 (d-nwqqrjxw): approved, queued at the
   end of "Next, in order".
-
-- [ ] Why a timer workaround reached a design again, and fix the process [t-nj2s7b7a]
-  (the user, 2026-10-12, after the coordinator wrote "the existing
-  5-minute sweep only catches missed events and a wedged session" into
-  [t-2k3ima2h] and then admitted it was a workaround: "you are right, it
-  was a workaround — why again? ask the models. fix the process").
 
 ## Proposed
 
