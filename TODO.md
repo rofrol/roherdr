@@ -97,6 +97,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `--draft` and `--auto-review` model calls can go through the API
   credits instead of `claude -p` on the subscription.
 
+- [ ] Stopping a worker whose process just exited fails with EPERM on macOS [t-4lgrokip]
+  (follow-up of [t-nwxujise], found by the coordinator 2026-10-12: run
+  r-uucamlb4's full `tests` check failed in
+  `workers::tests::a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches`
+  at `next.stop(&id)` (src/workers/tests.rs:5707) with `Operation not
+  permitted`; the same test passed in the `workers` check minutes before
+  and 40/40 alone under 12 CPU loads on master). Likely cause:
+  `signal_process_group` (src/platform/unix_common.rs:474) treats only
+  ESRCH as "gone", but macOS `killpg` returns EPERM for a group whose
+  members are all zombies (exited, not yet reaped). Confirm the cause
+  with a deterministic test (a group leader that exited unreaped), then
+  treat that case as gone without hiding a real permission error (check
+  the leader's state before mapping EPERM).
+
 - [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
   user's question 2026-10-12, "loss of memory between items and shallower
   review: how do others counter it?"; round 20261012-155246-e730, see
