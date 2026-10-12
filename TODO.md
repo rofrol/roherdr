@@ -33,6 +33,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pi`), with the same folder slot, sandbox, checks, verify and WORKER
   line; the usage gate reads the provider of the chosen agent; the
   coordinator picks pi when Anthropic's gate is closed or near it.
+  Slice 1 landed 2026-10-12 (65d75174): `todo run --agent pi` runs headless pi
+  (openai-codex/gpt-6.1-sol) with an RPC stream translator, herdr's gate
+  extension feeding the worker policy, a sandbox-exec shell, a usage gate
+  per provider (OpenAI for pi), agent and model recorded. Known limits,
+  accepted by the coordinator for now: macOS only; `[workers]
+  pre_tool_checks` do not run for pi (recorded at start); no takeover into a
+  tab; a handoff between pi's last message and its turn end loses the result
+  text (to fix with the verdict recording of the Stop path).
 
 - [ ] The usage gate's thresholds are settings (the user, 2026-10-12: [t-wwb6f43m]
   "move the work to GPT/API and make the threshold a configurable
