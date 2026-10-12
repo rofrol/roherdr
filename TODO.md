@@ -11,6 +11,22 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A message between coordinators is not a worker assignment (follows [t-yeravkf6]
+  from [t-due4cu42]; the first digest the herdr coordinator received,
+  2026-10-12 ~03:21, all five findings fired together at the install's
+  reconciliation): f-70 (guix -> todo-try-roguix), f-73 (odherdr ->
+  todo-herdr, its reports) and f-75 (guix -> todo-roguix-vps) are
+  `agent prompt` messages from one coordinator to another, tracked as
+  assignments that expect a WORKER line, so they raise
+  `stopped_without_verdict`/`unaccounted_assignment` falsely; f-71/f-72
+  (try-roguix's workers metal and ci-system) may be notes sent to busy
+  workers, not tasks. Decided by the coordinator: an assignment exists only
+  for a prompt from a coordinator tenure to a pane that is its worker (a
+  worker it started, or one registered to it); a prompt to another
+  coordinator, or any prompt marked as a note (`agent prompt --note`),
+  is a message: delivered and confirmed, never awaiting a verdict; tests
+  for each, and the existing false findings resolve at the next sweep.
+
 - [ ] Spend the Max plan's monthly API credits before they expire, and show [t-rlk6fbrp]
   them in a usage widget (the user, 2026-10-12: "so we do not lose these
   credits", "and show it in a usage widget; spend the $200 first?"; he
