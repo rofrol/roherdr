@@ -343,6 +343,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `[review] model`. Next: slice 2 (read-only repository tools for the
   review, a mechanical check of each cited file:line, findings tagged by
   origin), then slice 3 (the golden set with a dated cut-off).
+  Slice 2 landed (2026-10-12, run r-fgkhfqpt, second attempt: the first
+  ended its turn while reading code, with no commit): bounded read-only
+  review tools (`src/workers/runs/review_tools.rs`: read_file, grep,
+  git_log on the commit's git objects, 12 calls and 120 KB per review),
+  a tool loop on the credit path (`tool_choice` admitted narrowly by the
+  proxy), the `claude -p` path stays without tools and records it, a
+  mechanical file:line check with `in_diff`, findings tagged `checklist`
+  or `free` with per-review counts. Next: slice 3, the golden set with a
+  dated cut-off (round 20261012-183707-2629 in this item).
 
 - [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
   [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
