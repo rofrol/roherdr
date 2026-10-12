@@ -233,6 +233,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   5. Owner-approved only (the worker proposes, never applies): ~/.claude
      (settings.json, hooks, skills, CLAUDE.md), AGENTS.policy.md, .herdr,
      git config and excludes, install scripts, anything holding tokens.
+  Slice 1 landed 2026-10-12 (71a70839): explicit claim of a repository rooted
+  at HOME, the folder slot under ~/.local/state/herdr/worktrees/<name>
+  (configurable), `todo run` refusing without .herdr/checks.toml or "Next,
+  in order", HOME read-only to workers, landing waits for the owner's
+  `approve-landing` from a pane that coordinates nothing. Deferred, decided
+  by the coordinator: approving from the `?` list (and the weakness that an
+  agent passing another HERDR_PANE_ID could approve) goes with the grants
+  item (owner-click capture); the initial dotfiles checks.toml is proposed
+  by the home coordinator for the owner's review; point 5 needs no separate
+  mechanism while every HOME patch needs the owner's approval.
 
 - [ ] Turn the todo skill's new rules into herdr mechanisms (the user, [t-cndvjrq2]
   2026-10-12: "a skill? sounds non-deterministic; ask the models";
