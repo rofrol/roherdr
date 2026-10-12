@@ -2244,6 +2244,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   countdown; only the amount is colored: amber from 80% of the cap, red
   from 95%, plus a `!` marker so it reads without color; the expiry turns
   amber within 7 days, red within 2, and `expired` after.
+  Also (the user, 2026-10-12: "Antigravity's two weekly groups: add them
+  to the usage widget? ask the models"; round of 2026-10-12, MiMo and
+  DeepSeek; sol preferred two sub-lines): the GO line keeps the "Gemini
+  Models" group, and the "Claude and GPT models" group, which herdr already
+  parses, gets one tagged sub-line on the same column grid, never a
+  combined percent (the resets are independent):
+  ```
+  GO            0% 6d23h
+     CG         0% 6d23h
+  ```
 
 - [ ] Headless workers on the owner's Google AI subscription through the [t-dnqkeub6]
   Antigravity CLI (the user, 2026-10-12: "check using Gemini for tasks too;
