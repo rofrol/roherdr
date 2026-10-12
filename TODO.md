@@ -2512,6 +2512,30 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   some coordinator launched every so often that reviews the TODO? Or maybe
   it is not needed? How do others do it?"): before building the automatic
   switch, decide whether a resident coordinator session is needed at all.
+  Round 20261012-154713-644a (sol, MiMo, DeepSeek, all three agreeing):
+  continuity belongs in herdr's state (TODO.md, the ledger, runs), not in
+  a model's context; a resident session's cost grows with turns times an
+  ever larger context (this session: 9.4M cache-read tokens in its first
+  hour). Ranking: no resident coordinator (cheapest), per-item coordinator
+  (`todo next`) only for items a deterministic rule flags (multi-slice,
+  risky paths, missing checks), resident with rotation second-best, a
+  periodic reviewer worst (timer-driven, stale, still large). Duties:
+  deterministic for ordering, starts, verify, landing, routing; bounded
+  stateless calls for drafting, review (Opus-class, full diff and checks),
+  worker questions, triage of a new request or a failed verify into a
+  multiple-choice question, consult synthesis; the user for priority,
+  scope and risk. Others (confident claims only): Copilot coding agent
+  and OpenHands run one bounded agent per issue, Claude Code subagents and
+  Anthropic's research system give each subtask a fresh context,
+  Magentic-One keeps its state in ledgers; none keeps one all-day context.
+  Proposed first step: an A/B over the next 20-30 items, `todo queue on`
+  with `--draft` and `--auto-review` against the resident coordinator,
+  measuring cost per landed item, cache tokens per day, user questions per
+  item, review-caught bugs, reverts and reopenings. Not covered by the
+  models: what the user talks to; the coordinator's proposal is a
+  short-lived session per conversation started from a herdr snapshot.
+  Note: `--draft` and `--auto-review` call `claude -p` on the user's
+  subscription login, not the API credits.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
