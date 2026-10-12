@@ -1469,3 +1469,15 @@ proxy in-process, ledgered under the run, with one fallback to `claude -p`
 on a refusal (`claude -p` cannot use the proxy: it sends beta headers the
 proxy refuses) (run r-vddcm5rd). Rejected: moving coordinators to pi now
 (porting herdr's hooks and skills is a migration, piloted later).
+
+## Stopping an exited worker's process group is not an error (t-4lgrokip, 2026-10-12)
+
+Found by the coordinator: run r-uucamlb4's full `tests` check failed in a
+reattach test at `stop` with EPERM, while 40/40 runs of it alone under load
+passed. Confirmed by a deterministic test: macOS `killpg` answers EPERM for
+a group whose only member is an unreaped zombie (Linux answers success).
+`signal_process_group` now maps EPERM to "gone" only when the leader is
+verifiably a zombie or missing (`proc_pidinfo` on macOS, `/proc/<pid>/stat`
+on Linux, in `src/platform/macos.rs` and `linux.rs`); any other EPERM stays
+an error. The first attempt put the OS checks in `unix_common.rs` and
+asserted the macOS answer on Linux too; both were sent back.
