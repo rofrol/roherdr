@@ -1449,3 +1449,7 @@ Folder trust for worktrees: herdr's worktree roots are not pre-trusted in
 Claude Code (decided by the user 2026-10-12); the trust dialog stays,
 herdr reports a worker blocked on it at once, and headless workers are
 preferred. Agents never answer trust dialogs or write trust config.
+
+## todo run --help lists --agent (t-okqf5ugr, 2026-10-12)
+
+herdr todo run --help lists --agent (2026-10-12): done inside run r-3djse6sx of [t-s6lkxb4v] (commit 16274844), which lists the agent values in the help text.
