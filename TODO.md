@@ -11,6 +11,21 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
+  run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
+  a notification again? ask the models": the toast was the todo driver's
+  "t-rlk6fbrp approved; no next item started", which fires on every
+  `--stop-reason`; the coordinator uses it often only because `--next`
+  cannot choose pi or Claude). Round of 2026-10-12 (sol, MiMo, DeepSeek
+  agreeing): (1) a stop with a live coordinator is recorded on the run and
+  the sidebar only; it notifies only when no coordinator is alive to
+  continue the chain; (2) `--next-agent <claude|pi|pi-anthropic>` (and
+  queue mode's equivalent) so chains continue across agents; (3) every
+  notification names its source subsystem and run or agent
+  ("todo run r-...", "agent ... asks"), so nothing reads as the
+  supervisor; an agent blocked on the user's question keeps notifying once
+  per block.
+
 - [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
   2026-10-09): a second worker kind with its own stream parser, tool policy
   and sandbox equivalent and broker support, so a run can go to pi/sol while
