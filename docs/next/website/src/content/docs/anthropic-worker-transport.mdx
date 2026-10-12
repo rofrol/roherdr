@@ -41,15 +41,23 @@ exactly `?beta=true`, are accepted. Each proxy admits only its configured
 `anthropic_api_model` (default `claude-sonnet-5-5`), validated against the
 supported standard Sonnet tariffs. Token counting is authenticated but does not
 create billed message rows. Absolute URLs, other query strings, CONNECT,
-chunked request bodies, duplicate authentication or length headers, unknown
-models, premium service tiers, and server-side tools are refused. Bodies are limited to 150,000 bytes and output to 64,000 tokens.
+duplicate authentication or length headers, ambiguous HTTP framing, unknown
+models, premium service tiers, and server-side tools are refused. Bodies are
+limited to 32 MiB, matching Anthropic's [standard request limit](https://platform.claude.com/docs/en/api/errors#request-size-limits),
+and output to 64,000 tokens. Both Content-Length and chunked requests are
+accepted; the decoded chunk total is bounded before allocation, and trailers
+are discarded. Unframed HTTP/1.1 bodies are not accepted.
 Message shapes and content are validated only by the API, not the proxy.
 Tool-use, tool-result, thinking replay, image and document blocks are forwarded
 unchanged, as are invalid message shapes; API validation errors reach the client.
 System content is also left to the API. Tool schemas must be inline, without
 reference expansion. Conservative per-message/tool
-framing is reserved too; requests whose input bound reaches 200,000 tokens are
-refused to exclude long-context premium pricing. Validated JSON
+framing is reserved too. A byte bound above 200,000 is not grounds to refuse a
+conversation: bytes are not billed tokens. For Sonnet 4.5, reservations above
+that bound cover the long-context tariff (2x input/cache and 1.5x output);
+settlement applies it only when total billed input, cache reads and cache writes
+exceeds 200,000 tokens. Sonnet 4.6 and newer use standard long-context pricing.
+Validated JSON
 is re-encoded before forwarding so duplicate keys cannot change upstream model
 or token-limit interpretation. The server forces `service_tier = "standard_only"`
 rather than allowing the API's default automatic priority-tier selection.
@@ -82,9 +90,13 @@ has started, a failure is logged and the stream ends instead of appending an
 HTTP response.
 
 Responses stream through without buffering the entire SSE response. Usage is
-parsed incrementally; JSON responses are bounded. The ledger records run, item,
-model, input/output and cache tokens, and USD cost computed from API usage using
-the allowlisted model's standard token prices, including one-hour cache writes.
+parsed incrementally; JSON responses and individual SSE lines are bounded at
+192 MiB plus 8 KiB. Anthropic documents no SSE line limit; this local memory
+guard accommodates a request-sized tool argument even at JSON's worst-case
+sixfold escaping, rather than treating an ordinary large event as invalid.
+The ledger records run, item, model, input/output and cache tokens, and USD cost
+computed from API usage using the allowlisted model's token prices, including
+one-hour cache writes and the applicable Sonnet 4.5 long-context premium.
 The Messages API does not return an authoritative dollar cost; Console billing
 remains the authority. New models or pricing tiers require an explicit pricing
 and allowlist change, not a guessed default.
@@ -99,6 +111,53 @@ reservation at zero cost, including when its error JSON is absent or malformed.
 A broken transport, malformed 200 response, or SSE error remains uncertain and
 keeps the latch. Completed cost also survives restart; there is no timer-based
 or automatic billing-cycle reset. Do not delete the ledger to work around a refusal.
+
+## Refusal-check audit for long conversations
+
+Offline coverage sends a greater-than-2-MiB, 32-tool-turn conversation through
+both Content-Length and chunked framing, both JSON and SSE responses, the beta
+route/headers, request rewriting, upstream HTTP parsing, and ledger settlement.
+It includes thinking replay, cached system content, tool schemas/results and a
+2-MiB SSE tool-argument delta. No conversation content is locally classified.
+The following checks remain intentional:
+
+- Credential/configuration/accounting checks: a priced model, finite positive
+  cap, private owned key/socket paths, a nonempty valid key, random grants,
+  readable/writable ledger, valid rows, transactions and locks. Failures mean
+  credentials or the spending boundary cannot be trusted, not a long session.
+- Admission: active run token, no kill switch, no uncertain pending charge,
+  enough credit for the reservation. Large byte-based reservations can still
+  legitimately exceed remaining credit; the Console limit remains authoritative.
+- Routing: POST HTTP/1.1 to Messages or count_tokens, optionally `?beta=true`;
+  fixed destination and model. This is not a general network proxy.
+- Request framing: 8-KiB aggregate headers/lines, valid header encoding/syntax,
+  one authentication and length/transfer header, bearer syntax, decimal length,
+  chunked-only transfer coding, no simultaneous length/chunked framing, complete
+  bodies and CRLF chunk framing. Chunk-size/extensions and aggregate trailers
+  are bounded at 8 KiB. `Expect` remains unsupported (ordinary pi/SDK POSTs
+  do not need a 100-continue exchange). These prevent ambiguous parsing or
+  unbounded memory, independently of conversation length.
+- Request size/JSON: raw decoded and normalized bodies fit 32 MiB; valid JSON
+  object; selected model matches; only known top-level fields; client-only tools
+  with object inline schemas and no reference expansion; positive output ceiling
+  at most 64,000; thinking object and boolean stream. Message/system contents
+  are API-owned. Server tools, schema expansion and unpriced fields/tiers would
+  escape token-only reservations. Re-encoding prevents duplicate-key ambiguity;
+  adding the standard tier can push a boundary-sized request over the limit.
+- Beta headers: one bounded syntactically safe header containing only the four
+  supported tool/cache/counting features. Unknown paid features require a tariff
+  audit; conversation growth does not add beta features.
+- Upstream HTTP/transport: bounded status/header lines (8 KiB), aggregate headers
+  (32 KiB), at most four informational responses, status 200, successful curl
+  start/config/stdout/reaping/exit. Error details are bounded at 64 KiB. These
+  detect transport failure or report the API's own refusal, not body growth.
+- Upstream message/accounting: bounded JSON/SSE lines, valid JSON, matching model,
+  standard tier, complete start/final usage/stop, valid billed counts (at most
+  one million per component), available cache tariff and consistent one-hour
+  counts. Missing usage cannot be treated as free. SSE error events keep the
+  uncertain-charge latch; definite HTTP rejections release it. Token-counting
+  responses must contain an unsigned input count. No local check compares
+  conversation bytes to a context-window token limit.
 
 ## Owner reconciliation
 

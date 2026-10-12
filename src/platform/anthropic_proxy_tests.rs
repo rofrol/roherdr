@@ -167,6 +167,162 @@ fn multi_turn_agent_content_reaches_fake_upstream_unchanged() {
 }
 
 #[test]
+fn full_size_agent_conversation_reaches_upstream_with_both_http_framings() {
+    for chunked in [false, true] {
+        for streaming in [false, true] {
+            let mut f = OfflineFixture::new(200.0);
+            let token = f.proxy.register("long-conversation", "item").unwrap();
+            let mut messages =
+                vec![serde_json::json!({"role":"user", "content":"Inspect the project"})];
+            for turn in 0..32 {
+                messages.push(serde_json::json!({"role":"assistant", "content":[
+                    {"type":"thinking", "thinking":"Read another file", "signature":"synthetic"},
+                    {"type":"tool_use", "id":format!("call_{turn}"), "name":"read", "input":{"path":"example.txt"}}
+                ]}));
+                messages.push(serde_json::json!({"role":"user", "content":[
+                    {"type":"tool_result", "tool_use_id":format!("call_{turn}"), "content":"file contents\n".repeat(5100)}
+                ]}));
+            }
+            let mut body = serde_json::json!({"model":MODEL, "max_tokens":4096,
+                "messages":messages, "stream":streaming,
+                "system":[{"type":"text", "text":"Help with the task", "cache_control":{"type":"ephemeral"}}],
+                "thinking":{"type":"adaptive"}, "output_config":{"effort":"medium"},
+                "tools":[{"name":"read", "input_schema":{"type":"object", "properties":{"path":{"type":"string"}}}}]});
+            let encoded = serde_json::to_vec(&body).unwrap();
+            assert!(encoded.len() > 2 * 1024 * 1024);
+            let mut raw = format!("POST /v1/messages?beta=true HTTP/1.1\r\nAuthorization: Bearer {token}\r\nanthropic-beta: interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14\r\n").into_bytes();
+            if chunked {
+                raw.extend_from_slice(b"Transfer-Encoding: chunked\r\n\r\n");
+                for chunk in encoded.chunks(65536) {
+                    write!(&mut raw, "{:x};test=extension\r\n", chunk.len()).unwrap();
+                    raw.extend_from_slice(chunk);
+                    raw.extend_from_slice(b"\r\n");
+                }
+                raw.extend_from_slice(b"0\r\nX-Ignored: trailer\r\n\r\n");
+            } else {
+                write!(&mut raw, "Content-Length: {}\r\n\r\n", encoded.len()).unwrap();
+                raw.extend_from_slice(&encoded);
+            }
+            let mut output = Vec::new();
+            f.proxy.serve(raw.as_slice(), &mut output, |_, req, out| {
+                body["service_tier"] = serde_json::json!("standard_only");
+                assert_eq!(serde_json::from_slice::<Value>(&req.body).unwrap(), body);
+                assert!(req.reserve > 12.0);
+                assert!(req.reserve < 200.0);
+                assert!(curl_config("synthetic-key", req).unwrap().contains("api.anthropic.com/v1/messages?beta=true"));
+                let mut message: Value = serde_json::from_slice(&Fixture::response()).unwrap();
+                message["usage"]["input_tokens"] = Value::from(180_000);
+                message["usage"]["cache_read_input_tokens"] = Value::from(80_000);
+                let mut upstream = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n".to_vec();
+                if streaming {
+                    writeln!(&mut upstream, "data: {}\n", serde_json::json!({"type":"message_start", "message":message})).unwrap();
+                    // A large tool argument event must not trip the old 1 MB
+                    // SSE line limit. Transport fragments are not SSE lines.
+                    writeln!(&mut upstream, "data: {}\n", serde_json::json!({"type":"content_block_delta", "delta":{"type":"input_json_delta", "partial_json":"x".repeat(2 * 1024 * 1024)}})).unwrap();
+                    upstream.extend_from_slice(b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":20}}\n\ndata: {\"type\":\"message_stop\"}\n\n");
+                } else {
+                    upstream.extend_from_slice(&serde_json::to_vec(&message).unwrap());
+                }
+                forward_upstream(&mut BufReader::new(upstream.as_slice()), out)
+            }).unwrap();
+            assert!(output.starts_with(b"HTTP/1.1 200 OK"));
+            let pending: i64 = f
+                .proxy
+                .ledger
+                .query_row("SELECT pending FROM anthropic_requests", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(pending, 0);
+        }
+    }
+}
+
+#[test]
+fn request_body_limits_and_chunk_framing_are_enforced_before_upstream() {
+    assert_eq!(BODY_MAX, 32 * 1024 * 1024);
+    let prefix = "POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer synthetic\r\n";
+    for framing in [
+        format!("Content-Length: {}\r\n\r\n", BODY_MAX + 1),
+        format!("Transfer-Encoding: chunked\r\n\r\n{:x}\r\n", BODY_MAX + 1),
+        "Content-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".into(),
+        "Transfer-Encoding: gzip, chunked\r\n\r\n".into(),
+        "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n".into(),
+        "Transfer-Encoding: chunked\r\n\r\n-1\r\n".into(),
+        "Transfer-Encoding: chunked\r\n\r\n1\r\nx!!".into(),
+        "Transfer-Encoding: chunked\r\n\r\n2\r\nx".into(),
+        "Transfer-Encoding: chunked\r\n\r\n0\r\n".into(),
+        "Transfer-Encoding: chunked\r\n\r\n0\r\ninvalid\r\n\r\n".into(),
+        "\r\n{}".into(),
+    ] {
+        assert!(request(
+            format!("{prefix}{framing}").as_bytes(),
+            MODEL,
+            &mut RequestContext::default()
+        )
+        .is_err());
+    }
+    // Exact decoded limit is accepted; a second chunk cannot exceed it, even
+    // though each individual chunk is within the limit. No JSON allocation.
+    let mut chunks = format!("{:x}\r\n", BODY_MAX).into_bytes();
+    chunks.resize(chunks.len() + BODY_MAX, b'x');
+    chunks.extend_from_slice(b"\r\n0\r\n\r\n");
+    assert_eq!(
+        chunked_body(&mut BufReader::new(chunks.as_slice()))
+            .unwrap()
+            .len(),
+        BODY_MAX
+    );
+    chunks.truncate(chunks.len() - 5);
+    chunks.extend_from_slice(b"1\r\n");
+    let error = chunked_body(&mut BufReader::new(chunks.as_slice())).unwrap_err();
+    assert_eq!(
+        error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<Refusal>()
+            .unwrap()
+            .status,
+        413
+    );
+}
+
+#[test]
+fn long_context_tariff_uses_billed_tokens_not_bytes_and_reserves_premium() {
+    let model = "claude-sonnet-4-5-20250929";
+    let raw = thinking_request("synthetic", serde_json::json!({"type":"adaptive"}), 4096);
+    let raw = String::from_utf8(raw).unwrap().replace(MODEL, model);
+    // Rebuild length after changing the model name.
+    let encoded = raw.split("\r\n\r\n").nth(1).unwrap();
+    let mut body: Value = serde_json::from_str(encoded).unwrap();
+    body["messages"] = serde_json::json!([{"role":"user", "content":"x".repeat(250_000)}]);
+    let encoded = body.to_string();
+    let raw = format!("POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer synthetic\r\nContent-Length: {}\r\n\r\n{encoded}", encoded.len());
+    let req = request(raw.as_bytes(), model, &mut RequestContext::default()).unwrap();
+    assert!(req.reserve >= 250_000.0 * 12.0 / 1_000_000.0 + 4096.0 * 22.5 / 1_000_000.0);
+    let mut usage = Usage {
+        input: 100_000,
+        read: 100_000,
+        write: 0,
+        output: 100,
+        hour: 0,
+    };
+    assert_eq!(long_context_premium(model, 200_000), (1.0, 1.0));
+    let standard = usage.cost(model);
+    usage.read += 1;
+    assert!(
+        (usage.cost(model)
+            - ((100_000.0 * 3.0 + 100_001.0 * 0.3) * 2.0 + 100.0 * 22.5) / 1_000_000.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(usage.cost(model) > standard);
+    assert_eq!(long_context_premium(MODEL, 500_000), (1.0, 1.0));
+    assert_eq!(
+        long_context_premium("claude-sonnet-4-6", 500_000),
+        (1.0, 1.0)
+    );
+}
+
+#[test]
 fn thinking_output_reservation_denies_budget_beyond_remaining_credit() {
     for thinking in [
         serde_json::json!({"type":"enabled", "budget_tokens":2048}),

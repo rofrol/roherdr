@@ -13,8 +13,15 @@ use serde_json::Value;
 
 #[cfg(test)]
 const MODEL: &str = "claude-sonnet-5-5";
-const BODY_MAX: usize = 150_000;
-const LINE_MAX: usize = 1_000_000;
+// Anthropic's standard Messages and token-counting requests are limited to
+// 32 MiB (413 above this): https://platform.claude.com/docs/en/api/errors#request-size-limits
+const BODY_MAX: usize = 32 * 1024 * 1024;
+// The streaming API documents SSE framing, but no per-event byte ceiling:
+// https://platform.claude.com/docs/en/api/messages-streaming
+// Local memory guard, not an Anthropic limit. Allow a whole request-sized tool
+// argument/text event, including JSON escaping, rather than the old 1 MB line.
+const LINE_MAX: usize = 6 * BODY_MAX + 8192;
+const RESPONSE_MAX: usize = LINE_MAX;
 
 #[derive(Debug)]
 struct Refusal {
@@ -322,7 +329,7 @@ impl AnthropicProxy {
         let usage = response.finish().map_err(|e| with_upstream(e, 200))?;
         self.ledger.execute(
             "UPDATE anthropic_requests SET input=?1,output=?2,cache_read=?3,cache_write=?4,cost=?5,pending=0 WHERE id=?6",
-            params![usage.input as i64, usage.output as i64, usage.read as i64, usage.write as i64, usage.cost(), id])
+            params![usage.input as i64, usage.output as i64, usage.read as i64, usage.write as i64, usage.cost(&self.model), id])
             .map_err(|_| refused())?;
         Ok(())
     }
@@ -584,6 +591,7 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
     let mut beta = None;
     let mut token = None;
     let mut length = None;
+    let mut chunked = false;
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line
             .split_once(':')
@@ -638,18 +646,30 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
                 }
                 beta = Some(value.to_owned());
             }
-            "transfer-encoding" | "expect" => return Err(deny(403, "unsupported HTTP framing")),
+            "transfer-encoding" => {
+                if chunked || !value.trim().eq_ignore_ascii_case("chunked") {
+                    return Err(deny(403, "unsupported transfer-encoding"));
+                }
+                chunked = true;
+            }
+            "expect" => return Err(deny(403, "unsupported HTTP expectation")),
             _ => {} // No client headers are forwarded, including x-api-key and Host.
         }
     }
     let token = token.ok_or_else(|| deny(401, "missing run token"))?;
-    let length = length
-        .filter(|n| *n <= BODY_MAX)
-        .ok_or_else(|| deny(403, "content-length missing or too large"))?;
-    let mut body = vec![0; length];
-    input
-        .read_exact(&mut body)
-        .map_err(|_| deny(403, "incomplete request body"))?;
+    let body = match (length, chunked) {
+        (Some(_), true) => return Err(deny(403, "ambiguous request body framing")),
+        (None, true) => chunked_body(&mut input)?,
+        (Some(length), false) if length <= BODY_MAX => {
+            let mut body = vec![0; length];
+            input
+                .read_exact(&mut body)
+                .map_err(|_| deny(403, "incomplete request body"))?;
+            body
+        }
+        (Some(_), false) => return Err(deny(413, "request body too large")),
+        (None, false) => return Err(deny(403, "missing request body framing")),
+    };
     let mut data: Value =
         serde_json::from_slice(&body).map_err(|_| deny(403, "invalid request JSON"))?;
     context.model = if data["model"].as_str() == Some(model) {
@@ -743,7 +763,7 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
     // upstream to interpret a different model or token ceiling than we did.
     let body = serde_json::to_vec(&data).map_err(|_| refused())?;
     if body.len() > BODY_MAX {
-        return Err(deny(403, "normalized body too large"));
+        return Err(deny(413, "normalized body too large"));
     }
     // Plaintext tokens cannot exceed bytes plus protocol framing. Reserve a
     // deliberately generous 1024 tokens per message/tool/system block, not
@@ -751,13 +771,13 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
     let count = |name: &str| data[name].as_array().map_or(0, Vec::len);
     let input_bound =
         body.len() + 1024 * (1 + count("messages") + count("tools") + count("system"));
-    if input_bound >= 200_000 {
-        return Err(deny(403, "long-context pricing not allowlisted"));
-    } // Exclude long-context premium pricing.
-      // 6 USD/M covers even one-hour cache writes; output is standard tier.
-      // max_tokens bounds all generated tokens, including thinking. Reserving
-      // it at the output tariff covers adaptive/between-tools thinking too.
-    let reserve = input_bound as f64 * 6.0 / 1_000_000.0 + max as f64 * 15.0 / 1_000_000.0;
+    // Bytes are an upper bound, not a token count: long tool results must not
+    // be rejected as premium context merely because they exceed 200 kB.
+    // Reserve the premium tariff where this model can incur it, then settle
+    // from billed tokens (including cache reads/writes), not request bytes.
+    let premium = long_context_premium(model, input_bound as u64);
+    let reserve = input_bound as f64 * 6.0 * premium.0 / 1_000_000.0
+        + max as f64 * 15.0 * premium.1 / 1_000_000.0;
     Ok(Request {
         token,
         body,
@@ -767,6 +787,69 @@ fn request(input: impl Read, model: &str, context: &mut RequestContext) -> io::R
         beta,
         count: count_request,
     })
+}
+
+// Sonnet 4.5's >200k billed input tier doubles input/cache and multiplies
+// output by 1.5. Sonnet 4.6 and newer have standard pricing at long context.
+// https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
+fn long_context_premium(model: &str, input: u64) -> (f64, f64) {
+    if model == "claude-sonnet-4-5-20250929" && input > 200_000 {
+        (2.0, 1.5)
+    } else {
+        (1.0, 1.0)
+    }
+}
+
+fn chunked_body(input: &mut impl BufRead) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let line = bounded_line(input, 8192).map_err(|_| deny(403, "invalid chunk framing"))?;
+        let line = line
+            .strip_suffix(b"\r\n")
+            .ok_or_else(|| deny(403, "invalid chunk framing"))?;
+        let size = line.split(|b| *b == b';').next().unwrap_or_default();
+        if size.is_empty() || !size.iter().all(u8::is_ascii_hexdigit) {
+            return Err(deny(403, "invalid chunk size"));
+        }
+        let size = std::str::from_utf8(size)
+            .ok()
+            .and_then(|s| usize::from_str_radix(s, 16).ok())
+            .ok_or_else(|| deny(413, "request body too large"))?;
+        if size == 0 {
+            // Trailers are discarded, just like other client headers. Bound
+            // their aggregate size even when the decoded body is tiny.
+            let mut total = 0;
+            loop {
+                let line =
+                    bounded_line(input, 8192).map_err(|_| deny(403, "invalid chunk trailers"))?;
+                total += line.len();
+                if total > 8192 {
+                    return Err(deny(403, "chunk trailers too large"));
+                }
+                if line == b"\r\n" {
+                    return Ok(body);
+                }
+                if !line.ends_with(b"\r\n") || !line.contains(&b':') {
+                    return Err(deny(403, "invalid chunk trailers"));
+                }
+            }
+        }
+        if size > BODY_MAX - body.len() {
+            return Err(deny(413, "request body too large"));
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        input
+            .read_exact(&mut body[start..])
+            .map_err(|_| deny(403, "incomplete chunk body"))?;
+        let mut end = [0; 2];
+        input
+            .read_exact(&mut end)
+            .map_err(|_| deny(403, "incomplete chunk body"))?;
+        if end != *b"\r\n" {
+            return Err(deny(403, "invalid chunk framing"));
+        }
+    }
 }
 
 fn inline_schema(value: &Value) -> io::Result<()> {
@@ -843,12 +926,14 @@ impl Usage {
         self.output = count("output_tokens")?;
         Ok(())
     }
-    fn cost(&self) -> f64 {
-        (self.input as f64 * 3.0
-            + self.output as f64 * 15.0
+    fn cost(&self, model: &str) -> f64 {
+        let premium = long_context_premium(model, self.input + self.read + self.write);
+        ((self.input as f64 * 3.0
             + self.read as f64 * 0.3
             + (self.write - self.hour) as f64 * 3.75
             + self.hour as f64 * 6.0)
+            * premium.0
+            + self.output as f64 * 15.0 * premium.1)
             / 1_000_000.0
     }
 }
@@ -940,7 +1025,7 @@ impl<W: Write> Write for Response<'_, W> {
                 }
             }
         } else {
-            if self.json.len() + bytes.len() > 16_000_000 {
+            if self.json.len() + bytes.len() > RESPONSE_MAX {
                 return Err(deny(502, "upstream message too large"));
             }
             self.json.extend_from_slice(bytes);
