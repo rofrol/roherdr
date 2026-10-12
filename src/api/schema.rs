@@ -298,6 +298,10 @@ pub enum Method {
     /// the coordinator it was addressed to.
     #[serde(rename = "supervise.ack")]
     SuperviseAck(SuperviseAckParams),
+    /// The retracted and delivered holds of one predicate and rule version, as
+    /// fixtures for a fix of the predicate. Reads only.
+    #[serde(rename = "supervise.fixtures")]
+    SuperviseFixtures(SuperviseFixturesParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

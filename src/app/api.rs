@@ -1319,6 +1319,9 @@ impl App {
             Method::SuperviseAck(params) => {
                 return self.handle_supervise_ack(request.id, params);
             }
+            Method::SuperviseFixtures(params) => {
+                return self.handle_supervise_fixtures(request.id, params);
+            }
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }

@@ -996,11 +996,18 @@ pub struct SupervisionConfig {
     /// server's supervision sweep saw of the coordinators, and its findings.
     /// Default: true.
     pub show_tab: bool,
+    /// Raise a `predicate_review_due` finding for the herdr repository's
+    /// coordinator when the retracted holds of one supervision predicate and
+    /// rule version reach this count. 0 turns it off. Default: 3.
+    pub review_after_retractions: u32,
 }
 
 impl Default for SupervisionConfig {
     fn default() -> Self {
-        Self { show_tab: true }
+        Self {
+            show_tab: true,
+            review_after_retractions: 3,
+        }
     }
 }
 

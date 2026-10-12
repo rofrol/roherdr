@@ -5687,6 +5687,27 @@
           ],
           "type": "object"
         },
+        "SuperviseFixturesParams": {
+          "description": "`supervise.fixtures`: the recorded holds of one predicate and rule version. Reads only.",
+          "properties": {
+            "predicate": {
+              "$ref": "#/schemas/request/$defs/SupervisionPredicate"
+            },
+            "version": {
+              "description": "The rule version; the predicate's current one when absent.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "predicate"
+          ],
+          "type": "object"
+        },
         "SuperviseReportParams": {
           "description": "`supervise.report`: the findings that hold (open or acknowledged), or\nevery finding with `all`, and what the latest sweep saw of each\ncoordinator.",
           "properties": {
@@ -5702,6 +5723,57 @@
             }
           },
           "type": "object"
+        },
+        "SupervisionPredicate": {
+          "description": "The predicate a finding names: a positive fact and the event that did\nnot follow it. Quiet output is never one: it only means progress cannot\nbe established.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "coordinator_idle",
+              "description": "A coordinator's agent is idle while its repository has runnable\nitems, no open decision and no wait the server knows of.",
+              "type": "string"
+            },
+            {
+              "const": "working_after_stop",
+              "description": "A pane's agent shows `working` after the turn end its integration\nreported (Claude's `Stop`) with no turn start since\n(`UserPromptSubmit`).",
+              "type": "string"
+            },
+            {
+              "const": "untracked_shell",
+              "description": "A coordinator's turn ended with more background tasks running than\nherdr-job waits with a live record (its `bg_waits` token; a wait on\nanother pane's job is one) and no other wait edge the server knows\nof (a running herdr-job job of its pane, a worker of its tenure, a\nrun of its repository).",
+              "type": "string"
+            },
+            {
+              "const": "disk_low",
+              "description": "The file system of a coordinator's repository has less free space\nthan the build guard's 15 GiB.",
+              "type": "string"
+            },
+            {
+              "const": "verdict_undelivered",
+              "description": "Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or\n`WORKER-BLOCKED` line) and no waiter acknowledged it (`agent.ack_verdict`) while none\nwaits for it: its waiter was never started, ended on something else, gave up, or was\nkilled before or after the answer was written.",
+              "type": "string"
+            },
+            {
+              "const": "stopped_without_verdict",
+              "description": "A pane worker's turn ended (Claude's `Stop`, no background task left) with its\nassignment started and no `WORKER` line, and no turn started since: it asks\nsomething, stopped early, or forgot the line.",
+              "type": "string"
+            },
+            {
+              "const": "unaccounted_assignment",
+              "description": "A pane worker's turn closed (no background task left, or an error ended it) after herdr\naccepted its assignment, and neither a verdict, a newer prompt, a stop without a verdict\nnor a question of the pane accounts for the assignment, and no turn started since: herdr\ndid not find its start in the transcript, or the transcript was missing or unreadable.",
+              "type": "string"
+            },
+            {
+              "const": "predicate_review_due",
+              "description": "The retracted holds of one predicate and rule version reached the configured count\n(`[supervision] review_after_retractions`): the predicate's rule needs a review. Herdr\nraises it for the herdr repository's coordinator, with the retracted holds'\nfingerprints and request ids as evidence (`supervise.fixtures` exports them whole); it\nresolves when the rule's version for that predicate changes. Older clients read it as\n`unknown`.",
+              "type": "string"
+            }
+          ]
         },
         "TabActivity": {
           "description": "What a running tab's job is doing, as far as its runner can tell.",
@@ -9186,6 +9258,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/SuperviseAckParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The retracted and delivered holds of one predicate and rule version, as\nfixtures for a fix of the predicate. Reads only.",
+          "properties": {
+            "method": {
+              "const": "supervise.fixtures",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SuperviseFixturesParams"
             }
           },
           "required": [
@@ -16691,6 +16780,23 @@
               "type": "object"
             },
             {
+              "description": "`supervise.fixtures`' reply.",
+              "properties": {
+                "fixtures": {
+                  "$ref": "#/schemas/success_response/$defs/SupervisionFixtures"
+                },
+                "type": {
+                  "const": "supervision_fixtures",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "fixtures"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`supervise.acknowledge`'s and `supervise.ack`'s reply.",
               "properties": {
                 "finding": {
@@ -18655,6 +18761,89 @@
           ],
           "type": "object"
         },
+        "SupervisionFixture": {
+          "description": "One recorded hold with the facts it was recorded with.",
+          "properties": {
+            "counter_evidence": {
+              "description": "The counter-evidence entry that held it.",
+              "type": "string"
+            },
+            "ended_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "job_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "opened_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "The assignment whose continuation was awaited.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "fingerprint",
+            "request_id",
+            "counter_evidence",
+            "opened_ms"
+          ],
+          "type": "object"
+        },
+        "SupervisionFixtures": {
+          "description": "`supervise.fixtures`' reply: the cases a fix of the predicate must respect.",
+          "properties": {
+            "delivered": {
+              "description": "The delivered holds: known-true cases that must still fire.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionFixture"
+              },
+              "type": "array"
+            },
+            "predicate": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionPredicate"
+            },
+            "retracted": {
+              "description": "The retracted holds: cases that must not fire.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionFixture"
+              },
+              "type": "array"
+            },
+            "rule_version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "predicate",
+            "rule_version",
+            "retracted",
+            "delivered"
+          ],
+          "type": "object"
+        },
         "SupervisionHoldCount": {
           "description": "How many holds of one predicate and rule version ended in each state\n(`supervision_holds`): `retracted` is a false positive whose expected event followed,\n`delivered` a finding whose continuation ended without it, `resolved` a predicate that\nstopped holding some other way.",
           "properties": {
@@ -18774,6 +18963,11 @@
             {
               "const": "unaccounted_assignment",
               "description": "A pane worker's turn closed (no background task left, or an error ended it) after herdr\naccepted its assignment, and neither a verdict, a newer prompt, a stop without a verdict\nnor a question of the pane accounts for the assignment, and no turn started since: herdr\ndid not find its start in the transcript, or the transcript was missing or unreadable.",
+              "type": "string"
+            },
+            {
+              "const": "predicate_review_due",
+              "description": "The retracted holds of one predicate and rule version reached the configured count\n(`[supervision] review_after_retractions`): the predicate's rule needs a review. Herdr\nraises it for the herdr repository's coordinator, with the retracted holds'\nfingerprints and request ids as evidence (`supervise.fixtures` exports them whole); it\nresolves when the rule's version for that predicate changes. Older clients read it as\n`unknown`.",
               "type": "string"
             }
           ]

@@ -7,14 +7,15 @@
 
 use crate::api::schema::{
     AgentStatus, Method, Request, SuperviseAckParams, SuperviseAcknowledgeParams,
-    SuperviseReportParams, SupervisionDelivery, SupervisionFinding, SupervisionReport,
-    SupervisionSeverity, SupervisionStatus,
+    SuperviseFixturesParams, SuperviseReportParams, SupervisionDelivery, SupervisionFinding,
+    SupervisionPredicate, SupervisionReport, SupervisionSeverity, SupervisionStatus,
 };
 
 const USAGE: &str = "usage:
   herdr supervise --report [--all] [--json]
   herdr supervise --ack FINDING_ID [--json]
   herdr supervise ack FINDING_ID [--json]
+  herdr supervise fixtures PREDICATE [--version N]
       What herdr's supervision sweep (on the server's timer, and when a
       coordinator's pane reports a turn or changes state) saw of each active
       coordinator, and the findings that hold (open or acknowledged; with
@@ -49,7 +50,15 @@ const USAGE: &str = "usage:
       your turn after a notice ends without it, the finding's `?` entry says
       so.
       From the herdr repository's coordinator it also acknowledges the
-      finding, as --ack does.";
+      finding, as --ack does.
+  fixtures PREDICATE [--version N]
+      Prints JSON, read only: the holds recorded for a predicate
+      (stopped_without_verdict or unaccounted_assignment) at its rule version
+      (the current one by default): `retracted`, the cases that must not
+      fire, and `delivered`, the known-true cases that must still fire, each
+      with its fingerprint, request id, job ids, counter-evidence, opened and
+      ended times and the reason it ended. A `predicate_review_due` finding
+      points here.";
 
 pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
     let (command, json) = match parse(args) {
@@ -65,7 +74,11 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
         }
     };
     let pane_id = super::target::caller_pane_id();
+    let fixtures = matches!(command, Supervise::Fixtures { .. });
     let method = match command {
+        Supervise::Fixtures { predicate, version } => {
+            Method::SuperviseFixtures(SuperviseFixturesParams { predicate, version })
+        }
         Supervise::Report { all } => Method::SuperviseReport(SuperviseReportParams {
             all,
             pane_id: pane_id.clone(),
@@ -87,7 +100,7 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
         id: "cli:supervise".into(),
         method,
     })?;
-    if json || response.get("error").is_some() {
+    if json || fixtures || response.get("error").is_some() {
         return super::print_response(&response);
     }
     if ack {
@@ -122,6 +135,11 @@ enum Supervise {
     Ack(String),
     /// `ack FINDING_ID`: the notices addressed to the caller's tenure.
     AckNotice(String),
+    /// `fixtures PREDICATE [--version N]`.
+    Fixtures {
+        predicate: SupervisionPredicate,
+        version: Option<u32>,
+    },
 }
 
 /// `Ok(None)` asks for help; the flag says `--json`.
@@ -144,6 +162,35 @@ fn parse(args: &[String]) -> Result<Option<(Supervise, bool)>, String> {
             Some(finding) => Ok(Some((Supervise::AckNotice(finding), json))),
             None => Err("ack takes a finding id (f-N)".into()),
         };
+    }
+    if args.first().map(String::as_str) == Some("fixtures") {
+        let mut predicate = None;
+        let mut version = None;
+        let mut rest = args[1..].iter();
+        while let Some(arg) = rest.next() {
+            match arg.as_str() {
+                "--version" => match rest.next().and_then(|value| value.parse::<u32>().ok()) {
+                    Some(value) => version = Some(value),
+                    None => return Err("--version takes a rule version number".into()),
+                },
+                "help" | "--help" | "-h" => return Ok(None),
+                other if other.starts_with("--") => {
+                    return Err(format!("unexpected argument: {other}"))
+                }
+                other if predicate.is_none() => predicate = Some(other.to_owned()),
+                other => return Err(format!("unexpected argument: {other}")),
+            }
+        }
+        let Some(name) = predicate else {
+            return Err("fixtures takes a predicate name".into());
+        };
+        let predicate: SupervisionPredicate =
+            serde_json::from_value(serde_json::Value::String(name.clone()))
+                .unwrap_or(SupervisionPredicate::Unknown);
+        if predicate == SupervisionPredicate::Unknown {
+            return Err(format!("unknown predicate: {name}"));
+        }
+        return Ok(Some((Supervise::Fixtures { predicate, version }, true)));
     }
     let mut report = false;
     let mut ack = None;
@@ -374,7 +421,26 @@ mod tests {
             parse(&args(&["ack", "f-3", "--json"])),
             Ok(Some((Supervise::AckNotice("f-3".into()), true)))
         );
+        assert_eq!(
+            parse(&args(&[
+                "fixtures",
+                "stopped_without_verdict",
+                "--version",
+                "2"
+            ])),
+            Ok(Some((
+                Supervise::Fixtures {
+                    predicate: SupervisionPredicate::StoppedWithoutVerdict,
+                    version: Some(2)
+                },
+                true
+            )))
+        );
         for bad in [
+            &["fixtures"][..],
+            &["fixtures", "nonsense"],
+            &["fixtures", "disk_low", "--version"],
+            &["fixtures", "disk_low", "--version", "x"],
             &["ack"][..],
             &["ack", "f-3", "f-4"],
             &["ack", "f-3", "--all"],

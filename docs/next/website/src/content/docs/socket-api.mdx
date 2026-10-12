@@ -115,7 +115,7 @@ Raw socket method names use dot notation:
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
 | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
 | Reports | `report.record`, `report.list`, `report.close` |
-| Supervision | `supervise.report`, `supervise.acknowledge`, `supervise.ack` |
+| Supervision | `supervise.report`, `supervise.acknowledge`, `supervise.ack`, `supervise.fixtures` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -1237,6 +1237,22 @@ turn boundary (one hung while reported working) shows in the finding's `?`
 entry as `queued for <coordinator>, not delivered`. No timer, deadline or
 backoff moves a notice. An older server refuses `supervise.ack` as
 `invalid_request`.
+The digest typed to the herdr repository's coordinator is a per-predicate
+summary (the open findings and the holds by state, `pending`, `retracted`,
+`delivered` and `resolved`, of each predicate it covers), not one line per
+finding. `predicate_review_due` is a finding herdr raises itself, owned by the
+herdr repository's coordinator tenure, when the retracted holds of one predicate
+and rule version reach `[supervision] review_after_retractions` (default 3, 0
+turns it off): its evidence lists each retracted hold's fingerprint and request
+id, it is evaluated when a hold ends, and it resolves when the rule's version for
+that predicate changes. Clients that do not know the value read it as `unknown`.
+`supervise.fixtures` (`predicate`, optional `version`, the predicate's current
+rule version by default) reads only and answers `supervision_fixtures` with
+`predicate`, `rule_version`, `retracted` (the holds that must not fire) and
+`delivered` (known-true cases that must still fire), each with `fingerprint`,
+`request_id`, `job_ids`, `counter_evidence`, `opened_ms`, `ended_ms` and
+`reason`. A predicate without a rule needs an explicit `version`
+(`invalid_request` otherwise). An older server refuses it as `invalid_request`.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

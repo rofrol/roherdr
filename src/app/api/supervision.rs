@@ -7,7 +7,8 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    ResponseResult, SuperviseAckParams, SuperviseAcknowledgeParams, SuperviseReportParams,
+    ResponseResult, SuperviseAckParams, SuperviseAcknowledgeParams, SuperviseFixturesParams,
+    SuperviseReportParams,
 };
 use crate::app::App;
 use crate::workers::supervision::PaneFacts;
@@ -95,6 +96,22 @@ impl App {
             .map(|pane| self.canonical_pane_id(pane));
         match supervisor.supervision_report(params.all, pane.as_deref()) {
             Ok(report) => encode_success(id, ResponseResult::SupervisionReport { report }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `supervise.fixtures`: reads only.
+    pub(super) fn handle_supervise_fixtures(
+        &mut self,
+        id: String,
+        params: SuperviseFixturesParams,
+    ) -> String {
+        let Some(supervisor) = crate::workers::coordinators() else {
+            let error = unavailable();
+            return encode_error(id, error.code(), error.to_string());
+        };
+        match supervisor.supervision_fixtures(params.predicate, params.version) {
+            Ok(fixtures) => encode_success(id, ResponseResult::SupervisionFixtures { fixtures }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

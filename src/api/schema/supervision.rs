@@ -155,6 +155,13 @@ pub enum SupervisionPredicate {
     /// nor a question of the pane accounts for the assignment, and no turn started since: herdr
     /// did not find its start in the transcript, or the transcript was missing or unreadable.
     UnaccountedAssignment,
+    /// The retracted holds of one predicate and rule version reached the configured count
+    /// (`[supervision] review_after_retractions`): the predicate's rule needs a review. Herdr
+    /// raises it for the herdr repository's coordinator, with the retracted holds'
+    /// fingerprints and request ids as evidence (`supervise.fixtures` exports them whole); it
+    /// resolves when the rule's version for that predicate changes. Older clients read it as
+    /// `unknown`.
+    PredicateReviewDue,
     #[serde(other)]
     Unknown,
 }
@@ -307,6 +314,44 @@ pub struct SupervisionPendingHold {
     pub job_ids: Vec<String>,
     /// Unix milliseconds.
     pub opened_ms: u64,
+}
+
+/// `supervise.fixtures`: the recorded holds of one predicate and rule version. Reads only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SuperviseFixturesParams {
+    pub predicate: SupervisionPredicate,
+    /// The rule version; the predicate's current one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+}
+
+/// One recorded hold with the facts it was recorded with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionFixture {
+    pub fingerprint: String,
+    /// The assignment whose continuation was awaited.
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_ids: Vec<String>,
+    /// The counter-evidence entry that held it.
+    pub counter_evidence: String,
+    /// Unix milliseconds.
+    pub opened_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `supervise.fixtures`' reply: the cases a fix of the predicate must respect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionFixtures {
+    pub predicate: SupervisionPredicate,
+    pub rule_version: u32,
+    /// The retracted holds: cases that must not fire.
+    pub retracted: Vec<SupervisionFixture>,
+    /// The delivered holds: known-true cases that must still fire.
+    pub delivered: Vec<SupervisionFixture>,
 }
 
 /// `supervise.report`'s reply.

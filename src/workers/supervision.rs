@@ -69,10 +69,11 @@ use super::{lock, notify_clients, now_ms, Direction, PendingWorkerQuestion};
 use super::{WorkerError, WorkerSupervisor};
 use crate::api::schema::{
     AgentStatus, CoordinatorInfo, SupervisedCoordinator, SupervisionDelivery,
-    SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding, SupervisionHoldCount,
-    SupervisionPendingHold, SupervisionPredicate, SupervisionReport, SupervisionSeverity,
-    SupervisionStatus, TodoRunnableState, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
-    WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerState,
+    SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding, SupervisionFixture,
+    SupervisionFixtures, SupervisionHoldCount, SupervisionPendingHold, SupervisionPredicate,
+    SupervisionReport, SupervisionSeverity, SupervisionStatus, TodoRunnableState,
+    WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion, WorkerQuestionDetail,
+    WorkerQuestionKind, WorkerQuestionState, WorkerState,
 };
 
 /// The findings table.
@@ -347,6 +348,7 @@ fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
         SupervisionPredicate::VerdictUndelivered => "verdict_undelivered",
         SupervisionPredicate::StoppedWithoutVerdict => "stopped_without_verdict",
         SupervisionPredicate::UnaccountedAssignment => "unaccounted_assignment",
+        SupervisionPredicate::PredicateReviewDue => "predicate_review_due",
         SupervisionPredicate::Unknown => "unknown",
     }
 }
@@ -411,6 +413,33 @@ fn pending_holds(conn: &rusqlite::Connection) -> StoreResult<Vec<SupervisionPend
             request_id: row.get(3)?,
             job_ids: serde_json::from_str(&jobs).unwrap_or_default(),
             opened_ms: row.get::<_, i64>(5)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+/// The holds of `predicate` and `version` that ended in `state`, the oldest first.
+fn fixtures_of(
+    conn: &rusqlite::Connection,
+    predicate: SupervisionPredicate,
+    version: u32,
+    state: &str,
+) -> StoreResult<Vec<SupervisionFixture>> {
+    let mut statement = conn.prepare(
+        "SELECT fingerprint, request_id, job_ids, counter_evidence, opened_ms, ended_ms, reason
+         FROM supervision_holds WHERE predicate = ?1 AND rule_version = ?2 AND state = ?3
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map(params![predicate_name(predicate), version, state], |row| {
+        let jobs: String = row.get(2)?;
+        Ok(SupervisionFixture {
+            fingerprint: row.get(0)?,
+            request_id: row.get(1)?,
+            job_ids: serde_json::from_str(&jobs).unwrap_or_default(),
+            counter_evidence: row.get(3)?,
+            opened_ms: row.get::<_, i64>(4)?.max(0) as u64,
+            ended_ms: row.get::<_, Option<i64>>(5)?.map(|ms| ms.max(0) as u64),
+            reason: row.get(6)?,
         })
     })?;
     rows.collect()
@@ -1342,8 +1371,115 @@ struct Changes {
 /// that holds already moves its `last_seen_ms` and evidence (and is
 /// escalated, open again, when its severity rose), and every holding
 /// finding the sweep no longer saw is resolved.
+#[cfg(test)]
 fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResult<Changes> {
     record_sweep_with(tx, candidates, at_ms, &supervision_rules::hold_end)
+}
+
+/// What decides a predicate review (`predicate_review_due`).
+struct Review {
+    /// The retracted holds of one predicate and rule version that raise it; 0 turns it off.
+    after: u32,
+    /// The herdr repository's active tenure, which owns the finding: its repository and id.
+    herdr: Option<(String, String)>,
+}
+
+impl Review {
+    #[cfg(test)]
+    fn off() -> Self {
+        Self {
+            after: 0,
+            herdr: None,
+        }
+    }
+}
+
+/// `[supervision] review_after_retractions`, read from the config file at each sweep; the
+/// default when it cannot be read.
+fn configured_review_after() -> u32 {
+    #[cfg(test)]
+    {
+        DEFAULT_REVIEW_AFTER_RETRACTIONS
+    }
+    #[cfg(not(test))]
+    {
+        crate::config::load_live_config()
+            .map(|loaded| loaded.config.supervision.review_after_retractions)
+            .unwrap_or(DEFAULT_REVIEW_AFTER_RETRACTIONS)
+    }
+}
+
+const DEFAULT_REVIEW_AFTER_RETRACTIONS: u32 = 3;
+
+/// The `predicate_review_due` candidates: every predicate whose current rule version has
+/// `review.after` retracted holds or more. Derived from the holds, so the candidate holds
+/// until the rule's version changes (the count of the new version starts at zero) and the
+/// finding then resolves with the sweep that no longer sees it.
+fn review_candidates(
+    conn: &rusqlite::Connection,
+    review: &Review,
+    at_ms: u64,
+) -> StoreResult<Vec<Candidate>> {
+    let mut candidates = Vec::new();
+    if review.after == 0 {
+        return Ok(candidates);
+    }
+    for rule in supervision_rules::RULES {
+        let name = predicate_name(rule.predicate);
+        let mut statement = conn.prepare(
+            "SELECT fingerprint, request_id FROM supervision_holds
+             WHERE predicate = ?1 AND rule_version = ?2 AND state = 'retracted' ORDER BY id",
+        )?;
+        let retracted: Vec<(String, String)> = statement
+            .query_map(params![name, rule.version], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<StoreResult<_>>()?;
+        if retracted.len() < review.after as usize {
+            continue;
+        }
+        let count = retracted.len();
+        candidates.push(Candidate {
+            fingerprint: fingerprint(
+                SupervisionPredicate::PredicateReviewDue,
+                &format!("{name}:{}", rule.version),
+            ),
+            predicate: SupervisionPredicate::PredicateReviewDue,
+            severity: SupervisionSeverity::Warning,
+            summary: format!(
+                "the rule of {name} (version {}) retracted {count} findings: its predicate \
+                 needs a review",
+                rule.version
+            ),
+            expected_event: format!(
+                "the rule of {name} changes version after a review (`herdr supervise fixtures \
+                 {name} --version {}` lists the retracted cases and the known-true ones)",
+                rule.version
+            ),
+            repo: review.herdr.as_ref().map(|(repo, _)| repo.clone()),
+            coordinator_id: review.herdr.as_ref().map(|(_, id)| id.clone()),
+            pane_id: None,
+            run_id: None,
+            job_ids: Vec::new(),
+            evidence: SupervisionEvidence {
+                observed_ms: at_ms,
+                event_ids: retracted
+                    .iter()
+                    .map(|(fingerprint, request_id)| {
+                        format!("retracted hold {fingerprint} (request {request_id})")
+                    })
+                    .collect(),
+                facts: vec![
+                    format!("predicate: {name}"),
+                    format!("rule_version: {}", rule.version),
+                    format!("retracted_holds: {count}"),
+                    format!("review_after_retractions: {}", review.after),
+                ],
+            },
+            hold: None,
+        });
+    }
+    Ok(candidates)
 }
 
 /// Appends a `supervision.hold` event for one change of a pending finding.
@@ -1388,6 +1524,136 @@ fn end_hold(
     Ok(changed > 0)
 }
 
+/// Records one candidate: a new fingerprint opens a finding (a pending hold is kept instead
+/// when its rule's counter-evidence holds), one that holds already moves its `last_seen_ms`.
+fn record_candidate(
+    tx: &Tx<'_>,
+    candidate: &Candidate,
+    at_ms: u64,
+    changes: &mut Changes,
+) -> StoreResult<()> {
+    let conn = tx.connection();
+    let job_ids = serde_json::to_string(&candidate.job_ids).unwrap_or_else(|_| "[]".into());
+    let evidence = serde_json::to_string(&candidate.evidence).unwrap_or_else(|_| "{}".into());
+    let holding: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, severity FROM supervision_findings
+             WHERE fingerprint = ?1 AND status != 'resolved'",
+            [&candidate.fingerprint],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let (None, Some(hold)) = (&holding, &candidate.hold) {
+        let pending: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM supervision_holds
+                 WHERE fingerprint = ?1 AND state = 'pending'",
+                [&candidate.fingerprint],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let jobs = serde_json::to_string(&hold.job_ids).unwrap_or_else(|_| "[]".into());
+        match pending {
+            Some(id) => {
+                conn.execute(
+                    "UPDATE supervision_holds SET job_ids = ?2 WHERE id = ?1",
+                    params![id, jobs],
+                )?;
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO supervision_holds (fingerprint, predicate, rule_version,
+                         request_id, counter_evidence, job_ids, state, opened_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                    params![
+                        candidate.fingerprint,
+                        predicate_name(candidate.predicate),
+                        hold.rule_version,
+                        hold.request_id,
+                        hold.counter_evidence,
+                        jobs,
+                        at_ms as i64,
+                    ],
+                )?;
+                hold_event(tx, &candidate.fingerprint, "pending", None, at_ms)?;
+            }
+        }
+        return Ok(());
+    }
+    if holding.is_none() {
+        end_hold(
+            tx,
+            &candidate.fingerprint,
+            "delivered",
+            "the continuation ended without the expected event",
+            at_ms,
+        )?;
+    }
+    match holding {
+        None => {
+            conn.execute(
+                "INSERT INTO supervision_findings (fingerprint, predicate, severity, status,
+                     summary, expected_event, repo, coordinator_id, pane_id, run_id, job_ids,
+                     evidence, first_seen_ms, last_seen_ms)
+                 VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                params![
+                    candidate.fingerprint,
+                    predicate_name(candidate.predicate),
+                    severity_name(candidate.severity),
+                    candidate.summary,
+                    candidate.expected_event,
+                    candidate.repo,
+                    candidate.coordinator_id,
+                    candidate.pane_id,
+                    candidate.run_id,
+                    job_ids,
+                    evidence,
+                    at_ms as i64,
+                ],
+            )?;
+            let number = conn.last_insert_rowid();
+            if let Some(finding) = finding_by_number(conn, number)? {
+                finding_event(tx, &finding, "opened", at_ms)?;
+                changes.opened.push(finding);
+            }
+        }
+        Some((number, severity)) => {
+            let escalated =
+                severity_rank(candidate.severity) > severity_rank(parse_severity(&severity));
+            conn.execute(
+                "UPDATE supervision_findings SET last_seen_ms = ?2, evidence = ?3,
+                     summary = ?4, job_ids = ?5, run_id = ?6,
+                     severity = CASE WHEN ?7 THEN ?8 ELSE severity END,
+                     status = CASE WHEN ?7 THEN 'open' ELSE status END,
+                     acknowledged_ms = CASE WHEN ?7 THEN NULL ELSE acknowledged_ms END,
+                     acknowledged_by = CASE WHEN ?7 THEN NULL ELSE acknowledged_by END,
+                     coordinator_seen_ms =
+                         CASE WHEN ?7 THEN NULL ELSE coordinator_seen_ms END,
+                     coordinator_seen_by =
+                         CASE WHEN ?7 THEN NULL ELSE coordinator_seen_by END
+                 WHERE id = ?1",
+                params![
+                    number,
+                    at_ms as i64,
+                    evidence,
+                    candidate.summary,
+                    job_ids,
+                    candidate.run_id,
+                    escalated,
+                    severity_name(candidate.severity),
+                ],
+            )?;
+            if escalated {
+                if let Some(finding) = finding_by_number(conn, number)? {
+                    finding_event(tx, &finding, "escalated", at_ms)?;
+                    changes.escalated.push(finding);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// [`record_sweep`] with the judgement of an ended hold (`hold_end`) given.
 ///
 /// A candidate with a [`Hold`] that no finding holds yet is `pending`: it is recorded in
@@ -1395,11 +1661,24 @@ fn end_hold(
 /// without a hold (its job ended, its worker did not continue) is `delivered`: the finding
 /// opens now. A pending one whose candidate is gone is `retracted` when its expected event
 /// happened, else `resolved`.
+#[cfg(test)]
 fn record_sweep_with(
     tx: &Tx<'_>,
     candidates: &[Candidate],
     at_ms: u64,
     hold_end: &dyn Fn(ExpectedEvent, &PendingHold) -> HoldEnd,
+) -> StoreResult<Changes> {
+    record_sweep_full(tx, candidates, at_ms, hold_end, &Review::off())
+}
+
+/// [`record_sweep_with`] and, once the holds that ended in this sweep are recorded, the
+/// predicate reviews they made due (`review_candidates`): event-ordered, no timer.
+fn record_sweep_full(
+    tx: &Tx<'_>,
+    candidates: &[Candidate],
+    at_ms: u64,
+    hold_end: &dyn Fn(ExpectedEvent, &PendingHold) -> HoldEnd,
+    review: &Review,
 ) -> StoreResult<Changes> {
     let conn = tx.connection();
     let mut changes = Changes::default();
@@ -1408,124 +1687,7 @@ fn record_sweep_with(
         if !seen.insert(candidate.fingerprint.clone()) {
             continue;
         }
-        let job_ids = serde_json::to_string(&candidate.job_ids).unwrap_or_else(|_| "[]".into());
-        let evidence = serde_json::to_string(&candidate.evidence).unwrap_or_else(|_| "{}".into());
-        let holding: Option<(i64, String)> = conn
-            .query_row(
-                "SELECT id, severity FROM supervision_findings
-                 WHERE fingerprint = ?1 AND status != 'resolved'",
-                [&candidate.fingerprint],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if let (None, Some(hold)) = (&holding, &candidate.hold) {
-            let pending: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM supervision_holds
-                     WHERE fingerprint = ?1 AND state = 'pending'",
-                    [&candidate.fingerprint],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let jobs = serde_json::to_string(&hold.job_ids).unwrap_or_else(|_| "[]".into());
-            match pending {
-                Some(id) => {
-                    conn.execute(
-                        "UPDATE supervision_holds SET job_ids = ?2 WHERE id = ?1",
-                        params![id, jobs],
-                    )?;
-                }
-                None => {
-                    conn.execute(
-                        "INSERT INTO supervision_holds (fingerprint, predicate, rule_version,
-                             request_id, counter_evidence, job_ids, state, opened_ms)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
-                        params![
-                            candidate.fingerprint,
-                            predicate_name(candidate.predicate),
-                            hold.rule_version,
-                            hold.request_id,
-                            hold.counter_evidence,
-                            jobs,
-                            at_ms as i64,
-                        ],
-                    )?;
-                    hold_event(tx, &candidate.fingerprint, "pending", None, at_ms)?;
-                }
-            }
-            continue;
-        }
-        if holding.is_none() {
-            end_hold(
-                tx,
-                &candidate.fingerprint,
-                "delivered",
-                "the continuation ended without the expected event",
-                at_ms,
-            )?;
-        }
-        match holding {
-            None => {
-                conn.execute(
-                    "INSERT INTO supervision_findings (fingerprint, predicate, severity, status,
-                         summary, expected_event, repo, coordinator_id, pane_id, run_id, job_ids,
-                         evidence, first_seen_ms, last_seen_ms)
-                     VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
-                    params![
-                        candidate.fingerprint,
-                        predicate_name(candidate.predicate),
-                        severity_name(candidate.severity),
-                        candidate.summary,
-                        candidate.expected_event,
-                        candidate.repo,
-                        candidate.coordinator_id,
-                        candidate.pane_id,
-                        candidate.run_id,
-                        job_ids,
-                        evidence,
-                        at_ms as i64,
-                    ],
-                )?;
-                let number = conn.last_insert_rowid();
-                if let Some(finding) = finding_by_number(conn, number)? {
-                    finding_event(tx, &finding, "opened", at_ms)?;
-                    changes.opened.push(finding);
-                }
-            }
-            Some((number, severity)) => {
-                let escalated =
-                    severity_rank(candidate.severity) > severity_rank(parse_severity(&severity));
-                conn.execute(
-                    "UPDATE supervision_findings SET last_seen_ms = ?2, evidence = ?3,
-                         summary = ?4, job_ids = ?5, run_id = ?6,
-                         severity = CASE WHEN ?7 THEN ?8 ELSE severity END,
-                         status = CASE WHEN ?7 THEN 'open' ELSE status END,
-                         acknowledged_ms = CASE WHEN ?7 THEN NULL ELSE acknowledged_ms END,
-                         acknowledged_by = CASE WHEN ?7 THEN NULL ELSE acknowledged_by END,
-                         coordinator_seen_ms =
-                             CASE WHEN ?7 THEN NULL ELSE coordinator_seen_ms END,
-                         coordinator_seen_by =
-                             CASE WHEN ?7 THEN NULL ELSE coordinator_seen_by END
-                     WHERE id = ?1",
-                    params![
-                        number,
-                        at_ms as i64,
-                        evidence,
-                        candidate.summary,
-                        job_ids,
-                        candidate.run_id,
-                        escalated,
-                        severity_name(candidate.severity),
-                    ],
-                )?;
-                if escalated {
-                    if let Some(finding) = finding_by_number(conn, number)? {
-                        finding_event(tx, &finding, "escalated", at_ms)?;
-                        changes.escalated.push(finding);
-                    }
-                }
-            }
-        }
+        record_candidate(tx, candidate, at_ms, &mut changes)?;
     }
     let pending: Vec<(String, String, u64)> = {
         let mut statement = conn.prepare(
@@ -1558,6 +1720,11 @@ fn record_sweep_with(
                 at_ms,
             )?,
         };
+    }
+    for candidate in review_candidates(conn, review, at_ms)? {
+        if seen.insert(candidate.fingerprint.clone()) {
+            record_candidate(tx, &candidate, at_ms, &mut changes)?;
+        }
     }
     let holding: Vec<(i64, String)> = {
         let mut statement = conn.prepare(
@@ -1871,6 +2038,78 @@ pub(crate) struct DeliveryBatch {
     /// The recipient tenure's pane.
     pub(crate) pane_id: String,
     pub(crate) items: Vec<DeliveryItem>,
+    /// The per-predicate summary that stands for the batch's digest and unowned items: the
+    /// herdr coordinator is told counts per predicate, not each finding one by one.
+    pub(crate) digest: Vec<PredicateDigest>,
+}
+
+/// One predicate's line of a digest: the findings that are open (not acknowledged, not
+/// resolved) and the holds by state, over every rule version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PredicateDigest {
+    pub(crate) predicate: SupervisionPredicate,
+    pub(crate) open_findings: u64,
+    pub(crate) pending: u64,
+    pub(crate) retracted: u64,
+    pub(crate) delivered: u64,
+    pub(crate) resolved: u64,
+}
+
+/// The digest lines of the predicates of `findings`, from the findings and holds recorded.
+fn predicate_digest(
+    conn: &rusqlite::Connection,
+    findings: &[&SupervisionFinding],
+) -> StoreResult<Vec<PredicateDigest>> {
+    let mut predicates: Vec<SupervisionPredicate> = Vec::new();
+    for finding in findings {
+        if !predicates.contains(&finding.predicate) {
+            predicates.push(finding.predicate);
+        }
+    }
+    predicates.sort_by_key(|predicate| predicate_name(*predicate));
+    let mut lines = Vec::new();
+    for predicate in predicates {
+        let name = predicate_name(predicate);
+        let open_findings: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM supervision_findings WHERE predicate = ?1 AND status = 'open'",
+            [name],
+            |row| row.get(0),
+        )?;
+        let mut line = PredicateDigest {
+            predicate,
+            open_findings: open_findings.max(0) as u64,
+            pending: 0,
+            retracted: 0,
+            delivered: 0,
+            resolved: 0,
+        };
+        let mut statement = conn.prepare(
+            "SELECT state, COUNT(*) FROM supervision_holds WHERE predicate = ?1 GROUP BY state",
+        )?;
+        let rows = statement.query_map([name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (state, count) = row?;
+            let count = count.max(0) as u64;
+            match state.as_str() {
+                "pending" => line.pending = count,
+                "retracted" => line.retracted = count,
+                "delivered" => line.delivered = count,
+                _ => line.resolved = count,
+            }
+        }
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
+/// Whether a notice stands in a per-predicate summary instead of a line of its own.
+fn summarised(role: SupervisionDeliveryRole) -> bool {
+    matches!(
+        role,
+        SupervisionDeliveryRole::Digest | SupervisionDeliveryRole::Unowned
+    )
 }
 
 impl DeliveryBatch {
@@ -1909,17 +2148,8 @@ pub(crate) fn notice_text(batch: &DeliveryBatch) -> String {
         batch.coordinator_id,
         batch.items.len()
     );
-    for item in &batch.items {
+    for item in batch.items.iter().filter(|item| !summarised(item.role)) {
         let finding = &item.finding;
-        let role = match item.role {
-            SupervisionDeliveryRole::Owner => "yours".to_owned(),
-            SupervisionDeliveryRole::Digest => format!(
-                "digest, owned by {}",
-                finding.coordinator_id.as_deref().unwrap_or("?")
-            ),
-            SupervisionDeliveryRole::Unowned => "no owner herdr can prompt".to_owned(),
-            SupervisionDeliveryRole::Unknown => "unknown".to_owned(),
-        };
         let evidence: Vec<String> = finding
             .evidence
             .event_ids
@@ -1928,12 +2158,30 @@ pub(crate) fn notice_text(batch: &DeliveryBatch) -> String {
             .map(|id| quoted(id, 120))
             .collect();
         out.push_str(&format!(
-            "- {} {} {} ({role}): fact {}; evidence [{}]\n",
+            "- {} {} {} (yours): fact {}; evidence [{}]\n",
             finding.finding_id,
             severity_name(finding.severity),
             predicate_name(finding.predicate),
             quoted(&finding.summary, NOTICE_FACT_CHARS),
             evidence.join(", ")
+        ));
+    }
+    if !batch.digest.is_empty() {
+        out.push_str(
+            "Digest of the other owners' findings and the unowned ones, per predicate (open \
+             findings; holds by state over every rule version):\n",
+        );
+    }
+    for line in &batch.digest {
+        out.push_str(&format!(
+            "- {}: {} open finding(s); holds: pending {}, retracted {}, delivered {}, \
+             resolved {}\n",
+            predicate_name(line.predicate),
+            line.open_findings,
+            line.pending,
+            line.retracted,
+            line.delivered,
+            line.resolved
         ));
     }
     let ids: Vec<&str> = batch
@@ -2370,9 +2618,21 @@ impl WorkerSupervisor {
             .iter()
             .find(|tenure| is_herdr_repository(&tenure.repo))
             .cloned();
+        let review = Review {
+            after: configured_review_after(),
+            herdr: herdr_tenure
+                .as_ref()
+                .map(|tenure| (tenure.repo.clone(), tenure.coordinator_id.clone())),
+        };
         self.supervision_store()?
             .transaction(|tx| {
-                let changes = record_sweep(tx, &candidates, observed_ms)?;
+                let changes = record_sweep_full(
+                    tx,
+                    &candidates,
+                    observed_ms,
+                    &supervision_rules::hold_end,
+                    &review,
+                )?;
                 queue_deliveries(tx, &changes, &tenures, herdr_tenure.as_ref(), observed_ms)
             })
             .map_err(store_error)?;
@@ -2494,6 +2754,41 @@ impl WorkerSupervisor {
             herdr_coordinator_id: herdr.map(|herdr| herdr.coordinator_id),
             coordinators: last.coordinators,
             findings,
+        })
+    }
+
+    /// `supervise.fixtures`: the retracted holds (cases that must not fire) and the delivered
+    /// holds (known-true cases that must still fire) of `predicate` at rule `version` (its
+    /// current one by default), each with the facts recorded. Reads only.
+    pub(crate) fn supervision_fixtures(
+        &self,
+        predicate: SupervisionPredicate,
+        version: Option<u32>,
+    ) -> Result<SupervisionFixtures, WorkerError> {
+        let version = match (version, supervision_rules::rule_for(predicate)) {
+            (Some(version), _) => version,
+            (None, Some(rule)) => rule.version,
+            (None, None) => {
+                return Err(WorkerError::Invalid(format!(
+                    "{} has no rule, so it has no holds: pass --version to read an older one",
+                    predicate_name(predicate)
+                )))
+            }
+        };
+        let (retracted, delivered) = self
+            .supervision_store()?
+            .read(|conn| {
+                Ok((
+                    fixtures_of(conn, predicate, version, "retracted")?,
+                    fixtures_of(conn, predicate, version, "delivered")?,
+                ))
+            })
+            .map_err(store_error)?;
+        Ok(SupervisionFixtures {
+            predicate,
+            rule_version: version,
+            retracted,
+            delivered,
         })
     }
 
@@ -2714,6 +3009,7 @@ impl WorkerSupervisor {
                             coordinator_id: delivery.coordinator_id.clone(),
                             pane_id,
                             items: Vec::new(),
+                            digest: Vec::new(),
                         })
                         .items
                         .push(DeliveryItem {
@@ -2722,7 +3018,17 @@ impl WorkerSupervisor {
                             finding,
                         });
                 }
-                Ok(batches.into_values().collect::<Vec<_>>())
+                let mut batches = batches.into_values().collect::<Vec<_>>();
+                for batch in &mut batches {
+                    let findings: Vec<&SupervisionFinding> = batch
+                        .items
+                        .iter()
+                        .filter(|item| summarised(item.role))
+                        .map(|item| &item.finding)
+                        .collect();
+                    batch.digest = predicate_digest(conn, &findings)?;
+                }
+                Ok(batches)
             })
             .map_err(store_error)?;
         Ok(batches)
@@ -4258,8 +4564,17 @@ mod tests {
                 .find(|batch| batch.coordinator_id == herdr.coordinator_id)
                 .unwrap(),
         );
+        // The herdr coordinator's digest is one line per predicate, not the finding's line.
         assert!(
-            digest.contains(&format!("(digest, owned by {})", owner.coordinator_id)),
+            digest.contains(
+                "- verdict_undelivered: 1 open finding(s); holds: pending 0, retracted 0, \
+                 delivered 0, resolved 0"
+            ),
+            "{digest}"
+        );
+        assert!(!digest.contains("fact \""), "{digest}");
+        assert!(
+            digest.contains(&format!("herdr supervise ack <id> ({id})")),
             "{digest}"
         );
 
@@ -4804,6 +5119,202 @@ mod tests {
                 retracted: 2,
                 delivered: 1,
                 resolved: 1,
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn reviewing(after: u32) -> Review {
+        Review {
+            after,
+            herdr: Some(("/repo/herdr".into(), "c-herdr".into())),
+        }
+    }
+
+    /// Opens `n` pending holds of `stopped_without_verdict` (fingerprints fp0..) and
+    /// retracts them in one sweep, with the review of `review`.
+    fn retract_holds(
+        supervisor: &WorkerSupervisor,
+        range: std::ops::Range<u32>,
+        at_ms: u64,
+        review: &Review,
+    ) -> Changes {
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let candidates: Vec<Candidate> = range
+            .map(|n| {
+                let mut candidate = base.clone();
+                candidate.fingerprint = format!("fp{n}");
+                candidate.hold.as_mut().unwrap().request_id = format!("req{n}");
+                candidate
+            })
+            .collect();
+        let store = supervisor.supervision_store().unwrap();
+        store
+            .transaction(|tx| {
+                record_sweep_full(tx, &candidates, at_ms, &|_, _| HoldEnd::Resolved, review)
+            })
+            .unwrap();
+        store
+            .transaction(|tx| {
+                record_sweep_full(
+                    tx,
+                    &[],
+                    at_ms + 1,
+                    &|_, _| HoldEnd::Retracted("it resumed"),
+                    review,
+                )
+            })
+            .unwrap()
+    }
+
+    /// R7: the retractions of one predicate and rule version reaching the configured count
+    /// raise one finding for the herdr coordinator's tenure, in the sweep that ended the hold,
+    /// with the retracted holds as evidence; it resolves when the rule's version changes.
+    #[test]
+    fn retractions_reaching_the_count_raise_one_predicate_review_until_the_version_changes() {
+        let (main, root) = supervisor("review-due");
+        let review = reviewing(3);
+        let changes = retract_holds(&main, 0..2, 1000, &review);
+        assert!(
+            changes.opened.is_empty(),
+            "two retractions are under the count"
+        );
+        let changes = retract_holds(&main, 2..3, 2000, &review);
+        assert_eq!(changes.opened.len(), 1);
+        let finding = changes.opened[0].clone();
+        assert_eq!(finding.predicate, SupervisionPredicate::PredicateReviewDue);
+        assert_eq!(finding.coordinator_id.as_deref(), Some("c-herdr"));
+        assert_eq!(finding.repo.as_deref(), Some("/repo/herdr"));
+        assert_eq!(finding.evidence.event_ids.len(), 3);
+        for n in 0..3 {
+            assert!(
+                finding
+                    .evidence
+                    .event_ids
+                    .contains(&format!("retracted hold fp{n} (request req{n})")),
+                "{:?}",
+                finding.evidence
+            );
+        }
+        // More retractions keep the one finding; a sweep without news changes nothing.
+        let changes = retract_holds(&main, 3..4, 3000, &review);
+        assert!(changes.opened.is_empty() && changes.resolved.is_empty());
+        assert_eq!(main.supervision_findings(false).unwrap().len(), 1);
+        // A lower count is not a review; the setting 0 turns it off.
+        let (other, other_root) = supervisor("review-off");
+        assert!(retract_holds(&other, 0..4, 1000, &reviewing(0))
+            .opened
+            .is_empty());
+        assert!(other.supervision_findings(true).unwrap().is_empty());
+        // The rule's version changes: the old version's retractions no longer count.
+        main.supervision_store()
+            .unwrap()
+            .transaction(|tx| {
+                tx.connection()
+                    .execute("UPDATE supervision_holds SET rule_version = 0", [])?;
+                Ok(())
+            })
+            .unwrap();
+        retract_holds(&main, 10..11, 4000, &review);
+        let all = main.supervision_findings(true).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].finding_id, finding.finding_id);
+        assert_eq!(all[0].status, SupervisionStatus::Resolved);
+        assert!(main.supervision_findings(false).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(other_root);
+    }
+
+    /// R8: the retracted and the delivered holds of a predicate and version, with their facts.
+    #[test]
+    fn fixtures_list_the_retracted_and_delivered_holds_with_their_facts() {
+        let (supervisor, root) = supervisor("fixtures");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let with = |n: u32| {
+            let mut candidate = base.clone();
+            candidate.fingerprint = format!("fp{n}");
+            candidate.hold.as_mut().unwrap().request_id = format!("req{n}");
+            candidate
+        };
+        let all: Vec<Candidate> = (0..3).map(with).collect();
+        record_with(&supervisor, &all, 1000, HoldEnd::Resolved);
+        record_with(
+            &supervisor,
+            &all[2..],
+            1100,
+            HoldEnd::Retracted("it resumed"),
+        );
+        let mut fired = all[2].clone();
+        fired.hold = None;
+        record_with(&supervisor, &[fired], 1200, HoldEnd::Resolved);
+        let fixtures = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        assert_eq!(fixtures.rule_version, 1);
+        let retracted: Vec<(&str, &str)> = fixtures
+            .retracted
+            .iter()
+            .map(|f| (f.fingerprint.as_str(), f.request_id.as_str()))
+            .collect();
+        assert_eq!(retracted, [("fp0", "req0"), ("fp1", "req1")]);
+        assert_eq!(fixtures.retracted[0].opened_ms, 1000);
+        assert_eq!(fixtures.retracted[0].ended_ms, Some(1100));
+        assert_eq!(fixtures.retracted[0].reason.as_deref(), Some("it resumed"));
+        assert!(!fixtures.retracted[0].job_ids.is_empty());
+        assert_eq!(fixtures.delivered.len(), 1);
+        assert_eq!(fixtures.delivered[0].fingerprint, "fp2");
+        assert_eq!(fixtures.delivered[0].ended_ms, Some(1200));
+        // Another version has none; a predicate without a rule needs an explicit version.
+        let older = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, Some(7))
+            .unwrap();
+        assert!(older.retracted.is_empty() && older.delivered.is_empty());
+        assert_eq!(
+            supervisor
+                .supervision_fixtures(SupervisionPredicate::DiskLow, None)
+                .unwrap_err()
+                .code(),
+            "invalid_request"
+        );
+        // Read only: the holds are as they were.
+        assert_eq!(
+            hold_states(&supervisor),
+            ["retracted", "retracted", "delivered"]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// R9: the digest to the herdr coordinator counts per predicate, by open findings and by
+    /// the holds' states.
+    #[test]
+    fn the_herdr_digest_counts_findings_and_holds_per_predicate() {
+        let (supervisor, root) = supervisor("digest-counts");
+        retract_holds(&supervisor, 0..2, 1000, &Review::off());
+        let conn_digest = supervisor
+            .supervision_store()
+            .unwrap()
+            .read(|conn| {
+                let finding: SupervisionFinding = serde_json::from_value(json!({
+                    "finding_id": "f-1", "fingerprint": "x",
+                    "predicate": "stopped_without_verdict",
+                    "severity": "warning", "status": "open", "summary": "s",
+                    "expected_event": "e", "job_ids": [],
+                    "evidence": {"observed_ms": 1, "event_ids": [], "facts": []},
+                    "first_seen_ms": 1, "last_seen_ms": 1
+                }))
+                .unwrap();
+                predicate_digest(conn, &[&finding, &finding])
+            })
+            .unwrap();
+        assert_eq!(
+            conn_digest,
+            vec![PredicateDigest {
+                predicate: SupervisionPredicate::StoppedWithoutVerdict,
+                open_findings: 0,
+                pending: 0,
+                retracted: 2,
+                delivered: 0,
+                resolved: 0,
             }]
         );
         let _ = std::fs::remove_dir_all(root);

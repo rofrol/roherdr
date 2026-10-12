@@ -26,7 +26,7 @@ use super::plugins::{
 use super::reports::ReportInfo;
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
-use super::supervision::{SupervisionFinding, SupervisionReport};
+use super::supervision::{SupervisionFinding, SupervisionFixtures, SupervisionReport};
 use super::tabs::TabInfo;
 use super::todo::{
     TodoChainInfo, TodoGrant, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
@@ -254,6 +254,10 @@ pub enum ResponseResult {
     /// `supervise.report`'s reply.
     SupervisionReport {
         report: SupervisionReport,
+    },
+    /// `supervise.fixtures`' reply.
+    SupervisionFixtures {
+        fixtures: SupervisionFixtures,
     },
     /// `supervise.acknowledge`'s and `supervise.ack`'s reply.
     SupervisionFinding {

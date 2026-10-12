@@ -1747,6 +1747,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Show the Supervision tab pinned at the top of the sidebar: the worst severity and the counts of the findings that hold, and on a click what the server's supervision sweep saw of each coordinator and the findings with their evidence. Shown only when the server sends supervision."
+        },
+        {
+          "key": "supervision.review_after_retractions",
+          "type": "integer",
+          "default": "3",
+          "description": "Raise a predicate_review_due supervision finding for the herdr repository's coordinator when the retracted holds of one supervision predicate and rule version reach this count; the finding carries the retracted holds' fingerprints and request ids, and resolves when the rule's version for that predicate changes. 0 turns it off."
         }
       ]
     },
