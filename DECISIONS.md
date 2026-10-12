@@ -1341,3 +1341,18 @@ server's (re)subscription after a cold restart, CLI call bounds labelled
 `delay:` (a bound on a hung call), `herdr_ok()` gives up on stderr. Kept
 timers: the 15 s CPU sample and the transport backoffs (designed backoff).
 Left as a follow-up item: a connect between the server's bind and listen.
+
+## Companion installs stay in the repository's install script (2026-10-12)
+
+rormpc's run installed rormpc but not the rormpc-tools companions its pin
+bumped. The coordinator first queued, without a round, path-triggered
+multi-step installs in `.herdr/checks.toml`; the user objected ("what did
+you do here? explain; ask the models"). Round 20261012-020315-c8e8 (sol,
+MiMo; DeepSeek preferred the tools coordinator installing, with this as a
+bridge) rejected it: herdr would grow per-repository orchestration, diff
+paths are a poor proxy for installed state, resume assumes earlier steps
+still hold. Decided: herdr keeps one install argv; rormpc's
+`scripts/rormpc_install.sh install` reconciles the companions with the
+pinned tag itself (compares the installed tag, reinstalls and restarts
+only on mismatch, records it only after success, prints both versions).
+That is rormpc's work, not herdr's.
