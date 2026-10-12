@@ -19,6 +19,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   notifications (an agent done or asking) are unchanged. A test that a new
   or escalated finding queues no user notice.
 
+- [ ] A sound on/off button in herdr's UI (the user, 2026-10-12: "some [t-txlrolmj]
+  icon in herdr, a button that turns off sounds"). A clickable icon (the
+  sidebar footer or the top bar, following the existing UI patterns) that
+  mutes and unmutes herdr's sounds at once, shows the current state, and
+  persists it in the config (`[ui.sound] enabled`); a key binding too.
+
 - [ ] A message between coordinators is not a worker assignment (follows [t-yeravkf6]
   from [t-due4cu42]; the first digest the herdr coordinator received,
   2026-10-12 ~03:21, all five findings fired together at the install's
