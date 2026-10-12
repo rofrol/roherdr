@@ -53,12 +53,16 @@ pub(super) fn anthropic_model(config: &crate::config::WorkersConfig) -> String {
 
 /// pi 1.1's custom provider, isolated from the user's auth.json. Only the
 /// opaque grant is interpolated; neither credential is written to this file.
+/// Force adaptive thinking so pi maps `--thinking` to `output_config.effort`
+/// rather than the budget-based enabled thinking newer credit models reject.
 #[cfg(unix)]
 pub(super) fn anthropic_models(address: &str, model: &str) -> Value {
     json!({"providers": {"herdr-anthropic": {
         "baseUrl": address, "api": "anthropic-messages",
         "apiKey": "${HERDR_ANTHROPIC_PROXY_TOKEN}",
-        "models": [{"id": model, "reasoning": true, "contextWindow": 200000, "maxTokens": 8192}]
+        "models": [{"id": model, "reasoning": true,
+            "compat": {"forceAdaptiveThinking": true},
+            "contextWindow": 200000, "maxTokens": 8192}]
     }}})
 }
 
@@ -627,6 +631,10 @@ mod tests {
         assert_eq!(provider["apiKey"], "${HERDR_ANTHROPIC_PROXY_TOKEN}");
         assert_eq!(provider["models"][0]["id"], "claude-sonnet-5-5");
         assert_eq!(provider["models"][0]["reasoning"], true);
+        assert_eq!(
+            provider["models"][0]["compat"],
+            json!({"forceAdaptiveThinking": true})
+        );
         assert!(!config.to_string().contains("sk-ant-"));
         let model = anthropic_model(&crate::config::WorkersConfig::default());
         assert_eq!(model, "herdr-anthropic/claude-sonnet-5-5");
