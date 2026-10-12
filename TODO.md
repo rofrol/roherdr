@@ -3032,6 +3032,19 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
+- [ ] Credit funding without `.herdr/checks.toml` (the roguix-vps [t-7yl4ao3x]
+  coordinator, 2026-10-12, relaying the user: "strange that every
+  repository needs checks.toml before its workers can use the credits";
+  their round 20261012-192228-5cfb, sol, MiMo, DeepSeek: the agent and
+  funding choice and verify-and-land are separate axes). Already true
+  since b124c8c55: `herdr worker start --agent pi-anthropic|pi|claude`
+  needs no checks (src/cli/worker.rs:718), but `worker start --help`
+  does not list `--agent`. Proposed: list it in the help; let `todo run`
+  run in a repository without checks under an explicit per-repository
+  policy (checks none: the run works and reports "checks skipped" but
+  never auto-lands, installs or pushes); spend and concurrency limits per
+  credit worker (see "Concurrent credit workers refuse each other").
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
