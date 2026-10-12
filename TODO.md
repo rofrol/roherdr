@@ -49,6 +49,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   rests and the transcript cannot be read, record `unaccounted_assignment`
   with the last lifecycle fact "transcript unreadable"; a test.
 
+- [ ] A failed command is not a blocked tool call (todo-odherdr, [t-qlpe4w3g]
+  2026-10-12; earlier also try-roguix): `wait-agent --until verdict` on
+  wB8:p1 exited 6 with "the worker asks: blocked tool calls" while the
+  worker (auto mode, "Allowed by auto mode classifier", "1 shell still
+  running") kept working. Found by the coordinator in
+  src/integration/assets/claude/herdr-agent-state.sh: the Stop hook sets
+  `blocked_calls = bool(last_batch) and all(last_batch)`, where
+  `last_batch` holds each tool result's `is_error`, so a turn whose last
+  calls merely failed (a nonzero exit, a grep without a match) reports
+  the question "blocked tool calls", which ends verdict waits. Fix: count
+  only denials (the tool result's denial shape from Claude Code: a
+  permission or classifier refusal, the user rejecting the call), not
+  ordinary errors, with fixtures for both; the question is withdrawn when
+  the agent's next turn starts; bump the integration version once.
+
 - [ ] A prompt to a busy agent is queued by herdr, never silently lost, and [t-jkcv5fiy]
   a failed delivery is reported by herdr itself (the user via
   todo-try-roguix, 2026-10-12: "fix the process; ask the models"). Worker
