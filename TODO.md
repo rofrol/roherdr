@@ -2446,6 +2446,45 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Asked again 2026-10-12 (the user: "we need automatic switching to a new
   coordinator when the context gets too big; ask the models"): the switch
   must be automatic, not a manual handoff like the one at 15:05 today.
+  Automatic switch designed with the models (round 20261012-152237-bf3d,
+  sol, MiMo, DeepSeek agreeing; decided by the coordinator):
+  - herdr runs it as a durable state machine per tenure, CAS on the epoch,
+    one switch in flight: `active` -> `preparing` (herdr latches the
+    trigger from the transcript usage of one model request, starts the
+    successor read-only with a fixed prompt naming the snapshot) ->
+    `frozen` at the old session's next Stop (no new mutations; the
+    ownership Stop hook lets a frozen session end its turn) -> snapshot
+    written by herdr -> the successor's mechanical `herdr coordinator ack
+    --snapshot <id>` (an RPC herdr validates, not prose) -> one
+    transaction advances the epoch and moves worker ownership and question
+    routing -> herdr ends the old session. Each step's done event is that
+    step's own record; the old session's intent note is optional and
+    never gates the switch.
+  - Mutations (`todo resume`, `worker answer|ack`, decisions, TODO edits)
+    check the caller's epoch; a stale caller is refused. Shell writes
+    outside herdr stay cooperative (a PreToolUse deny for a frozen or
+    superseded session).
+  - The old session's background waits are Claude Code shells, not herdr
+    state: they are not moved; the successor rebuilds its waits from the
+    durable run ids and cursors in the snapshot, and a late wake of the
+    old session finds it superseded.
+  - An AskUserQuestion menu lives inside a turn, so none is open at a
+    Stop; plain-text questions are `herdr decision` records (the question
+    gate already enforces it) and the successor asks them again by id.
+  - Successor fails to start or exits before its ack (limit, trust
+    dialog, crash): a failure event; the switch aborts, the old session
+    unfreezes and keeps authority, and the user is told once; the trigger
+    stays latched until an explicit retry.
+  - Threshold: per-request input tokens (uncached + cache writes + cache
+    reads), default the smaller of 50% of the model's window and twice the
+    measured fresh-session floor, configurable; a floor at or above the
+    threshold is a configuration error, never a rotation loop. Cost per
+    turn is a separate guardrail that may only lower the threshold.
+  - First slice: a manual `herdr coordinator switch` driving the whole
+    state machine with a fake agent that speaks the ack, table tests of
+    every transition, a crash injected at each step (one writable epoch,
+    no lost obligation), then the automatic trigger from scripted
+    transcripts.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
