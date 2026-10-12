@@ -11,52 +11,34 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A false finding starts a correction loop (the user, 2026-10-12: "the [t-w5scj5ka]
-  supervisor contacted the coordinator; and then what? why is this not in a
-  correction loop? ask the models"; f-114, a worker waiting on its own
-  herdr-job reported as stopped). Round 20261012-134259-648f (sol, MiMo,
-  DeepSeek agreeing):
-  1. `herdr supervise dispute <id> --reason <text> --evidence <handle>`,
-     separate from ack; the handle must be a record herdr holds (a job, a
-     run, a transcript slice, an event), never prose; herdr dereferences
-     it and replays the predicate over the finding's recorded facts plus
-     the evidence: reproduced -> the dispute is rejected at once (logged,
-     counted against the disputer); contradicted -> a verified dispute;
-     missing history -> "unverified", not false.
-  2. Disputes aggregate per predicate, version and fact class into one item
-     delivered to the herdr coordinator (counts, finding ids, owners,
-     evidence); the finding stays visible, never suppressed.
-  3. The herdr coordinator resolves each: a predicate fix with a regression
-     test from the disputed facts that still fires on a known-true case, or
-     a rejection with its reason sent back; a rejected rejection goes to
-     the owner.
-  4. A deployed fix replays every linked dispute and closes those it
-     resolves, notifying each owner. No timers: visibility and delivery on
-     events are the forcing function.
-  Also (the user, 2026-10-12: "why did the supervisor not contact the herdr
-  coordinator, or should the herdr coordinator file these itself? ask the
-  models"; round of 2026-10-12, MiMo and DeepSeek; sol preferred a
-  per-predicate summary only): f-114's digest to the herdr coordinator was
-  dropped because the owner's ack resolved it first. (5) Digests to the
-  herdr coordinator are delivered for every finding regardless of its
-  state (the owner's ack settles the instance, not the predicate), with a
-  per-predicate summary on top; (6) the herdr coordinator's handling of a
-  digest item is a disposition, never a bare ack: true, false or unclear,
-  plus whether the predicate is sound; false or unclear opens or joins a
-  dispute it files itself; "out of scope" is not a value. The todo skill
-  and the herdr AGENTS.md say so once this lands; until then the herdr
-  coordinator judges each digest item before acking.
-
-- [ ] A worker waiting on its own registered job is not stopped (follows from [t-b6t3flyq]
-  the correction-loop item; f-114, round of 2026-10-12, sol, MiMo,
-  DeepSeek): `stopped_without_verdict` and `unaccounted_assignment` treat a
-  wait edge as "something resumes it" only while it is live, herdr itself
-  supervises it (a herdr-job job, a todo run, a worker wait; never an
-  agent's self-registration) and its completion is delivered to that
-  worker's pane, which is alive; when that job ends and no new turn of
-  the worker follows (ordering of events, no grace window), the finding
-  fires; a gone pane fires at once; the finding names the suppressing
-  edge. A regression test from f-114's facts and a known-true case.
+- [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
+  after f-114, a worker waiting on its own herdr-job reported as stopped:
+  "why is this not in a correction loop?", "why did the supervisor not
+  contact the herdr coordinator?", then "too much here is
+  non-deterministic; ask the models"; rounds 20261012-134259-648f and the
+  next, sol, MiMo, DeepSeek agreeing). No per-finding LLM judgment:
+  1. Each predicate declares, as a versioned rule, its counter-evidence
+     whitelist checked before delivery (for `stopped_without_verdict` and
+     `unaccounted_assignment`: a live job herdr supervises, owned by the
+     worker's assignment, whose completion is delivered to the worker's live
+     pane) and its expected event with a causal binding (that job's end
+     followed by the same worker's next turn on the same assignment).
+  2. Finding states: pending (an allowed continuation is live), delivered,
+     retracted (its expected event happened, bound causally: an objective
+     false-positive signal), resolved (a real violation later corrected).
+     Event-ordered, no horizons or timers: a pending finding is delivered
+     when its continuation ends without the expected event.
+  3. herdr counts retractions per predicate and version and opens a
+     predicate-review item itself (at a fixed count, or at once for a
+     severe one) with the retracted cases as regression fixtures; digests
+     to the herdr coordinator are per-predicate summaries of all findings,
+     whatever their state.
+  4. Agents only write the predicate fix, gated by replaying the recorded
+     retracted cases and known-true cases that must still fire.
+  5. `herdr supervise annotate <id>` (not a dispute) only adds a case with
+     its evidence handle to the fixtures for a missing fact or unmodeled
+     rule; it never overrides a finding. The herdr coordinator stops judging
+     findings one by one.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
