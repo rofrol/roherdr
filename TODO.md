@@ -316,19 +316,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the fence is check-then-act. Next: the todo skill's `--handoff` branch,
   then one live handoff of this coordinator.
 
-- [ ] Workers never kill processes by pattern (found by the coordinator [t-o466pc3q]
-  2026-10-12, report r-26): todo-run worker w276 (pi-anthropic, Sonnet
-  5.5) ran `pkill -f "herdr-"` and `pkill -f nextest` in the folder slot;
-  it killed the coordinator's herdr-job waits twice (`todo.wait`
-  client_disconnected at 18:25:26 and 18:41:00 UTC) and another
-  session's `agent.wait_verdict`. Proposed: the worker policy (pre-tool
-  checks) denies `pkill`, `killall` and `kill` by pattern or of a PID the
-  worker did not start; `todo run`'s task suffix states it; a test with
-  these exact commands. Cost: small src change in the worker policy plus
-  its tests; no guest build.
-  Decided by the user 2026-10-12 (d-incouunr): approved, right after the
-  handoff slice.
-
 - [ ] Handoff fence and persistence edge cases (follow-up of [t-dlr74xym]
   [t-ic5rrxn3], review of r-6s6uppz2 attempt 3): event-driven aborts and
   the successor-started write only log a failed persist (after a restart

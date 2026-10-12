@@ -1481,3 +1481,11 @@ verifiably a zombie or missing (`proc_pidinfo` on macOS, `/proc/<pid>/stat`
 on Linux, in `src/platform/macos.rs` and `linux.rs`); any other EPERM stays
 an error. The first attempt put the OS checks in `unix_common.rs` and
 asserted the macOS answer on Linux too; both were sent back.
+
+## Workers never kill processes by pattern (found by the coordinator
+
+Workers never kill processes by name or pattern (r-qbxvgpgv attempt 2):
+the worker policy denies pkill, killall, kill $(...), xargs kill and
+process-group kills for Claude and pi workers, allows kill of literal
+PIDs and plain variable expansions (the AGENTS.md stress loop is tested
+verbatim), and the todo run task suffix states the rule.
