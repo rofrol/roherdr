@@ -160,6 +160,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   credit runs' 400 was pi sending thinking disabled, which claude-sonnet-5-5
   rejects; the model is now marked reasoning and pi starts with `--thinking`
   from `[workers] anthropic_api_thinking` (default medium).
+  Slice 6 landed 2026-10-12 (5208251f, a pi worker): the proxy refused the
+  thinking pi now sends ("thinking must be disabled"); it now accepts the API's
+  thinking types and counts thinking in the reservation and the cost.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
