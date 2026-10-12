@@ -2682,6 +2682,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (335M), roguix-vps 352k (242M), herdr 348k (78M), chat-hosted 255k,
   odherdr 215k, job-seeker 188k, classify-x-posts 165k; a fresh session
   starts at about 75k. rormpc's space alone cost ~$72 list today.
+  Round 20261012-190801-487e (sol, MiMo, DeepSeek agreeing): end idle
+  coordinators (violai, job-seeker, classify-x-posts) after a short note,
+  with no replacement until the user has work there; hand off the active
+  oversized ones now (rormpc, try-roguix, guix); a coordinator blocked on
+  the user (roguix-vps, odherdr) records its question verbatim with its
+  options as the note's first item, then ends; chat-hosted stays. Rule: an
+  active session past about 300-400k hands off; history (cache reads
+  already paid) is no reason. Safe order: stop starting and landing work,
+  write the note (open questions verbatim, run ids with what each waits on
+  and what was read, verdicts decided but not applied, explicit
+  do-not-repeat actions, branch, HEAD, dirty files), end the old session
+  before the new one acts (no epoch fence yet), the new session's first
+  turn reads back and reconciles every run id with herdr and git before
+  acting. `/compact` is a weaker middle (can drop run ids). MiMo: this
+  herdr session grows ~87k tokens an hour; find what it inlines (whole
+  worker reports, diffs) before more handoffs.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
