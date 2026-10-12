@@ -69,6 +69,11 @@ pub enum SupervisionPredicate {
     /// assignment started and no `WORKER` line, and no turn started since: it asks
     /// something, stopped early, or forgot the line.
     StoppedWithoutVerdict,
+    /// A pane worker's turn closed (no background task left, or an error ended it) after herdr
+    /// accepted its assignment, and neither a verdict, a newer prompt, a stop without a verdict
+    /// nor a question of the pane accounts for the assignment, and no turn started since: herdr
+    /// did not find its start in the transcript, or the transcript was missing or unreadable.
+    UnaccountedAssignment,
     #[serde(other)]
     Unknown,
 }

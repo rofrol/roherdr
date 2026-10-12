@@ -185,6 +185,9 @@ struct Facts {
     /// The open assignments a worker's turn end left without a verdict
     /// (`crate::assignments::stopped_open`).
     stopped: Vec<crate::assignments::Assignment>,
+    /// The open assignments a closed turn left that no verdict, supersession or stop accounts
+    /// for (`crate::assignments::unaccounted_open`).
+    unaccounted: Vec<crate::assignments::Assignment>,
     /// The coordination tenure bound to each pane, by its public id: the coordinator that
     /// owns an assignment sent from that pane.
     tenure_of_pane: BTreeMap<String, String>,
@@ -214,6 +217,7 @@ fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
         SupervisionPredicate::DiskLow => "disk_low",
         SupervisionPredicate::VerdictUndelivered => "verdict_undelivered",
         SupervisionPredicate::StoppedWithoutVerdict => "stopped_without_verdict",
+        SupervisionPredicate::UnaccountedAssignment => "unaccounted_assignment",
         SupervisionPredicate::Unknown => "unknown",
     }
 }
@@ -345,6 +349,18 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
     for assignment in &facts.stopped {
         candidates.extend(stopped_without_verdict(
             assignment,
+            owner_of(assignment, facts),
+            facts.observed_ms,
+        ));
+    }
+    for assignment in &facts.unaccounted {
+        let pane = facts
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == assignment.pane_id);
+        candidates.extend(unaccounted_assignment(
+            assignment,
+            pane,
             owner_of(assignment, facts),
             facts.observed_ms,
         ));
@@ -637,6 +653,84 @@ fn stopped_without_verdict(
             event_ids: vec![format!(
                 "turn end of {} at {stopped_ms} without a verdict",
                 assignment.request_id
+            )],
+            facts,
+        },
+    })
+}
+
+/// The total accounting of the accepted-assignment ledger: an open assignment whose agent's
+/// turn closed after herdr accepted it (`crate::assignments::ClosedTurn`) needs a verdict, a
+/// stop without one (`stopped_without_verdict`), an open question of its pane or a causally
+/// linked continuation (a turn start, which clears the mark, or background work, which leaves
+/// the turn unclosed); otherwise it is unaccounted. It does not depend on what the transcript
+/// parser found: a start it never saw, a missing or unreadable transcript, a turn ended on an
+/// error all hold here. A queued prompt (typed while the turn before it ran) holds only once
+/// its agent rests with that turn closed and no turn started. It resolves with a verdict, a
+/// supersession, a stop, a question or the pane's next turn start; it goes to the coordinator
+/// that sent the prompt (`owner`).
+fn unaccounted_assignment(
+    assignment: &crate::assignments::Assignment,
+    pane: Option<&PaneFacts>,
+    owner: Option<&str>,
+    observed_ms: u64,
+) -> Option<Candidate> {
+    let closed = assignment.turn_closed.as_ref()?;
+    if !assignment.is_open() || assignment.stopped_ms.is_some() {
+        return None;
+    }
+    if pane.is_some_and(|pane| pane.asks_user || pane.status == AgentStatus::Blocked) {
+        return None;
+    }
+    if closed.queued && !pane.is_some_and(|pane| pane.turn_closed && resting(pane.status)) {
+        return None;
+    }
+    let (mut facts, worker) = assignment_evidence(assignment);
+    facts.push(format!("accepted_ms: {}", assignment.accepted_ms));
+    facts.push(match assignment.started_ms {
+        Some(started) => format!("started_ms: {started}"),
+        None => "started: not found".to_string(),
+    });
+    facts.push(format!("turn_closed_ms: {}", closed.at_ms));
+    facts.push(format!("last_fact: {}", closed.fact));
+    facts.push("verdict: none".to_string());
+    facts.push("stopped: no".to_string());
+    match pane {
+        Some(pane) => facts.push(format!(
+            "pane_now: {}, turn_closed: {}",
+            status_text(pane.status),
+            pane.turn_closed
+        )),
+        None => facts.push("pane_now: not an agent pane of this server".to_string()),
+    }
+    Some(Candidate {
+        fingerprint: fingerprint(
+            SupervisionPredicate::UnaccountedAssignment,
+            &assignment.request_id,
+        ),
+        predicate: SupervisionPredicate::UnaccountedAssignment,
+        severity: SupervisionSeverity::Warning,
+        summary: format!(
+            "the worker in pane {}{worker} closed a turn after assignment {} was accepted and \
+             nothing accounts for it (no verdict, no stop, no question, no new turn): {}",
+            assignment.pane_id, assignment.request_id, closed.fact
+        ),
+        expected_event: format!(
+            "its coordinator reads the pane (`herdr agent read {}`) and its verdict \
+             (`herdr agent verdict {}`), then answers or prompts the worker once, or the \
+             worker's next turn",
+            assignment.pane_id, assignment.request_id
+        ),
+        repo: None,
+        coordinator_id: owner.map(str::to_owned),
+        pane_id: Some(assignment.pane_id.clone()),
+        run_id: None,
+        job_ids: Vec::new(),
+        evidence: SupervisionEvidence {
+            observed_ms,
+            event_ids: vec![format!(
+                "turn closed after {} at {}",
+                assignment.request_id, closed.at_ms
             )],
             facts,
         },
@@ -1323,6 +1417,7 @@ impl WorkerSupervisor {
             disks,
             verdicts: crate::assignments::undelivered_unwatched(),
             stopped: crate::assignments::stopped_open(),
+            unaccounted: crate::assignments::unaccounted_open(),
             tenure_of_pane,
         };
         let candidates = evaluate(&facts);
@@ -1694,6 +1789,7 @@ mod tests {
             disks: Vec::new(),
             verdicts: Vec::new(),
             stopped: Vec::new(),
+            unaccounted: Vec::new(),
             tenure_of_pane: BTreeMap::new(),
         }
     }
@@ -1723,6 +1819,7 @@ mod tests {
             stopped_ms: None,
             answered_ms: None,
             delivered_ms: None,
+            turn_closed: None,
         }
     }
 
@@ -1785,6 +1882,133 @@ mod tests {
         });
         found.stopped = vec![stopped];
         assert!(predicates(&found).is_empty());
+    }
+
+    #[test]
+    fn a_closed_turn_nothing_accounts_for_is_the_owners_finding() {
+        let mut left = assignment(None);
+        left.started_ms = None;
+        left.turn_closed = Some(crate::assignments::ClosedTurn {
+            at_ms: 8,
+            fact: "a turn end; transcript: cannot read /t/s.jsonl".into(),
+            queued: false,
+        });
+        let mut found = facts(Vec::new(), Vec::new());
+        found
+            .tenure_of_pane
+            .insert("w1:p1".into(), "c-owner".into());
+        found.unaccounted.push(left.clone());
+        let candidates = evaluate(&found);
+        assert_eq!(
+            predicates(&found),
+            vec![SupervisionPredicate::UnaccountedAssignment]
+        );
+        assert_eq!(candidates[0].coordinator_id.as_deref(), Some("c-owner"));
+        assert!(candidates[0].summary.contains("cannot read /t/s.jsonl"));
+        assert!(candidates[0]
+            .evidence
+            .facts
+            .iter()
+            .any(|fact| fact == "started: not found"));
+
+        // An open question of the worker's pane accounts for it.
+        let mut asking = pane("w1:p2", AgentStatus::Idle);
+        asking.asks_user = true;
+        found.panes = vec![asking.clone()];
+        assert!(predicates(&found).is_empty());
+        asking.asks_user = false;
+        asking.status = AgentStatus::Blocked;
+        found.panes = vec![asking];
+        assert!(predicates(&found).is_empty());
+
+        // A queued prompt holds only once its agent rests with the turn closed.
+        left.turn_closed.as_mut().unwrap().queued = true;
+        found.unaccounted = vec![left.clone()];
+        found.panes = vec![pane("w1:p2", AgentStatus::Working)];
+        assert!(predicates(&found).is_empty());
+        let mut resting = pane("w1:p2", AgentStatus::Idle);
+        resting.turn_closed = true;
+        found.panes = vec![resting];
+        assert_eq!(
+            predicates(&found),
+            vec![SupervisionPredicate::UnaccountedAssignment]
+        );
+
+        // A stop, a verdict or a supersession accounts for it.
+        left.stopped_ms = Some(9);
+        found.unaccounted = vec![left];
+        assert!(predicates(&found).is_empty());
+    }
+
+    /// The supervisor's self-test: an assignment whose start no transcript record shows (the
+    /// parser saw nothing) and whose worker's turn closed after it is a finding of a real sweep,
+    /// also at a new server's first one, and resolves with the worker's next turn.
+    #[test]
+    fn a_sweep_reports_an_assignment_with_no_parseable_start_whose_turn_closed() {
+        let (supervisor, root) = supervisor("unaccounted");
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.join("not-a-repo").display().to_string();
+        supervisor.coordinator_start(&repo, "w1:p1", None).unwrap();
+        crate::assignments::set_test_dir(Some(root.join("assignments")));
+        let transcript = root.join("session.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"earlier\"}}\n",
+        )
+        .unwrap();
+        crate::assignments::accepted(
+            "prompt_self_1",
+            "w1:p2",
+            Some("claude"),
+            Some("w-item"),
+            Some("w1:p1"),
+            "do the item",
+            Some(&transcript),
+        );
+        // Claude collapsed the paste; the turn ended and wrote its end record.
+        let mut lines = std::fs::read_to_string(&transcript).unwrap();
+        lines.push_str(
+            "{\"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"[Pasted text #1 +3 lines]\"}}\n\
+             {\"type\": \"system\", \"subtype\": \"turn_duration\"}\n",
+        );
+        std::fs::write(&transcript, lines).unwrap();
+        let mut worker = pane("w1:p2", AgentStatus::Idle);
+        worker.turn_closed = true;
+        let _ = super::super::take_user_notices();
+
+        // A new server's first sweep reconciles the ledger with the transcript and reports it.
+        crate::assignments::set_test_dir(Some(root.join("assignments")));
+        supervisor
+            .supervision_sweep("startup", vec![worker.clone()])
+            .unwrap();
+        let report = supervisor.supervision_report(false, None).unwrap();
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.predicate == SupervisionPredicate::UnaccountedAssignment)
+            .unwrap_or_else(|| panic!("no unaccounted_assignment: {:?}", report.findings));
+        assert_eq!(finding.pane_id.as_deref(), Some("w1:p2"));
+        assert!(finding
+            .evidence
+            .facts
+            .iter()
+            .any(|fact| fact.starts_with("last_fact: ") && fact.contains("turn end at byte")));
+        assert!(super::super::take_user_notices()
+            .iter()
+            .any(|notice| notice.title.starts_with("Supervision finding")));
+
+        // The worker's next turn is the continuation: the finding resolves.
+        assert!(crate::assignments::turn_started("w1:p2"));
+        worker.turn_closed = false;
+        worker.status = AgentStatus::Working;
+        supervisor.supervision_sweep("turn", vec![worker]).unwrap();
+        let report = supervisor.supervision_report(false, None).unwrap();
+        assert!(report
+            .findings
+            .iter()
+            .all(|finding| finding.predicate != SupervisionPredicate::UnaccountedAssignment));
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2518,6 +2742,7 @@ mod tests {
             SupervisionPredicate::DiskLow,
             SupervisionPredicate::VerdictUndelivered,
             SupervisionPredicate::StoppedWithoutVerdict,
+            SupervisionPredicate::UnaccountedAssignment,
         ] {
             assert_eq!(
                 serde_json::to_value(predicate).unwrap(),

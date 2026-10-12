@@ -18378,6 +18378,11 @@
               "const": "stopped_without_verdict",
               "description": "A pane worker's turn ended (Claude's `Stop`, no background task left) with its\nassignment started and no `WORKER` line, and no turn started since: it asks\nsomething, stopped early, or forgot the line.",
               "type": "string"
+            },
+            {
+              "const": "unaccounted_assignment",
+              "description": "A pane worker's turn closed (no background task left, or an error ended it) after herdr\naccepted its assignment, and neither a verdict, a newer prompt, a stop without a verdict\nnor a question of the pane accounts for the assignment, and no turn started since: herdr\ndid not find its start in the transcript, or the transcript was missing or unreadable.",
+              "type": "string"
             }
           ]
         },

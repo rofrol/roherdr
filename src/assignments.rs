@@ -106,6 +106,26 @@ pub(crate) struct Assignment {
     /// When the waiter acknowledged the verdict (`agent.ack_verdict`), Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivered_ms: Option<u64>,
+    /// The agent's last turn that closed after herdr accepted the prompt (no background task
+    /// left), while the assignment stayed open; cleared when the pane's next turn starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) turn_closed: Option<ClosedTurn>,
+}
+
+/// A turn of an assignment's agent that closed after herdr accepted the prompt: a turn end
+/// herdr processed after the acceptance (event order on the app thread), or a turn end record
+/// written to the transcript after the assignment's anchor. Never elapsed time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClosedTurn {
+    /// When herdr learned it, Unix milliseconds.
+    pub(crate) at_ms: u64,
+    /// The last lifecycle fact: what closed the turn, the prompt's state then and what the
+    /// transcript showed of the assignment.
+    pub(crate) fact: String,
+    /// The prompt was still queued (typed, its turn not started) when the turn closed: that
+    /// turn was the one before it, and the agent's next turn starts with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) queued: bool,
 }
 
 impl Assignment {
@@ -295,6 +315,7 @@ pub(crate) fn accepted(
         stopped_ms: None,
         answered_ms: None,
         delivered_ms: None,
+        turn_closed: None,
     };
     persist(&record);
     store.records.insert(record.request_id.clone(), record);
@@ -421,20 +442,68 @@ pub(crate) fn stopped_without_verdict(request_id: &str) -> bool {
     })
 }
 
-/// A turn of the agent in `pane_id` started: its open assignments are worked on again.
-/// Whether one was marked stopped without a verdict.
+/// A turn of the agent in `pane_id` started: its open assignments are worked on again, and
+/// the turn that closed after them is no longer the last one. Whether one was marked stopped
+/// without a verdict or left unaccounted.
 pub(crate) fn turn_started(pane_id: &str) -> bool {
-    let stopped: Vec<String> = store()
+    let marked: Vec<String> = store()
         .records
         .values()
-        .filter(|record| record.pane_id == pane_id && record.stopped_ms.is_some())
+        .filter(|record| {
+            record.pane_id == pane_id
+                && (record.stopped_ms.is_some() || record.turn_closed.is_some())
+        })
         .map(|record| record.request_id.clone())
         .collect();
     let mut cleared = false;
-    for request_id in stopped {
-        cleared |= update(&request_id, |record| record.stopped_ms.take().is_some());
+    for request_id in marked {
+        cleared |= update(&request_id, |record| {
+            let stopped = record.stopped_ms.take().is_some();
+            let closed = record.turn_closed.take().is_some();
+            stopped || closed
+        });
     }
     cleared
+}
+
+/// A turn of the agent of the open assignment `request_id` closed after herdr accepted it
+/// ([`ClosedTurn`]), and `fact` says what herdr knew of it then. Whether that is new for an
+/// assignment that was not queued: an assignment left open by a closed turn that no stop, no
+/// question and no continuation accounts for is a supervision finding
+/// (`unaccounted_assignment`), so the caller asks for a sweep.
+pub(crate) fn turn_closed_after(request_id: &str, fact: String, queued: bool) -> bool {
+    let mut marked = false;
+    update(request_id, |record| {
+        if !record.is_open() {
+            return false;
+        }
+        marked = !queued
+            && record
+                .turn_closed
+                .as_ref()
+                .is_none_or(|closed| closed.queued);
+        record.turn_closed = Some(ClosedTurn {
+            at_ms: now_ms(),
+            fact,
+            queued,
+        });
+        true
+    });
+    marked
+}
+
+/// The open assignments a turn closed after, not marked stopped without a verdict: neither a
+/// verdict, a supersession nor a stop accounts for them. The sweep excuses those whose pane
+/// asks a question, and a queued one while its agent is not resting yet.
+pub(crate) fn unaccounted_open() -> Vec<Assignment> {
+    store()
+        .records
+        .values()
+        .filter(|record| {
+            record.is_open() && record.stopped_ms.is_none() && record.turn_closed.is_some()
+        })
+        .cloned()
+        .collect()
 }
 
 /// An `agent.wait_verdict` answered with the verdict of `request_id`; it is not delivered
@@ -675,6 +744,9 @@ pub(crate) struct Scan {
     /// The started assignments still without a verdict when the transcript ends on a turn end
     /// (Claude's `turn_duration` record): the agent stopped without one.
     pub(crate) ended: BTreeSet<String>,
+    /// The byte offset of the turn end record the transcript ends on, when it ends on one: no
+    /// prompt, tool use or text followed it.
+    pub(crate) turn_end_at: Option<u64>,
 }
 
 /// One record of a transcript that matters here.
@@ -797,8 +869,8 @@ pub(crate) fn scan_lines<'a>(
     let mut scan = Scan::default();
     let mut absorbed_seen = BTreeSet::new();
     let mut pending: Option<String> = None;
-    // The last record read was a turn's end.
-    let mut idle = false;
+    // The offset of the last record read when it was a turn's end.
+    let mut idle: Option<u64> = None;
     // A text that ended a turn is the verdict of every started assignment still without one
     // (several when the agent took queued prompts as one).
     let settle = |scan: &mut Scan, pending: &mut Option<String>| {
@@ -817,9 +889,15 @@ pub(crate) fn scan_lines<'a>(
     };
     for (offset, line) in lines {
         let Some(entry) = entry_of(line, &mut absorbed_seen) else {
+            // A record cut off while it is written follows the turn's end: the agent works.
+            if !line.trim().is_empty()
+                && serde_json::from_str::<serde::de::IgnoredAny>(line).is_err()
+            {
+                idle = None;
+            }
             continue;
         };
-        idle = matches!(entry, Entry::TurnEnd);
+        idle = matches!(entry, Entry::TurnEnd).then_some(offset);
         match entry {
             Entry::Prompt { text, absorbed } => {
                 settle(&mut scan, &mut pending);
@@ -878,7 +956,8 @@ pub(crate) fn scan_lines<'a>(
         }
         settle(&mut scan, &mut pending);
     }
-    if idle {
+    scan.turn_end_at = idle;
+    if idle.is_some() {
         scan.ended = scan
             .started
             .keys()
@@ -980,7 +1059,9 @@ pub(crate) fn reconcile_once(now_ms: u64) -> bool {
 /// Reads the transcript of each pane with open assignments not already stopped again
 /// ([`scan_open`], no turn taken as over unless the transcript shows its end): records the
 /// verdicts and supersessions found, and marks a started assignment stopped without a verdict
-/// when the transcript ends on a turn end that brought it none. Whether anything changed.
+/// when the transcript ends on a turn end that brought it none. An assignment whose start the
+/// read did not find while the transcript ends on a turn end written after its anchor is one a
+/// closed turn left unaccounted ([`turn_closed_after`]). Whether anything changed.
 pub(crate) fn reconcile(now_ms: u64) -> bool {
     let panes: BTreeSet<String> = store()
         .records
@@ -1009,6 +1090,32 @@ pub(crate) fn reconcile(now_ms: u64) -> bool {
         changed |= !scan.superseded.is_empty() || !apply(&path, &scan).is_empty();
         for request_id in &scan.ended {
             changed |= stopped_without_verdict(request_id);
+        }
+        let Some(turn_end) = scan.turn_end_at else {
+            continue;
+        };
+        let here = path.display().to_string();
+        for assignment in &open {
+            let id = &assignment.request_id;
+            let after = assignment.transcript.as_deref() == Some(here.as_str())
+                && assignment.anchor.is_some_and(|anchor| anchor <= turn_end);
+            if !after
+                || scan.started.contains_key(id)
+                || scan.verdicts.contains_key(id)
+                || scan.superseded.contains_key(id)
+            {
+                continue;
+            }
+            changed |= turn_closed_after(
+                id,
+                format!(
+                    "{here} ends on a turn end at byte {turn_end}, after the prompt was typed \
+                     at byte {}; no start of the prompt found there (read at a server start or \
+                     a live handoff)",
+                    assignment.anchor.unwrap_or(0)
+                ),
+                false,
+            );
         }
     }
     changed
@@ -1093,6 +1200,7 @@ mod tests {
             stopped_ms: None,
             answered_ms: None,
             delivered_ms: None,
+            turn_closed: None,
         }
     }
 
@@ -1597,5 +1705,226 @@ mod tests {
             worker_line("WORKER-DONE abc1234 | two", 1).unwrap()
         ));
         assert!(stopped_open().is_empty());
+    }
+
+    #[test]
+    fn a_closed_turn_marks_an_open_assignment_until_the_next_turn_starts() {
+        set_test_dir(None);
+        accepted("prompt_u_1", "w9:p1", None, None, None, "do the item", None);
+        accepted("prompt_u_2", "w9:p1", None, None, None, "queued item", None);
+        assert!(unaccounted_open().is_empty());
+        // A turn closed after it: new, and a sweep's business.
+        assert!(turn_closed_after("prompt_u_1", "a turn end".into(), false));
+        assert!(!turn_closed_after(
+            "prompt_u_1",
+            "a turn end again".into(),
+            false
+        ));
+        // A queued prompt is marked as one and asks for no sweep.
+        assert!(!turn_closed_after("prompt_u_2", "a turn end".into(), true));
+        let unaccounted = unaccounted_open();
+        assert_eq!(unaccounted.len(), 2);
+        let first = get("prompt_u_1").unwrap().turn_closed.unwrap();
+        assert_eq!(first.fact, "a turn end again");
+        assert!(!first.queued);
+        // A turn start clears the marks: the agent works on.
+        assert!(turn_started("w9:p1"));
+        assert!(unaccounted_open().is_empty());
+        // A stop without a verdict accounts for it; a verdict closes it.
+        assert!(turn_closed_after("prompt_u_1", "a turn end".into(), false));
+        assert!(stopped_without_verdict("prompt_u_1"));
+        assert!(unaccounted_open().is_empty());
+        assert!(turn_closed_after("prompt_u_2", "a turn end".into(), false));
+        assert!(record_verdict(
+            "prompt_u_2",
+            worker_line("WORKER-DONE abc1234 | x", 1).unwrap()
+        ));
+        assert!(unaccounted_open().is_empty());
+        assert!(!turn_closed_after("prompt_u_2", "a turn end".into(), false));
+    }
+
+    #[test]
+    fn a_turn_end_the_transcript_ends_on_is_where_it_is_and_a_cut_record_after_it_works() {
+        let open = [assignment("p1", "do the item", Some(0))];
+        let lines = vec![user("something else"), turn_duration()];
+        let at = user("something else").len() as u64 + 1;
+        assert_eq!(scan(&lines, &open, false).turn_end_at, Some(at));
+        // A record cut off while it is written follows the turn end: the agent works.
+        let mut cut = lines.clone();
+        cut.push(r#"{"type": "user", "message": {"role": "us"#.to_string());
+        assert_eq!(scan(&cut, &open, false).turn_end_at, None);
+        // A record that does not matter here does not hide the end.
+        let mut other = lines;
+        other.push(serde_json::json!({"type": "file-history-snapshot"}).to_string());
+        assert_eq!(scan(&other, &open, false).turn_end_at, Some(at));
+    }
+
+    /// The fixtures of the total accounting at a server start or a live handoff
+    /// ([`reconcile`]): every open assignment of a transcript that ends on a turn end written
+    /// after its anchor has a verdict, a stop or the unaccounted mark, never nothing.
+    #[test]
+    fn reconciliation_accounts_for_every_assignment_a_closed_turn_left() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-assignments-accounting-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_test_dir(Some(dir.join("assignments")));
+        let task = "Title line\n\nDo the item.\nLast line: `WORKER-DONE <sha> | <summary>`";
+        let earlier = [
+            user("earlier work"),
+            assistant("ok", false),
+            turn_duration(),
+        ];
+        // (name, lines after the prompt was typed, expected outcome)
+        let fixtures: Vec<(&str, Vec<String>, &str)> = vec![
+            (
+                "pasted_content",
+                vec![
+                    user(&pasted("", task)),
+                    assistant("WORKER-DONE 220dd3dd | the item", false),
+                    turn_duration(),
+                ],
+                "verdict",
+            ),
+            (
+                // Claude's input box collapsed the paste: the prompt's text is not there.
+                "pasted_placeholder",
+                vec![
+                    user("[Pasted text #1 +3 lines]"),
+                    assistant("WORKER-DONE 220dd3dd | the item", false),
+                    turn_duration(),
+                ],
+                "unaccounted",
+            ),
+            (
+                "queued_command",
+                {
+                    let mut lines = vec![user("other work"), assistant("working", true)];
+                    lines.extend(absorbed(task, "c1"));
+                    lines.extend([
+                        tool_result(),
+                        assistant("WORKER-DONE abc1234 | the item", false),
+                        turn_duration(),
+                    ]);
+                    lines
+                },
+                "verdict",
+            ),
+            (
+                // A queued command in a shape the parser does not know.
+                "queued_command_unknown_shape",
+                vec![
+                    user("other work"),
+                    serde_json::json!({"type": "attachment", "attachment": {
+                        "type": "queued_command", "prompt": {"blocks": [task]}}})
+                    .to_string(),
+                    assistant("WORKER-DONE abc1234 | the item", false),
+                    turn_duration(),
+                ],
+                "unaccounted",
+            ),
+            (
+                "multiline",
+                vec![
+                    user(&task.replace('\n', "\r\n")),
+                    assistant("Which variant?", false),
+                    turn_duration(),
+                ],
+                "stopped",
+            ),
+            (
+                // Cut off after the turn end: the agent writes its next record, so it works.
+                "truncated",
+                vec![
+                    user("[Pasted text #1 +3 lines]"),
+                    turn_duration(),
+                    r#"{"type": "user", "message": {"#.to_string(),
+                ],
+                "open",
+            ),
+            (
+                // The agent still works: no turn end after the prompt.
+                "working",
+                vec![user("[Pasted text #1 +3 lines]"), assistant("", true)],
+                "open",
+            ),
+        ];
+        for (index, (name, lines, _)) in fixtures.iter().enumerate() {
+            let path = dir.join(format!("{name}.jsonl"));
+            std::fs::write(&path, earlier.join("\n") + "\n").unwrap();
+            accepted(
+                &format!("prompt_f_{index}"),
+                &format!("w7:p{index}"),
+                Some("claude"),
+                None,
+                None,
+                task,
+                Some(&path),
+            );
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            use std::io::Write as _;
+            for line in lines {
+                writeln!(file, "{line}").unwrap();
+            }
+        }
+        // A missing transcript tells nothing of a turn end at a server start: the live Stop
+        // marks such an assignment (`App::account_closed_turn`), and the mark is kept.
+        accepted(
+            "prompt_f_missing",
+            "w7:p99",
+            Some("claude"),
+            None,
+            None,
+            task,
+            Some(&dir.join("missing.jsonl")),
+        );
+        assert!(turn_closed_after(
+            "prompt_f_missing",
+            "a turn end with no background task left; transcript: cannot read missing.jsonl".into(),
+            false
+        ));
+
+        // A new server (a restart or a live handoff) reconciles.
+        set_test_dir(Some(dir.join("assignments")));
+        assert!(reconcile(1));
+        for (index, (name, _, expected)) in fixtures.iter().enumerate() {
+            let record = get(&format!("prompt_f_{index}")).unwrap();
+            let outcome = if record.verdict.is_some() {
+                "verdict"
+            } else if record.stopped_ms.is_some() {
+                "stopped"
+            } else if let Some(closed) = &record.turn_closed {
+                assert!(
+                    closed.fact.contains("no start of the prompt"),
+                    "{name}: {closed:?}"
+                );
+                assert!(!closed.queued, "{name}");
+                "unaccounted"
+            } else {
+                "open"
+            };
+            assert_eq!(outcome, *expected, "{name}: {record:?}");
+        }
+        let unaccounted: BTreeSet<String> = unaccounted_open()
+            .into_iter()
+            .map(|record| record.request_id)
+            .collect();
+        assert_eq!(
+            unaccounted,
+            BTreeSet::from([
+                "prompt_f_1".to_string(),
+                "prompt_f_3".to_string(),
+                "prompt_f_missing".to_string()
+            ])
+        );
+        // Nothing new the second time.
+        assert!(!reconcile(2));
+        set_test_dir(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

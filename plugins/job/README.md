@@ -210,7 +210,8 @@ herdr-job wait "$id"
   below), then prompt it. It records the assignment under
   `~/.local/state/herdr-job/assignments/` for that fallback. A request
   herdr neither follows (`prompt_request_not_found`, as after a restart or a
-  live handoff) nor keeps an assignment of ends the wait at once with exit
+  live handoff from a server that did not carry its followed requests) nor
+  keeps an assignment of ends the wait at once with exit
   8, after one read of the transcript an earlier wait recorded: nothing
   herdr reports would end it. With an older herdr, a request it does not
   know that no earlier wait recorded waits as below instead.

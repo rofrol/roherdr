@@ -1771,6 +1771,193 @@ mod tests {
         );
     }
 
+    /// How the ledger accounts for an assignment after the turn end of a fixture: never
+    /// `"silent"`, an open assignment a closed turn left with no mark.
+    fn accounting_of(request_id: &str) -> (&'static str, Option<String>) {
+        let record = crate::assignments::get(request_id).expect("the assignment is kept");
+        let fact = record
+            .turn_closed
+            .as_ref()
+            .map(|closed| closed.fact.clone());
+        let outcome = if record.verdict.is_some() {
+            "verdict"
+        } else if record.superseded.is_some() {
+            "superseded"
+        } else if record.stopped_ms.is_some() {
+            "stopped"
+        } else if record
+            .turn_closed
+            .as_ref()
+            .is_some_and(|closed| closed.queued)
+        {
+            "queued"
+        } else if record.turn_closed.is_some() {
+            "unaccounted"
+        } else {
+            "silent"
+        };
+        (outcome, fact)
+    }
+
+    /// One worker turn on a typed prompt: `started` is the prompt the agent reported its turn
+    /// starting with (`None`: no start reported), `lines` what the transcript then shows (no
+    /// transcript file at all when `None`; a JSON string is written as it is, a record cut
+    /// off), `error` the error the turn ended on.
+    fn live_turn_accounting(
+        task: &str,
+        started: Option<&str>,
+        lines: Option<Vec<serde_json::Value>>,
+        error: Option<&str>,
+    ) -> (&'static str, Option<String>) {
+        crate::assignments::set_test_dir(None);
+        let dir = scratch_dir();
+        let transcript = dir.join("session.jsonl");
+        if lines.is_some() {
+            append_lines(
+                &transcript,
+                &[
+                    serde_json::json!({"type": "user", "message": {"role": "user",
+                    "content": "earlier work"}}),
+                ],
+            );
+        }
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_reporting_turns(&mut app, &transcript);
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params(task, false),
+        ));
+        if let Some(prompt) = started {
+            report_turn(&mut app, &pane, "started", Some(prompt));
+        }
+        if let Some(lines) = &lines {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&transcript)
+                .unwrap();
+            for line in lines {
+                match line.as_str() {
+                    Some(raw) => writeln!(file, "{raw}").unwrap(),
+                    None => writeln!(file, "{line}").unwrap(),
+                }
+            }
+        }
+        let mut finished = serde_json::json!({"pane_id": pane, "source": "herdr:claude",
+            "agent": "claude", "phase": "finished", "background_tasks": 0});
+        if let Some(error) = error {
+            finished["error"] = error.into();
+        }
+        report_turn_with(&mut app, finished);
+        let _ = std::fs::remove_dir_all(dir);
+        accounting_of(&request.request_id)
+    }
+
+    /// The total accounting at a live `Stop` (the capture-doc worker's missed verdict): every
+    /// open assignment a closed turn left has a verdict, a stop or the unaccounted mark that
+    /// the supervision sweep reports as `unaccounted_assignment`, whatever the transcript
+    /// parser found, and never nothing.
+    #[tokio::test]
+    async fn a_closed_turn_accounts_for_every_open_assignment_whatever_the_transcript_shows() {
+        let task = "AGENTS.md: capture with grim\n\nRewrite the paragraph.\n\
+                    Last line: `WORKER-DONE <sha> | <summary>`";
+        let pasted =
+            format!("\n\n<pasted_content id=\"7bb5\">\n{task}\n</pasted_content id=\"7bb5\">\n");
+        let user = |content: &str| serde_json::json!({"type": "user", "message": {"role": "user", "content": content}});
+        let done = serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "Done.\nWORKER-DONE 220dd3dd | grim"}]}});
+        let turn_end = serde_json::json!({"type": "system", "subtype": "turn_duration"});
+
+        // pasted_content, as the capture-doc worker's record.
+        assert_eq!(
+            live_turn_accounting(
+                task,
+                Some(&pasted),
+                Some(vec![user(&pasted), done.clone()]),
+                None
+            )
+            .0,
+            "verdict"
+        );
+        // multiline, other line endings.
+        let crlf = task.replace('\n', "\r\n");
+        assert_eq!(
+            live_turn_accounting(
+                task,
+                Some(&crlf),
+                Some(vec![user(&crlf), done.clone()]),
+                None
+            )
+            .0,
+            "verdict"
+        );
+        // queued_command: taken in mid-turn, no turn start of its own.
+        assert_eq!(
+            live_turn_accounting(
+                task,
+                None,
+                Some(vec![
+                    serde_json::json!({"type": "attachment", "attachment": {
+                        "type": "queued_command", "prompt": task, "source_uuid": "c1"}}),
+                    done.clone(),
+                ]),
+                None
+            )
+            .0,
+            "verdict"
+        );
+        // A queued command the parser cannot read: the prompt stays queued, which the sweep
+        // reports once the agent rests with its turn closed.
+        assert_eq!(
+            live_turn_accounting(
+                task,
+                None,
+                Some(vec![
+                    serde_json::json!({"type": "attachment", "attachment": {
+                        "type": "queued_command", "prompt": {"blocks": [task]}}}),
+                    done.clone(),
+                ]),
+                None
+            )
+            .0,
+            "queued"
+        );
+        // The prompt's start was reported, the transcript shows another text and no WORKER
+        // line: stopped without a verdict.
+        assert_eq!(
+            live_turn_accounting(
+                task,
+                Some(task),
+                Some(vec![user("[Pasted text #1 +3 lines]"), turn_end.clone()]),
+                None
+            )
+            .0,
+            "stopped"
+        );
+        // A missing transcript is evidence, not silence.
+        let (outcome, fact) = live_turn_accounting(task, Some(task), None, None);
+        assert_eq!(outcome, "unaccounted");
+        let fact = fact.unwrap_or_default();
+        assert!(fact.contains("cannot read"), "{fact}");
+        assert!(fact.contains("prompt state: working"), "{fact}");
+        // A truncated transcript (a record cut off) and a start never reported: unaccounted.
+        let (outcome, fact) = live_turn_accounting(
+            task,
+            Some("[Pasted text #1 +3 lines]"),
+            Some(vec![serde_json::json!("{\"type\": \"user\", \"mess")]),
+            None,
+        );
+        assert_eq!(outcome, "queued", "{fact:?}");
+        // A turn that ended on an error.
+        let (outcome, fact) =
+            live_turn_accounting(task, Some(task), Some(vec![user(task)]), Some("overloaded"));
+        assert_eq!(outcome, "unaccounted");
+        assert!(fact.unwrap_or_default().contains("overloaded"));
+        crate::assignments::set_test_dir(None);
+    }
+
     #[tokio::test]
     async fn an_earlier_identical_prompt_before_the_anchor_does_not_count() {
         let dir = scratch_dir();

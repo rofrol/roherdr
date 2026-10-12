@@ -9,13 +9,18 @@
 //! turn of its own for a queued message, so without a signal the outcome is `unknown`. A turn
 //! the integration marks as a continuation (a background task's notification inside the
 //! prompt's work) ends nothing: the prompt's turn ends at the end report that follows.
+//!
+//! A live handoff carries this state to the new server (`HandoffRuntimeState::prompt_turns`):
+//! which agent reports turns here, the requests it follows and the transcript, so
+//! `agent.prompt_status` and the waits on a request typed before the handoff go on there.
 
 use std::collections::VecDeque;
 
 /// Requests kept per terminal; the oldest finished ones go first.
 const MAX_REQUESTS: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptTurnState {
     /// Typed into the agent; its turn has not started yet.
     Accepted,
@@ -42,28 +47,40 @@ impl PromptTurnState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PromptRequest {
     id: String,
     text: String,
     state: PromptTurnState,
     /// The error a failed turn ended on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     /// Herdr sent the agent an interrupt key while this request's turn worked.
+    #[serde(default)]
     interrupt_sent: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PromptTurns {
     /// The agent label (`claude`, `pi`) whose integration reported turns in this terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     reporting_agent: Option<String>,
+    #[serde(default)]
     requests: VecDeque<PromptRequest>,
     /// The transcript the agent's integration reported with its session, where its
     /// assignments' verdicts are read (`crate::assignments`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     transcript: Option<String>,
 }
 
 impl PromptTurns {
+    /// Whether nothing is followed here: no agent reported turns and no request was typed. A
+    /// live handoff (Unix only) carries nothing then.
+    #[cfg(any(unix, test))]
+    pub fn is_empty(&self) -> bool {
+        self.reporting_agent.is_none() && self.requests.is_empty() && self.transcript.is_none()
+    }
+
     /// Records that `agent`'s integration reports turns here. Another agent's reports end the
     /// open requests of the agent before it; the first report keeps the requests typed before
     /// it, which its turns follow from now on (an agent that started behind a dialog reports
@@ -472,6 +489,33 @@ mod tests {
         assert_eq!(turns.state_of("working"), Some(PromptTurnState::Exited));
         assert_eq!(turns.state_of("accepted"), Some(PromptTurnState::Exited));
         assert!(!turns.agent_exited());
+    }
+
+    #[test]
+    fn the_followed_prompts_cross_a_live_handoff_as_json() {
+        let mut turns = following("claude");
+        turns.set_transcript(Some("/t/session.jsonl".into()));
+        turns.accept("p1".into(), "do the item");
+        turns.turn_started(Some("do the item"), false);
+        turns.interrupt_sent();
+        turns.accept("p2".into(), "next");
+        turns.accept("p3".into(), "failing");
+        assert!(!turns.is_empty());
+        assert!(PromptTurns::default().is_empty());
+        let json = serde_json::to_value(&turns).unwrap();
+        assert_eq!(json["requests"][0]["state"], "working");
+        let mut carried: PromptTurns = serde_json::from_value(json).unwrap();
+        assert_eq!(carried, turns);
+        assert!(carried.supported_for(Some("claude")));
+        // The interrupt key sent before the handoff still counts.
+        assert!(carried.turn_started(Some("next"), false));
+        assert_eq!(carried.state_of("p1"), Some(PromptTurnState::Interrupted));
+        assert_eq!(carried.state_of("p2"), Some(PromptTurnState::Working));
+        // What an older sender's handoff lacks is absent, not an error.
+        assert_eq!(
+            serde_json::from_value::<PromptTurns>(serde_json::json!({})).unwrap(),
+            PromptTurns::default()
+        );
     }
 
     #[test]

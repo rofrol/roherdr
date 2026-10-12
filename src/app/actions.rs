@@ -3648,6 +3648,7 @@ mod tests {
             alternate_screen_ansi: None,
             agent_state: None,
             awaiting_reply_reported: true,
+            prompt_turns: None,
             open_questions: carried
                 .into_iter()
                 .map(

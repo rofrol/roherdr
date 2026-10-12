@@ -682,6 +682,10 @@ fn restore_tab(
             .as_ref()
             .and_then(|imported| imported.state.limit_report.clone());
         #[cfg(unix)]
+        let handoff_prompt_turns = imported_runtime
+            .as_ref()
+            .and_then(|imported| imported.state.prompt_turns.clone());
+        #[cfg(unix)]
         let handoff_task = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.reported_task.clone());
@@ -844,6 +848,10 @@ fn restore_tab(
                 terminal.restore_limit_report(handoff_limit);
                 #[cfg(unix)]
                 terminal.report_task(handoff_task);
+                #[cfg(unix)]
+                if let Some(prompt_turns) = handoff_prompt_turns {
+                    terminal.prompt_turns = prompt_turns;
+                }
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);
@@ -2413,6 +2421,97 @@ mod tests {
                 state_before_handoff == AgentState::Blocked
             );
         }
+    }
+
+    /// The reported bug: after a live handoff `herdr-job wait-agent` retried forever on
+    /// `prompt_request_not_found` and panes answered "the agent does not report turns", since
+    /// the new server started with no followed prompts.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn live_handoff_carries_the_followed_prompts_and_the_reporting_agent() {
+        use crate::terminal::prompt_turns::PromptTurnState;
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = terminals.values_mut().next().unwrap();
+        assert_eq!(terminal.prompt_turns_for_handoff(), None);
+        terminal.prompt_turns.mark_reporting("claude");
+        terminal
+            .prompt_turns
+            .set_transcript(Some("/var/tmp/handoff-test.jsonl".into()));
+        terminal
+            .prompt_turns
+            .accept("prompt_1_1".into(), "do the item");
+        assert!(terminal
+            .prompt_turns
+            .turn_started(Some("do the item"), false));
+        terminal
+            .prompt_turns
+            .accept("prompt_1_2".into(), "the next item");
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        // delay: test harness, the reader pause's required bound, as the handoff test above.
+        let pause_bound = std::time::Duration::from_secs(2);
+        runtime.pause_handoff_reader(pause_bound).unwrap();
+        let mut state = runtime.handoff_runtime_state(pane_id.raw());
+        state.prompt_turns = terminals
+            .values()
+            .next()
+            .unwrap()
+            .prompt_turns_for_handoff();
+        // It crosses the process boundary as JSON.
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+        let (_, mut restored_terminals, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        drop(restored_runtimes);
+        drop(runtimes);
+        let turns = &mut restored_terminals.values_mut().next().unwrap().prompt_turns;
+        // `agent.prompt` and `agent.prompt_status` still see an agent that reports turns.
+        assert!(turns.supported_for(Some("claude")));
+        assert_eq!(turns.transcript(), Some("/var/tmp/handoff-test.jsonl"));
+        assert_eq!(turns.state_of("prompt_1_1"), Some(PromptTurnState::Working));
+        assert_eq!(
+            turns.state_of("prompt_1_2"),
+            Some(PromptTurnState::Accepted)
+        );
+        // The turn reports after the handoff end and start them, as before it.
+        assert!(turns.turn_finished(None, false));
+        assert_eq!(
+            turns.state_of("prompt_1_1"),
+            Some(PromptTurnState::Finished)
+        );
+        assert!(turns.turn_started(Some("the next item"), false));
+        assert_eq!(turns.state_of("prompt_1_2"), Some(PromptTurnState::Working));
     }
 
     #[tokio::test]

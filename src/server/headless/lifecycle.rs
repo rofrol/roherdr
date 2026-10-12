@@ -107,6 +107,7 @@ impl HeadlessServer {
                     )
                     .collect();
                 handoff_runtime.limit_report = terminal.limit_report().cloned();
+                handoff_runtime.prompt_turns = terminal.prompt_turns_for_handoff();
             }
             handoff_runtime.reported_task = self
                 .app

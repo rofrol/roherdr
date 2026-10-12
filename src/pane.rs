@@ -2444,6 +2444,7 @@ impl PaneRuntime {
             awaiting_reply_since_ms: None,
             limit_report: None,
             open_questions: Vec::new(),
+            prompt_turns: None,
         }
     }
 
@@ -2671,6 +2672,7 @@ impl PaneRuntime {
             awaiting_reply_since_ms: _,
             limit_report: _,
             open_questions: _,
+            prompt_turns: _,
         } = state;
         let pane_id = PaneId::from_raw(pane_id);
         use std::os::fd::FromRawFd;

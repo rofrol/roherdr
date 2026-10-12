@@ -2616,6 +2616,12 @@ impl TerminalState {
             .filter(|_| self.state == AgentState::Idle)
     }
 
+    /// The prompts followed here as a live handoff carries them; none when nothing is.
+    #[cfg(unix)]
+    pub(crate) fn prompt_turns_for_handoff(&self) -> Option<super::prompt_turns::PromptTurns> {
+        Some(self.prompt_turns.clone()).filter(|prompt_turns| !prompt_turns.is_empty())
+    }
+
     /// The limit report a live handoff carries, shown or not.
     #[cfg(unix)]
     pub(crate) fn limit_report(&self) -> Option<&LimitReport> {

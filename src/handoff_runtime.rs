@@ -55,6 +55,12 @@ pub(crate) struct HandoffRuntimeState {
     /// newest one for older receivers. Absent from older senders, which carry one at most.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_questions: Vec<HandoffOpenQuestion>,
+    /// The prompts herdr typed into the agent, followed through its turn reports, and which
+    /// agent reports turns here, so `agent.prompt_status` and the waits on a request typed
+    /// before the handoff go on. Absent from older senders, whose requests the new server does
+    /// not know (`prompt_request_not_found`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_turns: Option<crate::terminal::prompt_turns::PromptTurns>,
 }
 
 /// An open question as a live handoff carries it.
@@ -94,6 +100,29 @@ impl HandoffRuntimeState {
     pub fn with_pane_id(mut self, pane_id: crate::layout::PaneId) -> Self {
         self.pane_id = pane_id.raw();
         self
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_followed_prompts_are_optional_in_a_handoff_state() {
+        let mut state: HandoffRuntimeState = serde_json::from_value(serde_json::json!({
+            "pane_id": 1, "child_pid": 2, "rows": 24, "cols": 80,
+            "cell_width_px": 0, "cell_height_px": 0
+        }))
+        .unwrap();
+        // An older sender's state carries none.
+        assert_eq!(state.prompt_turns, None);
+        let mut turns = crate::terminal::prompt_turns::PromptTurns::default();
+        turns.mark_reporting("claude");
+        turns.accept("p1".into(), "do the item");
+        state.prompt_turns = Some(turns.clone());
+        let state: HandoffRuntimeState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(state.prompt_turns, Some(turns));
     }
 }
 

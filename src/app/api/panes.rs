@@ -1732,6 +1732,15 @@ impl App {
                 params.background_tasks.unwrap_or(0) == 0,
                 params.final_text.as_deref(),
             );
+        if let Some(error) = params.error.as_deref().filter(|_| finished) {
+            if params.background_tasks.unwrap_or(0) == 0 {
+                self.account_closed_turn(
+                    ws_idx,
+                    pane_id,
+                    &format!("a turn end on an error ({error}), transcript not read"),
+                );
+            }
+        }
         if !finished {
             self.assignments_turn_started(ws_idx, pane_id);
         }
