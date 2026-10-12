@@ -66,6 +66,23 @@ pub(super) fn item_text(text: &str, id: &str) -> Option<String> {
 /// The heading of the section whose first item `todo.next` coordinates.
 pub(super) const NEXT_SECTION: &str = "Next, in order";
 
+/// Whether `text` has a "Next, in order" heading (outside a code fence):
+/// the section a run's item is triaged into.
+pub(super) fn has_next_section(text: &str) -> bool {
+    let mut in_fence = false;
+    text.lines().any(|line| {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            return false;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        !in_fence
+            && hashes > 0
+            && line[hashes..].starts_with(' ')
+            && line[hashes..].trim() == NEXT_SECTION
+    })
+}
+
 /// The id of the first open item (`- [ ] `) of the "Next, in order"
 /// section of `text`: the items after its heading, up to the next heading
 /// of the same or a higher level (outside a code fence).
@@ -198,6 +215,17 @@ mod tests {
         let empty = "## Next, in order\n\n## Needs a decision\n- [ ] Later [t-ffffffff]\n";
         assert_eq!(next_item(empty), None);
         assert_eq!(next_item("- [ ] No section [t-aaaaaaaa]\n"), None);
+    }
+
+    #[test]
+    fn the_next_section_is_a_heading_outside_a_fence() {
+        assert!(has_next_section("# TODO\n\n## Next, in order\n"));
+        assert!(has_next_section(
+            "### Next, in order  \n- [ ] A [t-aaaaaaaa]\n"
+        ));
+        assert!(!has_next_section("# TODO\n\n- [ ] A [t-aaaaaaaa]\n"));
+        assert!(!has_next_section("```\n## Next, in order\n```\n"));
+        assert!(!has_next_section("Next, in order\n##Next, in order\n"));
     }
 
     #[test]

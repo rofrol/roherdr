@@ -82,7 +82,7 @@ const USAGE: &str = "usage:
   herdr todo resume <run-id> --event EVENT_ID
                     --action approve|retry|answer|verify|force-stop|
                              retry-install|skip-install|retry-todo|skip-todo|
-                             retry-push|abort
+                             retry-push|approve-landing|abort
                     [--task FILE [--ignore-usage]]
                     [--keep-open | (--note FILE | --close FILE)
                      [--next ITEM --next-task FILE
@@ -127,7 +127,12 @@ const USAGE: &str = "usage:
       choice per question; verify runs the verify again; force-stop SIGKILLs
       a worker still alive after its stop. After install_failed, todo_failed
       or push_failed: retry-install or skip-install, retry-todo or skip-todo,
-      retry-push. abort answers any event the run waits on, or the blocked
+      retry-push. In the repository rooted at the home directory the
+      cherry-pick first waits on a landing_approval event with the whole
+      patch and a backup and rollback note: its owner answers
+      approve-landing from a pane that coordinates no repository (not the
+      coordinator's), and only that commit lands and installs.
+      abort answers any event the run waits on, or the blocked
       event of a blocked run: the run stops its worker when it still runs,
       waits for its exit and ends aborted, with --message TEXT as the reason;
       its branches and commits (a commit already on master too) stay as they
@@ -626,11 +631,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 Some("retry-todo") => TodoAction::RetryTodo,
                 Some("skip-todo") => TodoAction::SkipTodo,
                 Some("retry-push") => TodoAction::RetryPush,
+                Some("approve-landing") => TodoAction::ApproveLanding,
                 Some("abort") => TodoAction::Abort,
                 _ => {
                     return Err("resume takes --action approve, retry, answer, verify, \
                          force-stop, retry-install, skip-install, retry-todo, skip-todo, \
-                         retry-push or abort"
+                         retry-push, approve-landing or abort"
                         .into())
                 }
             };

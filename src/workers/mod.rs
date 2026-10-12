@@ -32,6 +32,7 @@ mod decisions;
 mod error;
 mod grant_questions;
 mod history;
+pub(crate) mod home_repo;
 mod inbox;
 #[cfg(test)]
 mod install_script_tests;
@@ -286,9 +287,17 @@ fn check_item_id(item: &str) -> Result<(), WorkerError> {
 }
 
 /// The repository `dir` is in: the parent of its git common directory, the
-/// same for every worktree of it.
+/// same for every worktree of it. The repository rooted at the home
+/// directory whose git directory is registered elsewhere
+/// ([`home_repo`]) is the home directory, from HOME and from its worktrees.
 fn repository_of(dir: &Path) -> Option<String> {
+    if let Some(home) = home_repo::repository_of_home_dir(dir) {
+        return Some(home.display().to_string());
+    }
     let space = crate::workspace::git_space_metadata(dir)?;
+    if let Some(home) = home_repo::repository_of_common_dir(Path::new(&space.key)) {
+        return Some(home.display().to_string());
+    }
     Path::new(&space.key)
         .parent()
         .map(|repo| repo.display().to_string())
@@ -573,6 +582,12 @@ pub(crate) fn item_counts(repo: &str) -> ItemCounts {
 /// file system again for a coordinator's directory. Only found ones are
 /// kept: a directory may become a repository later.
 static REPOSITORIES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Forgets the repositories found so far: a registration
+/// ([`home_repo::register`]) changes what some directories name.
+pub(crate) fn forget_repositories() {
+    lock(&REPOSITORIES).clear();
+}
 
 /// The repository `dir` is in, as workers' `repo` names it (the parent of
 /// its git common directory); none outside git. Cached by directory.

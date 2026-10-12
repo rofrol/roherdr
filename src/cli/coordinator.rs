@@ -13,7 +13,11 @@ const USAGE: &str = "usage:
       Claim the repository's coordination for this pane ($HERDR_PANE_ID):
       refused (coordinator_active) while another pane coordinates it. DIR is
       a directory in the repository; this pane's directory by default.
-      Setting a tab's role to coordinator does the same.
+      Setting a tab's role to coordinator does the same. The repository
+      rooted at the home directory (dotfiles) is claimed only explicitly,
+      with --repo ~: a pane's directory there is never a claim. When it
+      keeps its git directory outside HOME, this asks git in HOME for it
+      (as your shell's git finds it) and the server records it.
   herdr coordinator end [--reason TEXT] [--id COORDINATOR_ID]
       End this pane's tenure, or the one named.
   herdr coordinator status [--repo DIR]
@@ -52,6 +56,36 @@ fn absolute(dir: Option<String>) -> Result<Option<String>, String> {
     .transpose()
 }
 
+/// Whether `dir` is `home`, both resolved.
+fn is_home(dir: &str, home: &std::path::Path) -> bool {
+    let real = |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    real(std::path::Path::new(dir)) == real(home)
+}
+
+/// For `--repo` naming the home directory: the common git directory that
+/// git in HOME finds with this shell's environment (a wrapper or alias
+/// that pairs a bare dotfiles repository with HOME), which the server
+/// cannot find by itself. None elsewhere, or when git finds none there.
+fn home_git_dir(dir: &str) -> Option<String> {
+    let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
+    if !is_home(dir, std::path::Path::new(&home)) {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&home)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|dir| !dir.is_empty())
+}
+
 /// `Ok(None)` asks for help.
 fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -66,9 +100,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             }
             let pane_id = super::target::caller_pane_id()
                 .ok_or("coordinator start runs in a herdr pane: HERDR_PANE_ID is not set")?;
+            let repo = absolute(repo)?;
+            let home_git_dir = repo.as_deref().and_then(home_git_dir);
             Method::CoordinatorStart(CoordinatorStartParams {
-                repo: absolute(repo)?,
+                repo,
                 pane_id: Some(pane_id),
+                home_git_dir,
             })
         }
         "end" => {

@@ -921,6 +921,12 @@ pub struct WorkersConfig {
     /// PreToolUse hook input on stdin. A check that denies refuses the call.
     /// Empty by default.
     pub pre_tool_checks: Vec<Vec<String>>,
+    /// The directory that holds every repository's folder slots, as
+    /// `<dir>/<repository name>/<slot>` (`~` expanded). Empty by default:
+    /// `herdr-worktrees` beside the repository, and for a repository rooted
+    /// at the home directory `worktrees` in herdr's state directory
+    /// (`~/.local/state/herdr/worktrees/home/<slot>`), never beside HOME.
+    pub folder_slots_dir: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

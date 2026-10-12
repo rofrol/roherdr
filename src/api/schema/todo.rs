@@ -302,6 +302,12 @@ pub enum TodoAction {
     SkipTodo,
     /// Push again (after `push_failed`), still only as a fast-forward.
     RetryPush,
+    /// The owner approves the whole patch of a `landing_approval` event:
+    /// the commit it showed lands in the repository rooted at the home
+    /// directory, and the registered install runs. Taken only from a pane
+    /// that coordinates no repository and does not own the run, so a
+    /// coordinator cannot approve its own landing.
+    ApproveLanding,
     /// End the run as `aborted` where it stands, from any event it waits
     /// on or from `blocked`: its worker is stopped when it still runs, and
     /// its branches and commits (also one already on `master`) stay as
@@ -408,6 +414,11 @@ pub enum TodoEventKind {
     /// `retry` with the answer as task text drafts again with it, or abort.
     /// The user can answer it from the `?` list too.
     Draft,
+    /// The approved commit would land in the repository rooted at the home
+    /// directory, which changes the user's live files: `result_text` holds
+    /// the whole patch and `error` the backup and rollback note. Its owner
+    /// answers `approve_landing` (not the coordinator), or abort.
+    LandingApproval,
     #[serde(other)]
     Unknown,
 }

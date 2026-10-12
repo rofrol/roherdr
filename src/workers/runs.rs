@@ -219,6 +219,11 @@ pub(super) struct RunFinish {
     /// The prepare ran and succeeded ([`prepare`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) prepared: bool,
+    /// The commit whose landing in the repository rooted at the home
+    /// directory its owner approved (`approve_landing`): only that commit
+    /// lands there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) landing_approved: Option<String>,
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -975,6 +980,7 @@ fn git_with(
     let output = command_with("git", env)
         .arg("-C")
         .arg(dir)
+        .args(super::home_repo::git_dir_args(dir))
         .args(args)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -1094,6 +1100,7 @@ fn carry_commit(repo: &Path, base: &str, from: &str) -> Result<Result<String, St
     let merged = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(super::home_repo::git_dir_args(repo))
         .args([
             "merge-tree",
             "--write-tree",
@@ -1150,6 +1157,7 @@ fn carry_commit(repo: &Path, base: &str, from: &str) -> Result<Result<String, St
     let created = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(super::home_repo::git_dir_args(repo))
         .args(["commit-tree", &tree, "-p", base, "-m", message.trim()])
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -1270,8 +1278,23 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
         TodoEventKind::Blocked => vec![TodoAction::Abort],
         TodoEventKind::RetryConflict => vec![TodoAction::Retry, TodoAction::Abort],
         TodoEventKind::Draft => vec![TodoAction::Retry, TodoAction::Abort],
+        TodoEventKind::LandingApproval => vec![TodoAction::ApproveLanding, TodoAction::Abort],
         _ => Vec::new(),
     }
+}
+
+/// What a `landing_approval` event tells the owner: what landing does, how
+/// to approve it, the backup and how to roll back.
+fn landing_note(run_id: &str, repo: &Path, commit: &str, head: &str) -> String {
+    format!(
+        "landing commit {commit} in {repo} changes the live files of the home directory, and the \
+         registered install runs after it. Its owner reviews the whole patch (result_text) and \
+         approves it with `herdr todo resume {run_id} --event <this event> --action \
+         approve-landing` from a pane that coordinates no repository, or aborts the run. Backup: \
+         master is at {head} before the pick. Roll back with `git revert <the landed commit>` \
+         in {repo}, or `git reset --keep {head}` there while nothing else has landed.",
+        repo = repo.display()
+    )
 }
 
 fn new_event(kind: TodoEventKind) -> TodoRunEvent {
@@ -1729,6 +1752,32 @@ impl WorkerSupervisor {
             check_message(&params.message).map_err(refuse)?;
             check_paths(&params.paths).map_err(refuse)?;
         }
+        // What a run needs and herdr never makes up itself: a triaged TODO
+        // and the repository's registered checks.
+        let todo_path = repo.join(TODO_FILE);
+        let todo = std::fs::read_to_string(&todo_path).map_err(|error| {
+            refuse(format!(
+                "cannot read {}: {error}; a run takes its item from the repository's TODO",
+                todo_path.display()
+            ))
+        })?;
+        if !todo_titles::has_next_section(&todo) {
+            return Err(refuse(format!(
+                "{} has no \"## {}\" section: triage the TODO first (the items an agent can \
+                 do alone go there); herdr does not choose or invent items",
+                todo_path.display(),
+                todo_titles::NEXT_SECTION
+            )));
+        }
+        if !repo.join(CHECKS_FILE).is_file() {
+            return Err(refuse(format!(
+                "{} has no {CHECKS_FILE}: register the repository's checks there first, each \
+                 name with its argv under [checks] (for example `lint = [\"shellcheck\", \
+                 \"install.sh\"]`), for its owner to review; herdr runs only registered checks \
+                 and never makes them up",
+                repo.display()
+            )));
+        }
         if !todo_titles::read_titles(repo).contains_key(&params.item) {
             return Err(refuse(format!(
                 "item {} is not in {}",
@@ -2039,11 +2088,16 @@ impl WorkerSupervisor {
             .as_deref()
             .and_then(|pane| self.coordinator_of_pane(pane))
             .map(|tenure| tenure.coordinator_id);
-        let takeover = self.run_takeover(
-            &run,
-            params.caller_pane_id.as_deref(),
-            caller_coordinator.as_deref(),
-        )?;
+        // The owner's approval of a landing does not take the run over.
+        let takeover = if params.action == TodoAction::ApproveLanding {
+            None
+        } else {
+            self.run_takeover(
+                &run,
+                params.caller_pane_id.as_deref(),
+                caller_coordinator.as_deref(),
+            )?
+        };
         let answered_body = latest
             .filter(|(seq, _)| *seq == params.event)
             .map(|(_, body)| body);
@@ -2193,6 +2247,37 @@ impl WorkerSupervisor {
                     return Err(WorkerError::Invalid("the run has no worker".into()));
                 }
             }
+            // The owner approves the landing, never the coordinator: not
+            // from a pane bound to a tenure or the pane that owns the run,
+            // nor from outside a pane.
+            TodoAction::ApproveLanding => {
+                let Some(pane) = params.caller_pane_id.as_deref() else {
+                    return Err(WorkerError::Invalid(
+                        "approve-landing runs in a herdr pane of the owner: HERDR_PANE_ID is not \
+                         set"
+                        .into(),
+                    ));
+                };
+                if let Some(tenure) = &caller_coordinator {
+                    return Err(WorkerError::Invalid(format!(
+                        "pane {pane} coordinates as {tenure}; the owner approves a landing in the \
+                         home directory from a pane that coordinates no repository"
+                    )));
+                }
+                if run.owner_pane.as_deref() == Some(pane) {
+                    return Err(WorkerError::Invalid(format!(
+                        "pane {pane} owns run {}; its owner approves the landing from another \
+                         pane",
+                        run.info.run_id
+                    )));
+                }
+                if reviewed.is_none() {
+                    return Err(WorkerError::Invalid(format!(
+                        "event {} names no commit to land",
+                        params.event
+                    )));
+                }
+            }
             TodoAction::Approve
             | TodoAction::Verify
             | TodoAction::RetryInstall
@@ -2219,6 +2304,9 @@ impl WorkerSupervisor {
         let env = headless_env.or_else(|| params.env.clone());
         match &env {
             Some(env) => lock(&RUN_ENV).insert(params.run_id.clone(), env.clone()),
+            // The owner's approval keeps the coordinator's environment for
+            // the install and the push when it sends none.
+            None if params.action == TodoAction::ApproveLanding => None,
             None => lock(&RUN_ENV).remove(&params.run_id),
         };
         let event = json!({
@@ -2238,6 +2326,8 @@ impl WorkerSupervisor {
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
+            "landing_approved_by": (params.action == TodoAction::ApproveLanding)
+                .then_some(&params.caller_pane_id),
         });
         let outcome = store
             .transaction(|tx| {
@@ -2296,6 +2386,10 @@ impl WorkerSupervisor {
                         current.current.review_text = None;
                         current.current.commit = reviewed.clone();
                         current.current.base = current.info.base.clone();
+                    }
+                    TodoAction::ApproveLanding => {
+                        current.info.step = TodoStep::CherryPick;
+                        current.finish.landing_approved = reviewed.clone();
                     }
                     TodoAction::RetryInstall => current.info.step = TodoStep::Install,
                     TodoAction::SkipInstall | TodoAction::RetryTodo => {
@@ -3419,6 +3513,12 @@ impl WorkerSupervisor {
             || git(&repo, &["cherry", "HEAD", &commit, &parent])?
                 .lines()
                 .any(|line| line.starts_with("- "));
+        if !applied
+            && super::home_repo::is_home_repository(&run.info.repo)
+            && run.finish.landing_approved.as_deref() != Some(commit.as_str())
+        {
+            return self.ask_landing_approval(run, &repo, &commit);
+        }
         if !applied {
             let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
             self.run_step(
@@ -3501,6 +3601,35 @@ impl WorkerSupervisor {
             })
             .map_err(|error| format!("the worker store failed: {error}"))?;
         announce();
+        Ok(())
+    }
+
+    /// Landing `commit` in the repository rooted at the home directory
+    /// changes the user's live files, so the run waits on a
+    /// `landing_approval` event with the whole patch and the backup and
+    /// rollback note until the owner approves it; nothing is picked yet.
+    fn ask_landing_approval(&self, run: &mut Run, repo: &Path, commit: &str) -> Result<(), String> {
+        let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+        let patch = git(
+            repo,
+            &[
+                "show",
+                "--stat",
+                "--patch",
+                "--format=commit %H%n%n    %s%n",
+                commit,
+            ],
+        )?;
+        let mut event = new_event(TodoEventKind::LandingApproval);
+        event.diff_stat = git(repo, &["diff", "--stat", &format!("{commit}^"), commit])
+            .ok()
+            .map(|stat| stat.trim_end().to_owned())
+            .filter(|stat| !stat.is_empty());
+        event.commits = vec![commit.to_owned()];
+        event.result_text = Some(patch);
+        event.error = Some(landing_note(&run.info.run_id, repo, commit, &head));
+        run.info.status = TodoRunStatus::Waiting;
+        self.record_run_event(run, &event)?;
         Ok(())
     }
 

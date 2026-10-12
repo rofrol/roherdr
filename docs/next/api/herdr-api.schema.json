@@ -2428,6 +2428,13 @@
         "CoordinatorStartParams": {
           "description": "Claims a repository's coordination: starts a tenure bound to the pane\n(one active tenure per repository). Setting a tab's role to\n`coordinator` starts one for the tab's focused pane.",
           "properties": {
+            "home_git_dir": {
+              "description": "With `repo` the home directory: the git directory of the repository\nrooted there when it keeps it outside HOME (a bare dotfiles\nrepository), which herdr cannot find by itself. The CLI asks the\ncaller's git in HOME for it; the server validates and records it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "pane_id": {
               "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
               "type": [
@@ -6159,6 +6166,11 @@
             {
               "const": "retry_push",
               "description": "Push again (after `push_failed`), still only as a fast-forward.",
+              "type": "string"
+            },
+            {
+              "const": "approve_landing",
+              "description": "The owner approves the whole patch of a `landing_approval` event:\nthe commit it showed lands in the repository rooted at the home\ndirectory, and the registered install runs. Taken only from a pane\nthat coordinates no repository and does not own the run, so a\ncoordinator cannot approve its own landing.",
               "type": "string"
             },
             {
@@ -18919,6 +18931,11 @@
               "type": "string"
             },
             {
+              "const": "approve_landing",
+              "description": "The owner approves the whole patch of a `landing_approval` event:\nthe commit it showed lands in the repository rooted at the home\ndirectory, and the registered install runs. Taken only from a pane\nthat coordinates no repository and does not own the run, so a\ncoordinator cannot approve its own landing.",
+              "type": "string"
+            },
+            {
               "const": "abort",
               "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on `master`) stay as\nthey are.",
               "type": "string"
@@ -19109,6 +19126,11 @@
             {
               "const": "draft",
               "description": "The server's draft of the worker's task needs an answer (`error`\nholds the question and its options, or why no valid draft came):\n`retry` with the answer as task text drafts again with it, or abort.\nThe user can answer it from the `?` list too.",
+              "type": "string"
+            },
+            {
+              "const": "landing_approval",
+              "description": "The approved commit would land in the repository rooted at the home\ndirectory, which changes the user's live files: `result_text` holds\nthe whole patch and `error` the backup and rollback note. Its owner\nanswers `approve_landing` (not the coordinator), or abort.",
               "type": "string"
             }
           ]

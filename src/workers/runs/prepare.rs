@@ -375,6 +375,7 @@ fn export_tree(repo: &Path, commit: &str, into: &Path) -> Result<(), String> {
     let mut archive = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(crate::workers::home_repo::git_dir_args(repo))
         .args(["archive", "--format=tar", commit])
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")

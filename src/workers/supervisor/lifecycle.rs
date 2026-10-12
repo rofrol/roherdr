@@ -96,6 +96,16 @@ impl WorkerSupervisor {
             .iter()
             .flat_map(|slot| [slot.target_dir(), slot.zig_cache_dir()])
             .collect();
+        // The sandbox lets Bash write the working directory and these: the
+        // live home directory and the agents' configuration stay read-only.
+        let writable: Vec<&Path> = std::iter::once(cwd_real.as_path())
+            .chain(slot_caches.iter().map(PathBuf::as_path))
+            .collect();
+        home_repo::check_worker_writes(
+            &writable,
+            repository_of_dir(&cwd_real.display().to_string()).as_deref(),
+            slot.is_some(),
+        )?;
 
         let number = {
             let mut registry = lock(&self.shared.registry);

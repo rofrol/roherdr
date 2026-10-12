@@ -25,8 +25,28 @@ fn unavailable(id: String) -> String {
 
 /// The repository of directory `dir`, as tenures name it.
 fn repository(dir: &str) -> Result<String, WorkerError> {
-    crate::workers::repository_of_dir(dir)
-        .ok_or_else(|| WorkerError::Invalid(format!("{dir} is not in a git repository")))
+    crate::workers::repository_of_dir(dir).ok_or_else(|| {
+        let hint = if crate::workers::home_repo::is_home(std::path::Path::new(dir)) {
+            "; the home directory has no .git of its own: claim the repository rooted there \
+             with `herdr coordinator start --repo ~` from a shell whose git finds it, which \
+             names its git directory"
+        } else {
+            ""
+        };
+        WorkerError::Invalid(format!("{dir} is not in a git repository{hint}"))
+    })
+}
+
+/// Records `git_dir` as the git directory of the repository rooted at the
+/// home directory `repo` names (an explicit claim's): a directory other
+/// than HOME needs no git directory, and the claim then goes on as usual.
+fn register_home(repo: &str, git_dir: &str) -> Result<(), WorkerError> {
+    if !crate::workers::home_repo::is_home(std::path::Path::new(repo)) {
+        return Ok(());
+    }
+    crate::workers::home_repo::register(std::path::Path::new(repo), std::path::Path::new(git_dir))?;
+    crate::workers::forget_repositories();
+    Ok(())
 }
 
 impl App {
@@ -48,7 +68,16 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
             return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
         };
-        let started = self.start_coordinator(coordinators, ws_idx, pane_id, params.repo.as_deref());
+        let started = match (&params.repo, &params.home_git_dir) {
+            (None, Some(_)) => Err(WorkerError::Invalid(
+                "home_git_dir needs repo, the home directory".into(),
+            )),
+            (Some(repo), Some(git_dir)) => register_home(repo, git_dir),
+            _ => Ok(()),
+        }
+        .and_then(|()| {
+            self.start_coordinator(coordinators, ws_idx, pane_id, params.repo.as_deref())
+        });
         self.sync_coordinator_roles();
         match started {
             Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
@@ -289,7 +318,9 @@ impl App {
     }
 
     /// Starts a tenure bound to the pane: of the repository of `repo` (a
-    /// directory in it), else of the pane's directory.
+    /// directory in it), else of the pane's directory. The repository
+    /// rooted at the home directory only with `repo`: a pane's directory
+    /// there is a candidate, never a claim.
     pub(super) fn start_coordinator(
         &self,
         coordinators: &WorkerSupervisor,
@@ -300,6 +331,7 @@ impl App {
         let pane = self
             .pane_metadata(ws_idx, pane_id)
             .ok_or_else(|| WorkerError::Invalid("the pane has no terminal".into()))?;
+        let explicit = repo;
         let dir = match repo {
             Some(dir) => dir.to_owned(),
             None => pane.cwd.clone().ok_or_else(|| {
@@ -310,6 +342,14 @@ impl App {
             })?,
         };
         let repo = repository(&dir)?;
+        if explicit.is_none() && crate::workers::home_repo::is_home_repository(&repo) {
+            return Err(WorkerError::Invalid(format!(
+                "the directory {dir} of pane {} is in the repository rooted at the home \
+                 directory {repo}, which a coordinator claims only explicitly: `herdr \
+                 coordinator start --repo ~`",
+                pane.pane_id
+            )));
+        }
         let session = pane.agent_session.map(|session| session.value);
         coordinators.coordinator_start(&repo, &pane.pane_id, session.as_deref())
     }
@@ -529,6 +569,7 @@ mod tests {
             CoordinatorStartParams {
                 repo: None,
                 pane_id: Some(pane_of(&app, 0)),
+                home_git_dir: None,
             },
         );
         assert!(refused.contains("coordinator_active"), "{refused}");
@@ -546,6 +587,7 @@ mod tests {
             CoordinatorStartParams {
                 repo: None,
                 pane_id: Some(pane_of(&app, 0)),
+                home_git_dir: None,
             },
         );
         assert!(started.contains("\"epoch\":2"), "{started}");
@@ -560,6 +602,102 @@ mod tests {
         );
         assert!(ended.contains("\"end_reason\":\"item done\""), "{ended}");
         assert_eq!(roles(&app), [None, None]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Moves tab `tab_idx`'s panes to `dir`.
+    fn set_cwd(app: &mut App, tab_idx: usize, dir: &std::path::Path) {
+        let terminals: Vec<_> = app.state.workspaces[0].tabs[tab_idx]
+            .panes
+            .values()
+            .map(|pane| pane.attached_terminal_id.clone())
+            .collect();
+        for terminal_id in terminals {
+            app.state.terminals.insert(
+                terminal_id.clone(),
+                crate::terminal::TerminalState::new(terminal_id, dir.to_owned()),
+            );
+        }
+    }
+
+    fn start(app: &mut App, tab_idx: usize, repo: Option<&str>, git_dir: Option<&str>) -> String {
+        let pane_id = pane_of(app, tab_idx);
+        app.handle_coordinator_start(
+            "req".into(),
+            CoordinatorStartParams {
+                repo: repo.map(str::to_owned),
+                pane_id: Some(pane_id),
+                home_git_dir: git_dir.map(str::to_owned),
+            },
+        )
+    }
+
+    /// The home directory's repository (a dotfiles repository with its git
+    /// directory outside HOME): `coordinator start` in HOME failed with
+    /// `invalid_request: <HOME> is not in a git repository`, because herdr
+    /// looks for `.git` upward. Only an explicit `--repo ~`, with the git
+    /// directory the CLI asks git for, claims it; a pane's directory there
+    /// (by `coordinator.start` or the coordinator role) is never a claim,
+    /// and a repository nested in HOME is claimed as itself.
+    #[test]
+    fn the_home_repository_is_claimed_only_explicitly() {
+        use crate::workers::home_repo::tests::HomeLayout;
+        let guard = crate::workers::home_repo::HomeForTest::set();
+        let layout = HomeLayout::new("claim");
+        guard.at(&layout.home);
+        let (mut app, root) = app("home");
+        set_cwd(&mut app, 0, &layout.home);
+        set_cwd(&mut app, 1, &layout.home);
+        let home = layout.home.display().to_string();
+        let git_dir = layout.git_dir.display().to_string();
+
+        // The failure, reproduced: HOME has no `.git`.
+        let failed = start(&mut app, 0, None, None);
+        assert!(failed.contains("invalid_request"), "{failed}");
+        assert!(
+            failed.contains(&format!("{home} is not in a git repository")),
+            "{failed}"
+        );
+        assert!(failed.contains("--repo ~"), "{failed}");
+        // A git directory without the home directory is refused.
+        let refused = start(&mut app, 0, None, Some(&git_dir));
+        assert!(refused.contains("home_git_dir needs repo"), "{refused}");
+
+        // The explicit claim records the git directory and claims HOME.
+        let started = start(&mut app, 0, Some(&home), Some(&git_dir));
+        assert!(
+            started.contains(&format!("\"repo\":\"{home}\"")),
+            "{started}"
+        );
+        assert_eq!(roles(&app), [Some(TabRole::Coordinator), None]);
+        let ended = app.handle_coordinator_end(
+            "req".into(),
+            CoordinatorEndParams {
+                reason: None,
+                coordinator_id: None,
+                pane_id: Some(pane_of(&app, 0)),
+            },
+        );
+        assert!(ended.contains("end_reason"), "{ended}");
+
+        // Now that herdr knows HOME's repository, a pane there is still
+        // only a candidate, by request or by role.
+        let refused = start(&mut app, 1, None, None);
+        assert!(refused.contains("claims only explicitly"), "{refused}");
+        let refused = set_role(&mut app, 1, Some(TabRole::Coordinator)).unwrap_err();
+        assert!(refused.contains("claims only explicitly"), "{refused}");
+        assert!(active(&app).is_empty());
+
+        // A repository nested in HOME is claimed from its pane as itself.
+        let nested = layout.home.join("proj");
+        std::fs::create_dir_all(&nested).unwrap();
+        crate::workers::home_repo::tests::run(&nested, &["init", "-q"]);
+        set_cwd(&mut app, 1, &nested);
+        let started = start(&mut app, 1, None, None);
+        assert!(
+            started.contains(&format!("\"repo\":\"{}\"", nested.display())),
+            "{started}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

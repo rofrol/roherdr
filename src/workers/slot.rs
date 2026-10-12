@@ -67,9 +67,14 @@ pub(super) fn validate_name(name: &str) -> Result<(), WorkerError> {
 const SLOTS_DIR: &str = "herdr-worktrees";
 
 /// The repository `dir` belongs to: its common `.git` directory (absolute,
-/// real) and its top directory, the parent of that.
+/// real) and its top directory, the parent of that; for the repository
+/// rooted at the home directory, its registered git directory and HOME
+/// ([`super::home_repo`]).
 fn repository_of(dir: &Path) -> Result<(PathBuf, PathBuf), WorkerError> {
     let repo_common_dir = common_dir(dir)?;
+    if let Some(home) = super::home_repo::repository_of_common_dir(&repo_common_dir) {
+        return Ok((repo_common_dir, home));
+    }
     if repo_common_dir.file_name().and_then(|name| name.to_str()) != Some(".git") {
         return Err(WorkerError::Invalid(format!(
             "folder slots need a repository with a .git directory; {} has {}",
@@ -100,16 +105,22 @@ pub(super) fn path_of(dir: &Path, name: &str) -> Result<PathBuf, WorkerError> {
 }
 
 fn resolve(repo_common_dir: &Path, repository: &Path, name: &str) -> Result<PathBuf, WorkerError> {
-    let parent = repository.parent().ok_or_else(|| {
-        WorkerError::Invalid(format!("{} has no parent directory", repository.display()))
-    })?;
-    let repository_name = repository.file_name().ok_or_else(|| {
-        WorkerError::Invalid(format!("{} has no directory name", repository.display()))
-    })?;
-    let slots = parent.join(SLOTS_DIR);
-    let folder = slots.join(repository_name);
-    let path = folder.join(name);
-    if std::fs::symlink_metadata(&path).is_err() {
+    let home = super::home_repo::is_home(repository)
+        .then(super::home_repo::home_dir)
+        .flatten();
+    let configured = configured_slots_dir();
+    let path = slot_path(repository, name, configured.as_deref(), home.as_deref())?;
+    if let Some(home) = &home {
+        check_ignored_by_home(repository, home, &path)?;
+    }
+    let folder = path
+        .parent()
+        .ok_or_else(|| WorkerError::Invalid(format!("{} has no parent", path.display())))?;
+    let beside = configured.is_none() && home.is_none();
+    if beside && std::fs::symlink_metadata(&path).is_err() {
+        let slots = folder
+            .parent()
+            .ok_or_else(|| WorkerError::Invalid(format!("{} has no parent", folder.display())))?;
         let legacy = slots.join(name);
         let legacy_is_ours = legacy.is_dir()
             && common_dir(&legacy).is_ok_and(|common| common == repo_common_dir)
@@ -133,6 +144,110 @@ fn resolve(repo_common_dir: &Path, repository: &Path, name: &str) -> Result<Path
         )));
     }
     Ok(path)
+}
+
+/// Where the slot `name` of `repository` goes: `<slots>/<repository
+/// name>/<name>`, `<slots>` being the configured `[workers]
+/// folder_slots_dir` (`configured`), else `herdr-worktrees` beside the
+/// repository. The repository rooted at the home directory (`home`) uses
+/// the folder `home`, and without a configured directory herdr's state
+/// directory ([`super::home_repo::default_slots_root`]): never beside HOME,
+/// where the slot would sit among the other users' homes, and never HOME
+/// itself or a directory around it.
+fn slot_path(
+    repository: &Path,
+    name: &str,
+    configured: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<PathBuf, WorkerError> {
+    let repository_name = match home {
+        Some(_) => std::ffi::OsStr::new(super::home_repo::SLOTS_NAME),
+        None => repository.file_name().ok_or_else(|| {
+            WorkerError::Invalid(format!("{} has no directory name", repository.display()))
+        })?,
+    };
+    let slots = match (configured, home) {
+        (Some(dir), _) => dir.to_owned(),
+        (None, Some(_)) => super::home_repo::default_slots_root(),
+        (None, None) => repository
+            .parent()
+            .ok_or_else(|| {
+                WorkerError::Invalid(format!("{} has no parent directory", repository.display()))
+            })?
+            .join(SLOTS_DIR),
+    };
+    let path = slots.join(repository_name).join(name);
+    if let Some(home) = home {
+        let beside_home = home.parent().is_some_and(|parent| slots == parent);
+        if beside_home || home.starts_with(&slots) || home.starts_with(&path) {
+            return Err(WorkerError::Invalid(format!(
+                "the folder slots of the repository rooted at the home directory {} cannot live \
+                 in {}: that is beside or around HOME; set [workers] folder_slots_dir to a \
+                 directory inside it, such as ~/.local/state/herdr/worktrees",
+                home.display(),
+                slots.display()
+            )));
+        }
+    }
+    Ok(path)
+}
+
+/// `[workers] folder_slots_dir` of the config, `~` expanded; none when it
+/// is unset or the config cannot be read (the default place then).
+fn configured_slots_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    let configured = lock_test_slots_dir().clone();
+    #[cfg(not(test))]
+    let configured = crate::config::load_live_config()
+        .ok()
+        .map(|loaded| loaded.config.workers.folder_slots_dir)
+        .filter(|dir| !dir.trim().is_empty());
+    let dir = configured?;
+    let expanded = match dir.strip_prefix("~/") {
+        Some(rest) => super::home_repo::home_dir()?.join(rest),
+        None if dir == "~" => super::home_repo::home_dir()?,
+        None => PathBuf::from(dir),
+    };
+    expanded.is_absolute().then_some(expanded)
+}
+
+#[cfg(test)]
+static TEST_SLOTS_DIR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn lock_test_slots_dir() -> std::sync::MutexGuard<'static, Option<String>> {
+    TEST_SLOTS_DIR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Sets `[workers] folder_slots_dir` as this test process sees it.
+#[cfg(test)]
+pub(super) fn set_slots_dir_for_test(dir: Option<&str>) {
+    *lock_test_slots_dir() = dir.map(str::to_owned);
+}
+
+/// A slot inside HOME is inside the HOME repository's work tree: the
+/// repository must ignore it, or its status would list the slot's files as
+/// HOME's own and a commit in HOME could take them.
+fn check_ignored_by_home(repository: &Path, home: &Path, path: &Path) -> Result<(), WorkerError> {
+    if !path.starts_with(home) {
+        return Ok(());
+    }
+    let relative = path
+        .strip_prefix(home)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    if git(repository, &["check-ignore", "-q", "--no-index", &relative]).is_ok() {
+        return Ok(());
+    }
+    Err(WorkerError::Invalid(format!(
+        "folder slot {} is inside the home directory's work tree, and its repository does not \
+         ignore it; add {} to that repository's excludes first",
+        path.display(),
+        relative
+    )))
 }
 
 /// A worker that holds a slot, for a busy refusal: its id and the
@@ -169,8 +284,10 @@ pub(super) fn locate_or_create(
                 std::fs::create_dir_all(dir)?;
             }
             let path_arg = path.display().to_string();
+            // From the common directory: the repository rooted at HOME may
+            // keep it outside HOME, where git in HOME does not find it.
             git(
-                repository,
+                &repo_common_dir,
                 &["worktree", "add", "--quiet", "--detach", &path_arg, base],
             )?;
             true
@@ -383,6 +500,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, WorkerError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(super::home_repo::git_dir_args(dir))
         .args(args)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -428,6 +546,90 @@ mod tests {
         for name in ["", ".", "..", ".hidden", "a/b", "../x", "a b", "~"] {
             assert!(validate_name(name).is_err(), "{name}");
         }
+    }
+
+    /// The slot of the repository rooted at the home directory lives in
+    /// herdr's state directory under `home`, or under the configured
+    /// directory; beside HOME (or around it) it is refused. Other
+    /// repositories keep theirs beside them unless one is configured.
+    #[test]
+    fn the_home_repositorys_slot_is_never_beside_home() {
+        let guard = super::super::home_repo::HomeForTest::set();
+        let home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("herdr-slot-home-{}", std::process::id()))
+            .join("me");
+        guard.at(&home);
+        let repo = Path::new("/src/repo");
+        assert_eq!(
+            slot_path(repo, "worker", None, None).unwrap(),
+            Path::new("/src/herdr-worktrees/repo/worker")
+        );
+        assert_eq!(
+            slot_path(repo, "worker", Some(Path::new("/slots")), None).unwrap(),
+            Path::new("/slots/repo/worker")
+        );
+        assert_eq!(
+            slot_path(&home, "worker", None, Some(&home)).unwrap(),
+            home.join(".local/state/herdr/worktrees/home/worker")
+        );
+        assert_eq!(
+            slot_path(&home, "worker", Some(Path::new("/slots")), Some(&home)).unwrap(),
+            Path::new("/slots/home/worker")
+        );
+        // The configured directory, `~` expanded; a relative one is not
+        // taken.
+        set_slots_dir_for_test(Some("~/slots"));
+        assert_eq!(configured_slots_dir(), Some(home.join("slots")));
+        set_slots_dir_for_test(Some("slots"));
+        assert_eq!(configured_slots_dir(), None);
+        set_slots_dir_for_test(None);
+        assert_eq!(configured_slots_dir(), None);
+        let parent = home.parent().unwrap();
+        for slots in [parent, home.as_path(), Path::new("/")] {
+            let refused = slot_path(&home, "worker", Some(slots), Some(&home)).unwrap_err();
+            assert!(
+                refused.to_string().contains("beside or around HOME"),
+                "{slots:?}: {refused}"
+            );
+        }
+    }
+
+    /// A slot of a dotfiles repository (its git directory outside HOME) is
+    /// created from that git directory, under herdr's state directory in
+    /// HOME, only once the repository ignores it; its worktree names HOME
+    /// as its repository.
+    #[test]
+    fn the_home_repositorys_slot_is_a_worktree_it_ignores() {
+        use super::super::home_repo::tests::HomeLayout;
+        let guard = super::super::home_repo::HomeForTest::set();
+        let layout = HomeLayout::new("slot");
+        guard.at(&layout.home);
+        super::super::home_repo::register(&layout.home, &layout.git_dir).unwrap();
+        let refused = locate_or_create(&layout.home, "worker", "master").unwrap_err();
+        assert!(
+            refused.to_string().contains("does not ignore it"),
+            "{refused}"
+        );
+        assert!(!layout.home.join(".local").exists());
+
+        std::fs::write(layout.git_dir.join("info/exclude"), "/.local/\n").unwrap();
+        let (slot, created) = locate_or_create(&layout.home, "worker", "master").unwrap();
+        assert!(created);
+        assert_eq!(
+            slot,
+            layout.home.join(".local/state/herdr/worktrees/home/worker")
+        );
+        assert!(slot.join(".zshrc").is_file());
+        assert_eq!(
+            crate::workers::repository_of_dir(&slot.display().to_string()),
+            Some(layout.home.display().to_string())
+        );
+        // HOME's status does not list the slot.
+        assert_eq!(layout.git(&["status", "--porcelain"]), "");
+        let (again, created) = locate_or_create(&layout.home, "worker", "master").unwrap();
+        assert_eq!((again, created), (slot, false));
     }
 
     /// A stand-in for the repository's sweep: it records its arguments and

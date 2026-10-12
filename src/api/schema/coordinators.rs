@@ -12,6 +12,12 @@ pub struct CoordinatorStartParams {
     /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// With `repo` the home directory: the git directory of the repository
+    /// rooted there when it keeps it outside HOME (a bare dotfiles
+    /// repository), which herdr cannot find by itself. The CLI asks the
+    /// caller's git in HOME for it; the server validates and records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_git_dir: Option<String>,
 }
 
 /// Ends a tenure: the one named, else the one bound to the pane.

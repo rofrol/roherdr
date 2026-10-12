@@ -6261,7 +6261,7 @@ mod todo_runs {
         }
         std::fs::write(
             repo.join("TODO.md"),
-            format!("# TODO\n\n- [ ] The driven item [{ITEM}]\n"),
+            format!("# TODO\n\n## Next, in order\n\n- [ ] The driven item [{ITEM}]\n"),
         )
         .unwrap();
         std::fs::write(repo.join(".gitignore"), "/target\n").unwrap();
@@ -6782,6 +6782,111 @@ mod todo_runs {
         assert_eq!(
             fixture.supervisor.todo_runs(None, None).unwrap().0[0].run_id,
             run.run_id
+        );
+    }
+
+    /// A repository rooted at the home directory (here the fixture's
+    /// repository is HOME): the worker runs in the slot under herdr's
+    /// state directory, and the approved commit lands only once a pane
+    /// that coordinates nothing approves its whole patch.
+    #[test]
+    fn a_landing_in_the_home_repository_waits_for_its_owner() {
+        let home = crate::workers::home_repo::HomeForTest::set();
+        let fixture = todo_repo("todo-home");
+        std::fs::write(fixture.repo.join(".gitignore"), "/target\n/.local/\n").unwrap();
+        git_in(&fixture.repo, &["commit", "-qam", "ignore the state"]);
+        home.at(&fixture.repo);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let worker = fixture
+            .supervisor
+            .status(waiting.worker_id.as_deref().unwrap())
+            .unwrap();
+        assert!(
+            worker
+                .cwd
+                .ends_with(".local/state/herdr/worktrees/home/worker"),
+            "{}",
+            worker.cwd
+        );
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (landing, held) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(landing.kind, TodoEventKind::LandingApproval, "{landing:#?}");
+        assert_eq!(
+            landing.actions,
+            [TodoAction::ApproveLanding, TodoAction::Abort]
+        );
+        assert_eq!(
+            (held.status, held.step, held.pending_event),
+            (
+                TodoRunStatus::Waiting,
+                TodoStep::CherryPick,
+                Some(landing.event_id)
+            )
+        );
+        let patch = landing.result_text.as_deref().unwrap_or_default();
+        assert!(patch.contains("+++ b/a.txt"), "{patch}");
+        let note = landing.error.as_deref().unwrap_or_default();
+        assert!(note.contains("live files of the home directory"), "{note}");
+        assert!(note.contains("git reset --keep"), "{note}");
+        // Nothing landed yet.
+        assert_eq!(master_subjects(&fixture), ["ignore the state", "init"]);
+
+        let approve = |pane: Option<&str>| {
+            fixture.supervisor.todo_resume(TodoResumeParams {
+                caller_pane_id: pane.map(str::to_owned),
+                ..resume_params(&run.run_id, landing.event_id, TodoAction::ApproveLanding)
+            })
+        };
+        // Not the run's coordinator, not another coordinator, not outside
+        // a pane; and approve does not answer it.
+        let refused = approve(Some("p-coordinator")).unwrap_err();
+        assert!(refused.to_string().contains("owns run"), "{refused}");
+        fixture
+            .supervisor
+            .coordinator_start("/elsewhere", "p-other", None)
+            .unwrap();
+        let refused = approve(Some("p-other")).unwrap_err();
+        assert!(refused.to_string().contains("coordinates as"), "{refused}");
+        let refused = approve(None).unwrap_err();
+        assert!(refused.to_string().contains("HERDR_PANE_ID"), "{refused}");
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            landing.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("approve_landing"), "{refused}");
+
+        approve(Some("p-owner")).unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(landing.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(
+            master_subjects(&fixture),
+            [SUBJECT, "ignore the state", "init"]
+        );
+        // The owner's approval did not take the run over.
+        assert_eq!(
+            fixture
+                .supervisor
+                .load_run(&run.run_id)
+                .unwrap()
+                .owner_pane
+                .as_deref(),
+            Some("p-coordinator")
         );
     }
 
@@ -8782,6 +8887,27 @@ mod todo_runs {
         let (code, message) = refused(params(&fixture, &task, "ok nosuch"));
         assert_eq!(code, "todo_preflight_failed");
         assert!(message.contains("nosuch"), "{message}");
+
+        // What herdr never makes up is a prerequisite it names: the
+        // registered checks and a triaged TODO.
+        let checks = fixture.repo.join(".herdr/checks.toml");
+        let registered = std::fs::read_to_string(&checks).unwrap();
+        std::fs::remove_file(&checks).unwrap();
+        let (code, message) = refused(params(&fixture, &task, "ok"));
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(message.contains("has no .herdr/checks.toml"), "{message}");
+        assert!(message.contains("never makes them up"), "{message}");
+        std::fs::write(&checks, registered).unwrap();
+        let todo = fixture.repo.join("TODO.md");
+        let triaged = std::fs::read_to_string(&todo).unwrap();
+        std::fs::write(&todo, format!("# TODO\n\n- [ ] The driven item [{ITEM}]\n")).unwrap();
+        let (code, message) = refused(params(&fixture, &task, "ok"));
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(
+            message.contains("has no \"## Next, in order\" section"),
+            "{message}"
+        );
+        std::fs::write(&todo, triaged).unwrap();
         assert!(fixture
             .supervisor
             .todo_runs(None, None)
@@ -8827,7 +8953,7 @@ mod todo_runs {
         std::fs::write(repo.join("DECISIONS.md"), "# Decisions\n\nIntro.\n").unwrap();
         std::fs::write(
             repo.join("TODO.md"),
-            format!("# TODO\n\n- [ ] The driven item [{ITEM}]\n  Its text.\n\n- [ ] The second item [{ITEM2}]\n"),
+            format!("# TODO\n\n## Next, in order\n\n- [ ] The driven item [{ITEM}]\n  Its text.\n\n- [ ] The second item [{ITEM2}]\n"),
         )
         .unwrap();
         let checks = repo.join(".herdr/checks.toml");
