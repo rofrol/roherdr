@@ -2316,6 +2316,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   GO            0% 6d23h
      CG         0% 6d23h
   ```
+  Labels decided (the user, 2026-10-12: "what does OA $0.00 spend mean? and
+  show when the AN $200 renews; ask the models"): `OA API` = OpenAI API
+  pay-as-you-go month-to-date spend (no balance exists) -> `   API $0.00 MTD
+  spend`; the AN credits renew on the same date the unused ones expire, so
+  the line leads with the renewal: `   API $0.21/$200 spend  renew28d`
+  (countdown; the tooltip says "unused credits expire then").
 
 - [ ] Headless workers on the owner's Google AI subscription through the [t-dnqkeub6]
   Antigravity CLI (the user, 2026-10-12: "check using Gemini for tasks too;
