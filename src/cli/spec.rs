@@ -642,6 +642,9 @@ fn agent_command() -> Command {
                 .arg(required("target", "TARGET"))
                 .arg(required("text", "TEXT"))
                 .arg(global_name_flag())
+                .arg(flag("note").help(
+                    "Send a message, not a worker's task: herdr confirms it but awaits no verdict",
+                ))
                 .arg(
                     flag("wait")
                         .help("Wait until the turn this prompt started ends"),

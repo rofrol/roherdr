@@ -139,14 +139,18 @@ impl App {
     }
 
     /// Types the supervision notices whose recipient's agent rests (a turn
-    /// boundary) into its pane, one batch per recipient. Runs on the server's
-    /// loop when an event asked for it
+    /// boundary) into its pane, one batch per recipient, unless a client has
+    /// that pane focused (`focused`, public pane ids): the user may be typing
+    /// there, and a notice must never land in their input. Runs on the
+    /// server's loop when an event asked for it
     /// ([`crate::workers::supervision::take_delivery_request`]); a recipient
-    /// that works keeps its notices queued until its next event.
+    /// that works, or whose pane is focused, keeps its notices queued until
+    /// its next event (its turn end, the pane losing focus, a sweep's end).
     /// Returns the replies of the prompts typed, which the loop reads as they
     /// come ([`crate::workers::supervision::SupervisionPrompt`]).
     pub(crate) fn deliver_supervision_notices(
         &mut self,
+        focused: &std::collections::HashSet<String>,
     ) -> Vec<crate::workers::supervision::SupervisionPrompt> {
         let Some(supervisor) = crate::workers::coordinators() else {
             return Vec::new();
@@ -165,6 +169,9 @@ impl App {
         let mut prompts = Vec::new();
         for batch in batches {
             let pane = self.canonical_pane_id(&batch.pane_id);
+            if focused.contains(&pane) {
+                continue;
+            }
             let ready = panes
                 .iter()
                 .find(|facts| facts.pane_id == pane)
@@ -324,6 +331,68 @@ mod tests {
         }));
         stuck.status = AgentStatus::Idle;
         supervisor.supervision_sweep("timer", vec![stuck]).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A notice is never typed into a pane a client has focused, even at a turn boundary: it
+    /// waits for the focus to leave (an event), then goes out, starting with "herdr
+    /// supervision".
+    #[tokio::test]
+    async fn a_notice_waits_while_a_client_has_the_coordinators_pane_focused() {
+        let (mut app, root) = app("focus");
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let pane = app.public_pane_id(0, pane_id).unwrap();
+        let supervisor = crate::workers::coordinators().unwrap();
+        let repo = crate::workers::repository_of_dir(
+            &std::env::current_dir().unwrap().display().to_string(),
+        )
+        .unwrap();
+        supervisor.coordinator_start(&repo, &pane, None).unwrap();
+        // A finding no owner can be prompted for queues for the herdr coordinator.
+        let stuck = PaneFacts {
+            pane_id: "w9:p9".into(),
+            agent: Some("claude".into()),
+            status: AgentStatus::Working,
+            state_seq: None,
+            turn_closed: true,
+            background_tasks: Some(0),
+            wait_edges: Some(0),
+            asks_user: false,
+            limited: false,
+            running_jobs: Vec::new(),
+        };
+        let mut facts = app.supervision_pane_facts();
+        facts.push(stuck);
+        supervisor.supervision_sweep("timer", facts).unwrap();
+        assert!(crate::workers::supervision::take_delivery_request());
+        assert_eq!(supervisor.pending_delivery_batches().unwrap().len(), 1);
+
+        // Its agent rests, but a client has the pane focused: nothing is typed.
+        let focused: std::collections::HashSet<String> = [pane.clone()].into();
+        assert!(app.deliver_supervision_notices(&focused).is_empty());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(supervisor.pending_delivery_batches().unwrap().len(), 1);
+
+        // The focus leaves the pane: that event asks for a delivery, which types it.
+        app.send_pane_focus_event(0, pane_id, crate::ghostty::FocusEvent::Lost);
+        assert!(crate::workers::supervision::take_delivery_request());
+        let prompts = app.deliver_supervision_notices(&std::collections::HashSet::new());
+        assert_eq!(prompts.len(), 1);
+        let _ = prompts[0].reply.recv();
+        let typed = rx.try_recv().unwrap();
+        let typed = String::from_utf8_lossy(&typed);
+        assert!(typed.starts_with("herdr supervision"), "{typed}");
+        assert!(supervisor.pending_delivery_batches().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 }

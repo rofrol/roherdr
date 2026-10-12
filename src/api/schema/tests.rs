@@ -116,6 +116,7 @@ fn agent_start_and_prompt_requests_round_trip() {
         id: "prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             caller_pane_id: None,
+            note: false,
             follow_turn: false,
             target: "reviewer".into(),
             prefer_workspace_id: None,
@@ -134,6 +135,7 @@ fn agent_start_and_prompt_requests_round_trip() {
         id: "prompt-and-wait".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             caller_pane_id: None,
+            note: false,
             follow_turn: false,
             target: "reviewer".into(),
             prefer_workspace_id: None,

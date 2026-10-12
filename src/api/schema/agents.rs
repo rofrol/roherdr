@@ -279,6 +279,10 @@ pub struct AgentPromptParams {
     /// owns the assignment herdr registers, whose inbox its supervision findings go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane_id: Option<String>,
+    /// The prompt is a note, a message rather than a worker's task (`agent prompt --note`):
+    /// herdr types and confirms it but awaits no verdict and tracks no assignment for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,
     /// Set by `agent.prompt_turn`: refuse before typing when the agent does not report turns.
@@ -303,6 +307,10 @@ pub struct AgentPromptTurnParams {
     /// owns the assignment herdr registers, whose inbox its supervision findings go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane_id: Option<String>,
+    /// The prompt is a note, a message rather than a worker's task (`agent prompt --note`):
+    /// herdr types and confirms it but awaits no verdict and tracks no assignment for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -328,6 +336,10 @@ pub struct AgentPromptTrackedParams {
     /// owns the assignment herdr registers, whose inbox its supervision findings go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane_id: Option<String>,
+    /// The prompt is a note, a message rather than a worker's task (`agent prompt --note`):
+    /// herdr types and confirms it but awaits no verdict and tracks no assignment for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
 }
 
 /// Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the
@@ -352,6 +364,10 @@ pub struct AgentPromptConfirmedParams {
     /// owns the assignment herdr registers, whose inbox its supervision findings go to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane_id: Option<String>,
+    /// The prompt is a note, a message rather than a worker's task (`agent prompt --note`):
+    /// herdr types and confirms it but awaits no verdict and tracks no assignment for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note: bool,
 }
 
 /// Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started
@@ -664,6 +680,10 @@ pub struct AgentAssignmentInfo {
     /// When the waiter acknowledged the verdict (`agent.ack_verdict`), Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered_ms: Option<u64>,
+    /// Why the prompt is a message, not a worker's assignment (a note, a message to a
+    /// coordinator, not the sender's worker): no verdict is awaited for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Why `agent.wait_verdict` answered.
@@ -679,6 +699,9 @@ pub enum AgentVerdictWaitReason {
     Question,
     /// The agent exited or its pane closed without a verdict.
     Exited,
+    /// The prompt is a message, not a worker's assignment: no verdict is awaited; see
+    /// `assignment.message`.
+    Message,
     /// Herdr never registered this request or no longer keeps it.
     UnknownRequest,
     /// Any reason this client does not know.

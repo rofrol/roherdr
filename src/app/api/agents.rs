@@ -94,6 +94,9 @@ impl App {
             Ok(started) => started,
             Err(err) => return encode_error_body(id, self.agent_start_error_body(err)),
         };
+        // The agent is a worker of the coordinator whose pane started it, before its launch
+        // prompt is registered, so that prompt is its assignment.
+        self.register_started_worker(started.ws_idx, started.pane_id, caller_pane_id.as_deref());
         // Followed like a prompt `agent.prompt` typed, registered before the app handles
         // anything else, so the agent's report of the turn it starts always finds it.
         let prompt_request = prompt.map(|prompt| {
@@ -134,7 +137,7 @@ impl App {
                     .prompt_turns
                     .unsupported_reason(terminal.effective_agent_label())
             });
-        self.register_assignment(ws_idx, pane_id, &request_id, prompt, caller_pane_id);
+        self.register_assignment(ws_idx, pane_id, &request_id, prompt, caller_pane_id, false);
         crate::api::schema::AgentPromptRequest {
             request_id,
             state: if error.is_some() {
@@ -408,6 +411,7 @@ impl App {
             prefer_workspace_id: None,
             text,
             caller_pane_id: None,
+            note: true,
             wait: None,
             follow_turn: false,
         };
@@ -661,6 +665,7 @@ impl App {
                 &prompt_request.request_id,
                 &params.text,
                 params.caller_pane_id.as_deref(),
+                params.note,
             );
         }
         self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
@@ -1195,6 +1200,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -1301,6 +1307,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: public_pane_id,
                 prefer_workspace_id: None,
@@ -1333,6 +1340,7 @@ mod tests {
             "req-raw",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -1351,6 +1359,7 @@ mod tests {
             "req-label",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "opencode".into(),
                 prefer_workspace_id: None,
@@ -1399,6 +1408,100 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// R2: only a coordinator's prompt to its worker is an assignment awaiting a verdict; a note,
+    /// a prompt to a pane that is not the sender's worker and one into a coordinator's pane are
+    /// messages, closed at once. A prompt from a pane without a tenure is followed as before.
+    #[tokio::test]
+    async fn only_a_coordinators_prompt_to_its_worker_awaits_a_verdict() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-agent-prompt-messages-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        crate::workers::set_test_coordinators(crate::workers::WorkerSupervisor::open(
+            root.join("workers"),
+            "claude".into(),
+        ));
+        let supervisor = crate::workers::coordinators().unwrap();
+        let repo = root.join("repo").display().to_string();
+        supervisor.coordinator_start(&repo, "w9:p1", None).unwrap();
+        let mut app = app_with_agent();
+        let (pane, mut rx) = claude_with_runtime(&mut app);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let mut prompt = |app: &mut App, caller: Option<&str>, note: bool| {
+            let mut params = prompt_params("do the item", false);
+            params.caller_pane_id = caller.map(str::to_owned);
+            params.note = note;
+            let request = prompt_request_of(&run_deferred_agent_prompt(app, "req", params));
+            while rx.try_recv().is_ok() {}
+            crate::assignments::get(&request.request_id).expect("the prompt is recorded")
+        };
+        let reason = |assignment: &crate::assignments::Assignment| {
+            assignment
+                .message
+                .as_ref()
+                .map(|message| message.reason.clone())
+        };
+
+        // Sent from a pane that holds no tenure: followed for its verdict, as before.
+        let plain = prompt(&mut app, None, false);
+        assert!(plain.is_open(), "{plain:?}");
+
+        // A coordinator's prompt to a pane that is not its worker: a message.
+        let stray = prompt(&mut app, Some("w9:p1"), false);
+        assert!(!stray.is_open());
+        assert!(
+            reason(&stray).is_some_and(|reason| reason.contains("not its worker")),
+            "{stray:?}"
+        );
+        assert_eq!(
+            crate::assignments::info(&stray).message,
+            reason(&stray),
+            "the API shows why"
+        );
+
+        // A worker it started: an assignment.
+        app.register_started_worker(0, pane_id, Some("w9:p1"));
+        assert_eq!(
+            crate::assignments::worker_pane_owner(&pane).map(|owner| owner.repo),
+            Some(repo.clone())
+        );
+        let task = prompt(&mut app, Some("w9:p1"), false);
+        assert!(task.is_open(), "{task:?}");
+        // The same pane, marked as a note: a message.
+        let note = prompt(&mut app, Some("w9:p1"), true);
+        assert!(reason(&note).is_some_and(|reason| reason.contains("note")));
+
+        // Another repository's coordinator prompting it: a message.
+        let other = root.join("other").display().to_string();
+        supervisor.coordinator_start(&other, "w9:p2", None).unwrap();
+        let foreign = prompt(&mut app, Some("w9:p2"), false);
+        assert!(
+            reason(&foreign).is_some_and(|reason| reason.contains("a worker of coordinator")),
+            "{foreign:?}"
+        );
+
+        // A worker-role tab nobody owns is claimed by the first coordinator that prompts it.
+        crate::assignments::register_worker_pane(&pane, None);
+        app.state.workspaces[0].tabs[0].role = Some(crate::api::schema::TabRole::Worker);
+        assert!(prompt(&mut app, Some("w9:p2"), false).is_open());
+        assert_eq!(
+            crate::assignments::worker_pane_owner(&pane).map(|owner| owner.repo),
+            Some(other)
+        );
+
+        // A prompt into a coordinator's pane: a message, whoever sends it.
+        let third = root.join("third").display().to_string();
+        supervisor.coordinator_start(&third, &pane, None).unwrap();
+        let to_coordinator = prompt(&mut app, Some("w9:p2"), false);
+        assert!(
+            reason(&to_coordinator)
+                .is_some_and(|reason| reason.contains("a message to coordinator")),
+            "{to_coordinator:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn claude_with_runtime(app: &mut App) -> (String, tokio::sync::mpsc::Receiver<Bytes>) {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -1415,6 +1518,7 @@ mod tests {
     fn prompt_params(text: &str, follow_turn: bool) -> AgentPromptParams {
         AgentPromptParams {
             caller_pane_id: None,
+            note: false,
             follow_turn,
             target: "reviewer".into(),
             prefer_workspace_id: None,
@@ -2651,6 +2755,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2688,6 +2793,7 @@ mod tests {
                 "req",
                 AgentPromptParams {
                     caller_pane_id: None,
+                    note: false,
                     follow_turn: false,
                     target: target.into(),
                     prefer_workspace_id: None,
@@ -2724,6 +2830,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2767,6 +2874,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2851,6 +2959,7 @@ mod tests {
             "req-pending",
             AgentPromptParams {
                 caller_pane_id: None,
+                note: false,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,

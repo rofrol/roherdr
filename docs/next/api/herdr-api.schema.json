@@ -1449,6 +1449,10 @@
                 "null"
               ]
             },
+            "note": {
+              "description": "The prompt is a note, a message rather than a worker's task (`agent prompt --note`):\nherdr types and confirms it but awaits no verdict and tracks no assignment for it.",
+              "type": "boolean"
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -1477,6 +1481,10 @@
                 "string",
                 "null"
               ]
+            },
+            "note": {
+              "description": "The prompt is a note, a message rather than a worker's task (`agent prompt --note`):\nherdr types and confirms it but awaits no verdict and tracks no assignment for it.",
+              "type": "boolean"
             },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
@@ -1529,6 +1537,10 @@
                 "null"
               ]
             },
+            "note": {
+              "description": "The prompt is a note, a message rather than a worker's task (`agent prompt --note`):\nherdr types and confirms it but awaits no verdict and tracks no assignment for it.",
+              "type": "boolean"
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -1558,6 +1570,10 @@
                 "string",
                 "null"
               ]
+            },
+            "note": {
+              "description": "The prompt is a note, a message rather than a worker's task (`agent prompt --note`):\nherdr types and confirms it but awaits no verdict and tracks no assignment for it.",
+              "type": "boolean"
             },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
@@ -11476,6 +11492,13 @@
                 "null"
               ]
             },
+            "message": {
+              "description": "Why the prompt is a message, not a worker's assignment (a note, a message to a\ncoordinator, not the sender's worker): no verdict is awaited for it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "pane_id": {
               "description": "The pane the prompt was typed into.",
               "type": "string"
@@ -12084,6 +12107,11 @@
             {
               "const": "exited",
               "description": "The agent exited or its pane closed without a verdict.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The prompt is a message, not a worker's assignment: no verdict is awaited; see\n`assignment.message`.",
               "type": "string"
             },
             {

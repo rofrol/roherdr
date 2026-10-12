@@ -27,6 +27,18 @@
 //! left) that brings an open, started assignment no verdict marks it stopped without one until
 //! the pane's next turn starts.
 //!
+//! Only a prompt from a coordination tenure's pane to a pane that is its worker is an
+//! assignment that awaits a verdict: a worker it started (`agent.start` from its pane, recorded
+//! by [`register_worker_pane`]) or one registered to it (a worker-role tab with no other owner,
+//! claimed by the first coordinator that prompts it). A prompt marked as a note
+//! (`agent prompt --note`), a prompt into another coordinator's pane, and a prompt from a
+//! coordinator to a pane that is not its worker are messages: herdr types and confirms them,
+//! and their record closes at once, for good, as a message ([`Assignment::message`]), so no
+//! verdict is awaited and no supervision finding follows them. The supervision sweep closes the
+//! open records it recognizes as messages the same way ([`close_messages`]), also those written
+//! before this rule. A prompt sent from a pane that holds no tenure is followed as before (its
+//! verdict for `agent.wait_verdict`), but no coordinator owns it, so supervision ignores it.
+//!
 //! A verdict counts as delivered only when its waiter acknowledges it (`agent.ack_verdict`, on
 //! the connection of the `agent.wait_verdict` that answered with it or on its own), not when
 //! the answer is written: a waiter killed between the two leaves it undelivered.
@@ -110,6 +122,19 @@ pub(crate) struct Assignment {
     /// left), while the assignment stayed open; cleared when the pane's next turn starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) turn_closed: Option<ClosedTurn>,
+    /// The prompt is a message, not a worker's task: it closed for good when herdr learned
+    /// that, and no verdict is awaited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) message: Option<Message>,
+}
+
+/// Why a prompt is a message rather than an assignment, and since when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Message {
+    /// Why, in words: a note, a message to a coordinator, not the sender's worker.
+    pub(crate) reason: String,
+    /// Unix milliseconds.
+    pub(crate) at_ms: u64,
 }
 
 /// A turn of an assignment's agent that closed after herdr accepted the prompt: a turn end
@@ -129,9 +154,9 @@ pub(crate) struct ClosedTurn {
 }
 
 impl Assignment {
-    /// Neither a verdict nor a newer prompt closed it.
+    /// Neither a verdict nor a newer prompt closed it, and it is not a message.
     pub(crate) fn is_open(&self) -> bool {
-        self.verdict.is_none() && self.superseded.is_none()
+        self.verdict.is_none() && self.superseded.is_none() && self.message.is_none()
     }
 }
 
@@ -190,6 +215,7 @@ static TEST_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 pub(crate) fn set_test_dir(dir: Option<PathBuf>) {
     *lock(&TEST_DIR) = dir;
     *lock(&STORE) = Store::default();
+    *lock(&WORKER_PANES) = None;
 }
 
 #[cfg(test)]
@@ -281,8 +307,8 @@ fn prune(store: &mut Store) {
     }
 }
 
-/// Registers a prompt herdr accepted. `transcript` is the agent's transcript now, whose length
-/// becomes the anchor.
+/// Registers a prompt herdr accepted as an assignment ([`accepted_as`] without a message).
+#[cfg(test)]
 pub(crate) fn accepted(
     request_id: &str,
     pane_id: &str,
@@ -291,6 +317,25 @@ pub(crate) fn accepted(
     owner_pane: Option<&str>,
     text: &str,
     transcript: Option<&Path>,
+) {
+    accepted_as(
+        request_id, pane_id, agent, worker, owner_pane, text, transcript, None,
+    );
+}
+
+/// Registers a prompt herdr accepted. `transcript` is the agent's transcript now, whose length
+/// becomes the anchor. With `message`, why the prompt is a message, which closes its record at
+/// once.
+#[allow(clippy::too_many_arguments)] // one field per fact the record keeps
+pub(crate) fn accepted_as(
+    request_id: &str,
+    pane_id: &str,
+    agent: Option<&str>,
+    worker: Option<&str>,
+    owner_pane: Option<&str>,
+    text: &str,
+    transcript: Option<&Path>,
+    message: Option<String>,
 ) {
     let anchor = transcript
         .and_then(|path| std::fs::metadata(path).ok())
@@ -316,10 +361,119 @@ pub(crate) fn accepted(
         answered_ms: None,
         delivered_ms: None,
         turn_closed: None,
+        message: message.map(|reason| Message {
+            reason,
+            at_ms: now_ms(),
+        }),
     };
+    let is_message = record.message.is_some();
     persist(&record);
     store.records.insert(record.request_id.clone(), record);
     prune(&mut store);
+    drop(store);
+    if is_message {
+        closed(request_id);
+    }
+}
+
+/// Closes, for good, each open assignment `classify` names a message (with the reason), and
+/// returns the requests it closed: the supervision sweep's reconciliation of prompts that were
+/// never worker tasks.
+pub(crate) fn close_messages(classify: impl Fn(&Assignment) -> Option<String>) -> Vec<String> {
+    let found: Vec<(String, String)> = store()
+        .records
+        .values()
+        .filter(|record| record.is_open())
+        .filter_map(|record| classify(record).map(|reason| (record.request_id.clone(), reason)))
+        .collect();
+    let mut closed_now = Vec::new();
+    for (request_id, reason) in found {
+        let changed = update(&request_id, |record| {
+            if !record.is_open() {
+                return false;
+            }
+            record.message = Some(Message {
+                reason,
+                at_ms: now_ms(),
+            });
+            record.stopped_ms = None;
+            record.turn_closed = None;
+            true
+        });
+        if changed {
+            closed(&request_id);
+            closed_now.push(request_id);
+        }
+    }
+    closed_now
+}
+
+/// The coordinator that owns a pane worker: the tenure that started it or claimed it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkerPaneOwner {
+    pub(crate) coordinator_id: String,
+    /// Its tenure's repository: a later tenure of the same repository (a handoff, a resume)
+    /// owns the worker too.
+    pub(crate) repo: String,
+}
+
+static WORKER_PANES: Mutex<Option<BTreeMap<String, WorkerPaneOwner>>> = Mutex::new(None);
+
+/// The file of the pane workers' owners, beside the assignments (a subdirectory, which the
+/// assignments' reader skips).
+fn worker_panes_file() -> Option<PathBuf> {
+    store_dir().map(|dir| dir.join("workers").join("panes.json"))
+}
+
+fn worker_panes() -> MutexGuard<'static, Option<BTreeMap<String, WorkerPaneOwner>>> {
+    let mut panes = lock(&WORKER_PANES);
+    if panes.is_none() {
+        let read = worker_panes_file()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        *panes = Some(read);
+    }
+    panes
+}
+
+fn persist_worker_panes(panes: &BTreeMap<String, WorkerPaneOwner>) {
+    let Some(path) = worker_panes_file() else {
+        return;
+    };
+    let result = (|| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let text = serde_json::to_string(panes).map_err(std::io::Error::other)?;
+        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &path)
+    })();
+    if let Err(error) = result {
+        warn!(%error, "cannot store the pane workers' owners");
+    }
+}
+
+/// The agent in `pane_id` is a worker of `owner` (it started it, or claimed it), or, with
+/// `None`, of nobody (an agent started there by a pane that holds no tenure).
+pub(crate) fn register_worker_pane(pane_id: &str, owner: Option<WorkerPaneOwner>) {
+    let mut guard = worker_panes();
+    let panes = guard.get_or_insert_with(BTreeMap::new);
+    let changed = match owner {
+        Some(owner) => panes.insert(pane_id.to_string(), owner.clone()) != Some(owner),
+        None => panes.remove(pane_id).is_some(),
+    };
+    if changed {
+        persist_worker_panes(panes);
+    }
+}
+
+/// The coordinator that owns the worker in `pane_id`, if one does.
+pub(crate) fn worker_pane_owner(pane_id: &str) -> Option<WorkerPaneOwner> {
+    worker_panes()
+        .as_ref()
+        .and_then(|panes| panes.get(pane_id).cloned())
 }
 
 /// The assignment of `request_id`, also one another server recorded after this one read the
@@ -1157,6 +1311,10 @@ pub(crate) fn info(assignment: &Assignment) -> crate::api::schema::AgentAssignme
             .map(|superseded| superseded.by.clone()),
         answered_ms: assignment.answered_ms,
         delivered_ms: assignment.delivered_ms,
+        message: assignment
+            .message
+            .as_ref()
+            .map(|message| message.reason.clone()),
     }
 }
 
@@ -1213,6 +1371,7 @@ mod tests {
             answered_ms: None,
             delivered_ms: None,
             turn_closed: None,
+            message: None,
         }
     }
 

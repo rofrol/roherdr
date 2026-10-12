@@ -445,6 +445,7 @@ pub(super) fn prompt_agent_turn(
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
                 caller_pane_id: params.caller_pane_id,
+                note: params.note,
                 wait: None,
                 follow_turn: true,
             }),
@@ -547,6 +548,7 @@ pub(super) fn prompt_agent_tracked(
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
                 caller_pane_id: params.caller_pane_id,
+                note: params.note,
                 wait: None,
                 follow_turn: true,
             }),
@@ -609,6 +611,7 @@ pub(super) fn prompt_agent_confirmed(
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
                 caller_pane_id: params.caller_pane_id,
+                note: params.note,
                 wait: None,
                 follow_turn: false,
             }),
@@ -1285,6 +1288,14 @@ pub(super) fn wait_agent_verdict(
                 answered_verdict = true;
                 return ended(
                     AgentVerdictWaitReason::Verdict,
+                    Some(followed),
+                    Some(assignment),
+                    None,
+                );
+            }
+            if assignment.message.is_some() {
+                return ended(
+                    AgentVerdictWaitReason::Message,
                     Some(followed),
                     Some(assignment),
                     None,

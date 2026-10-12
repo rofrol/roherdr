@@ -21,7 +21,9 @@ impl App {
     }
 
     /// Registers a prompt herdr accepted for the pane's agent, anchored at the end of the
-    /// agent's transcript now, owned by `caller_pane` (the coordinator that sent it).
+    /// agent's transcript now, owned by `caller_pane` (the coordinator that sent it). A note,
+    /// or a prompt that is not from a coordinator to its worker, is registered as a message
+    /// ([`Self::prompt_message_reason`]): closed at once, awaiting no verdict.
     pub(super) fn register_assignment(
         &self,
         ws_idx: usize,
@@ -29,6 +31,7 @@ impl App {
         request_id: &str,
         text: &str,
         caller_pane: Option<&str>,
+        note: bool,
     ) {
         let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
             return;
@@ -45,7 +48,8 @@ impl App {
         let owner = caller_pane
             .filter(|pane| !pane.trim().is_empty())
             .map(|pane| self.canonical_pane_id(pane));
-        crate::assignments::accepted(
+        let message = self.prompt_message_reason(ws_idx, pane_id, &public, owner.as_deref(), note);
+        crate::assignments::accepted_as(
             request_id,
             &public,
             agent,
@@ -53,7 +57,100 @@ impl App {
             owner.as_deref(),
             text,
             transcript.as_deref(),
+            message,
         );
+    }
+
+    /// Why a prompt into `target` (the public id of `pane_id`) from `owner` is a message rather
+    /// than a worker's assignment, or `None` when it is one. Only a prompt from a coordination
+    /// tenure's pane to its worker is an assignment: a worker it started
+    /// ([`Self::register_started_worker`]), or one registered to it, which a worker-role tab
+    /// nobody owns becomes when its first coordinator prompts it. A note, a prompt into a
+    /// coordinator's pane and a coordinator's prompt to a pane that is not its worker are
+    /// messages. A prompt sent from a pane without a tenure stays followed for its verdict, as
+    /// before; no coordinator owns it, so supervision ignores it.
+    fn prompt_message_reason(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        target: &str,
+        owner: Option<&str>,
+        note: bool,
+    ) -> Option<String> {
+        if note {
+            return Some("a note (`agent prompt --note`)".into());
+        }
+        let coordinators = crate::workers::coordinators()?;
+        if let Some(tenure) = coordinators.coordinator_of_pane(target) {
+            return Some(format!(
+                "a message to coordinator {} (its pane {target})",
+                tenure.coordinator_id
+            ));
+        }
+        let sender = coordinators.coordinator_of_pane(owner?)?;
+        match crate::assignments::worker_pane_owner(target) {
+            Some(worker_owner) if worker_owner.repo == sender.repo => None,
+            Some(worker_owner) => Some(format!(
+                "a message from coordinator {} to a worker of coordinator {}",
+                sender.coordinator_id, worker_owner.coordinator_id
+            )),
+            None if self.pane_tab_role(ws_idx, pane_id)
+                == Some(crate::api::schema::TabRole::Worker) =>
+            {
+                crate::assignments::register_worker_pane(
+                    target,
+                    Some(crate::assignments::WorkerPaneOwner {
+                        coordinator_id: sender.coordinator_id,
+                        repo: sender.repo,
+                    }),
+                );
+                None
+            }
+            None => Some(format!(
+                "a message from coordinator {} to pane {target}, which is not its worker",
+                sender.coordinator_id
+            )),
+        }
+    }
+
+    /// The role of the tab that holds `pane_id`.
+    fn pane_tab_role(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<crate::api::schema::TabRole> {
+        self.state
+            .workspaces
+            .get(ws_idx)?
+            .tabs
+            .iter()
+            .find(|tab| tab.panes.contains_key(&pane_id))?
+            .role
+    }
+
+    /// An agent was started in `pane_id` by `caller_pane`: it is a worker of the coordination
+    /// tenure that pane holds, else of nobody (a stale owner of the pane is forgotten).
+    pub(super) fn register_started_worker(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        caller_pane: Option<&str>,
+    ) {
+        let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
+            return;
+        };
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return;
+        };
+        let owner = caller_pane
+            .filter(|pane| !pane.trim().is_empty())
+            .map(|pane| self.canonical_pane_id(pane))
+            .and_then(|pane| coordinators.coordinator_of_pane(&pane))
+            .map(|tenure| crate::assignments::WorkerPaneOwner {
+                coordinator_id: tenure.coordinator_id,
+                repo: tenure.repo,
+            });
+        crate::assignments::register_worker_pane(&public, owner);
     }
 
     /// The pane's agent reported a turn end: reads its transcript once for the pane's open

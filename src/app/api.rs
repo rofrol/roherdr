@@ -1019,6 +1019,12 @@ impl App {
         pane_id: crate::layout::PaneId,
         event: crate::ghostty::FocusEvent,
     ) {
+        if event == crate::ghostty::FocusEvent::Lost {
+            // A supervision notice waits while its coordinator's pane is focused.
+            if let Some(public) = self.public_pane_id(ws_idx, pane_id) {
+                crate::workers::supervision::pane_focus_lost(&public);
+            }
+        }
         let Some(runtime) = self.state.workspaces.get(ws_idx).and_then(|_| {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)

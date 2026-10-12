@@ -2858,6 +2858,11 @@ def recorded_verdict(say, args, record):
     if reason == "exited":
         say("the agent exited without a verdict")
         sys.exit(EXIT_VERDICT_AGENT_EXITED)
+    if reason == "message":
+        why = (result.get("assignment") or {}).get("message") or "a message"
+        say(f"prompt request {args.request} is a message, not a worker's assignment ({why}); "
+            f"herdr awaits no verdict for it")
+        sys.exit(2)
     if reason == "superseded":
         newer = (result.get("assignment") or {}).get("superseded_by") or "?"
         pane = result.get("pane_id") or (record or {}).get("pane") or args.pane

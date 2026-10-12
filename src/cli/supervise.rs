@@ -27,16 +27,17 @@ const USAGE: &str = "usage:
       one shows \"cannot establish progress\": quiet output is never a
       finding. The sweep only reports: it never waits, retries, kills,
       restarts, clears a state or marks work done.
-      Each new or escalated finding notifies the herdr repository's
-      coordinator (its pane), whose inbox this report is: read from that
-      pane, it marks the findings that hold seen by its tenure, and shows
-      `new` beside those it had not seen. Herdr also types a notice of each
-      new or escalated finding (a fixed template; the finding's text quoted
+      Supervision makes no sound and no notification: findings show in the
+      Supervision tab and the `?` list. This report is the herdr repository's
+      coordinator's inbox: read from that pane, it marks the findings that
+      hold seen by its tenure, and shows `new` beside those it had not seen.
+      Herdr also types a notice of each new or escalated finding (a fixed
+      template starting with `herdr supervision`; the finding's text quoted
       as data) into the pane of the coordinator that owns it, and a digest
       of every owner's findings, or the unowned ones, into the herdr
       repository's coordinator's pane, only when that agent rests (a turn
-      boundary); the notices wait while it works. A finding without an owner
-      herdr can prompt also notifies you at once.
+      boundary) and no client has its pane focused; the notices wait while
+      it works or while you are in its pane.
   --ack FINDING_ID
       Acknowledges an open finding: only from the pane that holds the herdr
       repository's coordination tenure, refused otherwise with
@@ -45,7 +46,8 @@ const USAGE: &str = "usage:
   ack FINDING_ID
       Acknowledges the notices of a finding addressed to your coordination
       tenure, from the pane that holds it (reading the report does not). If
-      your turn after a notice ends without it, herdr alerts the user once.
+      your turn after a notice ends without it, the finding's `?` entry says
+      so.
       From the herdr repository's coordinator it also acknowledges the
       finding, as --ack does.";
 

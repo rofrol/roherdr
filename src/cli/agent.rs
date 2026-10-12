@@ -991,7 +991,7 @@ fn agent_rename(args: &[String], scope: NameScope) -> std::io::Result<i32> {
 fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!(
-            "usage: herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]"
+            "usage: herdr agent prompt <target> <text> [--note] [--wait] [--until STATUS]... [--timeout MS]"
         );
         return Ok(2);
     };
@@ -1000,6 +1000,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         return Ok(2);
     };
     let mut wait = false;
+    let mut note = false;
     let mut until = Vec::new();
     let mut timeout_ms = None;
     let mut index = 2;
@@ -1007,6 +1008,11 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         match args[index].as_str() {
             "--wait" => {
                 wait = true;
+                index += 1;
+            }
+            // A message, not a worker's task: herdr awaits no verdict for it.
+            "--note" => {
+                note = true;
                 index += 1;
             }
             "--until" => {
@@ -1050,7 +1056,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         return Ok(2);
     }
     if wait && until.is_empty() {
-        match prompt_and_wait_for_turn(target, text, &scope, timeout_ms)? {
+        match prompt_and_wait_for_turn(target, text, &scope, timeout_ms, note)? {
             TurnWait::Done(exit_code) => return Ok(exit_code),
             TurnWait::Untracked => eprintln!(
                 "herdr: agent {target} does not report its turns; waiting for its state instead, which may match a turn that was already running"
@@ -1062,6 +1068,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
             id: "cli:agent:prompt_confirmed".into(),
             method: Method::AgentPromptConfirmed(AgentPromptConfirmedParams {
                 caller_pane_id: super::target::caller_pane_id(),
+                note,
                 target: target.clone(),
                 prefer_workspace_id: scope.prefer_workspace_id.clone(),
                 text: text.clone(),
@@ -1080,6 +1087,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             caller_pane_id: super::target::caller_pane_id(),
+            note,
             follow_turn: false,
             target: target.clone(),
             prefer_workspace_id: scope.prefer_workspace_id,
@@ -1134,12 +1142,14 @@ fn prompt_and_wait_for_turn(
     text: &str,
     scope: &NameScope,
     timeout_ms: Option<u64>,
+    note: bool,
 ) -> std::io::Result<TurnWait> {
     if timeout_ms.is_none() {
         let response = super::send_request(&Request {
             id: "cli:agent:prompt_tracked".into(),
             method: Method::AgentPromptTracked(AgentPromptTrackedParams {
                 caller_pane_id: super::target::caller_pane_id(),
+                note,
                 target: target.to_string(),
                 prefer_workspace_id: scope.prefer_workspace_id.clone(),
                 text: text.to_string(),
@@ -1161,6 +1171,7 @@ fn prompt_and_wait_for_turn(
         id: "cli:agent:prompt_turn".into(),
         method: Method::AgentPromptTurn(AgentPromptTurnParams {
             caller_pane_id: super::target::caller_pane_id(),
+            note,
             target: target.to_string(),
             prefer_workspace_id: scope.prefer_workspace_id.clone(),
             text: text.to_string(),
@@ -1395,7 +1406,9 @@ fn print_agent_help() {
     eprintln!("  herdr agent get <target>");
     eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
-    eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
+    eprintln!(
+        "  herdr agent prompt <target> <text> [--note] [--wait] [--until STATUS]... [--timeout MS]"
+    );
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent awaiting-reply [--pane PANE_ID] [QUESTION]");
