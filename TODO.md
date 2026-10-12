@@ -2354,6 +2354,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      Usage view rendering the same query (spaces x days, drill into
      models and items).
 
+- [ ] A pause button on a space for when tokens run short (the user, [t-q5rybg3y]
+  2026-10-12: "maybe a pause button on a herdr space that I can press when
+  I run short of tokens? ask the models", "as a TODO"; round of
+  2026-10-12, sol, MiMo, DeepSeek agreeing):
+  1. One button pauses a space: new worker starts are held (the same
+     admission chokepoint as the usage gate's pending starts, the item and
+     its held state persisted before any start); running workers finish
+     their current turn, then hold; the coordinator gets one "paused since
+     <time>: <reason>" notice and its next herdr-driven prompt is held,
+     never silently swallowed. Nothing is killed; the landing path (verify,
+     cherry-pick, install, push) of a run already past review finishes.
+  2. Resume only by the same button (or `herdr space resume`), never by the
+     usage gate reopening; held starts resume in order, exactly once.
+  3. Per space by default; a separate, labelled "pause all"; no
+     per-provider pause (the usage gate already does that).
+  4. The space header shows a pause icon with the reason and what still
+     runs ("paused, 2 turns finishing, 4 starts held"); its right-click
+     menu sets the reason; `herdr todo queue pause` maps onto it; the state
+     survives restarts and handoffs.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
