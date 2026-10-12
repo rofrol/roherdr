@@ -66,6 +66,30 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      (settings.json, hooks, skills, CLAUDE.md), AGENTS.policy.md, .herdr,
      git config and excludes, install scripts, anything holding tokens.
 
+- [ ] Turn the todo skill's new rules into herdr mechanisms (the user, [t-cndvjrq2]
+  2026-10-12: "a skill? sounds non-deterministic; ask the models";
+  round 20261012-031249-6075, sol, MiMo, DeepSeek agreeing). The
+  coordinator added three rules to the todo skill (dotfiles d48f4a9);
+  replace each with enforcement, then cut the text:
+  1. Tenure: `todo run`, `worker start` and `agent prompt` to a worker
+     refuse from a caller without a coordinator tenure (bound to the
+     session identity, not a pane string the caller passes), naming the
+     command that claims it; a Stop of a tenure with unacknowledged
+     findings is blocked; ack only by `supervise.ack <id>` with
+     ownership checked.
+  2. Failures: herdr records every failed CLI/API call and every
+     undelivered prompt itself (a finding to the caller's coordinator and
+     the herdr coordinator), with the full stdout/stderr and exit status
+     captured inside the CLI before a shell pipe can drop it; a local
+     durable outbox when the server is unreachable. The skill keeps only
+     the narration rule (tell the user what herdr's reply says; never
+     "pending" without it), which hooks cannot see.
+  3. Approval: a worker's approval-required refusal is a structured event
+     that creates a `?` entry naming the pane (not prose detection); with
+     the grants item, a protected step without a grant is refused at the
+     operation. The skill keeps only "never reword a task to get past a
+     refusal".
+
 - [ ] An open assignment whose transcript is missing at startup is a finding [t-tr3kuvje]
   (follows from [t-276mtaqw]: slice 2 leaves an assignment whose transcript
   is missing when the server starts, without a Stop mark, unflagged until
