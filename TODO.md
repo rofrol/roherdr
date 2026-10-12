@@ -2552,6 +2552,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   lands.
   Asked 2026-10-12 (the user: "loss of memory between items and shallower
   review: how do others counter it? ask the models").
+  Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
+  memory as small, scoped, versioned repository instructions (Copilot
+  and path instructions, CodeRabbit path instructions and learnings,
+  Devin knowledge and playbooks, Cursor rules, CLAUDE.md/AGENTS.md,
+  OpenHands path-triggered microagents) plus code retrieval (Aider's repo
+  map, Greptile's graph), not one long context; auto-accumulated lesson
+  stores go stale and bloat prompts. Review depth comes from codebase
+  access, not a bigger diff prompt: a diff-only reviewer structurally
+  misses the bugs the resident coordinator caught (a helper's guards, a
+  documented port, a contract change in a regenerated schema). Agreed
+  countermeasures: (1) a deterministic context pack for draft and review
+  (the item, its linked decisions, its run history with failure reasons,
+  `git log` and ripgrep hits for the paths and symbols the item names);
+  (2) the review call gets bounded read-only repository tools; (3) a
+  short checklist (about 20 lines) distilled from caught bug classes,
+  each line with its source; (4) each finding cites file:line and how it
+  was verified, uncited findings are dropped; (5) generated, schema and
+  contract paths are never cut by the 200 KB diff limit; (6) a bug class
+  caught twice becomes a check, not a memory; (7) the user's answers are
+  written back into TODO.md/DECISIONS.md at decision time (already the
+  rule). Measure: a golden set of the coordinator's past catches replayed
+  blind against the new reviewer, and shadow-running both on the same
+  items. Second specialised reviewers only for high-risk paths (DeepSeek)
+  or not at this scale (MiMo).
+  The user agreed 2026-10-12 to a short-lived session per conversation
+  starting from a herdr snapshot ("it can be done; ask the models").
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
