@@ -118,6 +118,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   switch; worker policies deny the key file. Not yet wired to any worker:
   slice 2 does that (pi with an Anthropic model through the proxy, then
   the fallback at the subscription limit and the usage widget).
+  Slice 2 landed 2026-10-12 (b7553a43, a pi worker): `todo run --agent
+  pi-anthropic` runs pi with a private agent dir whose `herdr-anthropic`
+  provider points at a per-worker 127.0.0.1 listener; the token reaches pi
+  only through `${HERDR_ANTHROPIC_PROXY_TOKEN}` interpolation; the cap gate at
+  creation, dispatch and retry; costs in results and journals; a credit line
+  in the usage widget. Left (slice 3): the model is hard-coded to an old
+  Sonnet id: make it a setting defaulting to the newest Claude model
+  (claude-sonnet-5-5 or claude-opus-5-5); an automatic cycle rollover on the
+  8th; the fallback to this agent when the subscription gate closes; the
+  proxy surviving a server handoff.
 
 - [ ] A coordinator can run for the home (dotfiles) repository (the user, [t-6udxxqqr]
   2026-10-12: "I cannot start a coordinator in ~; add it to the TODO as
