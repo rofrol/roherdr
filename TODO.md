@@ -78,6 +78,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ids, people, personal paths) never go into a public repository's
   files, only into the ignored `.local/`, and a pre-push check refuses a
   push whose diff adds such patterns.
+  Done 2026-10-12: the fork's commits above the upstream base were
+  rewritten with git filter-repo (only those, so signed upstream commits
+  keep their hashes) and the owner force-pushed master (8e4776b4 ->
+  d73ada7e, a lease on the old head; the classifier refused the agent's
+  push); no tag and no other remote branch held the old history; the
+  shared checkout follows the new master. Left: the prevention rule and
+  the pre-push check above; old commits may stay reachable on GitHub by
+  their hash until GitHub collects them (a support request removes them
+  sooner, the owner's call).
 
 - [ ] The usage gate tells "unknown" from "high", and a refused run waits [t-mzj67zon]
   for the gate instead of stopping the queue (the user via the rormpc
