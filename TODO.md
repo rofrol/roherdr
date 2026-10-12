@@ -327,6 +327,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   counted. No periodic audit timer.
   Fix a in flight 2026-10-12: worker w277 (pi-anthropic) in worktree
   `../herdr-worktrees/consult-rule10`, base 8a946bbbb.
+  Fix a landed 2026-10-12: 9c8985ea0 (worker w277, verified), consult rounds
+  now prepend `plugins/consult/rule10-preamble.md`.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
@@ -3039,6 +3041,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   guests.
   Decided by the user 2026-10-12 (d-nwqqrjxw): approved, queued at the
   end of "Next, in order".
+
+- [ ] The supervisor drives the TODO itself: a dirty TODO.md starts an [t-lpqiube5]
+  analysis agent; a clean one starts an agent per item in order, with a
+  funding fallback (the user, 2026-10-12: "maybe like this: when TODO.md
+  is dirty, the supervisor starts an agent to analyse it. When it is ok,
+  it starts an agent on each TODO item in turn, deterministically: first
+  with the $200 Anthropic credits, then the Anthropic subscription, when
+  credits run short pi with Sol, etc. Ask the models").
 
 ## Proposed
 
