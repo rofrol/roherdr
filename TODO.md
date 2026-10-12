@@ -77,6 +77,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `.herdr/checks.toml` (roguix-vps has none) cannot use `todo run`, so its
   workers stay on the subscription. This item must cover `worker start`
   (or checks.toml for every coordinated repository) too.
+  Needed first for the queue-mode trial (d-amwperuu, 2026-10-12): queue
+  runs and `todo run --draft` take the default agent too, and the
+  `--draft` and `--auto-review` model calls can go through the API
+  credits instead of `claude -p` on the subscription.
 
 - [ ] `herdr todo run --help` lists `--agent` (follow-up of [t-s6lkxb4v]; the [t-okqf5ugr]
   roguix-vps coordinator, 2026-10-12, read the help, found only `--task
@@ -2536,6 +2540,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   short-lived session per conversation started from a herdr snapshot.
   Note: `--draft` and `--auto-review` call `claude -p` on the user's
   subscription login, not the API credits.
+  Decided by the user 2026-10-12 (d-amwperuu): trial queue mode (`todo
+  queue on`, `--draft`, `--auto-review`) over 20-30 items, measuring cost
+  per landed item, user questions per item and review-caught bugs; the
+  resident coordinator stays only for talking with the user. The
+  automatic switch above waits for the trial's result. Prerequisite found
+  by the coordinator: `todo run --draft` and queue runs take no `--agent`
+  (`src/cli/todo.rs` `parse_draft_run`), so their workers and the draft
+  and review calls would run on the subscription (weekly window ~94%,
+  where the usage gate refuses); the trial starts once [t-s6lkxb4v]
+  lands.
 
 - [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
   Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
