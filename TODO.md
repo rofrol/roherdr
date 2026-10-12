@@ -41,6 +41,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      without a registered handle (a wait-text on a transcript is not a
      handle), via `unaccounted_assignment`.
 
+- [ ] An open assignment whose transcript is missing at startup is a finding [t-tr3kuvje]
+  (follows from [t-276mtaqw]: slice 2 leaves an assignment whose transcript
+  is missing when the server starts, without a Stop mark, unflagged until
+  the next Stop). Decided by the coordinator, per that item's rule
+  "missing evidence is a finding, never silence": when the pane's agent
+  rests and the transcript cannot be read, record `unaccounted_assignment`
+  with the last lifecycle fact "transcript unreadable"; a test.
+
 - [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
   (the user via the chat-hosted coordinator, 2026-10-12: "the process is
   failing here; ask the models"): a TUI worker refused an approved
