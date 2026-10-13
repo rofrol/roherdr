@@ -3736,6 +3736,9 @@ user needs to decide or do.
   read-only/added-only/fail-open behavior; explicit recurring recovery
   remains denied even alongside event-driven wording. The current live
   hook files have no uncommitted changes. Approval must come from the user.
+  Decided by the user 2026-10-13: deploy the whole reviewed delay-hook
+  safeguard patch. Approval covers only the two prepared hook/test files;
+  no settings, permissions, model or billing-route change is included.
 
 ### Decide
 
