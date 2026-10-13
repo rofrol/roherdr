@@ -2990,6 +2990,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   credential is required for that plan. Moved back to approved work; the
   worker must preserve VM isolation and validate setup before execution.
 
+- [ ] Make Opus 5.5 the default in Claude Code and the ask-Claude helper (the user, 2026-10-13: "Opus 5.5 used 2.43 times fewer tokens than Sonnet 5.5 while scoring higher in the official Terminal-Bench 4.0 leaderboard; change it to be the default in Claude Code and ask Claude. Ask the models"). [t-ywxovmb4]
+  User source: https://www.runtheeval.com/sonnet-5-5-vs-opus-5-5/.
+  Approved work; consult the models now, then implement through a worker
+  in queue order. Checked: Claude Code settings currently select `opus`
+  already; the installed ask-Claude Python helper defaults to
+  `claude-sonnet-5-5` unless its environment or CLI flag overrides it.
+  Preserve explicit model overrides, quota checks, no silent fallback,
+  billing route and safeguards. Do not change herdr's standard-Sonnet-only
+  credit tariff or credit worker model as part of this request. Changes to
+  settings.json require approval of the whole prepared patch if needed;
+  no rewrite is needed merely to replace an already-correct setting.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
