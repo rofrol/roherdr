@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo only; other OpenRouter models never by default).
+description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo only; other OpenRouter models never by default).'
 ---
 
 # Consulting an OpenRouter model (Xiaomi MiMo by default)
