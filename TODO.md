@@ -3020,6 +3020,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Plan: Opus 5.5 helper default in queue order, Sonnet still explicit,
   effort unchanged. Claude Code currently has `opus`; exact local alias
   resolution remains worker verification, not an asserted completed test.
+  Follow-up questions from the user 2026-10-13, checked and consulted
+  (round 20261013-094738-3ffb, MiMo + DeepSeek): capped-credit pi still
+  defaults to Sonnet 5.5, and model validation accepts only the audited
+  standard-Sonnet tariffs. The default spend ceiling is $200; that value
+  alone is not evidence of a credit balance or billing route. Claude CLI
+  settings select Opus, independently of authentication/funding. The
+  failed CLI credit-successor branch remains aborted and uninstalled.
+  Calling ask-Claude from pi does not inherit pi's model or capped proxy:
+  it uses the helper's current Sonnet default (unless overridden) and
+  Claude CLI's configured authentication. MiMo's causal wording linking
+  worker config to ask-Claude was rejected: these are separate routes.
+  Both models agree that Opus proxy funding requires audited Opus pricing,
+  reservation/cap/accounting and model-identity tests, not a string swap.
+  This follow-up asked about current state; no paid-route expansion or
+  new billing change is approved by it. The already-approved helper
+  default task remains queued. Timing: none for model routing.
 
 - [ ] Make wait contracts cover all relevant producer outcomes, not one guessed log line (the user, 2026-10-13: a VM reboot wait stayed blocked for about ten hours after the checked work finished, showing the owner as working; fix the process with the models so it cannot recur). [t-at6a6gqb]
   Reported failure: the same narrow boot-line pattern had hung an earlier
@@ -3039,6 +3055,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   via workers in queue order. Do not modify another project's VM/scripts,
   add timer recovery, weaken detection, or promise absolute liveness for
   a producer that remains alive without an observable terminal outcome.
+  Consulted 2026-10-13 (round 20261013-094738-3ffb): MiMo and DeepSeek
+  agree: enumerate known semantic outcomes and remaining unsupported
+  cases, not an exhaustive promise; samples are regression evidence,
+  not a guarantee. Choose the bounded process/doc/test slice: name the
+  producer, attempt/cursor, trigger and positive terminal outcomes;
+  arm observation before triggering action; distinguish start from ready;
+  preserve final-read-on-exit and rotation semantics; require recorded
+  actual output evidence before relying on a textual wait. Reuse existing
+  `wait-text --pid`; no generic supervisor dependency graph is justified
+  by this incident, since the failing script did not use that mechanism.
+  Tests: alternate known output shapes, no newline/split writes, stale
+  attempt rejection, match-versus-exit races, rotation/truncation/missing
+  initial source, source errors. Worker must name existing coverage first.
+  Dismissed: interpreting any boot-start line as readiness, auto-failure on
+  file deletion despite rotation contract, or guaranteeing termination
+  when an alive producer exposes no terminal outcome. Such a missing
+  contract must be reported before relying on it; silence cannot raise an
+  event by itself. No new deadline/timer is chosen or needed for this slice.
+  Timing review: producer exit, source events and lifecycle reconciliation
+  are event-driven; neither model proposed periodic recovery. MiMo's
+  Timing:none label omitted events discussed in its answer; classified
+  those explicitly here. Changes to another project's script remain its
+  coordinator's responsibility, not permission for this session to edit it.
 
 ## Proposed
 
