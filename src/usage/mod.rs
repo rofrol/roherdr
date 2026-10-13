@@ -6,6 +6,7 @@
 //! Observations and rate-limit backoff are shared across herdr instances
 //! through [`cache::UsageCache`].
 
+mod anthropic_api;
 mod cache;
 mod claude;
 mod codex;
@@ -108,6 +109,8 @@ impl UsagePoller {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Provider {
     Claude,
+    // Same vendor as Claude, so its row sits right under it.
+    AnthropicApi,
     Codex,
     // Same vendor as Codex, so its row sits right under it.
     OpenAiApi,
@@ -121,6 +124,7 @@ impl Provider {
     fn id(self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::AnthropicApi => "anthropic_api",
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::DeepSeek => "deepseek",
@@ -133,6 +137,7 @@ impl Provider {
     fn label(self) -> &'static str {
         match self {
             Self::Claude => "Claude",
+            Self::AnthropicApi => "Anthropic · API credits",
             Self::Codex => "Codex",
             Self::Gemini => "Gemini",
             Self::DeepSeek => "DeepSeek",
@@ -145,6 +150,7 @@ impl Provider {
     fn fetch(self, config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
         match self {
             Self::Claude => claude::fetch(),
+            Self::AnthropicApi => anthropic_api::fetch(config),
             Self::Codex => Ok(codex::fetch()?),
             Self::Gemini => Ok(gemini::fetch()?),
             Self::DeepSeek => deepseek::fetch(config),
@@ -157,6 +163,7 @@ impl Provider {
     fn enabled_in(self, config: &UsageConfig) -> bool {
         match self {
             Self::Claude => config.claude,
+            Self::AnthropicApi => config.anthropic_api,
             Self::Codex => config.codex,
             Self::OpenAiApi => config.openai_api,
             Self::Gemini => config.gemini,
@@ -178,6 +185,13 @@ impl Provider {
                     Err(_) => "missing",
                 }
             }
+            Self::AnthropicApi => {
+                return match anthropic_api::admin_key(config) {
+                    Ok(_) => "found",
+                    Err(problem) if problem.unsafe_file => "unsafe",
+                    Err(_) => "missing",
+                }
+            }
             Self::DeepSeek => keys::KeyedProvider::DeepSeek,
             Self::OpenRouter => keys::KeyedProvider::OpenRouter,
             Self::Kimi => keys::KeyedProvider::Kimi,
@@ -190,10 +204,17 @@ impl Provider {
     }
 
     fn warning(self) -> Option<&'static str> {
-        matches!(self, Self::OpenAiApi).then_some(
-            "needs an OpenAI Admin key, which can manage the whole organization; \
-             herdr only reads costs, usage and the spend limit",
-        )
+        match self {
+            Self::OpenAiApi => Some(
+                "needs an OpenAI Admin key, which can manage the whole organization; \
+                 herdr only reads costs, usage and the spend limit",
+            ),
+            Self::AnthropicApi => Some(
+                "needs an Anthropic Admin key, which can manage the whole organization; \
+                 herdr only reads the cost report",
+            ),
+            _ => None,
+        }
     }
 
     /// Shortest gap between fetches, whatever the configured interval.
@@ -210,8 +231,9 @@ impl Provider {
 const OPENAI_API_MIN_REFRESH_SECS: u64 = 15 * 60;
 
 /// Every provider in footer order.
-const ALL_PROVIDERS: [Provider; 7] = [
+const ALL_PROVIDERS: [Provider; 8] = [
     Provider::Claude,
+    Provider::AnthropicApi,
     Provider::Codex,
     Provider::OpenAiApi,
     Provider::Gemini,
@@ -266,6 +288,7 @@ fn enabled_providers(config: &UsageConfig) -> Vec<Provider> {
         ),
         // Opt-in: shows an error row when the key file is missing or unsafe.
         (config.openai_api, Provider::OpenAiApi),
+        (config.anthropic_api, Provider::AnthropicApi),
     ]
     .into_iter()
     .filter_map(|(enabled, provider)| enabled.then_some(provider))
@@ -596,7 +619,14 @@ pub(crate) fn with_freshness(report: &UsageReport, config: &UsageConfig, now: u6
     #[cfg(unix)]
     if let Ok(loaded) = crate::config::load_live_config() {
         let config = loaded.config.workers;
-        if !config.anthropic_api_key_file.is_empty() {
+        // The Admin API's organization-wide cost report, when polled, is
+        // what the Console balance is drawn from; herdr's own proxy ledger
+        // sees only its workers' requests, so it shows only without it.
+        let polled = report
+            .providers
+            .iter()
+            .any(|usage| usage.provider == Provider::AnthropicApi.id());
+        if !polled && !config.anthropic_api_key_file.is_empty() {
             report.providers.push(anthropic_credit_usage(&config));
         }
     }
@@ -922,6 +952,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "claude",
+                "anthropic_api",
                 "codex",
                 "openai_api",
                 "gemini",
@@ -930,12 +961,15 @@ mod tests {
                 "kimi"
             ]
         );
-        let openai = &settings.providers[2];
+        let anthropic = &settings.providers[1];
+        assert!(!anthropic.enabled);
+        assert!(anthropic.warning.is_some());
+        let openai = &settings.providers[3];
         assert!(openai.enabled);
         assert_eq!(openai.credential, "missing");
         assert!(openai.warning.is_some());
         assert_eq!(settings.providers[0].credential, "not_required");
-        assert!(!settings.providers[6].enabled);
+        assert!(!settings.providers[7].enabled);
     }
 
     #[test]

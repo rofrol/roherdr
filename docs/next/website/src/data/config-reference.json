@@ -572,6 +572,36 @@
           "description": "File holding the OpenAI Admin key (read access to usage and costs) on one line. On Unix it must be owned by you and not readable by others (mode 0600). No environment variable is read, so agent panes never inherit the key."
         },
         {
+          "key": "usage.anthropic_api",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show Anthropic API credits spent against the current grant (for example the Max plan's monthly API credits) as spent/granted, from the Admin API cost report: the organization's billed cost from usage.anthropic_credit_since on, across every workspace and API key, since they all draw from the same credits. Off by default because an admin key reads organization-wide billing. Anthropic documents no balance endpoint, so the Console's billing page stays the authority. When on, it replaces the estimate from herdr's own credit proxy ledger."
+        },
+        {
+          "key": "usage.anthropic_admin_key_file",
+          "type": "string",
+          "default": "\"~/.config/herdr/anthropic-admin-key\"",
+          "description": "File holding the Anthropic Admin key on one line. On Unix it must be owned by you and not readable by others (mode 0600). No environment variable is read, so agent panes never inherit the key."
+        },
+        {
+          "key": "usage.anthropic_credit_usd",
+          "type": "integer",
+          "default": "200",
+          "description": "The current Anthropic credit grant in whole US dollars, shown as the limit of usage.anthropic_api."
+        },
+        {
+          "key": "usage.anthropic_credit_since",
+          "type": "string",
+          "default": "\"\"",
+          "description": "First UTC day (YYYY-MM-DD) of the current Anthropic credit grant; billed cost from that day on counts as spent from it. Required by usage.anthropic_api; update it when a new grant arrives."
+        },
+        {
+          "key": "usage.anthropic_credit_expires",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Day (YYYY-MM-DD) the current Anthropic credit grant expires, shown in the usage details. Empty hides it."
+        },
+        {
           "key": "usage.gate_close_percent",
           "type": "integer",
           "default": "90",

@@ -35,6 +35,21 @@ pub struct UsageConfig {
     /// File holding the OpenAI Admin key, readable only by its owner. No
     /// environment variable is read, so the key never reaches agent panes.
     pub openai_admin_key_file: String,
+    /// Read Anthropic API credits spent since the grant through the Admin
+    /// API cost report. Off by default: an admin key reads organization-wide
+    /// billing.
+    pub anthropic_api: bool,
+    /// File holding the Anthropic Admin key, readable only by its owner. No
+    /// environment variable is read, so the key never reaches agent panes.
+    pub anthropic_admin_key_file: String,
+    /// The current credit grant in whole US dollars, shown as the limit.
+    pub anthropic_credit_usd: u32,
+    /// First UTC day (YYYY-MM-DD) of the current credit grant; costs from
+    /// that day on count as spent from it.
+    pub anthropic_credit_since: String,
+    /// Day (YYYY-MM-DD) the current credit grant expires, shown in the
+    /// details. Empty hides it.
+    pub anthropic_credit_expires: String,
     /// `herdr todo run`'s usage gate closes when a window of the run's
     /// provider is at least this many percent used (1-100).
     pub gate_close_percent: u8,
@@ -81,6 +96,11 @@ impl Default for UsageConfig {
             kimi_host: "api.moonshot.ai".to_owned(),
             openai_api: false,
             openai_admin_key_file: "~/.config/herdr/openai-admin-key".to_owned(),
+            anthropic_api: false,
+            anthropic_admin_key_file: "~/.config/herdr/anthropic-admin-key".to_owned(),
+            anthropic_credit_usd: 200,
+            anthropic_credit_since: String::new(),
+            anthropic_credit_expires: String::new(),
             gate_close_percent: DEFAULT_GATE_CLOSE_PERCENT,
             gate_reopen_percent: DEFAULT_GATE_REOPEN_PERCENT,
         }
@@ -138,6 +158,7 @@ mod tests {
         assert!(config.enabled);
         assert!(config.claude && config.codex && config.gemini && config.deepseek);
         assert!(!config.openai_api);
+        assert!(!config.anthropic_api);
         assert_eq!(
             config.usage_gate_thresholds(),
             Ok(UsageGateThresholds {
