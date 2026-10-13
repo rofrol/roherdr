@@ -1501,3 +1501,31 @@ instead of reordering the ack); an unknown session on the old pane is no
 longer fenced; the pane-session map is pruned on pane close and at
 startup; socket-api docs say the fence applies to calls carrying a
 caller pane.
+
+## Rule 10 process safeguards (2026-10-13)
+
+The user asked why a timer workaround reached a design again and to fix
+this process. Consult rounds identified contradictory sweep wording,
+missing plan/decision checks, missing consult context and euphemistic
+internal-event recovery as contributing causes.
+
+Chosen: consultation briefs include Rule 10 and a Timing inventory;
+global and canonical rules prohibit periodic repair of one's own events
+and describe durable state/cursors, producer-event/startup/handoff
+reconciliation and notifications as wake-ups. The delay hook checks added
+TODO/DECISIONS prose and internal-recovery euphemisms, accepts only the
+existing timing categories with local scope, and preserves read-only,
+added-only and fail-open behavior. Explicit event-triggered reconciliation
+remains allowed. Rejected: treating mechanism nouns alone as proof of
+periodicity, or allowing one marker to exempt an unrelated whole task.
+
+Decided by the user 2026-10-13: deploy the whole reviewed two-file hook
+patch. The coordinator reviewed the full proposal, reproduced and fixed
+two event-driven false positives, verified the stopped worker, landed the
+proposal in the configuration repository and confirmed byte identity with
+the deployed files. All 48 isolated tests and whitespace checks passed;
+existing PreToolUse registration was confirmed without changing settings.
+No model, permissions or billing-route changes were included. This is a
+bounded lexical safeguard, not a semantic proof or direct enforcement of
+pi tools. Owner-caught Rule 10 violations remain the process outcome to
+measure; no periodic audit timer was added.
