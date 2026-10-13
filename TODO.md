@@ -3001,6 +3001,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   credit tariff or credit worker model as part of this request. Changes to
   settings.json require approval of the whole prepared patch if needed;
   no rewrite is needed merely to replace an already-correct setting.
+  Consulted 2026-10-13 (round 20261013-093345-b367): MiMo and DeepSeek
+  agree on narrow helper default + skill/test update, explicit overrides,
+  no silent fallback, no quota/billing change, and verifying the existing
+  Claude Code Opus alias rather than rewriting settings unnecessarily.
+  GPT/Sol was excluded as the caller family; no model failed. Timing: none.
+  Act on: preserve `-m` > environment > default; verify alias/model
+  identity and consultation descriptors; keep credit-worker tariff out of
+  scope. Noted: benchmark effort and subscription quota are not equivalent.
+  Dismissed: both models treated the user's official-leaderboard claim as
+  unsupported before direct verification. Subsequently fetched the raw
+  official https://www.tbench.ai/?version=4 page: Opus max 64.85%,
+  8,034,082,467 total tokens; Sonnet max 61.82%, 19,413,047,384 total
+  tokens, each 330 trials. Rounded displayed totals give about 2.43x;
+  exact totals about 2.42x. This supports the user's specific benchmark
+  claim, not a general savings guarantee. The article's 193k/119k AA
+  output-token comparison is a different benchmark and metric.
+  Plan: Opus 5.5 helper default in queue order, Sonnet still explicit,
+  effort unchanged. Claude Code currently has `opus`; exact local alias
+  resolution remains worker verification, not an asserted completed test.
 
 ## Proposed
 
