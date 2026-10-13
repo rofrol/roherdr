@@ -42,20 +42,35 @@ pub struct UsageConfig {
     /// File holding the Anthropic Admin key, readable only by its owner. No
     /// environment variable is read, so the key never reaches agent panes.
     pub anthropic_admin_key_file: String,
-    /// The current credit grant in whole US dollars, shown as the limit.
-    pub anthropic_credit_usd: u32,
-    /// First UTC day (YYYY-MM-DD) of the current credit grant; costs from
-    /// that day on count as spent from it.
-    pub anthropic_credit_since: String,
-    /// Day (YYYY-MM-DD) the current credit grant expires, shown in the
-    /// details. Empty hides it.
-    pub anthropic_credit_expires: String,
+    /// The organization's Anthropic credit grants, as the Console's billing
+    /// page lists them. Billed cost is drawn from them day by day.
+    pub anthropic_credits: Vec<AnthropicCreditGrant>,
     /// `herdr todo run`'s usage gate closes when a window of the run's
     /// provider is at least this many percent used (1-100).
     pub gate_close_percent: u8,
     /// A high usage latch reopens once every window is below this many
     /// percent (1-100, below `gate_close_percent`).
     pub gate_reopen_percent: u8,
+}
+
+/// `[[usage.anthropic_credits]]`: one credit grant of the Anthropic Console
+/// organization.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnthropicCreditGrant {
+    /// The granted amount in whole US dollars.
+    pub usd: u32,
+    /// UTC day (YYYY-MM-DD) the grant arrived ("Date granted").
+    pub granted: String,
+    /// UTC day (YYYY-MM-DD) it expires ("Expires on"); from that day on it
+    /// is gone. Empty: it does not expire.
+    #[serde(default)]
+    pub expires: String,
+    /// A plan's included API credits (the Max plan's monthly grant), which
+    /// Anthropic spends before any other credit. The widget shows this grant
+    /// as spent/granted and the others' remaining balance next to it.
+    #[serde(default)]
+    pub included: bool,
 }
 
 pub(crate) const MIN_USAGE_REFRESH_INTERVAL_SECS: u64 = 60;
@@ -98,9 +113,7 @@ impl Default for UsageConfig {
             openai_admin_key_file: "~/.config/herdr/openai-admin-key".to_owned(),
             anthropic_api: false,
             anthropic_admin_key_file: "~/.config/herdr/anthropic-admin-key".to_owned(),
-            anthropic_credit_usd: 200,
-            anthropic_credit_since: String::new(),
-            anthropic_credit_expires: String::new(),
+            anthropic_credits: Vec::new(),
             gate_close_percent: DEFAULT_GATE_CLOSE_PERCENT,
             gate_reopen_percent: DEFAULT_GATE_REOPEN_PERCENT,
         }

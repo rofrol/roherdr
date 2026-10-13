@@ -38,14 +38,17 @@ PRs.
   organization-wide spend, not prepaid credit left, refreshed at most every
   15 minutes. With a monthly spend limit set on the OpenAI platform it reads
   `$4.20/$20`, coloured by the share used, and red once OpenAI enforces it.
-  Anthropic API credits (an `AN` row, e.g. the Max plan's monthly API
+  Anthropic Console credits (an `AN` row, e.g. the Max plan's monthly API
   credits) are opt-in too (`anthropic_api = true`): they read the Admin API
-  cost report with an Anthropic Admin key in
-  `~/.config/herdr/anthropic-admin-key` (`anthropic_admin_key_file`, mode
-  0600) and show the organization's billed cost since the grant day against
-  the grant, `$58.91/$200` for a Console balance of $141.09. Set the grant
-  with `anthropic_credit_since = "2026-10-12"`, `anthropic_credit_usd = 200`
-  and `anthropic_credit_expires`; update them when a new grant arrives.
+  cost report with a key in `~/.config/herdr/anthropic-admin-key`
+  (`anthropic_admin_key_file`, mode 0600; an Admin key, or a key of a
+  service account with the Admin role that is not scoped to a workspace) and
+  replay the organization's billed cost day by day against the grants the
+  Console's billing page lists, one `[[usage.anthropic_credits]]` table each
+  (`usd`, `granted`, `expires`, and `included = true` for the plan's
+  credits, which Anthropic spends first). The row reads `$76.92/$200 +$9.87`:
+  the plan's grant spent of granted, plus what the other grants have left.
+  Add the new grant when the next one arrives.
   Settings has a `usage` tab with the footer switch and one toggle per
   provider, showing which still lack a key; it changes the `[usage]` section
   of the machine whose footer you see, also over SSH. Turning on the OpenAI

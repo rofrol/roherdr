@@ -433,7 +433,11 @@ fn render_provider_row(
             }
         }
         render_reset_credit_expiry(buffer, row, end, provider, now_unix, palette);
-    } else if let Some(balance) = provider.balances.first() {
+    } else if let Some(balance) = provider
+        .balances
+        .first()
+        .filter(|_| provider.spend.is_empty())
+    {
         // Prepaid balances have no reset window; label them so they do not read as a 5h cell.
         let x = put_segment(
             buffer,
@@ -478,14 +482,26 @@ fn render_provider_row(
             &text,
             Style::default().fg(color),
         );
-        put_segment(
-            buffer,
-            x,
-            row.y,
-            row.right(),
-            " spend",
-            Style::default().fg(palette.overlay0),
-        );
+        // Credits a provider reports beside its spend (Anthropic's grants
+        // other than the plan's) are money left, so they read `+$9.87`.
+        match provider.balances.first() {
+            Some(balance) => put_segment(
+                buffer,
+                x,
+                row.y,
+                row.right(),
+                &format!(" +{}", compact_balance(&balance.total, &balance.currency)),
+                Style::default().fg(palette.text),
+            ),
+            None => put_segment(
+                buffer,
+                x,
+                row.y,
+                row.right(),
+                " spend",
+                Style::default().fg(palette.overlay0),
+            ),
+        };
     } else if !failed {
         let placeholder = if provider.status == ProviderUsageStatus::Pending {
             "…"
@@ -823,7 +839,7 @@ pub(super) fn observed_age(observed_at: u64, now_unix: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{UsageBalance, UsageWindow};
+    use crate::api::schema::{UsageBalance, UsageSpend, UsageWindow};
 
     fn provider(id: &str, label: &str) -> ProviderUsage {
         let mut usage = ProviderUsage::pending(id, label);
@@ -909,6 +925,34 @@ mod tests {
         assert_eq!(rows[1], " AN   2% 47m   12% 6d");
         assert_eq!(rows[2], " OA  87% 47m  100% 6d");
         assert_eq!(rows[3], " DS $13.41 balance");
+    }
+
+    #[test]
+    fn footer_shows_credits_spent_of_a_grant_plus_other_credits_left() {
+        let mut credits = provider("anthropic_api", "Anthropic · API credits");
+        credits.spend.push(UsageSpend {
+            currency: "USD".into(),
+            amount: "76.920000".into(),
+            since: 0,
+            limit: Some("200.00".into()),
+            limit_enforcing: false,
+        });
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![credits.clone()],
+        };
+        assert_eq!(footer_text(&report, 26)[1], " AN $76.92/$200 spend");
+        credits.balances.push(UsageBalance {
+            currency: "USD".into(),
+            total: "9.87".into(),
+            granted: Some("10.00".into()),
+            topped_up: None,
+        });
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![credits],
+        };
+        assert_eq!(footer_text(&report, 26)[1], " AN $76.92/$200 +$9.87");
     }
 
     #[test]

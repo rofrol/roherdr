@@ -1,28 +1,31 @@
-//! Anthropic API credits spent since the current grant, from the Admin API
-//! cost report. Anthropic documents no credit-balance endpoint, so the spend
-//! is the organization's billed cost from the grant's first UTC day on, and
-//! the configured grant is the limit: `$58.91/$200` for a Console balance of
-//! $141.09. Every API key and workspace of the organization draws from the
-//! same credits, so the report is organization-wide, not herdr's own ledger.
-//! The admin key comes only from a private file, never from the environment
-//! that agent panes inherit.
+//! Anthropic Console credits left, from the Admin API cost report.
+//! Anthropic documents no credit-balance endpoint, so herdr replays the
+//! organization's billed cost day by day against the grants the Console's
+//! billing page lists (configured in `[[usage.anthropic_credits]]`): a plan's
+//! included credits first, as Anthropic spends them, then the others by
+//! soonest expiry. The row reads `$76.92/$200 +$9.87`: the included grant
+//! spent of granted, plus what the other grants have left. Every API key and
+//! workspace of the organization draws from the same credits, so the report
+//! is organization-wide, not herdr's own ledger. The admin key comes only
+//! from a private file, never from the environment that agent panes inherit.
 
 use serde::Deserialize;
 
 use super::FetchError;
-use crate::api::schema::{ProviderUsage, UsageAccount, UsageSpend};
-use crate::config::UsageConfig;
+use crate::api::schema::{ProviderUsage, UsageAccount, UsageBalance, UsageSpend};
+use crate::config::{AnthropicCreditGrant, UsageConfig};
 
 const COST_REPORT_URL: &str = "https://api.anthropic.com/v1/organizations/cost_report";
 const API_VERSION: &str = "2023-06-01";
-/// Daily buckets; a credit cycle has at most 31, the endpoint's page maximum.
+/// Daily buckets; 31 is the endpoint's page maximum.
 const BUCKETS_PER_PAGE: u32 = 31;
-/// A cycle fits one page; more pages than this means the cursor is misbehaving.
-const MAX_PAGES: usize = 8;
+/// About 16 months of days; more pages than this means the cursor is
+/// misbehaving or a grant that ended long ago is still configured.
+const MAX_PAGES: usize = 16;
 
 #[derive(Deserialize)]
 struct Page {
-    // Required: a reply without them must not read as a cycle with no costs.
+    // Required: a reply without them must not read as a period with no costs.
     data: Vec<Bucket>,
     has_more: bool,
     next_page: Option<String>,
@@ -30,6 +33,8 @@ struct Page {
 
 #[derive(Deserialize)]
 struct Bucket {
+    /// RFC 3339 start of the UTC day.
+    starting_at: String,
     #[serde(default)]
     results: Vec<CostResult>,
 }
@@ -41,18 +46,42 @@ struct CostResult {
     currency: String,
 }
 
+/// A configured grant during the replay.
+#[derive(Debug)]
+struct Grant {
+    amount: i128,
+    granted: String,
+    expires: Option<String>,
+    included: bool,
+    remaining: i128,
+}
+
+impl Grant {
+    fn active_on(&self, day: &str) -> bool {
+        self.granted.as_str() <= day && self.expires.as_deref().is_none_or(|end| day < end)
+    }
+}
+
 pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
     let key = admin_key(config).map_err(|problem| FetchError::Setup {
         setup: setup_steps(config, &problem),
         message: problem.message,
     })?;
-    let since_day = config.anthropic_credit_since.trim();
-    let since = day_start_unix(since_day).ok_or_else(|| FetchError::Setup {
-        message: "usage.anthropic_credit_since is not set to the grant's first day".into(),
+    let mut grants = grants(&config.anthropic_credits).map_err(|message| FetchError::Setup {
+        message,
         setup: grant_steps(),
     })?;
-    let costs = fetch_all(&format!("{since_day}T00:00:00Z"), &key)?;
-    let spent = spent_nano_cents(&costs)?;
+    let first_day = grants
+        .iter()
+        .map(|grant| grant.granted.clone())
+        .min()
+        .ok_or_else(|| FetchError::Setup {
+            message: "no [[usage.anthropic_credits]] grant is configured".into(),
+            setup: grant_steps(),
+        })?;
+    let days = fetch_all(&format!("{first_day}T00:00:00Z"), &key)?;
+    let uncovered = replay(&mut grants, &days)?;
+    let today = today_utc(super::now_unix());
     let mut usage = ProviderUsage::pending("anthropic_api", "Anthropic · API credits");
     usage.account = Some(UsageAccount {
         source: format!(
@@ -61,27 +90,190 @@ pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
         ),
         ..UsageAccount::default()
     });
-    let limit = u64::from(config.anthropic_credit_usd) * 100;
-    usage.spend.push(UsageSpend {
-        currency: "USD".into(),
-        amount: dollars(spent),
-        since,
-        limit: Some(dollars(i128::from(limit) * NANO_PER_CENT)),
-        // Spending the grant does not prove Anthropic blocks requests: the
-        // organization may hold other credits. The share used still colours it.
-        limit_enforcing: false,
-    });
-    let expires = config.anthropic_credit_expires.trim();
-    usage.notes.push(if expires.is_empty() {
-        format!("credit granted {since_day}")
-    } else {
-        format!("credit granted {since_day}, expires {expires}")
-    });
+    usage.spend.extend(included_spend(&grants, &today));
+    usage.balances.extend(other_balance(&grants, &today));
+    for grant in &grants {
+        usage.notes.push(grant_note(grant, &today));
+    }
+    if uncovered > 0 {
+        usage.notes.push(format!(
+            "US${} billed beyond the configured grants",
+            cents(uncovered)
+        ));
+    }
     usage.notes.push(
-        "organization-wide billed cost since the grant day; the Console balance is the authority"
+        "replayed from the organization-wide cost report by UTC day; the Console balance is \
+         the authority"
             .into(),
     );
     Ok(usage)
+}
+
+fn grants(configured: &[AnthropicCreditGrant]) -> Result<Vec<Grant>, String> {
+    configured
+        .iter()
+        .map(|grant| {
+            let granted = grant.granted.trim();
+            day_start_unix(granted).ok_or_else(|| {
+                format!("anthropic_credits: granted {granted:?} is not a YYYY-MM-DD day")
+            })?;
+            let expires = grant.expires.trim();
+            let expires =
+                (!expires.is_empty())
+                    .then(|| {
+                        day_start_unix(expires).map(|_| expires.to_owned()).ok_or_else(|| {
+                        format!("anthropic_credits: expires {expires:?} is not a YYYY-MM-DD day")
+                    })
+                    })
+                    .transpose()?;
+            let amount = i128::from(grant.usd) * 100 * NANO_PER_CENT;
+            Ok(Grant {
+                amount,
+                granted: granted.to_owned(),
+                expires,
+                included: grant.included,
+                remaining: amount,
+            })
+        })
+        .collect()
+}
+
+/// Draw each day's cost from the grants active that day: included credits
+/// first, then the soonest to expire. Returns the cost no grant covered. A
+/// negative day (a refund) undoes the latest draws first, into grants still
+/// active that day, and lowers the uncovered cost before that.
+fn replay(grants: &mut [Grant], days: &[(String, i128)]) -> Result<i128, String> {
+    let mut uncovered = 0i128;
+    // (grant, amount) per draw, newest last.
+    let mut draws: Vec<(usize, i128)> = Vec::new();
+    for (day, cost) in days {
+        if *cost < 0 {
+            let mut refund = -*cost;
+            let take = refund.min(uncovered);
+            uncovered -= take;
+            refund -= take;
+            while refund > 0 {
+                let Some((index, amount)) = draws.pop() else {
+                    break;
+                };
+                if !grants[index].active_on(day) {
+                    continue;
+                }
+                let back = refund.min(amount);
+                grants[index].remaining += back;
+                refund -= back;
+                if back < amount {
+                    draws.push((index, amount - back));
+                }
+            }
+            continue;
+        }
+        let mut order = (0..grants.len())
+            .filter(|index| grants[*index].active_on(day))
+            .collect::<Vec<_>>();
+        order.sort_by(|a, b| {
+            let (a, b) = (&grants[*a], &grants[*b]);
+            b.included
+                .cmp(&a.included)
+                .then_with(|| match (&a.expires, &b.expires) {
+                    (Some(a), Some(b)) => a.cmp(b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| a.granted.cmp(&b.granted))
+        });
+        let mut left = *cost;
+        for index in order {
+            let take = left.min(grants[index].remaining);
+            if take > 0 {
+                grants[index].remaining -= take;
+                draws.push((index, take));
+                left -= take;
+            }
+        }
+        uncovered = uncovered
+            .checked_add(left)
+            .ok_or_else(|| "Anthropic cost total overflowed".to_owned())?;
+    }
+    Ok(uncovered)
+}
+
+/// The newest active included grant as spent of granted.
+fn included_spend(grants: &[Grant], today: &str) -> Option<UsageSpend> {
+    let grant = grants
+        .iter()
+        .filter(|grant| grant.included && grant.active_on(today))
+        .max_by(|a, b| a.granted.cmp(&b.granted))?;
+    Some(UsageSpend {
+        currency: "USD".into(),
+        amount: dollars(grant.amount - grant.remaining),
+        since: day_start_unix(&grant.granted).unwrap_or_default(),
+        // Two decimals, so a whole grant reads `$200`.
+        limit: Some(cents(grant.amount)),
+        // Spending the grant does not prove Anthropic blocks requests: the
+        // organization may hold other credits. The share used still colours it.
+        limit_enforcing: false,
+    })
+}
+
+/// What the active grants other than the shown included one have left.
+fn other_balance(grants: &[Grant], today: &str) -> Option<UsageBalance> {
+    let shown = grants
+        .iter()
+        .enumerate()
+        .filter(|(_, grant)| grant.included && grant.active_on(today))
+        .max_by(|(_, a), (_, b)| a.granted.cmp(&b.granted))
+        .map(|(index, _)| index);
+    let others = grants
+        .iter()
+        .enumerate()
+        .filter(|(index, grant)| Some(*index) != shown && grant.active_on(today))
+        .map(|(_, grant)| grant)
+        .collect::<Vec<_>>();
+    if others.is_empty() {
+        return None;
+    }
+    Some(UsageBalance {
+        currency: "USD".into(),
+        total: cents(others.iter().map(|grant| grant.remaining).sum()),
+        granted: Some(cents(others.iter().map(|grant| grant.amount).sum())),
+        topped_up: None,
+    })
+}
+
+fn grant_note(grant: &Grant, today: &str) -> String {
+    let kind = if grant.included { "included" } else { "other" };
+    let expires = grant
+        .expires
+        .as_deref()
+        .map_or_else(String::new, |day| format!(", expires {day}"));
+    let state = if grant.active_on(today) {
+        format!("US${} left", cents(grant.remaining))
+    } else {
+        "not active".to_owned()
+    };
+    format!(
+        "{kind} US${} granted {}{expires}: {state}",
+        cents(grant.amount),
+        grant.granted
+    )
+}
+
+/// `YYYY-MM-DD` of a Unix time in UTC.
+fn today_utc(now_unix: u64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(now_unix as i64).map_or_else(
+        |_| String::new(),
+        |now| {
+            let date = now.date();
+            format!(
+                "{:04}-{:02}-{:02}",
+                date.year(),
+                u8::from(date.month()),
+                date.day()
+            )
+        },
+    )
 }
 
 /// Why the admin key cannot be used.
@@ -119,7 +311,10 @@ pub(super) fn admin_key(config: &UsageConfig) -> Result<String, KeyProblem> {
 fn setup_steps(config: &UsageConfig, problem: &KeyProblem) -> String {
     let path = config.anthropic_admin_key_file.trim();
     let mut steps = vec![
-        "Create an Admin key at platform.claude.com: Settings, Admin keys.".to_owned(),
+        "At platform.claude.com create an Admin key (Settings, Admin keys) or, where that page \
+         is missing, a service account with the Admin role (Settings, Service accounts) and a \
+         key linked to it with the Organization scope (Settings, API keys)."
+            .to_owned(),
         format!("Save it as one line in {path} on the machine running this herdr server."),
         format!("Make it private: chmod 600 {path}"),
     ];
@@ -127,7 +322,7 @@ fn setup_steps(config: &UsageConfig, problem: &KeyProblem) -> String {
         steps.insert(0, problem.message.clone());
     }
     steps.push(
-        "herdr only reads the cost report, but an Admin key can manage the whole organization."
+        "herdr only reads the cost report, but such a key can manage the whole organization."
             .to_owned(),
     );
     steps.join("\n")
@@ -135,15 +330,16 @@ fn setup_steps(config: &UsageConfig, problem: &KeyProblem) -> String {
 
 fn grant_steps() -> String {
     [
-        "Open platform.claude.com, Settings, Billing, Promotional credits.",
-        "Set usage.anthropic_credit_since to the day the credit arrived (YYYY-MM-DD),",
-        "usage.anthropic_credit_usd to its amount and usage.anthropic_credit_expires to its expiry.",
+        "Open platform.claude.com, Settings, Billing: Promotional credits and the invoice history.",
+        "Add one [[usage.anthropic_credits]] table per grant still in use, with usd, granted",
+        "and expires as the page shows them (YYYY-MM-DD, UTC); mark the plan's monthly",
+        "API credits included = true. Add the new grant when the next one arrives.",
     ]
     .join("\n")
 }
 
-fn fetch_all(starting_at: &str, key: &str) -> Result<Vec<CostResult>, FetchError> {
-    let mut results = Vec::new();
+fn fetch_all(starting_at: &str, key: &str) -> Result<Vec<(String, i128)>, FetchError> {
+    let mut days = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let mut url = format!(
@@ -167,7 +363,7 @@ fn fetch_all(starting_at: &str, key: &str) -> Result<Vec<CostResult>, FetchError
             }
             403 => {
                 return Err(FetchError::Auth(
-                    "the Anthropic key cannot read the cost report; it needs an Admin key".into(),
+                    "the Anthropic key cannot read the cost report; it needs the Admin role and no workspace scope".into(),
                 ))
             }
             429 => return Err(FetchError::RateLimited),
@@ -179,10 +375,19 @@ fn fetch_all(starting_at: &str, key: &str) -> Result<Vec<CostResult>, FetchError
         }
         let page: Page = serde_json::from_str(&response.body)
             .map_err(|error| format!("unexpected Anthropic cost report: {error}"))?;
-        results.extend(page.data.into_iter().flat_map(|bucket| bucket.results));
+        for bucket in page.data {
+            let day = bucket
+                .starting_at
+                .get(..10)
+                .filter(|day| day_start_unix(day).is_some())
+                .ok_or_else(|| {
+                    format!("unexpected Anthropic cost bucket {:?}", bucket.starting_at)
+                })?;
+            days.push((day.to_owned(), spent_nano_cents(&bucket.results)?));
+        }
         match next_cursor(page.has_more, page.next_page, cursor.as_deref())? {
             Some(next) => cursor = Some(next),
-            None => return Ok(results),
+            None => return Ok(days),
         }
     }
     Err("Anthropic cost report pagination did not end"
@@ -266,6 +471,19 @@ fn dollars(nano_cents: i128) -> String {
     format!("{sign}{}.{:06}", micros / 1_000_000, micros % 1_000_000)
 }
 
+/// Billionths of a cent as dollars with two decimals, rounded half away from zero.
+fn cents(nano_cents: i128) -> String {
+    let half = if nano_cents < 0 {
+        -NANO_PER_CENT / 2
+    } else {
+        NANO_PER_CENT / 2
+    };
+    let total = (nano_cents + half) / NANO_PER_CENT;
+    let sign = if total < 0 { "-" } else { "" };
+    let total = total.abs();
+    format!("{sign}{}.{:02}", total / 100, total % 100)
+}
+
 /// Midnight UTC of a `YYYY-MM-DD` day as a Unix time.
 fn day_start_unix(day: &str) -> Option<u64> {
     let mut parts = day.split('-');
@@ -302,8 +520,8 @@ mod tests {
                 {"starting_at":"2026-10-12T00:00:00Z","ending_at":"2026-10-13T00:00:00Z",
                  "results":[{"amount":"5000.5","currency":"USD","description":null},
                             {"amount":"890.123456789","currency":"USD"}]},
-                {"results":[]},
-                {"results":[{"amount":"0.376543211","currency":"USD"}]}
+                {"starting_at":"2026-10-13T00:00:00Z","results":[]},
+                {"starting_at":"2026-10-14T00:00:00Z","results":[{"amount":"0.376543211","currency":"USD"}]}
             ],"has_more":false,"next_page":null}"#,
         )
         .unwrap();
@@ -315,6 +533,88 @@ mod tests {
         let spent = spent_nano_cents(&costs).unwrap();
         assert_eq!(spent, 5891 * NANO_PER_CENT);
         assert_eq!(dollars(spent), "58.910000");
+    }
+
+    fn grant(usd: u32, granted: &str, expires: &str, included: bool) -> AnthropicCreditGrant {
+        AnthropicCreditGrant {
+            usd,
+            granted: granted.into(),
+            expires: expires.into(),
+            included,
+        }
+    }
+
+    fn day(day: &str, cents: i128) -> (String, i128) {
+        (day.into(), cents * NANO_PER_CENT)
+    }
+
+    /// The Console of 2026-10-13: a $10 grant from Sep 27 that had paid
+    /// $0.13 when the Max plan's $200 arrived on Oct 11, which then paid
+    /// $76.92. The row reads `$76.92/$200 +$9.87`.
+    #[test]
+    fn included_credits_pay_first_and_the_others_keep_their_balance() {
+        let mut grants = grants(&[
+            grant(200, "2026-10-11", "2026-11-09", true),
+            grant(10, "2026-09-27", "2027-09-28", false),
+        ])
+        .unwrap();
+        let days = [
+            day("2026-09-27", 3),
+            day("2026-10-02", 10),
+            day("2026-10-11", 2_000),
+            day("2026-10-12", 4_000),
+            day("2026-10-13", 1_692),
+        ];
+        assert_eq!(replay(&mut grants, &days), Ok(0));
+        let spend = included_spend(&grants, "2026-10-13").unwrap();
+        assert_eq!(
+            (spend.amount.as_str(), spend.limit.as_deref()),
+            ("76.920000", Some("200.00"))
+        );
+        assert_eq!(spend.since, 1_791_676_800);
+        let other = other_balance(&grants, "2026-10-13").unwrap();
+        assert_eq!(
+            (other.total.as_str(), other.granted.as_deref()),
+            ("9.87", Some("10.00"))
+        );
+    }
+
+    #[test]
+    fn spent_out_grants_pass_cost_on_and_the_rest_is_uncovered() {
+        let mut grants = grants(&[
+            grant(1, "2026-10-01", "2026-10-03", true),
+            grant(2, "2026-10-01", "", false),
+        ])
+        .unwrap();
+        // Day 1 empties the included dollar and takes 50 cents of the
+        // other. The refunds undo the latest draws first: Oct 2 and the
+        // first 30 cents of Oct 3 return the other's 50 cents; the last 20
+        // reach the included grant's draw, which has expired by then, so
+        // they are lost. Oct 4 spends the other's $2 and overflows by $2.
+        let days = [
+            day("2026-10-01", 150),
+            day("2026-10-02", -20),
+            day("2026-10-03", -50),
+            day("2026-10-04", 400),
+        ];
+        assert_eq!(replay(&mut grants, &days), Ok(200 * NANO_PER_CENT));
+        assert_eq!(grants[0].remaining, 0);
+        assert_eq!(grants[1].remaining, 0);
+        assert!(included_spend(&grants, "2026-10-04").is_none());
+        assert_eq!(other_balance(&grants, "2026-10-04").unwrap().total, "0.00");
+    }
+
+    #[test]
+    fn a_grant_counts_from_its_day_until_the_day_it_expires() {
+        let grants = grants(&[grant(5, "2026-10-11", "2026-11-09", true)]).unwrap();
+        assert!(!grants[0].active_on("2026-10-10"));
+        assert!(grants[0].active_on("2026-10-11"));
+        assert!(grants[0].active_on("2026-11-08"));
+        assert!(!grants[0].active_on("2026-11-09"));
+        assert!(super::grants(&[grant(5, "2026-10", "", false)]).is_err());
+        assert!(super::grants(&[grant(5, "2026-10-11", "never", false)]).is_err());
+        assert_eq!(today_utc(1_791_763_200), "2026-10-12");
+        assert_eq!(cents(987 * NANO_PER_CENT + NANO_PER_CENT / 2), "9.88");
     }
 
     #[test]
@@ -384,7 +684,7 @@ mod tests {
             unsafe_file: false,
         };
         let steps = setup_steps(&config, &missing);
-        assert!(steps.starts_with("Create an Admin key"));
+        assert!(steps.starts_with("At platform.claude.com create an Admin key"));
         assert!(steps.contains("chmod 600 ~/.config/herdr/anthropic-admin-key"));
         let shared = KeyProblem {
             message: "readable by other users".into(),
