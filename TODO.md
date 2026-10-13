@@ -3021,6 +3021,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   effort unchanged. Claude Code currently has `opus`; exact local alias
   resolution remains worker verification, not an asserted completed test.
 
+- [ ] Make wait contracts cover all relevant producer outcomes, not one guessed log line (the user, 2026-10-13: a VM reboot wait stayed blocked for about ten hours after the checked work finished, showing the owner as working; fix the process with the models so it cannot recur). [t-at6a6gqb]
+  Reported failure: the same narrow boot-line pattern had hung an earlier
+  run. A generation-link path was expected, but kexec used a store-system
+  path. Rule 10's positive-event requirement did not cover alternative
+  success signals or producer/source termination. Consider: name relevant
+  success and failure outcomes; validate patterns against recorded actual
+  producer samples; associate waits with their producer and source so exit
+  or loss of a source is surfaced by its event, never a timer/retry.
+  Checked: the job script used `tail -F | grep -m1`, not `wait-text`.
+  Existing `herdr-job wait-text --pid` already handles producer exit with
+  exit 3, source errors with exit 2, final-byte recheck on exit, and
+  event-driven kqueue/inotify. File removal currently tolerates rotation;
+  do not reinterpret rotation as failure without an explicit contract.
+  Boot-start is not VM-ready; do not count any boot line as readiness.
+  Consult now, record the chosen bounded process/test slice, then execute
+  via workers in queue order. Do not modify another project's VM/scripts,
+  add timer recovery, weaken detection, or promise absolute liveness for
+  a producer that remains alive without an observable terminal outcome.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
