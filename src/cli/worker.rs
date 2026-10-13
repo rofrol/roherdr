@@ -1004,6 +1004,27 @@ mod tests {
         items.iter().map(|item| (*item).to_owned()).collect()
     }
 
+    /// The pane id the parser reads from the environment: set when the tests
+    /// run inside a Herdr pane, absent elsewhere. Tests expect it, so they pass
+    /// in both.
+    fn caller() -> Option<String> {
+        super::super::target::caller_pane_id()
+    }
+
+    /// `worker answer` parses to `worker.answer`, or to
+    /// `worker.answer_from_pane` carrying the caller's pane inside a pane.
+    fn parsed_answer(items: &[&str]) -> Option<WorkerAnswerParams> {
+        match parse_worker_args(&args(items)) {
+            Ok(Some(Method::WorkerAnswer(answer))) if caller().is_none() => Some(answer),
+            Ok(Some(Method::WorkerAnswerFromPane(params)))
+                if Some(&params.caller_pane_id) == caller().as_ref() =>
+            {
+                Some(params.answer)
+            }
+            _ => None,
+        }
+    }
+
     #[test]
     fn every_subcommand_answers_help() {
         let first = USAGE.lines().next().unwrap_or_default();
@@ -1197,6 +1218,7 @@ mod tests {
                 ..
             })))
         ));
+        // A wait after a cursor is an observer's, so it never names the caller.
         assert!(matches!(
             parse_worker_args(&args(&["wait", "w1", "--attention", "--after=42"])),
             Ok(Some(Method::WorkerWait(WorkerWaitParams {
@@ -1229,18 +1251,18 @@ mod tests {
         assert!(matches!(
             parse_worker_args(&args(&["interrupt", "w1", "--turn", "7"])),
             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
-                caller_pane_id: None,
+                caller_pane_id,
                 turn: Some(7),
                 ..
-            })))
+            }))) if caller_pane_id == caller()
         ));
         assert!(matches!(
             parse_worker_args(&args(&["interrupt", "w1"])),
             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
-                caller_pane_id: None,
+                caller_pane_id,
                 turn: None,
                 ..
-            })))
+            }))) if caller_pane_id == caller()
         ));
     }
 
@@ -1265,36 +1287,24 @@ mod tests {
 
     #[test]
     fn parses_answers_as_a_decision_or_choices() {
-        let Ok(Some(Method::WorkerAnswer(params))) = parse_worker_args(&args(&[
-            "answer",
-            "w1",
-            "--request",
-            "r1",
-            "deny",
-            "--message",
-            "no",
-        ])) else {
+        let Some(params) =
+            parsed_answer(&["answer", "w1", "--request", "r1", "deny", "--message", "no"])
+        else {
             panic!("answer must parse");
         };
         assert_eq!(params.decision, Some(WorkerDecision::Deny));
         assert_eq!(params.message.as_deref(), Some("no"));
         assert!(params.answers.is_empty());
 
-        let Ok(Some(Method::WorkerAnswer(params))) = parse_worker_args(&args(&[
-            "answer",
-            "--request",
-            "r1",
-            "w1",
-            "blue.txt",
-            "1,3",
-        ])) else {
+        let Some(params) = parsed_answer(&["answer", "--request", "r1", "w1", "blue.txt", "1,3"])
+        else {
             panic!("answer must parse");
         };
         assert_eq!(params.request_id.as_deref(), Some("r1"));
         assert_eq!(params.decision, None);
         assert_eq!(params.answers, vec!["blue.txt", "1,3"]);
 
-        let Ok(Some(Method::WorkerAnswer(params))) = parse_worker_args(&args(&[
+        let Some(params) = parsed_answer(&[
             "answer",
             "w1",
             "--command-id",
@@ -1302,7 +1312,7 @@ mod tests {
             "--request",
             "r1",
             "allow",
-        ])) else {
+        ]) else {
             panic!("answer with a command id must parse");
         };
         assert_eq!(params.command_id.as_deref(), Some("item-3:answer:r1"));
@@ -1351,7 +1361,7 @@ mod tests {
         assert_eq!(
             parse_worker_args(&args(&["ack", "w12", "40"])),
             Ok(Some(Method::WorkerAck(WorkerAckParams {
-                caller_pane_id: None,
+                caller_pane_id: caller(),
                 worker_id: "w12".into(),
                 seq: 40,
             })))
@@ -1524,7 +1534,7 @@ mod tests {
         assert_eq!(
             parse_worker_args(&args(&["escalate", "w12", "--request", "perm-1"])),
             Ok(Some(Method::WorkerEscalate(WorkerEscalateParams {
-                caller_pane_id: None,
+                caller_pane_id: caller(),
                 worker_id: "w12".into(),
                 request_id: "perm-1".into(),
             })))
