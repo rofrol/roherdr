@@ -30,6 +30,8 @@ DEFAULT_MODEL = "mimo"  # an alias, so the default keeps its provider pin
 MODEL_ALIASES = {
     "mimo": ("xiaomi/mimo-v2.6-pro", "Xiaomi"),
     "mimo-flash": ("xiaomi/mimo-v2.6-flash", "Xiaomi"),
+    # Not in agy (the Google AI subscription) yet, so it goes through OpenRouter, pinned to Google AI Studio.
+    "argon": ("google/gemini-4-argon", "Google AI Studio"),
 }
 
 # ask_openrouter.sh stages each run under this directory; a --staged attachment must come from it.

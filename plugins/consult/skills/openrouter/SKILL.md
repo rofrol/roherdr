@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo only; other OpenRouter models never by default).'
+description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; Gemini 4 Argon with `-m argon`, also in the default set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo and Argon only; other OpenRouter models never by default).'
 ---
 
 # Consulting an OpenRouter model (Xiaomi MiMo by default)
@@ -49,7 +49,8 @@ Never read files, never include real secrets, config or private code — synthet
 (Not installed automatically: writing into `~/.claude` is a config change — ask the user first.)
 
 Options: `-m SLUG|ALIAS` (default `mimo`, env `OPENROUTER_MODEL`; aliases `mimo` =
-`xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi), `--provider NAME`
+`xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi; `argon` = `google/gemini-4-argon`, pinned
+to Google AI Studio), `--provider NAME`
 (serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; `-` =
 stdin; `--allow-files` is still accepted but no longer needed), `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
 `OPENROUTER_TIMEOUT`. Answers can take a few minutes — use a Bash timeout of 600000.
@@ -61,6 +62,8 @@ payload summary is printed there.
 
 - MiMo is in the default set (from 2026-10-03; sol + MiMo + DeepSeek since 2026-10-11, see the `consult` skill) and
   joins every default round.
+  Gemini 4 Argon (`-m argon`) joined the default set on 2026-10-15 (the user); agy does not serve it yet, so it goes
+  through OpenRouter at $2/$10 per M tokens, pinned to Google AI Studio (Google's paid-API terms say prompts are not used for training; unverified for calls routed through OpenRouter).
   Other OpenRouter models only on an explicit request to try or evaluate them.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
@@ -99,6 +102,19 @@ scripts. A consult costs about half a cent.
   `ask_openrouter.sh` sandbox cannot read the repo, so the wrapper vets each `-f` file outside it and passes in a copy.
 - The served provider is taken from the completion (`provider` field), because `/generation` answers 404 for pi's
   OAuth token; consult-stats logs it as `xiaomi/mimo-v2.6-pro via Xiaomi`. A different provider prints a warning.
+
+## Argon trial (from 2026-10-15)
+
+Gemini 4 Argon (`-m argon`) is in the default set on trial, decided by the user on 2026-10-15: 20 shared rounds,
+hard cap, counting from round `20261015-022755-2c2c` (the first one; Argon has no earlier rounds). It costs several
+times MiMo per token, so the verdict weighs both quality and cost:
+
+- quality: `consult.py stats --vs argon sol --rounds 20` and `--vs argon mimo --rounds 20` (accepted unique findings
+  per call, rejected share);
+- cost: the sum of `usage_raw.cost` (USD, from OpenRouter) of Argon's calls in those rounds in
+  `~/.local/state/consult/log.jsonl`, against MiMo's, and accepted unique findings per dollar.
+
+No automatic pass rule: after the 20th round, report both to the user, who decides whether Argon stays.
 
 ## Privacy and secrets — read before sending any code
 

@@ -8,15 +8,15 @@ statistics on which of those models actually helped.
   session runs a stale set), leaves out the caller's own model family, and
   the skill says how to rate and score.
 - `gpt`: GPT via Codex CLI on the ChatGPT subscription (credentials from pi).
-- `gemini`: Gemini via Antigravity CLI (`agy`) on the Google AI subscription.
 - `deepseek`: DeepSeek API (key from pi).
 - `claude`: Claude Sonnet 5.5 by default, or explicit Opus 5.5 with
   `ask_claude.py -m claude-opus-5-5`, via Claude Code CLI. Subscription billing
   requires subscription login; API-key/cloud billing is not a subscription.
 - `openrouter`: an OpenRouter model (default Xiaomi MiMo-V2.6-Pro pinned to the
   Xiaomi provider). MiMo is in the default set with sol and DeepSeek (DeepSeek
-  left it on 2026-10-03 and rejoined on 2026-10-11); other OpenRouter models
-  only on request.
+  left it on 2026-10-03 and rejoined on 2026-10-11). Gemini 4 Argon (`-m argon`,
+  pinned to Google AI Studio) joined the set on 2026-10-15; other OpenRouter
+  models only on request.
   Providers may retain what is sent, so the skill never sends secrets: it has no repo mode, `-f` attachments are vetted
   fail-closed outside its sandbox, and the prompt is hard-refused if it contains
   secret-shaped strings. The MiMo trials are described in its `SKILL.md`; the
@@ -35,6 +35,13 @@ only this file to change who joins a round; the skills name no models.
 
 History of the set:
 
+- 2026-10-15, the user: Gemini 4 Argon added next to sol, MiMo and DeepSeek
+  ("add Gemini 4 Argon to ask"). agy does not offer it yet, so it goes through
+  OpenRouter, pinned to Google AI Studio ($2/$10 per M tokens, several cents a
+  consult). It counts as the gemini family, so a Gemini caller skips it.
+  The same day the user removed the `gemini` skill (Gemini 3.8 Flash through
+  agy): Argon is the only Gemini model the toolkit asks. Its past calls stay in
+  the consult log and in `consult.py stats`.
 - 2026-10-11, the user: sol 6.1 (effort medium, the gpt script's default),
   MiMo and DeepSeek ("add deepseek to the default set"; asked first on
   2026-10-07: it is fast, and on Claude Max 20 the tokens spent reading its
@@ -60,9 +67,8 @@ spend another vendor's quota:
 | ----- | ----- |
 | `gpt` | the ChatGPT subscription, through Codex CLI |
 | `claude` | the Anthropic account (Claude Code login; no API key is used) |
-| `gemini` | the Google AI subscription, through `agy` |
 | `deepseek` | DeepSeek API credits, per token |
-| `openrouter` | the OpenRouter account (per token; MiMo about half a cent a consult) |
+| `openrouter` | the OpenRouter account (per token; MiMo about half a cent a consult, Argon several cents) |
 
 So a Codex/ChatGPT limit (`You've hit your usage limit`) says nothing about
 Sonnet, and vice versa. After a limit error the call is logged with `status
@@ -83,10 +89,10 @@ renewal while Claude Code answered three consultations in a row, because plan
 limits are separate buckets (rolling windows, and model-specific allowances),
 and an explicitly requested model can still have room.
 
-Availability is decided by the call, not by the dashboard. The Gemini helper
-attempts the requested call once without a quota preflight or availability cache;
-agy's rejection is reported and logged. Herdr's usage panel separately parses
-agy's JSON quota output in Rust for display, not to authorize consultations.
+Availability is decided by the call, not by the dashboard. Each helper
+attempts the requested call once without a quota preflight or availability
+cache; the vendor's rejection is reported and logged. Herdr's usage panel reads
+quotas for display, not to authorize consultations.
 Claude Code reports its buckets for free, without spending tokens:
 
 ```sh
