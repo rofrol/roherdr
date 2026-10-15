@@ -15,8 +15,8 @@ statistics on which of those models actually helped.
 - `openrouter`: an OpenRouter model (default Xiaomi MiMo-V2.6-Pro pinned to the
   Xiaomi provider). MiMo is in the default set with sol and DeepSeek (DeepSeek
   left it on 2026-10-03 and rejoined on 2026-10-11). Gemini 4 Argon (`-m argon`,
-  pinned to Google AI Studio) joined the set on 2026-10-15; other OpenRouter
-  models only on request.
+  pinned to Google AI Studio) and Meta Muse Wonder (`-m wonder`, pinned to Meta)
+  joined the set on 2026-10-15; other OpenRouter models only on request.
   Providers may retain what is sent, so the skill never sends secrets: it has no repo mode, `-f` attachments are vetted
   fail-closed outside its sandbox, and the prompt is hard-refused if it contains
   secret-shaped strings. The MiMo trials are described in its `SKILL.md`; the
@@ -35,6 +35,10 @@ only this file to change who joins a round; the skills name no models.
 
 History of the set:
 
+- 2026-10-15, the user: Meta Muse Wonder added on trial ("add Muse Wonder to
+  the tests"), through OpenRouter, pinned to Meta ($4/$20 per M tokens, the
+  most expensive of the set). It is the meta family, so a Meta caller skips it.
+  The trial is described in the openrouter skill.
 - 2026-10-15, the user: Gemini 4 Argon added next to sol, MiMo and DeepSeek
   ("add Gemini 4 Argon to ask"). agy does not offer it yet, so it goes through
   OpenRouter, pinned to Google AI Studio ($2/$10 per M tokens, several cents a
@@ -68,7 +72,7 @@ spend another vendor's quota:
 | `gpt` | the ChatGPT subscription, through Codex CLI |
 | `claude` | the Anthropic account (Claude Code login; no API key is used) |
 | `deepseek` | DeepSeek API credits, per token |
-| `openrouter` | the OpenRouter account (per token; MiMo about half a cent a consult, Argon several cents) |
+| `openrouter` | the OpenRouter account (per token; MiMo about half a cent a consult, Argon several cents, Muse Wonder about twice Argon) |
 
 So a Codex/ChatGPT limit (`You've hit your usage limit`) says nothing about
 Sonnet, and vice versa. After a limit error the call is logged with `status

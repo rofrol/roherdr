@@ -1,6 +1,6 @@
 ---
 name: consult-stats
-description: 'Statistics of consulted models (gpt: astra/sol/terra, gemini argon via openrouter, deepseek, claude Sonnet 5.5 skills) — which were most useful. Use when the user asks for consult/model statistics ("statystyki consult", "statystyki oracle", "który model najlepszy"), or to rate a past consultation.'
+description: 'Statistics of consulted models (gpt: astra/sol/terra, gemini argon and meta muse wonder via openrouter, deepseek, claude Sonnet 5.5 skills) — which were most useful. Use when the user asks for consult/model statistics ("statystyki consult", "statystyki oracle", "który model najlepszy"), or to rate a past consultation.'
 ---
 
 # Consult statistics

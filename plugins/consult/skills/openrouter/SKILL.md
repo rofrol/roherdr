@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; Gemini 4 Argon with `-m argon`, also in the default set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo and Argon only; other OpenRouter models never by default).'
+description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; Gemini 4 Argon with `-m argon` and Meta Muse Wonder with `-m wonder`, both also in the default set on trial; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo, Argon and Muse Wonder only; other OpenRouter models never by default).'
 ---
 
 # Consulting an OpenRouter model (Xiaomi MiMo by default)
@@ -50,7 +50,7 @@ Never read files, never include real secrets, config or private code — synthet
 
 Options: `-m SLUG|ALIAS` (default `mimo`, env `OPENROUTER_MODEL`; aliases `mimo` =
 `xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi; `argon` = `google/gemini-4-argon`, pinned
-to Google AI Studio), `--provider NAME`
+to Google AI Studio; `wonder` = `meta/muse-wonder`, pinned to Meta), `--provider NAME`
 (serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; `-` =
 stdin; `--allow-files` is still accepted but no longer needed), `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
 `OPENROUTER_TIMEOUT`. Answers can take a few minutes — use a Bash timeout of 600000.
@@ -64,6 +64,9 @@ payload summary is printed there.
   joins every default round.
   Gemini 4 Argon (`-m argon`) joined the default set on 2026-10-15 (the user); agy does not serve it yet, so it goes
   through OpenRouter at $2/$10 per M tokens, pinned to Google AI Studio (Google's paid-API terms say prompts are not used for training; unverified for calls routed through OpenRouter).
+  Meta Muse Wonder (`-m wonder`) joined the default set on 2026-10-15 (the user) at $4/$20 per M tokens, pinned to
+  Meta, its only OpenRouter provider (Meta's retention and training terms for this API are unverified; send it what
+  you would send DeepSeek).
   Other OpenRouter models only on an explicit request to try or evaluate them.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
@@ -115,6 +118,20 @@ times MiMo per token, so the verdict weighs both quality and cost:
   `~/.local/state/consult/log.jsonl`, against MiMo's, and accepted unique findings per dollar.
 
 No automatic pass rule: after the 20th round, report both to the user, who decides whether Argon stays.
+
+## Muse Wonder trial (from 2026-10-15)
+
+Meta Muse Wonder (`-m wonder`) is in the default set on trial, decided by the user on 2026-10-15 ("add Muse Wonder to
+the tests"): 20 shared rounds, hard cap, counting from the first round it joins (it has no earlier rounds). At $4/$20
+per M tokens it is the most expensive model of the set, about twice Argon, so the verdict weighs quality and cost the
+same way as Argon's:
+
+- quality: `consult.py stats --vs wonder sol --rounds 20`, `--vs wonder mimo --rounds 20` and
+  `--vs wonder argon --rounds 20`;
+- cost: the sum of `usage_raw.cost` of Wonder's calls in those rounds in `~/.local/state/consult/log.jsonl`, against
+  MiMo's and Argon's, and accepted unique findings per dollar.
+
+No automatic pass rule: after the 20th round, report both to the user, who decides whether Muse Wonder stays.
 
 ## Privacy and secrets — read before sending any code
 

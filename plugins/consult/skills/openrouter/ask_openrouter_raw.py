@@ -32,6 +32,8 @@ MODEL_ALIASES = {
     "mimo-flash": ("xiaomi/mimo-v2.6-flash", "Xiaomi"),
     # Not in agy (the Google AI subscription) yet, so it goes through OpenRouter, pinned to Google AI Studio.
     "argon": ("google/gemini-4-argon", "Google AI Studio"),
+    # Meta is its only provider on OpenRouter; the pin keeps it that way if others appear.
+    "wonder": ("meta/muse-wonder", "Meta"),
 }
 
 # ask_openrouter.sh stages each run under this directory; a --staged attachment must come from it.

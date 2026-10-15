@@ -156,6 +156,9 @@ class ResolveModelTests(unittest.TestCase):
     def test_argon_alias_pins_google_ai_studio(self):
         self.assertEqual(mod.resolve_model("argon", ""), ("google/gemini-4-argon", "Google AI Studio"))
 
+    def test_wonder_alias_pins_meta(self):
+        self.assertEqual(mod.resolve_model("wonder", ""), ("meta/muse-wonder", "Meta"))
+
     def test_explicit_provider_wins_over_alias(self):
         self.assertEqual(mod.resolve_model("mimo", "DeepInfra"), ("xiaomi/mimo-v2.6-pro", "DeepInfra"))
 
