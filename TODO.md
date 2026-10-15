@@ -3019,6 +3019,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   those explicitly here. Changes to another project's script remain its
   coordinator's responsibility, not permission for this session to edit it.
 
+- [ ] Carry the libghostty-vt `cursorChangePin` crash fix as vendored patch 0009 (the user, 2026-10-15, decision `d-xyf2vrgk`: "add it to roherdr's TODO"; asked from the herdr-tov coordinator after consult round `20261015-131156-0448`, Sol, MiMo and DeepSeek agree: a local patch, no ghostty fork). [t-5qaljuad]
+  - The bug: SIGSEGV in `Screen.endHyperlink` (null dereference at 0x20) when `cursorAbsolute` moves a styled cursor with an open OSC 8 link onto a page whose style set is full. Found by herdr-bend; root cause and evidence in `~/personal_projects/herdr-bend/spike/RESULTS.md`, "Patched upstream baseline". Reported upstream as https://github.com/herdrdev/herdr/issues/5296; a ghostty "Issue Triage" discussion is drafted in herdr-bend (`spike/ghostty-triage-draft.md`) for the user to edit and post. Still present in ghostty main `a2e4403`.
+  - The fix: `~/personal_projects/herdr-bend/spike/upstream-cursorchangepin.patch` (detach the cursor hyperlink before the style migration, re-add it after). It applies cleanly to this repository's vendored tree (`git apply --check`, 2026-10-15). The Zig regression test is in `spike/ghostty-cursorchangepin.patch` in herdr-bend.
+  - Do: store it as `vendor/patches/libghostty-vt/0009-...patch` with an entry in `vendor/libghostty-vt.patches.md` (reason, issue 5296, base `44f2a44`, verification, removal condition: the vendored source no longer has the bug, shown by the regression test and the reproducer, whatever shape upstream's fix takes); `just check` must pass. Verify with herdr-bend's seeded generator (crashes the unpatched build, not the patched one).
+  - Consumers: herdr-tov's and herdr-bend's `tools/vt-ref`/`corpus/vt-ref` link the `libghostty-vt.a` this checkout builds, as a reference oracle. Rebuild them after the patch and re-run their corpus comparisons; expect no screen change (the patch touches only the crashing path), and report any diff to those repositories' coordinators.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
