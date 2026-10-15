@@ -3248,6 +3248,28 @@ Items agents add. Not approved until the user moves them up.
   - Do: store it as `vendor/patches/libghostty-vt/0009-...patch` with an entry in `vendor/libghostty-vt.patches.md` (reason, issue 5296, base `44f2a44`, verification, removal condition: the vendored source no longer has the bug, shown by the regression test and the reproducer, whatever shape upstream's fix takes); `just check` must pass. Verify with herdr-bend's seeded generator (crashes the unpatched build, not the patched one).
   - Consumers: herdr-tov's and herdr-bend's `tools/vt-ref`/`corpus/vt-ref` link the `libghostty-vt.a` this checkout builds, as a reference oracle. Rebuild them after the patch and re-run their corpus comparisons; expect no screen change (the patch touches only the crashing path), and report any diff to those repositories' coordinators.
 
+- [ ] herdr-job commits only on a passing check of the same tree [t-6gowvwu6]
+  (user, 2026-10-15, d-d22gg3n7 in herdr-bend: "yes, add it to Proposed").
+  In herdr-bend a coordinator committed on a failing test-reducer run
+  (`tail -1 $LOG; grep ...; git commit ... -- <paths>`: `;` let the commit
+  run although the job had ended `failed (1)`). Consult rounds
+  `20261015-212602-b7e3` and `20261015-212929-26b5` (Sol, MiMo,
+  DeepSeek, Argon, Wonder): the gate belongs in global tooling, the
+  per-repository policy (which checks gate which paths) in each
+  repository. Add a checked commit to `herdr-job`, e.g.
+  `herdr-job run --commit-on-success -m MSG -- <paths> -- <check>`: build
+  the candidate tree (HEAD plus only the given paths, as `clean-tree`
+  does), run the check on that tree, and on exit 0 commit exactly that
+  tree object with `commit-tree` and a compare-and-swap `update-ref`
+  on the parent it tested; refuse when HEAD moved, never touch other
+  sessions' index or working-tree changes. Rejected in the rounds: a
+  PreToolUse hook matching `;` before `git commit` (Claude Code only,
+  false positives, easy to bypass) and a pre-commit hook comparing a pass
+  marker (temporary index of `git commit -- <paths>`, `--no-verify`,
+  shared checkouts). The user kept the rule itself per repository
+  (d-wfiwe6sh), so global instructions do not change. Cost: a new
+  herdr-job mode and its tests; no build of the herdr binary.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
