@@ -86,6 +86,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   latch by repository): the high latch is per repository while the
   subscription is per account. Open, for the user: the cap's default and
   the latch's scope (d-... below).
+  Decided by the user 2026-10-16: the cap defaults to 2 per provider,
+  configurable (d-t4luph5r); the high latch is per provider account, not
+  per repository (d-wkjyhabm).
 
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
