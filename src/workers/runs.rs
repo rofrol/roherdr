@@ -95,7 +95,7 @@ pub(crate) use auto_answer::settle_inline;
 /// the third blocks the run.
 const MAX_ATTEMPTS: u32 = 3;
 /// The folder slot every run's worker uses.
-const SLOT: &str = "worker";
+pub(in crate::workers) const SLOT: &str = "worker";
 /// The repository's registered checks, relative to its checkout.
 pub(super) const CHECKS_FILE: &str = ".herdr/checks.toml";
 /// The free disk preflight asks for when the checks file names none: the

@@ -45,3 +45,13 @@ perform this new action. No frozen client codec is changed: the existing run
 and question snapshots carry the pending state and reason. Environments are
 kept in memory and handed off, never persisted; after a cold restart, a later
 verification may need the environment supplied by `todo resume` as other runs do.
+
+## External orchestrators
+
+An orchestrator outside the TODO driver runs its agents with `herdr worker run`
+(`worker.run`), which passes this same gate: the same server-side check, state
+and thresholds for the repository of its directory and the agent's provider,
+never a second gate. A refusal exits with its own status (4) and the gate's
+reason on stderr, and nothing starts; the caller records it instead of retrying
+on a timer. `--ignore-usage` has the same meaning as for `todo run`, and the
+decision is recorded in the worker's journal.

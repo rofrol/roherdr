@@ -76,6 +76,104 @@ pub struct WorkerStartChoiceParams {
     pub agent_choice: Option<WorkerAgentChoice>,
 }
 
+/// `worker.run`: a gated, blocking headless run for an orchestrator outside
+/// herdr's TODO driver. The server admits it through the same usage gate as
+/// `todo.run` (the repository of `cwd`, the agent's provider), starts the
+/// worker as `worker.start` does but without a folder slot, sends `prompt`
+/// as its one turn, waits for that turn's end (or a question its policy
+/// leaves to the user), stops the worker and waits for its exit, then
+/// answers with [`WorkerGatedRun`]. A refusal of the gate is the error
+/// `usage_gate`, and nothing starts. A client that goes away ends the run:
+/// the worker is killed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerGatedRunParams {
+    /// The working directory: absolute, in a git repository (a worktree the
+    /// caller owns), outside herdr's folder slots.
+    pub cwd: String,
+    /// The worker's one user message.
+    pub prompt: String,
+    /// The agent CLI the worker runs; Claude when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<WorkerAgent>,
+    /// Passed to `claude --model` (or `pi --model`), as in `worker.start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The worker's task, as the sidebar names it; the prompt's first line
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The space the worker is listed under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The TODO item the worker works on (`t-abcd2345`), as in
+    /// `worker.start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Starts despite a refusing usage gate, with the meaning `todo.run`'s
+    /// `ignore_usage` has: a refusal it overrides leaves the gate's state as
+    /// it was, and the decision (`ignored`) is recorded in the worker's
+    /// journal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_usage: bool,
+}
+
+/// How a `worker.run` ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerGatedRunOutcome {
+    /// The turn ended with `result/success`.
+    Ended,
+    /// The turn failed, or the worker's process ended before its turn did.
+    Failed,
+    /// The turn was interrupted.
+    Stopped,
+    /// The worker asked a question its policy leaves to the user; nothing
+    /// answered it and the worker was stopped.
+    PolicyRefused,
+    /// An outcome this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One model's usage over a `worker.run`, as the worker's journal records
+/// it (the `modelUsage` of the CLI's `result` events, summed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerModelUsage {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    /// In US dollars, when the CLI reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+/// `worker.run`'s answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerGatedRun {
+    pub worker_id: String,
+    pub outcome: WorkerGatedRunOutcome,
+    /// One line on the outcome, for the caller's record.
+    pub message: String,
+    /// The final assistant text of the turn, when the CLI sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Usage per model; empty when the agent's CLI reports none (pi).
+    #[serde(default)]
+    pub usage: Vec<WorkerModelUsage>,
+    /// The `total_cost_usd` of the CLI's `result` events, summed, when any
+    /// reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
+    /// The usage gate's decision that admitted the run, as `todo.run`
+    /// records it.
+    pub usage_gate: serde_json::Value,
+    /// The question that ended a `policy_refused` run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<WorkerQuestion>,
+}
+
 /// Starts a headless worker: `claude -p` over stream-json pipes (or `pi
 /// --mode rpc` with `agent: pi`), no terminal. The server owns the process;
 /// clients only ask about it.

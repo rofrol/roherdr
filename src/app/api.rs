@@ -1452,6 +1452,7 @@ impl App {
             }
             Method::WorkerStart(_)
             | Method::WorkerStartChoice(_)
+            | Method::WorkerGatedRun(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)

@@ -175,6 +175,7 @@ fn is_open_wait(method: &Method) -> bool {
             | Method::WorkerEvents(_)
             | Method::WorkerTranscriptWait(_)
             | Method::WorkerWaitDrained(_)
+            | Method::WorkerGatedRun(_)
             | Method::TodoWait(_)
     )
 }
@@ -920,6 +921,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ServerPtyUsage(_) => "server.pty_usage",
         Method::WorkerStart(_) => "worker.start",
         Method::WorkerStartChoice(_) => "worker.start_choice",
+        Method::WorkerGatedRun(_) => "worker.run",
         Method::WorkerStatus(_) => "worker.status",
         Method::WorkerList(_) => "worker.list",
         Method::WorkerWait(_) => "worker.wait",

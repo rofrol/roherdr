@@ -28,7 +28,8 @@
 //! `hook <tool> <words...>` (a PreToolUse `hook_callback` for the hook an
 //! `initialize` request registered for that tool, whose command is the
 //! words; the result is its answer as JSON, or `unregistered`) and
-//! `hook-bg <tool> <words...>` (the same with `run_in_background: true`).
+//! `hook-bg <tool> <words...>` (the same with `run_in_background: true`)
+//! and `usage` (a `result/success` with `modelUsage` and `total_cost_usd`).
 //! A message with `Review of attempt N:` lines (a todo run's later attempt)
 //! is chosen by the line after the last one instead.
 #![cfg(unix)]
@@ -136,6 +137,14 @@ while True:
     command = words[0]
     if command == "finish":
         result()
+    elif command == "usage":
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "terminal_reason": "completed", "result": "final text",
+              "session_id": "stub-session", "total_cost_usd": 0.25,
+              "modelUsage": {"stub-model": {"inputTokens": 10, "outputTokens": 5,
+                                            "cacheReadInputTokens": 3,
+                                            "cacheCreationInputTokens": 2,
+                                            "costUSD": 0.25}}})
     elif command in ("hook", "hook-bg"):
         result(text=hook_callback(words[1], " ".join(words[2:]), command == "hook-bg"))
     elif command == "done":
@@ -6244,6 +6253,8 @@ fn a_handoff_keeps_a_brokered_worker_mid_turn_and_the_new_server_ends_its_turn()
     wait_on(&next, &id, WorkerWaitUntil::Exit);
     plain.wait(&blocked, WorkerWaitUntil::Exit);
 }
+
+mod gated_run_tests;
 
 mod todo_runs {
     use super::*;

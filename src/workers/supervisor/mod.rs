@@ -2,6 +2,7 @@
 //! supervisor's struct and shared state stay in `workers/mod.rs`.
 
 pub(super) mod commands;
+pub(super) mod gated_run;
 pub(super) mod handoff;
 pub(super) mod lifecycle;
 pub(super) mod questions;

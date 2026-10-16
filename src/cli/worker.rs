@@ -4,13 +4,14 @@ use crate::api::schema::{
     EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams,
     WorkerAnswerFromPaneParams, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
     WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
-    WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
-    WorkerPromptParams, WorkerRunsParams, WorkerStartChoiceParams, WorkerStartParams, WorkerTarget,
-    WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
+    WorkerGatedRunParams, WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams,
+    WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams, WorkerStartChoiceParams,
+    WorkerStartParams, WorkerTarget, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams,
+    WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|runs|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
+    "usage: herdr worker <start|run|status|list|runs|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--agent claude|pi|pi-anthropic]
                      [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
@@ -31,6 +32,33 @@ const USAGE: &str =
     a time, keeping target/ warm; --fresh-build removes the slot's target/ and Zig cache first.
     The caller's pane (HERDR_PANE_ID) and agent session (CLAUDE_CODE_SESSION_ID)
     become the worker's owner.
+  herdr worker run [--cwd DIR] [--agent claude|pi] [--model MODEL] [--name TASK]
+                   [--workspace ID] [--item ID] [--ignore-usage] [--prompt-file FILE]
+    A gated, blocking headless run for an orchestrator outside herdr's TODO
+    driver (todo run). The server admits it through the same usage gate as
+    todo run, for the repository of DIR (default: the current directory) and
+    the agent's provider; --ignore-usage starts anyway, with the same meaning
+    as todo run's (on the user's word; a refusal it overrides leaves the gate's
+    state as it was, and the decision is recorded in the worker's journal).
+    Then it starts the worker as worker start does (the same sandbox: writes
+    only to DIR, its temp dir and caches) but in DIR itself, a git worktree
+    the caller owns outside herdr's folder slots (refused by the slot's path,
+    whether or not a worker ran there), with no branch, verify, landing or
+    TODO edit. It sends the
+    prompt (FILE's text, else standard input) as the one turn, waits for that
+    turn's end on the worker's own events, stops the worker and waits for its
+    exit, then prints one JSON object: worker_id, outcome (ended, failed,
+    stopped, or policy_refused when the worker asked a question its policy
+    leaves to the user, which nothing answers), message, text (the final
+    assistant text), usage (per model: tokens and cost_usd, as the worker's
+    journal records them), total_cost_usd, usage_gate (the gate's decision)
+    and question (for policy_refused). Never retried: ending this command, or
+    losing its connection, kills the worker.
+    Exits 0 when the outcome is ended, 3 for any other outcome (the JSON is
+    printed all the same), 4 when the usage gate refuses (its reason on
+    stderr; nothing starts), 2 for a usage error and 1 for any other refusal
+    or error (a directory outside a git repository, in a folder slot or one
+    worker start refuses).
   herdr worker status <worker_id>
   herdr worker list
   herdr worker runs [--item ID] [--repo DIR]
@@ -135,6 +163,7 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("log") => return run_log(&args[1..]),
         Some("wait-drained") => return run_wait_drained(&args[1..]),
+        Some("run") => return run_gated(&args[1..]),
         _ => {}
     }
     let method = match parse_worker_args(args) {
@@ -196,6 +225,117 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
             _ => 3,
         },
     )
+}
+
+/// `herdr worker run`'s exit status for an outcome other than `ended`.
+const GATED_RUN_NOT_ENDED: i32 = 3;
+/// `herdr worker run`'s exit status when the usage gate refuses the run.
+const GATED_RUN_USAGE_GATE: i32 = 4;
+
+/// `herdr worker run`: one gated, blocking run ([`USAGE`]). Never resent:
+/// the server ends the worker when the connection drops, so a second send
+/// would be a second run.
+fn run_gated(args: &[String]) -> std::io::Result<i32> {
+    let params = match parse_gated_run(args, &mut std::io::stdin().lock()) {
+        Ok(params) => params,
+        Err(message) => {
+            eprintln!("{message}");
+            if let Some(help) = subcommand_help(&["run".to_owned(), "--help".to_owned()]) {
+                eprintln!("{help}");
+            }
+            return Ok(2);
+        }
+    };
+    let response = super::send_request(&Request {
+        id: "cli:worker:run".into(),
+        method: Method::WorkerGatedRun(params),
+    })?;
+    Ok(gated_run_exit(&response))
+}
+
+/// Prints `worker.run`'s reply (the run's object on stdout, or the gate's
+/// reason or the error on stderr) and returns the exit status.
+fn gated_run_exit(response: &serde_json::Value) -> i32 {
+    if let Some(error) = response.get("error") {
+        if error["code"] == "usage_gate" {
+            eprintln!(
+                "{}",
+                error["message"]
+                    .as_str()
+                    .unwrap_or("the usage gate refused the run")
+            );
+            return GATED_RUN_USAGE_GATE;
+        }
+        eprintln!("{response}");
+        return 1;
+    }
+    let run = &response["result"]["run"];
+    println!("{run}");
+    if run["outcome"] == "ended" {
+        0
+    } else {
+        GATED_RUN_NOT_ENDED
+    }
+}
+
+/// `worker run`'s options; the prompt from `--prompt-file`, else from
+/// `stdin`.
+fn parse_gated_run(
+    args: &[String],
+    stdin: &mut dyn std::io::Read,
+) -> Result<WorkerGatedRunParams, String> {
+    let (cwd, rest) = take_string_option(args, "--cwd")?;
+    let (agent, rest) = take_string_option(&rest, "--agent")?;
+    let (model, rest) = take_string_option(&rest, "--model")?;
+    let (name, rest) = take_string_option(&rest, "--name")?;
+    let (workspace_id, rest) = take_string_option(&rest, "--workspace")?;
+    let (item, rest) = take_string_option(&rest, "--item")?;
+    let (prompt_file, rest) = take_string_option(&rest, "--prompt-file")?;
+    let ignore_usage = match rest.as_slice() {
+        [] => false,
+        [flag] if flag == "--ignore-usage" => true,
+        _ => {
+            return Err(format!(
+                "unexpected argument for worker run: {}",
+                rest.join(" ")
+            ))
+        }
+    };
+    let agent = match agent.as_deref() {
+        None => None,
+        Some("claude") => Some(crate::api::schema::WorkerAgent::Claude),
+        Some("pi") => Some(crate::api::schema::WorkerAgent::Pi),
+        Some(other) => return Err(format!("--agent takes claude or pi, not {other}")),
+    };
+    let prompt = match prompt_file {
+        Some(path) => std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read --prompt-file {path}: {error}"))?,
+        None => {
+            let mut text = String::new();
+            stdin
+                .read_to_string(&mut text)
+                .map_err(|error| format!("cannot read the prompt from standard input: {error}"))?;
+            text
+        }
+    };
+    if prompt.trim().is_empty() {
+        return Err("worker run needs a prompt (--prompt-file FILE or standard input)".into());
+    }
+    let cwd = match cwd {
+        Some(cwd) => std::path::PathBuf::from(cwd),
+        None => std::env::current_dir().map_err(|error| error.to_string())?,
+    };
+    let cwd = std::path::absolute(&cwd).map_err(|error| error.to_string())?;
+    Ok(WorkerGatedRunParams {
+        cwd: cwd.display().to_string(),
+        prompt,
+        agent,
+        model,
+        name,
+        workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
+        item,
+        ignore_usage,
+    })
 }
 
 /// The usage of `herdr worker <subcommand> --help` (or `-h`): that subcommand's part of
@@ -1052,6 +1192,75 @@ mod tests {
         assert!(verify.contains("--generated PATH=COMMAND"));
         assert!(!verify.contains("herdr worker prompt"));
         assert_eq!(subcommand_help(&args(&["status", "w1"])), None);
+    }
+
+    #[test]
+    fn parses_worker_run_with_the_prompt_from_stdin_or_a_file() {
+        let dir = std::env::temp_dir().join(format!("herdr-worker-run-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut stdin = "do the task\n".as_bytes();
+        let params = parse_gated_run(
+            &args(&[
+                "--cwd",
+                &dir.display().to_string(),
+                "--agent",
+                "pi",
+                "--model",
+                "m",
+                "--item",
+                "t-abcd2345",
+                "--ignore-usage",
+            ]),
+            &mut stdin,
+        )
+        .unwrap();
+        assert_eq!(params.prompt, "do the task\n");
+        assert_eq!(params.agent, Some(crate::api::schema::WorkerAgent::Pi));
+        assert_eq!(params.model.as_deref(), Some("m"));
+        assert_eq!(params.item.as_deref(), Some("t-abcd2345"));
+        assert!(params.ignore_usage);
+        assert_eq!(params.cwd, dir.display().to_string());
+
+        let file = dir.join("prompt.txt");
+        std::fs::write(&file, "from the file").unwrap();
+        let params = parse_gated_run(
+            &args(&["--prompt-file", &file.display().to_string()]),
+            &mut "ignored".as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(params.prompt, "from the file");
+        assert_eq!(params.agent, None);
+        assert!(!params.ignore_usage);
+
+        for (bad, why) in [
+            (vec!["--agent", "pi-anthropic"], "claude or pi"),
+            (vec!["--bogus"], "unexpected argument"),
+        ] {
+            let error = parse_gated_run(&args(&bad), &mut "task".as_bytes()).unwrap_err();
+            assert!(error.contains(why), "{error}");
+        }
+        let error = parse_gated_run(&args(&[]), &mut " \n".as_bytes()).unwrap_err();
+        assert!(error.contains("needs a prompt"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn worker_run_exits_by_outcome_and_with_its_own_status_for_the_usage_gate() {
+        let refused = serde_json::json!({"id": "x", "error": {"code": "usage_gate",
+            "message": "Claude usage is high"}});
+        assert_eq!(gated_run_exit(&refused), GATED_RUN_USAGE_GATE);
+        let invalid = serde_json::json!({"id": "x", "error": {"code": "invalid",
+            "message": "not in a git repository"}});
+        assert_eq!(gated_run_exit(&invalid), 1);
+        let run = |outcome: &str| {
+            serde_json::json!({"id": "x", "result": {"type": "worker_gated_run",
+                "run": {"worker_id": "w1", "outcome": outcome}}})
+        };
+        assert_eq!(gated_run_exit(&run("ended")), 0);
+        for outcome in ["failed", "stopped", "policy_refused"] {
+            assert_eq!(gated_run_exit(&run(outcome)), GATED_RUN_NOT_ENDED);
+        }
+        assert_ne!(GATED_RUN_USAGE_GATE, GATED_RUN_NOT_ENDED);
     }
 
     #[test]

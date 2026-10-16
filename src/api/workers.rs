@@ -17,6 +17,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
         method,
         Method::WorkerStart(_)
             | Method::WorkerStartChoice(_)
+            | Method::WorkerGatedRun(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)
@@ -155,6 +156,17 @@ pub(super) fn handle_worker_request(
             let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
             let drain = supervisor.wait_drained(&params, CONNECTION_POLL_INTERVAL, keep_waiting)?;
             Ok::<_, WorkerError>(ResponseResult::WorkerDrain { drain })
+        }
+        Method::WorkerGatedRun(params) => {
+            // As above: the worker's turn-end, question and exit events end
+            // the run; a client that went away ends it too, killing the
+            // worker.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            match supervisor.gated_run(&params, CONNECTION_POLL_INTERVAL, keep_waiting) {
+                Ok(None) => return None,
+                Ok(Some(run)) => Ok(ResponseResult::WorkerGatedRun { run }),
+                Err(error) => Err(error),
+            }
         }
         Method::TodoWait(params) => {
             // As above: the run's events end the wait.

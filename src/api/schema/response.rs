@@ -33,9 +33,9 @@ use super::todo::{
     TodoRunnableState,
 };
 use super::workers::{
-    WorkerAttentionReason, WorkerDrain, WorkerEvent, WorkerEventsSnapshot, WorkerInfo,
-    WorkerItemRuns, WorkerKillReport, WorkerObligation, WorkerQuestion, WorkerQuestionDetail,
-    WorkerRun, WorkerTranscript, WorkerVerification,
+    WorkerAttentionReason, WorkerDrain, WorkerEvent, WorkerEventsSnapshot, WorkerGatedRun,
+    WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerObligation, WorkerQuestion,
+    WorkerQuestionDetail, WorkerRun, WorkerTranscript, WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -291,6 +291,10 @@ pub enum ResponseResult {
     /// `report.close`'s reply.
     Report {
         report: ReportInfo,
+    },
+    /// `worker.run`'s reply: how the gated run ended, its text and usage.
+    WorkerGatedRun {
+        run: WorkerGatedRun,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

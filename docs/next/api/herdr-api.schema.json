@@ -7402,6 +7402,67 @@
           },
           "type": "object"
         },
+        "WorkerGatedRunParams": {
+          "description": "`worker.run`: a gated, blocking headless run for an orchestrator outside\nherdr's TODO driver. The server admits it through the same usage gate as\n`todo.run` (the repository of `cwd`, the agent's provider), starts the\nworker as `worker.start` does but without a folder slot, sends `prompt`\nas its one turn, waits for that turn's end (or a question its policy\nleaves to the user), stops the worker and waits for its exit, then\nanswers with [`WorkerGatedRun`]. A refusal of the gate is the error\n`usage_gate`, and nothing starts. A client that goes away ends the run:\nthe worker is killed.",
+          "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent CLI the worker runs; Claude when absent."
+            },
+            "cwd": {
+              "description": "The working directory: absolute, in a git repository (a worktree the\ncaller owns), outside herdr's folder slots.",
+              "type": "string"
+            },
+            "ignore_usage": {
+              "description": "Starts despite a refusing usage gate, with the meaning `todo.run`'s\n`ignore_usage` has: a refusal it overrides leaves the gate's state as\nit was, and the decision (`ignored`) is recorded in the worker's\njournal.",
+              "type": "boolean"
+            },
+            "item": {
+              "description": "The TODO item the worker works on (`t-abcd2345`), as in\n`worker.start`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "description": "Passed to `claude --model` (or `pi --model`), as in `worker.start`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "The worker's task, as the sidebar names it; the prompt's first line\nwhen absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "description": "The worker's one user message.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "description": "The space the worker is listed under.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "cwd",
+            "prompt"
+          ],
+          "type": "object"
+        },
         "WorkerGeneratedFile": {
           "description": "A committed file and the shell command that regenerates it.",
           "properties": {
@@ -8443,6 +8504,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerStartChoiceParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A gated, blocking headless run: admitted by the same usage gate as\n`todo.run`, one turn, then the worker is stopped.",
+          "properties": {
+            "method": {
+              "const": "worker.run",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerGatedRunParams"
             }
           },
           "required": [
@@ -17329,6 +17407,23 @@
               "type": "object"
             },
             {
+              "description": "`worker.run`'s reply: how the gated run ended, its text and usage.",
+              "properties": {
+                "run": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerGatedRun"
+                },
+                "type": {
+                  "const": "worker_gated_run",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "run"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -21669,6 +21764,95 @@
           ],
           "type": "object"
         },
+        "WorkerGatedRun": {
+          "description": "`worker.run`'s answer.",
+          "properties": {
+            "message": {
+              "description": "One line on the outcome, for the caller's record.",
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/WorkerGatedRunOutcome"
+            },
+            "question": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The question that ended a `policy_refused` run."
+            },
+            "text": {
+              "description": "The final assistant text of the turn, when the CLI sent one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "total_cost_usd": {
+              "description": "The `total_cost_usd` of the CLI's `result` events, summed, when any\nreported it.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "usage": {
+              "default": [],
+              "description": "Usage per model; empty when the agent's CLI reports none (pi).",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerModelUsage"
+              },
+              "type": "array"
+            },
+            "usage_gate": {
+              "description": "The usage gate's decision that admitted the run, as `todo.run`\nrecords it."
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "outcome",
+            "message",
+            "usage_gate"
+          ],
+          "type": "object"
+        },
+        "WorkerGatedRunOutcome": {
+          "description": "How a `worker.run` ended.",
+          "oneOf": [
+            {
+              "const": "ended",
+              "description": "The turn ended with `result/success`.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The turn failed, or the worker's process ended before its turn did.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "The turn was interrupted.",
+              "type": "string"
+            },
+            {
+              "const": "policy_refused",
+              "description": "The worker asked a question its policy leaves to the user; nothing\nanswered it and the worker was stopped.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerHeldOutput": {
           "description": "A process the CLI started exited while processes outside the CLI's tree\n(its detached descendants) still hold the write end of a pipe the CLI\nreads: a tool call whose output stays open, so the CLI keeps waiting\nfor its end. A report, never a kill.",
           "properties": {
@@ -22057,6 +22241,50 @@
           },
           "required": [
             "from_coordinator_id"
+          ],
+          "type": "object"
+        },
+        "WorkerModelUsage": {
+          "description": "One model's usage over a `worker.run`, as the worker's journal records\nit (the `modelUsage` of the CLI's `result` events, summed).",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cost_usd": {
+              "description": "In US dollars, when the CLI reported it.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "input_tokens": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model": {
+              "type": "string"
+            },
+            "output_tokens": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens"
           ],
           "type": "object"
         },

@@ -122,14 +122,7 @@ fn resolve(repo_common_dir: &Path, repository: &Path, name: &str) -> Result<Path
             .parent()
             .ok_or_else(|| WorkerError::Invalid(format!("{} has no parent", folder.display())))?;
         let legacy = slots.join(name);
-        let legacy_is_ours = legacy.is_dir()
-            && common_dir(&legacy).is_ok_and(|common| common == repo_common_dir)
-            && git(&legacy, &["rev-parse", "--show-toplevel"])
-                .ok()
-                .and_then(|top| PathBuf::from(top.trim()).canonicalize().ok())
-                .zip(legacy.canonicalize().ok())
-                .is_some_and(|(top, legacy)| top == legacy);
-        if legacy_is_ours {
+        if is_worktree_of(&legacy, repo_common_dir) {
             return Ok(legacy);
         }
     }
@@ -144,6 +137,54 @@ fn resolve(repo_common_dir: &Path, repository: &Path, name: &str) -> Result<Path
         )));
     }
     Ok(path)
+}
+
+/// Whether `dir` is a worktree of the repository whose common directory is
+/// `repo_common_dir`, at its top level.
+fn is_worktree_of(dir: &Path, repo_common_dir: &Path) -> bool {
+    dir.is_dir()
+        && common_dir(dir).is_ok_and(|common| common == repo_common_dir)
+        && git(dir, &["rev-parse", "--show-toplevel"])
+            .ok()
+            .and_then(|top| PathBuf::from(top.trim()).canonicalize().ok())
+            .zip(dir.canonicalize().ok())
+            .is_some_and(|(top, dir)| top == dir)
+}
+
+/// Every place the folder slot `name` of the repository `dir` belongs to
+/// may be, whether or not a worker ever ran there: where [`path_of`] puts
+/// it now, and the earlier `herdr-worktrees/<name>` while that is a
+/// worktree of this repository. Real paths where they exist. None for a
+/// repository that can hold no slot ([`repository_of`] or the slots
+/// directory refuses it).
+pub(super) fn places_of(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let Ok((repo_common_dir, repository)) = repository_of(dir) else {
+        return Vec::new();
+    };
+    if validate_name(name).is_err() {
+        return Vec::new();
+    }
+    let home = super::home_repo::is_home(&repository)
+        .then(super::home_repo::home_dir)
+        .flatten();
+    let configured = configured_slots_dir();
+    let Ok(path) = slot_path(&repository, name, configured.as_deref(), home.as_deref()) else {
+        return Vec::new();
+    };
+    let mut places = vec![path.clone()];
+    if configured.is_none() && home.is_none() {
+        let legacy = path
+            .parent()
+            .and_then(Path::parent)
+            .map(|slots| slots.join(name));
+        if let Some(legacy) = legacy.filter(|legacy| is_worktree_of(legacy, &repo_common_dir)) {
+            places.push(legacy);
+        }
+    }
+    places
+        .into_iter()
+        .map(|place| place.canonicalize().unwrap_or(place))
+        .collect()
 }
 
 /// Where the slot `name` of `repository` goes: `<slots>/<repository

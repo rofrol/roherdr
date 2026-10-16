@@ -133,6 +133,8 @@ impl WorkerSupervisor {
                 usage_gate_config: Mutex::new(crate::config::UsageConfig::default()),
                 #[cfg(test)]
                 review_program: Mutex::new(None),
+                #[cfg(all(test, unix))]
+                gated_run_end_failure: Mutex::new(Default::default()),
             }),
         };
         for (number, held) in unowned {

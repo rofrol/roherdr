@@ -500,6 +500,10 @@ struct Shared {
     /// `program`, which the server calls.
     #[cfg(test)]
     review_program: Mutex<Option<PathBuf>>,
+    /// Which of `worker.run`'s ending signals a test makes fail without
+    /// sending it, so the run's handling of a failed stop is tested.
+    #[cfg(all(test, unix))]
+    gated_run_end_failure: Mutex<supervisor::gated_run::GatedRunEndFailure>,
 }
 
 /// Starts, tracks and stops headless workers.

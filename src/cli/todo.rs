@@ -31,7 +31,9 @@ const USAGE: &str = "usage:
       Unknown usage waits for a successful read below gate_close_percent
       (default 90); failure never clears a high latch. A refused start prints
       a durable run id; todo wait waits through measurements;
-      --ignore-usage, on the user's word, starts anyway), then
+      --ignore-usage, on the user's word, starts anyway; an orchestrator
+      outside this driver runs its agents with `herdr worker run`, which
+      passes this same gate), then
       start a headless worker in the repository's folder slot
       ../herdr-worktrees/<repository>/worker (see `herdr worker start`) on
       the branch todo/<item-id>-<attempt> from the repository's default

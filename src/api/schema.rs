@@ -82,6 +82,10 @@ pub enum Method {
     /// `worker.start` with the agent chosen by name (`pi-anthropic` too).
     #[serde(rename = "worker.start_choice")]
     WorkerStartChoice(WorkerStartChoiceParams),
+    /// A gated, blocking headless run: admitted by the same usage gate as
+    /// `todo.run`, one turn, then the worker is stopped.
+    #[serde(rename = "worker.run")]
+    WorkerGatedRun(WorkerGatedRunParams),
     #[serde(rename = "worker.status")]
     WorkerStatus(WorkerTarget),
     #[serde(rename = "worker.list")]
