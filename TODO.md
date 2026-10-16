@@ -3942,6 +3942,9 @@ Items agents add. Not approved until the user moves them up.
   `question` whenever that pane asked its user something. Keep one
   finding per assignment while its fact holds, and do not treat a relay
   (or a question to the user) as an unaccounted assignment.
+  Same for `disk_low` (2026-10-16): one low disk raised ten findings per
+  sweep, one per repository on that volume (f-194..f-223), each batch
+  under new ids; keep one finding per volume while it holds.
 
 - [ ] The old server waits 500 ms for `owned` after a handoff's commit [t-kpayroca]
   (follow-up of t-qgtdc57s, found by its worker, run r-cults2sq): if the
