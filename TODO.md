@@ -134,6 +134,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   different target branch, not an override of the default-branch
   detection the user rejected on 2026-10-12. Tell bend-bootstrap's
   coordinator when it lands.
+  Design decided with the models 2026-10-16 (round `20261016-214721-9ab2`, all five): the
+  target is local herdr state keyed by repository and landing worktree,
+  set with `herdr todo target set --branch B (--push R | --no-push)`, never
+  the tracked `.herdr/checks.toml`; branch and HEAD are rechecked right
+  before the cherry-pick; the push fetches first and fast-forwards with an
+  explicit refspec, never forced. Attempt 1 (run r-t7uheqex) was briefed
+  with checks.toml before this round; its retry carries the change.
 
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
