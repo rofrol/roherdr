@@ -68,6 +68,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   attempt 1 de6fdc82d rename design rejected in review round
   20261016-150857-ff68, attempt 2 blocked on src/api/server.rs).
 
+- [ ] The consult plugin's `test_error_malformed_and_timeout_logged` races [t-nz3ptrnq]
+  its own 1 s deadline (found by the coordinator 2026-10-16: it failed
+  r-cults2sq's `maintenance` check under load with `FileNotFoundError:
+  .../capture`; plugins/consult/test_claude_consult.py:64 passes `-t 1`
+  to every mode, so a fake CLI that starts slower than 1 s is killed
+  before it writes its capture). Give only the timeout mode a deadline,
+  and make that case observe the fake CLI's start (a positive event, such
+  as the capture file or a pipe) before the helper's deadline counts,
+  instead of hoping it starts within a second.
+
 - [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
   t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
   2026-10-16 a client that found no socket during a failed handoff
