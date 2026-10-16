@@ -978,7 +978,9 @@ mod tests {
 
     /// Takes the [`super::super::ExclusiveFileLock`] on the file in
     /// [`HOLD_ENV`], reports `held`, and waits for the end of its stdin,
-    /// which never comes: the starting test kills it.
+    /// which the starting test keeps open until it has killed and reaped
+    /// it. The end comes only when that test fails first; the holder then
+    /// exits with 2, never with success.
     #[test]
     fn hold_lock_process_entry() {
         use std::io::{Read, Write};
@@ -994,7 +996,7 @@ mod tests {
         stdout.flush().unwrap();
         let _ = std::io::stdin().read_to_end(&mut Vec::new());
         drop(lock);
-        std::process::exit(0);
+        std::process::exit(2);
     }
 
     // A server that crashes (here SIGKILL, so nothing of it runs) leaves no
@@ -1013,6 +1015,12 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        // The holder's only way out but the kill is the end of its stdin, so
+        // the test keeps the write end until the holder is reaped:
+        // `Child::wait` closes a stdin it still owns before it waits, and a
+        // holder that saw that end before the SIGKILL landed exited by
+        // itself. Dropped last, it also ends the holder when the test fails.
+        let _stdin = holder.stdin.take();
         let stdout = holder.stdout.take().unwrap();
         let held = std::io::BufReader::new(stdout)
             .lines()
@@ -1024,7 +1032,12 @@ mod tests {
             .is_none());
 
         holder.kill().unwrap();
-        assert!(!holder.wait().unwrap().success());
+        let status = holder.wait().unwrap();
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(libc::SIGKILL),
+            "the holder ended other than by the kill: {status:?}"
+        );
         let next = super::super::ExclusiveFileLock::try_acquire(&path).unwrap();
         assert!(next.is_some(), "the killed holder's lock was not freed");
         drop(next);
