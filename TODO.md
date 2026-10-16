@@ -3820,12 +3820,40 @@ Items agents add. Not approved until the user moves them up.
   while a client is attached.
 
 - [ ] Headless workers get `TMPDIR` set to their own temp dir (short enough for a Unix socket, macOS keeps 104 bytes), instead of a contract line telling them never to use `$TMPDIR`: tools such as `mktemp`, compilers and test runners read it, and a worker in agentic-workflow-bend-claude could not run that repository's tests (`mktemp -d` denied). Consult rounds `20261016-101122-79f1` and `20261016-101852-b403` (deepseek, argon, wonder); from agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-u2w7au4k]
+  Note 2026-10-16 (round `20261016-145027-bd52`, all five): a short TMPDIR
+  is likely not enough for PostgreSQL; initdb and postgres under the
+  sandbox may also need POSIX shared memory and a local Unix socket bind.
+  Prove it with initdb, start, one query and stop under the real worker
+  profile before calling this item done.
 
 - [ ] `todo run`'s TODO step refuses to close an item in a repository without `DECISIONS.md` ("main has no DECISIONS.md", agentic-workflow-bend-claude run r-ckv77gyg, 2026-10-16); the preflight should say so before a worker runs, or the step should create the file. From agentic-workflow-bend-claude's coordinator. [t-nvlv7hrd]
 
 - [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
+
+- [ ] The verify keeps each check's output, and `todo review` shows it [t-fqrtichg]
+  (from agentic-workflow-bend-claude's coordinator, 2026-10-16, consult
+  round `20261016-145027-bd52`, all five): a check records only passed or
+  failed, and a failure's last lines (src/workers/verify.rs); a check that
+  exits 0 early or skips its cases reads as passed. Keep every check's
+  exit code and its stdout/stderr (bounded, the cut said) as an artifact
+  keyed to the commit, and show it in `todo review`.
+
+- [ ] The verify runs before a manual review, not only before [t-4joiiaxa]
+  `--auto-review` (from agentic-workflow-bend-claude's coordinator,
+  2026-10-16, round `20261016-145027-bd52`, all five): the coordinator
+  now reviews the worker's account of its tests, and the verify first
+  runs after the approval (t-adaptcli's suite never ran before its
+  review). Run the registered checks before the `review` event, as the
+  automatic review does, and show the result in `todo review`.
+
+- [ ] A wrong `--close` file says why the TODO step failed (from [t-jryxjhyt]
+  agentic-workflow-bend-claude's coordinator, 2026-10-16): given `--close
+  TODO.md` instead of a close note, the step failed and `todo review` did
+  not say why; it was skipped and the item closed by hand. Refuse a
+  `--close`/`--note` file that is the repository's TODO.md or
+  DECISIONS.md at resume time, and show a failed TODO step's error.
 
 ## Needs a decision
 
@@ -3878,6 +3906,17 @@ user needs to decide or do.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
   Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
+
+- [ ] The verify runs worker-written code outside the sandbox with the [t-vzhiukks]
+  coordinator's environment (raised by agentic-workflow-bend-claude's
+  coordinator, 2026-10-16, round `20261016-145027-bd52`: sol, Argon,
+  Wonder): the checks run the worker's commit (its tests, scripts such as
+  `tests/run.sh`) unsandboxed, with the environment the push uses, and the
+  worker edits the tests that grade it. AGENTS.md documents the verify
+  outside the sandbox; no decision record accepts this risk.
+  Which boundary should the verify have?
+  Options: run the checks in a sandbox at least as strict as the worker's, with push credentials kept out of their environment (Recommended) | keep them unsandboxed and treat the diff review as the gate, test files reviewed as privileged code
+  Checked: AGENTS.md "Fork Sync" (todo run section) says the verify runs outside the sandbox; nothing in DECISIONS.md accepts it.
 
 ### Decide
 
