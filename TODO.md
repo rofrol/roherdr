@@ -82,28 +82,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a stop signal arriving with `committed`, and the old server's 500 ms
   wait for `owned` after the commit.
 
-- [ ] The consult plugin's `test_error_malformed_and_timeout_logged` races [t-nz3ptrnq]
-  its own 1 s deadline (found by the coordinator 2026-10-16: it failed
-  r-cults2sq's `maintenance` check under load with `FileNotFoundError:
-  .../capture`; plugins/consult/test_claude_consult.py:64 passes `-t 1`
-  to every mode, so a fake CLI that starts slower than 1 s is killed
-  before it writes its capture). Give only the timeout mode a deadline,
-  and make that case observe the fake CLI's start (a positive event, such
-  as the capture file or a pipe) before the helper's deadline counts,
-  instead of hoping it starts within a second.
-  Design from round `20261016-160553-0296` (sol, DeepSeek; MiMo, Argon
-  and Wonder refused the brief for env-shaped strings): the helper's
-  420 s deadline is a real external deadline (a vendor CLI can hang) and
-  stays. The test's `-t 1` for every mode, the fake's `sleep(3)` and the
-  outer `timeout=10` are wall-clock races: the error and malformed modes
-  get no short deadline and assert their own classification; the timeout
-  path is tested in-process with the runner injected (it records its
-  arguments, then raises `subprocess.TimeoutExpired`), asserting the
-  status, the error kind and the forwarded deadline; no sleep, no clock.
-  Both also judged the coordinator's re-run of r-cults2sq's whole verify
-  to get past this failure a blind retry (user, 2026-10-16: "why an
-  asynchronous workaround here? 1 second?"); see the user's answer below.
-
 - [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
   t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
   2026-10-16 a client that found no socket during a failed handoff

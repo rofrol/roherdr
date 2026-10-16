@@ -1582,3 +1582,19 @@ child's stdin and keeps it until the status is collected, asserts the
 status names SIGKILL, and the holder exits 2 on an early end of stdin. The
 other tests that start the test binary as a child were checked and do not
 depend on stdin staying open.
+
+## The consult helper's timeout is tested in process, not against a 1 s deadline (t-nz3ptrnq, 2026-10-16)
+
+`test_error_malformed_and_timeout_logged` gave every mode `-t 1` and its
+fake CLI slept 3 s, so under load the helper killed the fake before it
+wrote its capture (r-cults2sq's `maintenance` check failed on it, and the
+coordinator's re-run of that whole verify was a blind retry; user,
+2026-10-16: "why an asynchronous workaround here? 1 second?"; round
+`20261016-160553-0296`). Now (run r-7vsbj4as): `ask_claude.py` calls the
+CLI through a module-level `run_claude`; the timeout path is tested in
+process with a runner that records its arguments and raises
+`TimeoutExpired` (status, error kind and the forwarded deadline
+asserted); the error and malformed modes run with the default 420 s
+external deadline and assert their error kind; the fake's sleep and the
+outer `timeout=10` are gone. A flaky check is fixed at its cause before
+the change it blocks is verified again, never re-run to get green.
