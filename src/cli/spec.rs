@@ -509,6 +509,16 @@ fn todo_command() -> Command {
             .arg(flag("json")),
         )
         .subcommand(
+            Command::new("review-eval")
+                .about("Replay the golden set of past review catches blind against the automatic review")
+                .arg(option("case", "NAME").action(ArgAction::Append))
+                .arg(flag("without-context-pack"))
+                .arg(flag("without-checklist"))
+                .arg(flag("credits"))
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(option("out", "FILE").value_hint(ValueHint::FilePath)),
+        )
+        .subcommand(
             Command::new("runs")
                 .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),

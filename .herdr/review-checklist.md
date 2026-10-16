@@ -1,4 +1,5 @@
 # Review checklist of the automatic review (`todo run --auto-review`): one bug class per line, at most 25 lines, each ending with its source in parentheses, a DECISIONS.md section title or a commit sha. Lines starting with # are not given to the model.
+# Cut-off: 2026-10-12T18:46:06+02:00 (RFC 3339; the commit that added this file, fa003c7c9). The lines below are distilled from catches before it and stay frozen; the golden set in .herdr/review-golden/ replays only catches after it.
 - An environment variable (HERDR_WORKSPACE_ID, a pane or socket variable) read without the remote and empty-value guards that an existing helper in the same code already has; reuse the helper. (source: bc6086b79)
 - A concrete fact (a host name or IP address, a port, an absolute or personal path) written into code, docs, fixtures or tests instead of being taken from the repository, its configuration or DNS. (source: DECISIONS.md "A moved host: DNS names, a one-off search, no registry")
 - An in-memory queue, history, map or cache with no bound or eviction, or a bounded one whose overflow loses entries silently instead of reporting the loss. (source: 65927cef1)

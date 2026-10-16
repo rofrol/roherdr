@@ -162,14 +162,14 @@ const CREDIT_MAX_TOKENS: u32 = 16_000;
 /// What a credit call came to.
 // The credit proxy is Unix only: elsewhere a credit call is always refused.
 #[cfg_attr(not(unix), allow(dead_code))]
-enum CreditCall {
+pub(in crate::workers) enum CreditCall {
     Answered { reply: Value, cost: f64 },
     Refused(String),
 }
 
 /// The structured output and the model of an API message that answered a
 /// call with a JSON schema: its text blocks hold the JSON.
-fn parse_message(reply: &Value) -> Result<(Value, Option<String>), String> {
+pub(in crate::workers) fn parse_message(reply: &Value) -> Result<(Value, Option<String>), String> {
     if reply["stop_reason"].as_str() == Some("max_tokens") {
         return Err("the model's answer was cut at its token limit".into());
     }
@@ -397,7 +397,6 @@ impl WorkerSupervisor {
 
     /// One call through the credit proxy, in-process (no listener: the
     /// run's grant, the run's ledger rows). `Err` and `Refused` are credit refusals.
-    #[cfg(unix)]
     fn call_credit(
         &self,
         run: &super::Run,
@@ -406,143 +405,183 @@ impl WorkerSupervisor {
         model: Option<&str>,
         tools: Option<&mut RepoTools<'_>>,
     ) -> Result<CreditCall, String> {
-        use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
-
-        let mut config = crate::config::load_live_config()
-            .map_err(|_| "cannot load credit configuration".to_owned())?
-            .config
-            .workers;
-        if let Some(model) = run
-            .finish
-            .credit_model
-            .as_deref()
-            .and_then(|model| model.strip_prefix(crate::workers::pi::ANTHROPIC_PREFIX))
-        {
-            config.anthropic_api_model = model.to_owned();
-        }
-        if let Some(model) = model {
-            config.anthropic_api_model = model.to_owned();
-        }
-        let ledger = ledger_path(&config).map_err(|error| error.to_string())?;
-        std::fs::create_dir_all(crate::config::state_dir()).map_err(|error| error.to_string())?;
-        let schema: Value = serde_json::from_str(prompt.schema)
-            .map_err(|error| format!("the output schema is not JSON: {error}"))?;
-        let body = json!({
-            "model": config.anthropic_api_model,
-            "max_tokens": CREDIT_MAX_TOKENS,
-            "system": prompt.system,
-            "messages": [{"role": "user", "content": format!("{}\n\n{input}\n", prompt.intro)}],
-            "output_config": {"format": {"type": "json_schema", "schema": schema}},
-        });
-        let send = |body: &Value| -> Result<(Value, f64), String> {
-            let proxy =
-                AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
-            let (status, reply) = proxy
-                .message(&run.info.run_id, &run.info.item, &body.to_string())
-                .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
-            if status != 200 {
-                return Err(format!(
-                    "the credit proxy answered {status}: {}",
-                    cut(&reply)
-                ));
-            }
-            let reply: Value = serde_json::from_str(&reply)
-                .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
-            // The proxy settled the call in the ledger before it answered.
-            let (cost, _) = AnthropicProxy::accounting(&ledger, Some(&run.info.run_id))
-                .map_err(|error| error.to_string())?;
-            Ok((reply, cost))
+        let caller = CreditCaller {
+            run_id: &run.info.run_id,
+            item: &run.info.item,
+            credit_model: run.finish.credit_model.as_deref(),
         };
-        let answered = match tools {
-            Some(tools) => tool_loop(body, tools, send),
-            None => send(&body),
-        };
-        Ok(match answered {
-            Ok((reply, cost)) => CreditCall::Answered { reply, cost },
-            Err(reason) => CreditCall::Refused(reason),
-        })
+        credit_call(&caller, prompt, input, model, tools)
     }
 
-    #[cfg(not(unix))]
-    fn call_credit(
-        &self,
-        _run: &super::Run,
-        _prompt: &Prompt<'_>,
-        _input: &str,
-        _model: Option<&str>,
-        _tools: Option<&mut RepoTools<'_>>,
-    ) -> Result<CreditCall, String> {
-        Err("the Anthropic credit proxy requires Unix".into())
-    }
-
-    /// One `claude -p` call with `input` on its standard input; its exit is
-    /// the event waited for (no deadline: the provider imposes none). The
-    /// call runs in the worker store's directory with the server's
-    /// environment (the user's login) without `HERDR_*`, and without tools,
-    /// session, MCP servers, hooks or project instructions. `model` is
-    /// `--model`.
+    /// One `claude -p` call ([`call_cli`]) with the server's `claude`, run
+    /// in the worker store's directory.
     pub(super) fn call_model(
         &self,
         prompt: &Prompt<'_>,
         input: &str,
         model: Option<&str>,
     ) -> Result<(Value, Option<String>), String> {
-        let program = self.decision_program();
-        let mut command = Command::new(&program);
-        if let Some(model) = model {
-            command.args(["--model", model]);
-        }
-        command
-            .args([
-                "-p",
-                "--output-format",
-                "json",
-                "--json-schema",
-                prompt.schema,
-                "--tools",
-                "",
-                "--no-session-persistence",
-                "--strict-mcp-config",
-                "--safe-mode",
-                "--system-prompt",
-                prompt.system,
-            ])
-            .current_dir(&self.shared.dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("HERDR_") {
-                command.env_remove(key);
-            }
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot run {}: {error}", program.display()))?;
-        // Written from a thread: a child that answers before it read all
-        // of its input must not block on a full pipe while this one writes.
-        let writer = child.stdin.take().map(|mut stdin| {
-            let input = format!("{}\n\n{input}\n", prompt.intro);
-            std::thread::spawn(move || stdin.write_all(input.as_bytes()))
-        });
-        let output = child
-            .wait_with_output()
-            .map_err(|error| format!("waiting for {}: {error}", program.display()))?;
-        if let Some(writer) = writer {
-            // A child that exited without reading all of it broke the pipe;
-            // its exit status says what happened.
-            let _ = writer.join();
-        }
-        if !output.status.success() {
+        call_cli(
+            &self.decision_program(),
+            &self.shared.dir,
+            prompt,
+            input,
+            model,
+        )
+    }
+}
+
+/// Whom a credit call is booked to in the credit ledger: a run and its item,
+/// and the run's pinned credit model.
+// The credit proxy is Unix only: elsewhere a credit call reads none of it.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(in crate::workers) struct CreditCaller<'a> {
+    pub(in crate::workers) run_id: &'a str,
+    pub(in crate::workers) item: &'a str,
+    pub(in crate::workers) credit_model: Option<&'a str>,
+}
+
+/// One call through the credit proxy, in-process, booked to `caller`.
+/// `Err` and `Refused` are credit refusals.
+#[cfg(unix)]
+pub(in crate::workers) fn credit_call(
+    caller: &CreditCaller<'_>,
+    prompt: &Prompt<'_>,
+    input: &str,
+    model: Option<&str>,
+    tools: Option<&mut RepoTools<'_>>,
+) -> Result<CreditCall, String> {
+    use crate::platform::anthropic_proxy::{ledger_path, AnthropicProxy};
+
+    let mut config = crate::config::load_live_config()
+        .map_err(|_| "cannot load credit configuration".to_owned())?
+        .config
+        .workers;
+    if let Some(model) = caller
+        .credit_model
+        .and_then(|model| model.strip_prefix(crate::workers::pi::ANTHROPIC_PREFIX))
+    {
+        config.anthropic_api_model = model.to_owned();
+    }
+    if let Some(model) = model {
+        config.anthropic_api_model = model.to_owned();
+    }
+    let ledger = ledger_path(&config).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(crate::config::state_dir()).map_err(|error| error.to_string())?;
+    let schema: Value = serde_json::from_str(prompt.schema)
+        .map_err(|error| format!("the output schema is not JSON: {error}"))?;
+    let body = json!({
+        "model": config.anthropic_api_model,
+        "max_tokens": CREDIT_MAX_TOKENS,
+        "system": prompt.system,
+        "messages": [{"role": "user", "content": format!("{}\n\n{input}\n", prompt.intro)}],
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+    });
+    let send = |body: &Value| -> Result<(Value, f64), String> {
+        let proxy = AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
+        let (status, reply) = proxy
+            .message(caller.run_id, caller.item, &body.to_string())
+            .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
+        if status != 200 {
             return Err(format!(
-                "{} exited with {}: {}",
-                program.display(),
-                output.status,
-                cut(&String::from_utf8_lossy(&output.stderr))
+                "the credit proxy answered {status}: {}",
+                cut(&reply)
             ));
         }
-        parse_cli_output(&String::from_utf8_lossy(&output.stdout))
+        let reply: Value = serde_json::from_str(&reply)
+            .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
+        // The proxy settled the call in the ledger before it answered.
+        let (cost, _) = AnthropicProxy::accounting(&ledger, Some(caller.run_id))
+            .map_err(|error| error.to_string())?;
+        Ok((reply, cost))
+    };
+    let answered = match tools {
+        Some(tools) => tool_loop(body, tools, send),
+        None => send(&body),
+    };
+    Ok(match answered {
+        Ok((reply, cost)) => CreditCall::Answered { reply, cost },
+        Err(reason) => CreditCall::Refused(reason),
+    })
+}
+
+#[cfg(not(unix))]
+pub(in crate::workers) fn credit_call(
+    _caller: &CreditCaller<'_>,
+    _prompt: &Prompt<'_>,
+    _input: &str,
+    _model: Option<&str>,
+    _tools: Option<&mut RepoTools<'_>>,
+) -> Result<CreditCall, String> {
+    Err("the Anthropic credit proxy requires Unix".into())
+}
+
+/// One `claude -p` call by `program` with `input` on its standard input;
+/// its exit is the event waited for (no deadline: the provider imposes
+/// none). The call runs in `dir` with this process's environment (the
+/// user's login) without `HERDR_*`, and without tools, session, MCP
+/// servers, hooks or project instructions. `model` is `--model`.
+pub(in crate::workers) fn call_cli(
+    program: &std::path::Path,
+    dir: &std::path::Path,
+    prompt: &Prompt<'_>,
+    input: &str,
+    model: Option<&str>,
+) -> Result<(Value, Option<String>), String> {
+    let mut command = Command::new(program);
+    if let Some(model) = model {
+        command.args(["--model", model]);
     }
+    command
+        .args([
+            "-p",
+            "--output-format",
+            "json",
+            "--json-schema",
+            prompt.schema,
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--safe-mode",
+            "--system-prompt",
+            prompt.system,
+        ])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("HERDR_") {
+            command.env_remove(key);
+        }
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", program.display()))?;
+    // Written from a thread: a child that answers before it read all
+    // of its input must not block on a full pipe while this one writes.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let input = format!("{}\n\n{input}\n", prompt.intro);
+        std::thread::spawn(move || stdin.write_all(input.as_bytes()))
+    });
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("waiting for {}: {error}", program.display()))?;
+    if let Some(writer) = writer {
+        // A child that exited without reading all of it broke the pipe;
+        // its exit status says what happened.
+        let _ = writer.join();
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "{} exited with {}: {}",
+            program.display(),
+            output.status,
+            cut(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    parse_cli_output(&String::from_utf8_lossy(&output.stdout))
 }
 
 #[cfg(test)]

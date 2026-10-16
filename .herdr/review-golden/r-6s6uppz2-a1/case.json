@@ -1,0 +1,71 @@
+{
+  "run": "r-6s6uppz2",
+  "item": "t-ic5rrxn3",
+  "attempt": 1,
+  "base": "64de556174ad988fc2ac4ebfc461b587cf9b5229",
+  "commit": "2cd7b8ad37c6120d37690d34bc794bfa82bee1f2",
+  "subject": "feat: coordinators hand off to a fresh session with ready, handoff --successor and ack",
+  "allowed_paths": [
+    "src/**",
+    "tests/**",
+    "docs/next/**"
+  ],
+  "caught_at": "2026-10-12T21:39:43+02:00",
+  "caught_at_source": "git log: committer date of attempt 2's commit cbe26c7b8eb4d5f5c42a2c7a4bfaf6c71e3446a0, which the review of attempt 1 sent back; the review was written before it",
+  "source": {
+    "run": "r-6s6uppz2",
+    "attempt": 2,
+    "dump": "herdr todo review r-6s6uppz2 --attempt 2",
+    "section": "Review of attempt 1"
+  },
+  "task": "Self-service coordinator handoff, first slice (herdr side) [t-ic5rrxn3]\n\nGoal: a coordinator session can hand its tenure to a fresh session of the\nsame agent kind (Claude or pi) by itself, triggered manually from its own\npane. Read the item t-ic5rrxn3 in TODO.md, ONLY its last three notes\n(from \"Round 20261012-192328-6320\" to the end); they are the design.\nExisting code to build on: src/cli/coordinator.rs (`coordinator\nstart|end|status|handoff --to PANE`), src/app/api/coordinators.rs\n(tenures with an epoch, `handle_coordinator_handoff`), `herdr agent start\n--kind <kind> --pane <pane> --prompt <text>` (src/app/api/agents.rs and\nits CLI). Verify each of these names in the code before using it; if the\ncode disagrees with this task, stop with WORKER-BLOCKED.\n\nBuild:\n1. `herdr coordinator ready --note <path>` from the coordinator's pane:\n   herdr checks the caller holds the tenure (current epoch) and that its\n   agent is at a turn end (not working), copies the note into herdr's\n   state directory and records its sha256. It marks the tenure\n   `frozen`: mutations that already check the tenure refuse a frozen or\n   superseded caller (at least `coordinator handoff`, `todo resume`,\n   `worker start`, `worker answer`, `worker ack` where they have the\n   caller's pane; list any you could not fence).\n2. `herdr coordinator handoff --successor` from the coordinator's pane\n   (after `ready`): herdr writes a handoff manifest (JSON, versioned) to\n   its state directory: epoch, its own snapshot of the tenure (repository,\n   runs in flight for that repository with their ids and last event ids,\n   owned workers, pending question ids), snapshot path and sha256, the\n   frozen note copy's path and sha256, the old pane id and the agent kind.\n   It opens a new pane in the old pane's tab (no focus change) and starts\n   the same agent kind there with ONE launch prompt from a per-kind table:\n   claude `/todo --handoff <absolute manifest path>`, pi\n   `/skill:todo --handoff <absolute manifest path>`; any other kind is\n   refused before anything starts (fail closed). No second message.\n3. `herdr coordinator ack --epoch E --snapshot <sha256>` from the\n   successor's pane: herdr validates the pending handoff (epoch, hash,\n   caller is the started successor pane), then in one step advances the\n   epoch, moves the tenure, worker ownership and the tab's coordinator\n   role to the successor, and ends the old agent session (stop its agent;\n   leave the pane closed or idle as existing helpers allow, say which).\n   A stale or wrong ack is refused and changes nothing.\n4. Failure: if the successor exits or reports a limit before its ack,\n   the handoff aborts, the old tenure unfreezes and keeps authority, and\n   one event/notice says so. No timers anywhere (no grace period).\n   `coordinator status` shows a pending handoff's state.\n5. Tests next to the code: table tests of every transition (active ->\n   frozen -> successor started -> acked; abort paths; stale ack; ready\n   without tenure; unknown kind refused), using AppState/App test helpers,\n   no real agent process. A fake successor that \"speaks the ack\" is\n   enough.\n6. Docs: a short section for these commands in\n   docs/next/website/src/content/docs/ where coordinator commands are\n   documented (find it); keep it generic, no personal paths.\n\nOut of scope: the todo skill text (lives outside this repo; the\ncoordinator handles it), the automatic context-size trigger, codex/agy.\n\nContract: edit with Edit/Write; keep drafts in your temp dir by absolute\npath, never $TMPDIR; never work around the sandbox, and list the tests\nthat cannot run there; end any process you start; no push, install,\nrebase, `git stash`, or agents of your own. Make exactly one commit.\n\n---\nRun everything in the foreground: no `run_in_background`, no Monitor. You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this subject, with no body and no trailers:\nfeat: coordinators hand off to a fresh session with ready, handoff --successor and ack\nTouch only these paths (git globs): src/** tests/** docs/next/**\nThe verify runs these checks in your folder, each as its argv (no shell):\n- `workers`: `[\"cargo\",\"nextest\",\"run\",\"-E\",\"test(/workers::/)\"]`\n- `lint`: `[\"just\",\"lint\"]`\n- `windows-lint`: `[\"python3\",\"scripts/windows_cross.py\",\"lint\"]`\n- `tests`: `[\"cargo\",\"nextest\",\"run\"]`\n- `maintenance`: `[\"just\",\"maintenance-test\"]`\n- `ui-architecture`: `[\"just\",\"ui-hot-path-architecture-test\"]`\n- `integration-assets`: `[\"just\",\"integration-assets-test\"]`, added by the verify when your diff touches `src/integration/assets/`, so a change there is verified with the integration asset tests\n- `docs-contract`: `[\"just\",\"docs-contract-test\"]`, added by the verify when your diff touches `scripts/docs/`, so a change there is verified with the docs contract tests\nBefore your last line, run every one of them you can in your sandbox (`windows-lint` works there) and report each one's result, or the sandbox error that stopped it.\nAdvertised client methods keep their v1 shape: add a new method instead of changing one (AGENTS.md, Stable client endpoint contract).\nEnd your last reply with the line `WORKER-DONE <sha> | <summary>`, or `WORKER-BLOCKED <reason>` when you cannot finish.\n",
+  "worker_final_text": "Committed as `2cd7b8ad3` on `todo/t-ic5rrxn3-r-6s6uppz2-1` with the exact subject. It is untested end to end: the pane split and successor agent launch in `coordinator handoff --successor` never ran. The sandbox gives panes no usable terminal, so a test stands in for them with the supervisor's own steps.\n\n**What was built**\n- **Methods:** `coordinator.ready`, `coordinator.handoff_successor` and `coordinator.ack` are new methods. Existing v1 methods are unchanged.\n- **CLI:** `herdr coordinator ready --note`, `handoff --successor` and `ack --epoch --snapshot`.\n- **Status:** `coordinator status` shows a pending handoff as `handoff {state: frozen | successor_started, ...}`.\n- **Schema and docs:** `herdr-api.schema.json` is regenerated, and `cli-reference.mdx` and `socket-api.mdx` have the new section, with no personal paths.\n- **State:** the handoff state lives in `src/workers/coordinator_handoff.rs`.\n- **Launch prompts:** the table is `/todo --handoff <manifest>` for claude and `/skill:todo --handoff <manifest>` for pi. Any other kind is refused at `ready` and again at `handoff --successor`, before anything is written or started.\n- **Ack:** a stale or wrong ack is refused and changes nothing. It moves the epoch, tenure, workers, runs and the tab's role in one step.\n- **Abort:** if the successor exits, closes or reports a limit before its ack, the tenure unfreezes, keeps authority, and one notice says so. Closing the old pane or ending the tenure also drops the handoff. No timers.\n\n**Choices you should know about**\n- **Old pane after ack:** it is closed, which ends the old agent session.\n- **Turn-end check:** `ready` runs from inside the agent's own turn, so the agent is live-`working`. I enforce only that the agent is claude or pi and is not blocked on a question or permission. A real \"turn has ended\" check is not possible there.\n- **Restart:** a pending handoff lives in server memory, so a server restart unfreezes the tenure. This is documented.\n- **Fencing:** a frozen caller is refused with `coordinator_frozen` for `coordinator handoff --to`, `todo resume`, `todo run`, `worker start`, `worker start_choice`, `worker answer`, `worker answer_as` and `worker ack`.\n- **Superseded callers:** they need no separate fence. Once the old pane is closed its tenure is gone, so its calls get `coordinator_not_found`.\n- **Not fenced:** `worker prompt`, `worker stop`, `worker kill`, `worker interrupt`, `todo next`, `todo draft_run` and read-only calls.\n\n**Check results**\n- **`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`:** clean. I ran these directly because `just lint` failed on the `herdr-job` slot file (`Operation not permitted`).\n- **`python3 scripts/windows_cross.py lint`:** passed.\n- **`just ui-hot-path-architecture-test`:** passed (6 tests).\n- **My tests:** 7 supervisor tests in `coordinator_handoff.rs` and 1 App test in `src/app/api/coordinators.rs` pass. They cover the active, frozen, successor started and acked path, abort paths, a stale ack, `ready` without a tenure, an unknown kind refused, and `coordinator end` dropping a pending handoff. The regenerated-schema test passes.\n- **`cargo nextest run -E 'test(/workers::/)'` and the full `cargo nextest run`:** many sandbox failures (sockets, PTYs, brokers, integration shell scripts), and the full run's per-test output scrolled past me. I did not get a failure list outside the sandbox-bound areas, and I have no clean baseline to compare against. In my targeted `test(/coordinator/)` run, 67 of 75 passed and the 8 failures were integration script tests failing with `Operation not permitted`.\n- **`just maintenance-test`:** Python errors in `scripts/test_awaiting_reply_audit` (coordinator stop tests). I did not touch `scripts/`, but I did not confirm these are sandbox-only.\n- **Not applicable:** `just integration-assets-test` and `just docs-contract-test`, since `src/integration/assets/` and `scripts/docs/` are untouched.\n\nThe coordinator should run the full `just check` outside the sandbox.\n\nI did not use `pkill` after your correction. The only test process I launched myself finished or timed out, and `pgrep` showed none left.\n\nWORKER-DONE 2cd7b8ad3 | coordinator ready/handoff --successor/ack: frozen tenure fencing, manifest and snapshot, same-kind successor launch (claude, pi), atomic ack that closes the old pane, abort on successor exit or limit; sandbox-blocked tests listed above\n",
+  "expected": [
+    {
+      "file": "src/api/workers.rs",
+      "line": 180,
+      "summary": "The frozen-tenure fence covers only some mutating methods: worker prompt, interrupt, stop, kill, escalate and several todo methods still run for a frozen or superseded caller.",
+      "severe": true
+    },
+    {
+      "file": "src/app/api/coordinators.rs",
+      "line": 462,
+      "summary": "`coordinator end` from the frozen pane silently drops the pending handoff instead of being refused.",
+      "severe": true
+    },
+    {
+      "file": "src/app/api/coordinators.rs",
+      "summary": "After the ack nothing refuses the superseded old pane, and the ack discards the result of closing that pane, so a failed close is reported as success.",
+      "severe": true
+    },
+    {
+      "file": "src/workers/coordinator_handoff.rs",
+      "summary": "The worker fence checks the worker's owner instead of the caller, so the user's own answers to escalated questions are refused while the tenure is frozen.",
+      "severe": false
+    },
+    {
+      "file": "src/workers/coordinator_handoff.rs",
+      "line": 473,
+      "summary": "A successor that never produces an event (a crash before detection, a dialog) leaves the tenure frozen forever, with no way to abort the handoff.",
+      "severe": true
+    },
+    {
+      "file": "src/workers/registry.rs",
+      "line": 82,
+      "summary": "The pending handoff lives only in server memory, so a restart or a live handoff loses it.",
+      "severe": true
+    },
+    {
+      "file": "src/workers/coordinator_handoff.rs",
+      "line": 446,
+      "summary": "The ack validates, removes the pending handoff and transfers the tenure in separate lock acquisitions, leaving a window in which the fence is lifted.",
+      "severe": true
+    },
+    {
+      "file": "src/workers/coordinator_handoff.rs",
+      "line": 173,
+      "summary": "The server accepts a relative note path; only the CLI refuses it.",
+      "severe": false
+    }
+  ]
+}

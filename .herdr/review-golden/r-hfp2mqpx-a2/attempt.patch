@@ -1,0 +1,2488 @@
+diff --git a/docs/next/api/herdr-api.schema.json b/docs/next/api/herdr-api.schema.json
+index 5295dd284..4bf48d40e 100644
+--- a/docs/next/api/herdr-api.schema.json
++++ b/docs/next/api/herdr-api.schema.json
+@@ -2355,6 +2355,19 @@
+           ],
+           "type": "object"
+         },
++        "CoordinatorCreditLaunchParams": {
++          "description": "Claims the launch environment of a credit-funded successor\n(`coordinator.credit_launch`). Sent by herdr's own launcher\n(`herdr coordinator credit-launch`), typed into the successor's pane, from\nthat pane: the grant is given once, to that pane, and never appears in\nthe typed command, an argument, the pane's shell or any state.",
++          "properties": {
++            "pane_id": {
++              "description": "The successor's pane (the launcher sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            }
++          },
++          "required": [
++            "pane_id"
++          ],
++          "type": "object"
++        },
+         "CoordinatorEndParams": {
+           "description": "Ends a tenure: the one named, else the one bound to the pane.",
+           "properties": {
+@@ -2381,6 +2394,26 @@
+           },
+           "type": "object"
+         },
++        "CoordinatorFunding": {
++          "description": "What pays for a successor session.",
++          "oneOf": [
++            {
++              "const": "login",
++              "description": "The agent's own login.",
++              "type": "string"
++            },
++            {
++              "const": "credits",
++              "description": "The Anthropic API credits, through herdr's credit proxy (Claude Code).",
++              "type": "string"
++            },
++            {
++              "const": "unknown",
++              "description": "A value a newer server sent that this client does not know.",
++              "type": "string"
++            }
++          ]
++        },
+         "CoordinatorHandoffAbortParams": {
+           "description": "Cancels a pending handoff (`coordinator.handoff_abort`): the tenure\nunfreezes and keeps its authority.",
+           "properties": {
+@@ -2427,6 +2460,24 @@
+           ],
+           "type": "object"
+         },
++        "CoordinatorHandoffSuccessorFundedParams": {
++          "description": "Starts the successor like `coordinator.handoff_successor`, with the\nfunding named (`coordinator.handoff_successor_funded`). A server that\ndoes not advertise this method cannot start a successor on the credits:\nthe client must not fall back to `coordinator.handoff_successor` for\n`credits`, which an older server would start on the login.",
++          "properties": {
++            "funding": {
++              "$ref": "#/schemas/request/$defs/CoordinatorFunding",
++              "description": "What pays for the successor."
++            },
++            "pane_id": {
++              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            }
++          },
++          "required": [
++            "pane_id",
++            "funding"
++          ],
++          "type": "object"
++        },
+         "CoordinatorHandoffSuccessorParams": {
+           "description": "Starts the successor of a frozen tenure (`coordinator.handoff_successor`):\na new pane in the caller's tab runs a fresh session of the same agent kind.",
+           "properties": {
+@@ -9410,6 +9461,40 @@
+           ],
+           "type": "object"
+         },
++        {
++          "description": "Like `coordinator.handoff_successor`, with the funding named.",
++          "properties": {
++            "method": {
++              "const": "coordinator.handoff_successor_funded",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorHandoffSuccessorFundedParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
++        {
++          "description": "The credit launcher's one-use claim of its pane's launch environment.",
++          "properties": {
++            "method": {
++              "const": "coordinator.credit_launch",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorCreditLaunchParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
+         {
+           "description": "Cancels a pending handoff; the old tenure unfreezes.",
+           "properties": {
+@@ -12721,6 +12806,26 @@
+             }
+           ]
+         },
++        "CoordinatorFunding": {
++          "description": "What pays for a successor session.",
++          "oneOf": [
++            {
++              "const": "login",
++              "description": "The agent's own login.",
++              "type": "string"
++            },
++            {
++              "const": "credits",
++              "description": "The Anthropic API credits, through herdr's credit proxy (Claude Code).",
++              "type": "string"
++            },
++            {
++              "const": "unknown",
++              "description": "A value a newer server sent that this client does not know.",
++              "type": "string"
++            }
++          ]
++        },
+         "CoordinatorHandoffInfo": {
+           "description": "A tenure's pending self-service handoff.",
+           "properties": {
+@@ -12736,6 +12841,17 @@
+               "format": "int64",
+               "type": "integer"
+             },
++            "funding": {
++              "anyOf": [
++                {
++                  "$ref": "#/schemas/success_response/$defs/CoordinatorFunding"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "description": "What pays for the successor, once started: `login` or `credits`."
++            },
+             "note_sha256": {
+               "description": "The sha256 of the copied note.",
+               "type": "string"
+@@ -12814,6 +12930,24 @@
+               "format": "int64",
+               "type": "integer"
+             },
++            "funding": {
++              "anyOf": [
++                {
++                  "$ref": "#/schemas/success_response/$defs/CoordinatorFunding"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "description": "What pays for the session of this tenure: `credits` for a successor\nstarted with `--funding credits` (kept across a server restart; see\n`funding_note` for when its endpoint is gone), else `login`."
++            },
++            "funding_note": {
++              "description": "Set when `funding` is `credits` but herdr's credit endpoint for the\nsession is not running (the server restarted or handed off live since\nthe successor started): the session's requests fail instead of\nfalling back to the login. Names the recovery.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "handoff": {
+               "anyOf": [
+                 {
+@@ -12881,6 +13015,22 @@
+           ],
+           "type": "object"
+         },
++        "CoordinatorLaunchEnv": {
++          "description": "One environment variable for the launched process.",
++          "properties": {
++            "name": {
++              "type": "string"
++            },
++            "value": {
++              "type": "string"
++            }
++          },
++          "required": [
++            "name",
++            "value"
++          ],
++          "type": "object"
++        },
+         "CoordinatorOverride": {
+           "description": "One exception to a coordinator tab's command allowlist.",
+           "properties": {
+@@ -17100,6 +17250,26 @@
+               ],
+               "type": "object"
+             },
++            {
++              "description": "`coordinator.credit_launch`'s reply: the environment for the launched\nprocess alone. Holds a secret; the launcher is its only reader.",
++              "properties": {
++                "env": {
++                  "items": {
++                    "$ref": "#/schemas/success_response/$defs/CoordinatorLaunchEnv"
++                  },
++                  "type": "array"
++                },
++                "type": {
++                  "const": "coordinator_credit_launch",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type",
++                "env"
++              ],
++              "type": "object"
++            },
+             {
+               "description": "`coordinator.status`'s reply: the active tenures, oldest first.",
+               "properties": {
+diff --git a/docs/next/website/src/content/docs/cli-reference.mdx b/docs/next/website/src/content/docs/cli-reference.mdx
+index 22602e2a9..7c6be624f 100644
+--- a/docs/next/website/src/content/docs/cli-reference.mdx
++++ b/docs/next/website/src/content/docs/cli-reference.mdx
+@@ -453,7 +453,7 @@ herdr coordinator handoff --abort [--id COORDINATOR_ID]
+ herdr coordinator ack --epoch N --snapshot SHA256
+ ```
+ 
+-A coordinator can hand its tenure to a fresh session of the same agent without a person in between. `coordinator ready --note FILE` freezes the caller's tenure: herdr copies the note into its state directory and records its sha256. Run `ready` inside the turn and end the turn afterwards. While frozen, every mutation sent from the tenure's pane is refused with `coordinator_frozen`: `coordinator handoff --to`, `coordinator end`, `todo run`, `resume`, `next`, `stop`, `queue`, `grant`, `revoke`, `worker start`, `prompt`, `interrupt`, `stop`, `kill`, `answer`, `ack` and `escalate`; reads are not fenced, and neither is the user's own answer from their shell or client. `ready` is refused for an agent that is not a claude or pi session, or that is blocked on a question. `coordinator handoff --successor` writes herdr's own snapshot of the tenure (runs in flight with their last event ids, owned workers, pending question ids) and a versioned JSON manifest (epoch, snapshot and note paths with sha256, the old pane and the agent kind) to the state directory, opens a pane in the old pane's tab without moving focus and starts one fresh session of the same agent kind with a single launch prompt that names the manifest (`/todo --handoff PATH` for claude, `/skill:todo --handoff PATH` for pi). Any other agent kind is refused before anything starts. The successor reads the manifest and runs `coordinator ack --epoch N --snapshot SHA256` from its own pane; herdr then advances the epoch, moves the tenure, its workers and runs and the tab's coordinator role to the successor and closes the old pane, which ends the old agent session; if the pane cannot be closed, the reply says so and the old session stays fenced, with `coordinator_superseded`, until that pane closes. A stale or wrong ack is refused (`handoff_refused`) and changes nothing. A successor that is blocked on a permission or trust dialog is starting normally: the handoff stays pending, the dialog shows as a waiting question, and its ack still succeeds. If the successor exits after it was detected, reports a limit or its pane closes before its ack, or `coordinator handoff --abort` runs (from the old pane, the successor's pane, or outside a pane with `--id`), the handoff aborts: the old tenure unfreezes and keeps its authority, the successor's pane is closed (unless the successor itself aborted), and one notice says so. No timer is involved, and `coordinator status` shows a pending handoff's `state` (`frozen` or `successor_started`). A pending handoff is stored with the server's state, so a restart or a live handoff keeps the tenure frozen and the successor's ack valid; if the successor's pane is gone by then, or its agent was detected and then left, the handoff aborts with its one notice; a successor whose agent is not detected yet keeps it pending. A superseded session is fenced by pane and agent session: the old session is refused wherever it runs (`--resume` in another pane), and a new session that reuses the old pane id is not. An ack or an abort whose state write fails is refused and changes nothing. A relative `--note` path is made absolute by the CLI and refused by the server.
++A coordinator can hand its tenure to a fresh session of the same agent without a person in between. `coordinator ready --note FILE` freezes the caller's tenure: herdr copies the note into its state directory and records its sha256. Run `ready` inside the turn and end the turn afterwards. While frozen, every mutation sent from the tenure's pane is refused with `coordinator_frozen`: `coordinator handoff --to`, `coordinator end`, `todo run`, `resume`, `next`, `stop`, `queue`, `grant`, `revoke`, `worker start`, `prompt`, `interrupt`, `stop`, `kill`, `answer`, `ack` and `escalate`; reads are not fenced, and neither is the user's own answer from their shell or client. `ready` is refused for an agent that is not a claude or pi session, or that is blocked on a question. `coordinator handoff --successor` writes herdr's own snapshot of the tenure (runs in flight with their last event ids, owned workers, pending question ids) and a versioned JSON manifest (epoch, snapshot and note paths with sha256, the old pane and the agent kind) to the state directory, opens a pane in the old pane's tab without moving focus and starts one fresh session of the same agent kind with a single launch prompt that names the manifest (`/todo --handoff PATH` for claude, `/skill:todo --handoff PATH` for pi). Any other agent kind is refused before anything starts. The successor reads the manifest and runs `coordinator ack --epoch N --snapshot SHA256` from its own pane; herdr then advances the epoch, moves the tenure, its workers and runs and the tab's coordinator role to the successor and closes the old pane, which ends the old agent session; if the pane cannot be closed, the reply says so and the old session stays fenced, with `coordinator_superseded`, until that pane closes. A stale or wrong ack is refused (`handoff_refused`) and changes nothing. A successor that is blocked on a permission or trust dialog is starting normally: the handoff stays pending, the dialog shows as a waiting question, and its ack still succeeds. If the successor exits after it was detected, reports a limit or its pane closes before its ack, or `coordinator handoff --abort` runs (from the old pane, the successor's pane, or outside a pane with `--id`), the handoff aborts: the old tenure unfreezes and keeps its authority, the successor's pane is closed (unless the successor itself aborted), and one notice says so. No timer is involved, and `coordinator status` shows a pending handoff's `state` (`frozen` or `successor_started`). A pending handoff is stored with the server's state, so a restart or a live handoff keeps the tenure frozen and the successor's ack valid; if the successor's pane is gone by then, or its agent was detected and then left, the handoff aborts with its one notice; a successor whose agent is not detected yet keeps it pending. A superseded session is fenced by pane and agent session: the old session is refused wherever it runs (`--resume` in another pane), and a new session that reuses the old pane id is not. An ack or an abort whose state write fails is refused and changes nothing. `coordinator handoff --successor --funding credits|login` chooses what pays for the successor (default: `[coordinator] funding`, itself `login`, which is today's behaviour: the agent's own login). With `credits` and agent kind `claude`, herdr registers a credit proxy grant bound to the tenure (ledger run `<tenure id>-e<epoch>`, item `coordinator`: the ledger has no stage column, so the stage `coordinator` is encoded as that item) and keeps a loopback listener for it for the successor's whole tenure. The typed command carries no secret: the successor's pane runs herdr's own launcher (`herdr coordinator credit-launch -- claude ...`, not for people), which claims the grant once from the server over the local socket and replaces itself with `claude`, the variables `ANTHROPIC_BASE_URL=<listener>`, `ANTHROPIC_AUTH_TOKEN=<grant>`, `ANTHROPIC_MODEL=<[workers] anthropic_api_model>` and the `ANTHROPIC_DEFAULT_SONNET_MODEL`, `_OPUS_MODEL` and `_HAIKU_MODEL` aliases (the same model: the proxy admits only that one) set in that process alone. Every other inherited `ANTHROPIC_*` variable, the `CLAUDE_CODE_USE_*` provider switches and Claude Code's OAuth tokens are removed from it, so an API key or login in the environment cannot choose another route. The grant therefore never appears in the pane's echo, scrollback, shell history, environment or argument list, in the start response, the manifest, the snapshot or any state file; the API key never leaves herdr. The grant is held in server memory until the launcher claims it, once, from the successor's pane; a second claim is refused. A login or `apiKeyHelper` set in Claude Code's own settings files is not touched by herdr. The listener and grant end when the successor's tenure ends or the handoff aborts; ending does not wait for a request in flight, which finishes first. The spend counts against `[workers] anthropic_api_cap_usd` and lands in the credit ledger under that run and item; only the standard Sonnet tariff models of `anthropic_api_model` are supported. `credits` is refused, naming why and before anything starts, when the proxy cannot start (no key file, no `anthropic_api_cycle`, no Unix, no socket), the cap is reached or accounting is unavailable, or no usable credit model is configured; it is also refused for `pi`, whose provider file herdr writes only for its own headless workers. A server older than this option answers `unknown_method` to `--funding` instead of starting the successor on the login. `coordinator status` shows each tenure's `funding` and, for a started successor, the handoff's `funding`. The intent (never a grant) is stored with the server's state; the listener lives in the server's memory, so after a server restart or a live handoff a credit session still holds its dead address and its requests fail, never falling back to the login. `coordinator status` then keeps `funding` at `credits` and adds a `funding_note` saying the endpoint is not running and how to recover: start a fresh session on the login and run `coordinator handoff --successor --funding credits` again. Whether the proxy's request allowlist, written for pi, admits every request Claude Code sends has not been established: it stays unchanged (unknown betas and fields remain refused), and the ignored test `installed_claude_code_request_shape_offline` records what the installed Claude Code sends, with a fake upstream and no paid call. A relative `--note` path is made absolute by the CLI and refused by the server.
+ 
+ `coordinator start` claims the coordination of the repository of `--repo` (default: the caller pane's directory) for the caller's pane (`HERDR_PANE_ID`): a tenure with an id of its own (`c-...`). It is refused with `coordinator_active`, naming the other tenure and its pane, while another pane coordinates that repository. `herdr tab role <tab> coordinator` does the same for the tab's focused pane, and the tab's `♛` follows the tenure: `coordinator end` (this pane's tenure, or `--id`'s) or `herdr tab role <tab> none` ends it, and so does closing its pane or exiting its agent. `coordinator status` lists the active tenures, each with the TODO item its `herdr todo run` works on until the run ends. Workers and runs started from a coordinator's pane carry its tenure's id (`owner_coordinator_id`) and belong to the tenure, not to the pane: when the coordinator's agent session comes back in another pane (`claude --resume`), the tenure, its workers, their obligations and its runs move there, and another session in the old pane inherits none of them. A `/clear` in the coordinator's pane keeps the tenure: the agent integration reports the new session (Claude's `SessionStart` with `source: clear`), and the tenure, with its workers and runs, goes on with it, so a later `claude --resume` of the new session finds it. `coordinator handoff --to PANE` passes the coordination on: this pane's tenure (or `--id`'s) ends `handed_off`, and the next one, one epoch on, starts in `PANE` with the item, workers and runs. The repository rooted at the home directory (a dotfiles repository) is claimed only explicitly, with `coordinator start --repo ~`: a pane whose directory is in it, by `coordinator start` without `--repo` or by the coordinator tab role, is refused, while a repository nested in the home directory is claimed as itself. Such a repository often keeps its git directory outside HOME (a bare repository that a `git` wrapper pairs with HOME), which herdr cannot find by looking for `.git`; then `coordinator start` failed with `invalid_request: <HOME> is not in a git repository`. With `--repo ~` the CLI asks git in HOME, with your shell's environment, for that directory (`git rev-parse --git-common-dir`) and sends it; the server checks that it is a repository's common directory that tracks files of HOME, records it in its state directory (`home-repositories.json`, so a restarted or handed-off server keeps it) and runs git there with `--git-dir` and `--work-tree`. Its folder slot lives in `~/.local/state/herdr/worktrees/home/<slot>` (or under `[workers] folder_slots_dir`), never beside HOME, and only once the repository ignores it; its workers write only that slot and their temp directory, never HOME itself or `~/.claude`.
+ 
+diff --git a/docs/next/website/src/content/docs/socket-api.mdx b/docs/next/website/src/content/docs/socket-api.mdx
+index b95e2ad45..2ecae9014 100644
+--- a/docs/next/website/src/content/docs/socket-api.mdx
++++ b/docs/next/website/src/content/docs/socket-api.mdx
+@@ -110,7 +110,7 @@ Raw socket method names use dot notation:
+ | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
+ | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait_start`, `agent.wait`, `agent.wait_change`, `agent.verdict`, `agent.wait_verdict`, `agent.ack_verdict`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
+ | Worker | `worker.start`, `worker.start_choice`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.answer_as`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
+-| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.ready`, `coordinator.handoff_successor`, `coordinator.ack`, `coordinator.handoff_abort`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
++| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.ready`, `coordinator.handoff_successor`, `coordinator.handoff_successor_funded`, `coordinator.credit_launch`, `coordinator.ack`, `coordinator.handoff_abort`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
+ | TODO runs | `todo.run`, `todo.draft_run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.open_log`, `todo.review`, `todo.next`, `todo.stop`, `todo.queue_set`, `todo.queue_status`, `todo.runnable_state`, `todo.grant`, `todo.grants`, `todo.revoke` |
+ | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
+ | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
+@@ -1032,7 +1032,10 @@ its turn afterwards):
+ `coordinator.ready` (`pane_id`, `note_path`) freezes the caller's tenure and
+ copies the note; `coordinator.handoff_successor` (`pane_id`) writes herdr's
+ snapshot and the handoff manifest and starts the successor in a new pane of
+-the same tab; `coordinator.ack` (`pane_id`, `epoch`, `snapshot_sha256`), from
++the same tab (`coordinator.handoff_successor_funded` takes `pane_id` and
++`funding`, `login` or `credits`; `credits` runs a Claude successor on the
++Anthropic credits through the credit proxy, and a server without that method
++answers `unknown_method` instead of starting a login session; `coordinator.credit_launch`, with the successor's `pane_id`, is herdr's own launcher claiming that session's grant once, and its reply holds a secret); `coordinator.ack` (`pane_id`, `epoch`, `snapshot_sha256`), from
+ the successor's pane, moves the tenure, its workers and the tab's coordinator
+ role in one step, under one lock, and closes the old pane. `coordinator.ready`
+ and the others answer `coordinator`, `coordinator.ack` answers
+diff --git a/docs/next/website/src/data/config-reference.json b/docs/next/website/src/data/config-reference.json
+index 71ff0bda8..8f7c0d504 100644
+--- a/docs/next/website/src/data/config-reference.json
++++ b/docs/next/website/src/data/config-reference.json
+@@ -1741,6 +1741,16 @@
+             "enforce",
+             "off"
+           ]
++        },
++        {
++          "key": "coordinator.funding",
++          "type": "enum",
++          "default": "login",
++          "description": "What pays for the successor that `herdr coordinator handoff --successor` starts: login (the agent's own login, as before) or credits (the Anthropic API credits through herdr's credit proxy; Claude Code only, on the model `workers.anthropic_api_model`, counted against `workers.anthropic_api_cap_usd`). `--funding` overrides it for one handoff.",
++          "values": [
++            "login",
++            "credits"
++          ]
+         }
+       ]
+     },
+diff --git a/src/api/mod.rs b/src/api/mod.rs
+index c30b80e3c..0d0d0973f 100644
+--- a/src/api/mod.rs
++++ b/src/api/mod.rs
+@@ -63,6 +63,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
+             | Method::CoordinatorHandoff(_)
+             | Method::CoordinatorReady(_)
+             | Method::CoordinatorHandoffSuccessor(_)
++            | Method::CoordinatorHandoffSuccessorFunded(_)
+             | Method::CoordinatorAck(_)
+             | Method::CoordinatorHandoffAbort(_)
+             | Method::CoordinatorRecordOverride(_)
+diff --git a/src/api/schema.rs b/src/api/schema.rs
+index d38b351fd..a52005e9d 100644
+--- a/src/api/schema.rs
++++ b/src/api/schema.rs
+@@ -273,6 +273,12 @@ pub enum Method {
+     /// tenure over.
+     #[serde(rename = "coordinator.handoff_successor")]
+     CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams),
++    /// Like `coordinator.handoff_successor`, with the funding named.
++    #[serde(rename = "coordinator.handoff_successor_funded")]
++    CoordinatorHandoffSuccessorFunded(CoordinatorHandoffSuccessorFundedParams),
++    /// The credit launcher's one-use claim of its pane's launch environment.
++    #[serde(rename = "coordinator.credit_launch")]
++    CoordinatorCreditLaunch(CoordinatorCreditLaunchParams),
+     /// Cancels a pending handoff; the old tenure unfreezes.
+     #[serde(rename = "coordinator.handoff_abort")]
+     CoordinatorHandoffAbort(CoordinatorHandoffAbortParams),
+diff --git a/src/api/schema/coordinators.rs b/src/api/schema/coordinators.rs
+index 25f9a0f05..a98befb03 100644
+--- a/src/api/schema/coordinators.rs
++++ b/src/api/schema/coordinators.rs
+@@ -67,6 +67,60 @@ pub struct CoordinatorHandoffSuccessorParams {
+     pub pane_id: String,
+ }
+ 
++/// What pays for a successor session.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++#[serde(rename_all = "snake_case")]
++pub enum CoordinatorFunding {
++    /// The agent's own login.
++    Login,
++    /// The Anthropic API credits, through herdr's credit proxy (Claude Code).
++    Credits,
++    /// A value a newer server sent that this client does not know.
++    #[serde(other)]
++    Unknown,
++}
++
++impl CoordinatorFunding {
++    pub fn as_str(self) -> &'static str {
++        match self {
++            Self::Login => "login",
++            Self::Credits => "credits",
++            Self::Unknown => "unknown",
++        }
++    }
++}
++
++/// Starts the successor like `coordinator.handoff_successor`, with the
++/// funding named (`coordinator.handoff_successor_funded`). A server that
++/// does not advertise this method cannot start a successor on the credits:
++/// the client must not fall back to `coordinator.handoff_successor` for
++/// `credits`, which an older server would start on the login.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorHandoffSuccessorFundedParams {
++    /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
++    pub pane_id: String,
++    /// What pays for the successor.
++    pub funding: CoordinatorFunding,
++}
++
++/// Claims the launch environment of a credit-funded successor
++/// (`coordinator.credit_launch`). Sent by herdr's own launcher
++/// (`herdr coordinator credit-launch`), typed into the successor's pane, from
++/// that pane: the grant is given once, to that pane, and never appears in
++/// the typed command, an argument, the pane's shell or any state.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorCreditLaunchParams {
++    /// The successor's pane (the launcher sends its `HERDR_PANE_ID`).
++    pub pane_id: String,
++}
++
++/// One environment variable for the launched process.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorLaunchEnv {
++    pub name: String,
++    pub value: String,
++}
++
+ /// Cancels a pending handoff (`coordinator.handoff_abort`): the tenure
+ /// unfreezes and keeps its authority.
+ #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+@@ -120,6 +174,9 @@ pub struct CoordinatorHandoffInfo {
+     /// The sha256 of herdr's snapshot, once the successor started.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub snapshot_sha256: Option<String>,
++    /// What pays for the successor, once started: `login` or `credits`.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub funding: Option<CoordinatorFunding>,
+ }
+ 
+ /// Lists the active tenures, of one repository when given.
+@@ -176,6 +233,17 @@ pub struct CoordinatorInfo {
+     /// restart may restore an older state. Absent once a write succeeded.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub handoff_persist_error: Option<String>,
++    /// What pays for the session of this tenure: `credits` for a successor
++    /// started with `--funding credits` (kept across a server restart; see
++    /// `funding_note` for when its endpoint is gone), else `login`.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub funding: Option<CoordinatorFunding>,
++    /// Set when `funding` is `credits` but herdr's credit endpoint for the
++    /// session is not running (the server restarted or handed off live since
++    /// the successor started): the session's requests fail instead of
++    /// falling back to the login. Names the recovery.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub funding_note: Option<String>,
+ }
+ 
+ /// Records an exception to a coordinator tab's command allowlist: one tool
+diff --git a/src/api/schema/response.rs b/src/api/schema/response.rs
+index 07956873f..a227ee205 100644
+--- a/src/api/schema/response.rs
++++ b/src/api/schema/response.rs
+@@ -5,8 +5,8 @@ use super::agents::{
+ };
+ use super::common::{ClientWindowTitleReason, NotificationShowReason};
+ use super::coordinators::{
+-    CoordinatorAllowlistMode, CoordinatorInfo, CoordinatorOverride, CoordinatorWouldDeny,
+-    CoordinatorWouldDenyShape,
++    CoordinatorAllowlistMode, CoordinatorInfo, CoordinatorLaunchEnv, CoordinatorOverride,
++    CoordinatorWouldDeny, CoordinatorWouldDenyShape,
+ };
+ use super::decisions::DecisionRecord;
+ use super::events::EventEnvelope;
+@@ -236,6 +236,11 @@ pub enum ResponseResult {
+         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+         successor_pane_closed: bool,
+     },
++    /// `coordinator.credit_launch`'s reply: the environment for the launched
++    /// process alone. Holds a secret; the launcher is its only reader.
++    CoordinatorCreditLaunch {
++        env: Vec<CoordinatorLaunchEnv>,
++    },
+     /// `coordinator.status`'s reply: the active tenures, oldest first.
+     Coordinators {
+         coordinators: Vec<CoordinatorInfo>,
+diff --git a/src/api/server.rs b/src/api/server.rs
+index 84f60c94b..07bb64ebe 100644
+--- a/src/api/server.rs
++++ b/src/api/server.rs
+@@ -977,6 +977,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
+         Method::CoordinatorHandoff(_) => "coordinator.handoff",
+         Method::CoordinatorReady(_) => "coordinator.ready",
+         Method::CoordinatorHandoffSuccessor(_) => "coordinator.handoff_successor",
++        Method::CoordinatorHandoffSuccessorFunded(_) => "coordinator.handoff_successor_funded",
++        Method::CoordinatorCreditLaunch(_) => "coordinator.credit_launch",
+         Method::CoordinatorAck(_) => "coordinator.ack",
+         Method::CoordinatorHandoffAbort(_) => "coordinator.handoff_abort",
+         Method::CoordinatorRecordOverride(_) => "coordinator.record_override",
+diff --git a/src/app/agents.rs b/src/app/agents.rs
+index 69c283476..5e5222d95 100644
+--- a/src/app/agents.rs
++++ b/src/app/agents.rs
+@@ -192,6 +192,20 @@ impl App {
+     pub(super) fn start_agent(
+         &mut self,
+         params: AgentStartParams,
++    ) -> Result<StartedAgent, AgentStartError> {
++        self.start_agent_launched(params, None)
++    }
++
++    /// [`Self::start_agent`] through `launcher`, an argv the pane's shell
++    /// runs ahead of the agent's own (herdr's credit launcher, which fetches
++    /// the agent's credentials over the local socket and execs it). The typed
++    /// text names no secret: whatever the launcher fetches reaches the
++    /// agent's process alone, never the pane's shell, its echo, scrollback or
++    /// history.
++    pub(super) fn start_agent_launched(
++        &mut self,
++        params: AgentStartParams,
++        launcher: Option<&[String]>,
+     ) -> Result<StartedAgent, AgentStartError> {
+         let name = params.name;
+         if !valid_agent_name(&name) {
+@@ -256,7 +270,11 @@ impl App {
+         argv.extend(params.args);
+         // The first prompt goes last, as the agent's positional prompt argument.
+         argv.extend(params.prompt.clone());
+-        let command = crate::platform::interactive_shell_command(&argv, &shell_name)
++        let typed = launcher_argv(launcher, &argv);
++        if typed.iter().any(|arg| arg.chars().any(char::is_control)) {
++            return Err(AgentStartError::InvalidArgument);
++        }
++        let command = crate::platform::interactive_shell_command(&typed, &shell_name)
+             .ok_or(AgentStartError::InvalidArgument)?;
+         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
+         // The caller's own bound, if it gave one; herdr adds none.
+@@ -573,6 +591,13 @@ fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crat
+         })
+ }
+ 
++/// The argv the pane's shell runs: `argv` behind `launcher`, when given.
++pub(super) fn launcher_argv(launcher: Option<&[String]>, argv: &[String]) -> Vec<String> {
++    let mut typed = launcher.map(<[String]>::to_vec).unwrap_or_default();
++    typed.extend(argv.iter().cloned());
++    typed
++}
++
+ /// A launch `start_agent` typed into its pane.
+ pub(super) struct StartedAgent {
+     pub(super) agent: crate::api::schema::AgentInfo,
+@@ -620,7 +645,36 @@ pub(super) enum AgentRenameError {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::valid_agent_name;
++    use super::{launcher_argv, valid_agent_name};
++
++    #[test]
++    fn the_launcher_goes_before_the_agent_and_the_typed_command_names_no_secret() {
++        let argv = vec!["claude".to_string(), "/todo".to_string()];
++        assert_eq!(launcher_argv(None, &argv), argv);
++        let launcher: Vec<String> = ["herdr", "coordinator", "credit-launch", "--"]
++            .map(String::from)
++            .to_vec();
++        let typed = launcher_argv(Some(&launcher), &argv);
++        assert_eq!(
++            typed,
++            [
++                "herdr",
++                "coordinator",
++                "credit-launch",
++                "--",
++                "claude",
++                "/todo"
++            ]
++        );
++        // The shell text is built from this argv alone: no env, token or
++        // address is an input of the launch path.
++        let text = crate::platform::interactive_shell_command(&typed, "bash").unwrap();
++        assert!(text.contains("credit-launch"));
++        assert!(
++            !text.contains("ANTHROPIC") && !text.contains("env "),
++            "{text}"
++        );
++    }
+ 
+     #[test]
+     fn agent_names_use_a_small_cli_safe_grammar() {
+diff --git a/src/app/api.rs b/src/app/api.rs
+index 370be97bf..4d609c90e 100644
+--- a/src/app/api.rs
++++ b/src/app/api.rs
+@@ -1335,6 +1335,12 @@ impl App {
+             Method::CoordinatorHandoffSuccessor(params) => {
+                 return self.handle_coordinator_handoff_successor(request.id, params);
+             }
++            Method::CoordinatorHandoffSuccessorFunded(params) => {
++                return self.handle_coordinator_handoff_successor_funded(request.id, params);
++            }
++            Method::CoordinatorCreditLaunch(params) => {
++                return self.handle_coordinator_credit_launch(request.id, params);
++            }
+             Method::CoordinatorHandoffAbort(params) => {
+                 return self.handle_coordinator_handoff_abort(request.id, params);
+             }
+diff --git a/src/app/api/coordinators.rs b/src/app/api/coordinators.rs
+index 825a5fc24..9f2bf24d3 100644
+--- a/src/app/api/coordinators.rs
++++ b/src/app/api/coordinators.rs
+@@ -7,11 +7,13 @@
+ 
+ use super::responses::{encode_error, encode_success};
+ use crate::api::schema::{
+-    CoordinatorAckParams, CoordinatorAllowlistRefusalParams, CoordinatorEndParams,
+-    CoordinatorHandoffAbortParams, CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams,
+-    CoordinatorInfo, CoordinatorReadyParams, CoordinatorRecordOverrideParams,
+-    CoordinatorStartParams, CoordinatorStatusParams, NotificationShowParams, NotificationShowSound,
+-    ResponseResult, TabRole,
++    CoordinatorAckParams, CoordinatorAllowlistRefusalParams, CoordinatorCreditLaunchParams,
++    CoordinatorEndParams, CoordinatorFunding, CoordinatorHandoffAbortParams,
++    CoordinatorHandoffParams, CoordinatorHandoffSuccessorFundedParams,
++    CoordinatorHandoffSuccessorParams, CoordinatorInfo, CoordinatorLaunchEnv,
++    CoordinatorReadyParams, CoordinatorRecordOverrideParams, CoordinatorStartParams,
++    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
++    TabRole,
+ };
+ use crate::app::App;
+ use crate::workers::{WorkerError, WorkerSupervisor};
+@@ -546,11 +548,80 @@ impl App {
+         &mut self,
+         id: String,
+         params: CoordinatorHandoffSuccessorParams,
++    ) -> String {
++        // Without `--funding`, the `[coordinator] funding` default decides.
++        let funding = match crate::config::load_live_config() {
++            Ok(loaded) => match loaded.config.coordinator.funding {
++                crate::config::CoordinatorFundingConfig::Login => CoordinatorFunding::Login,
++                crate::config::CoordinatorFundingConfig::Credits => CoordinatorFunding::Credits,
++            },
++            Err(_) => CoordinatorFunding::Login,
++        };
++        self.handoff_successor_funded(id, params.pane_id, funding)
++    }
++
++    /// `coordinator.handoff_successor_funded`: the same, with the funding
++    /// named.
++    pub(super) fn handle_coordinator_handoff_successor_funded(
++        &mut self,
++        id: String,
++        params: CoordinatorHandoffSuccessorFundedParams,
++    ) -> String {
++        self.handoff_successor_funded(id, params.pane_id, params.funding)
++    }
++
++    /// `coordinator.credit_launch`: the launcher in a successor's pane claims
++    /// the grant armed for that pane, once.
++    pub(super) fn handle_coordinator_credit_launch(
++        &mut self,
++        id: String,
++        params: CoordinatorCreditLaunchParams,
+     ) -> String {
+         let Some(coordinators) = crate::workers::coordinators() else {
+             return unavailable(id);
+         };
+         let pane = self.canonical_pane_id(&params.pane_id);
++        match coordinators.credit_launch_claim(&pane) {
++            Ok(grant) => encode_success(
++                id,
++                ResponseResult::CoordinatorCreditLaunch {
++                    env: grant
++                        .launch_env()
++                        .into_iter()
++                        .map(|(name, value)| CoordinatorLaunchEnv { name, value })
++                        .collect(),
++                },
++            ),
++            Err(error) => encode_error(id, error.code(), error.to_string()),
++        }
++    }
++
++    fn handoff_successor_funded(
++        &mut self,
++        id: String,
++        pane_id: String,
++        funding: CoordinatorFunding,
++    ) -> String {
++        let Some(coordinators) = crate::workers::coordinators() else {
++            return unavailable(id);
++        };
++        let pane = self.canonical_pane_id(&pane_id);
++        let setup = match funding {
++            CoordinatorFunding::Login => None,
++            CoordinatorFunding::Unknown => {
++                return encode_error(
++                    id,
++                    "handoff_refused",
++                    "unknown funding: use login or credits",
++                );
++            }
++            CoordinatorFunding::Credits => {
++                match crate::workers::coordinator_handoff::CreditSetup::live() {
++                    Ok(setup) => Some(setup),
++                    Err(error) => return encode_error(id, error.code(), error.to_string()),
++                }
++            }
++        };
+         let prepared = match coordinators
+             .fence_pane_session(Some(&pane), self.pane_agent_session(&pane).as_deref())
+             .or_else(|error| {
+@@ -564,7 +635,7 @@ impl App {
+             .and_then(|()| self.handoff_pane(&pane))
+             .and_then(|(_, _, kind, _)| {
+                 coordinators
+-                    .handoff_prepare(&pane, &kind)
++                    .handoff_prepare_funded(&pane, &kind, funding, setup.as_ref())
+                     .map(|prepared| (prepared, kind))
+             }) {
+             Ok(prepared) => prepared,
+@@ -650,15 +721,35 @@ impl App {
+                     .unwrap_or("unknown error")
+             )));
+         };
+-        let started = self.start_agent(crate::api::schema::AgentStartParams {
+-            name: successor_agent_name(epoch),
+-            kind: kind.to_owned(),
+-            pane_id: successor.clone(),
+-            args: Vec::new(),
+-            timeout_ms: None,
+-            prompt: Some(prepared.prompt.clone()),
+-            caller_pane_id: None,
+-        });
++        // A credit-funded successor starts behind herdr's launcher: the typed
++        // command names no secret. The grant is armed for this pane and the
++        // launcher claims it once over the local socket, then execs the
++        // agent with it in that process's environment alone.
++        let canonical = self.canonical_pane_id(&successor);
++        let launcher = match (&prepared.credit, crate::workers::coordinators()) {
++            (Some(grant), Some(coordinators)) => {
++                coordinators.credit_launch_arm(&canonical, &prepared.coordinator_id, grant.clone());
++                Some(credit_launcher_argv())
++            }
++            _ => None,
++        };
++        let started = self.start_agent_launched(
++            crate::api::schema::AgentStartParams {
++                name: successor_agent_name(epoch),
++                kind: kind.to_owned(),
++                pane_id: successor.clone(),
++                args: Vec::new(),
++                timeout_ms: None,
++                prompt: Some(prepared.prompt.clone()),
++                caller_pane_id: None,
++            },
++            launcher.as_deref(),
++        );
++        if started.is_err() {
++            if let Some(coordinators) = crate::workers::coordinators() {
++                coordinators.credit_launch_disarm(&canonical);
++            }
++        }
+         match started {
+             Ok(_) => Ok(successor),
+             Err(error) => {
+@@ -792,6 +883,23 @@ fn response_error(closed: Result<(), String>) -> Option<String> {
+     )
+ }
+ 
++/// The argv ahead of the agent in a credit-funded successor's pane: herdr's
++/// own binary (when it still exists, else `herdr` on the PATH) running its
++/// credit launcher.
++fn credit_launcher_argv() -> Vec<String> {
++    let exe = std::env::current_exe()
++        .ok()
++        .filter(|path| path.is_file())
++        .map(|path| path.display().to_string())
++        .unwrap_or_else(|| "herdr".to_owned());
++    vec![
++        exe,
++        "coordinator".into(),
++        "credit-launch".into(),
++        "--".into(),
++    ]
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/src/cli/coordinator.rs b/src/cli/coordinator.rs
+index 3bf7c2341..ee99942c1 100644
+--- a/src/cli/coordinator.rs
++++ b/src/cli/coordinator.rs
+@@ -2,9 +2,10 @@
+ //! active coordinator per repository).
+ 
+ use crate::api::schema::{
+-    CoordinatorAckParams, CoordinatorEndParams, CoordinatorHandoffAbortParams,
+-    CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams, CoordinatorReadyParams,
+-    CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
++    CoordinatorAckParams, CoordinatorEndParams, CoordinatorFunding, CoordinatorHandoffAbortParams,
++    CoordinatorHandoffParams, CoordinatorHandoffSuccessorFundedParams,
++    CoordinatorHandoffSuccessorParams, CoordinatorReadyParams, CoordinatorStartParams,
++    CoordinatorStatusParams, Method, Request,
+ };
+ 
+ use super::worker::take_string_option;
+@@ -34,10 +35,16 @@ const USAGE: &str = "usage:
+       sha256. A frozen tenure refuses handoff, todo resume, worker start,
+       answer and ack until the handoff ends. Refused when the agent is not
+       a claude or pi session, or is blocked on a question.
+-  herdr coordinator handoff --successor
++  herdr coordinator handoff --successor [--funding credits|login]
+       After ready: write herdr's snapshot and the handoff manifest, open a
+       pane beside this one and start a fresh session of the same agent kind
+-      there with one launch prompt that names the manifest. End your turn
++      there with one launch prompt that names the manifest. --funding
++      credits runs the successor (claude only) on the Anthropic API
++      credits through herdr's credit proxy, its spend in the ledger under
++      the stage coordinator; login (the default, or [coordinator] funding)
++      uses the agent's own login. Refused, before anything starts, when the
++      proxy cannot start, the cap is reached or no credit model is set.
++      End your turn
+       afterwards; if the successor exits or reports a limit before its ack,
+       the handoff aborts and this tenure unfreezes.
+   herdr coordinator handoff --abort [--id COORDINATOR_ID]
+@@ -51,7 +58,58 @@ const USAGE: &str = "usage:
+       pane is then closed, which ends its agent session; when it cannot be
+       closed the reply says so and that session stays fenced as superseded.";
+ 
++/// `coordinator credit-launch -- AGENT ARGS...`: what herdr types into a
++/// credit-funded successor's pane (not for people). Claims the grant armed
++/// for this pane over the local socket and replaces itself with the agent,
++/// the grant in that process's environment alone. Prints no response: it
++/// holds a secret.
++#[cfg(unix)]
++fn run_credit_launch(args: &[String]) -> std::io::Result<i32> {
++    use crate::api::schema::{CoordinatorCreditLaunchParams, CoordinatorLaunchEnv};
++    let argv: Vec<String> = match args {
++        [separator, rest @ ..] if separator == "--" && !rest.is_empty() => rest.to_vec(),
++        _ => {
++            eprintln!("usage: herdr coordinator credit-launch -- AGENT [ARGS...]");
++            return Ok(2);
++        }
++    };
++    let Some(pane_id) = super::target::caller_pane_id() else {
++        eprintln!("credit-launch runs in a herdr pane: HERDR_PANE_ID is not set");
++        return Ok(2);
++    };
++    let response = super::send_request(&Request {
++        id: "cli:coordinator:credit-launch".into(),
++        method: Method::CoordinatorCreditLaunch(CoordinatorCreditLaunchParams { pane_id }),
++    })?;
++    if let Some(error) = response.get("error") {
++        let message = error["message"].as_str().unwrap_or("refused");
++        eprintln!("credit-launch: {message}");
++        return Ok(1);
++    }
++    let env: Vec<CoordinatorLaunchEnv> =
++        match serde_json::from_value(response["result"]["env"].clone()) {
++            Ok(env) => env,
++            Err(_) => {
++                eprintln!("credit-launch: the server's reply held no launch environment");
++                return Ok(1);
++            }
++        };
++    let env: Vec<(String, String)> = env.into_iter().map(|e| (e.name, e.value)).collect();
++    let error = crate::platform::credit_launch::exec_with_env(&argv, &env);
++    eprintln!("credit-launch: cannot start {}: {error}", argv[0]);
++    Ok(1)
++}
++
++#[cfg(not(unix))]
++fn run_credit_launch(_args: &[String]) -> std::io::Result<i32> {
++    eprintln!("credit-launch requires Unix");
++    Ok(1)
++}
++
+ pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
++    if args.first().map(String::as_str) == Some("credit-launch") {
++        return run_credit_launch(&args[1..]);
++    }
+     let method = match parse(args) {
+         Ok(Some(method)) => method,
+         Ok(None) => {
+@@ -194,11 +252,31 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
+                 coordinator_id,
+             })
+         }
+-        "handoff" if rest == ["--successor"] => {
++        "handoff" if rest.first().map(String::as_str) == Some("--successor") => {
++            let (funding, extra) = take_string_option(&rest[1..], "--funding")?;
++            if !extra.is_empty() {
++                return Err("handoff --successor takes only --funding credits|login".into());
++            }
++            let funding = match funding.as_deref() {
++                None => None,
++                Some("credits") => Some(CoordinatorFunding::Credits),
++                Some("login") => Some(CoordinatorFunding::Login),
++                Some(other) => {
++                    return Err(format!("--funding must be credits or login, not {other}"))
++                }
++            };
+             let pane_id = super::target::caller_pane_id().ok_or(
+                 "coordinator handoff --successor runs in a herdr pane: HERDR_PANE_ID is not set",
+             )?;
+-            Method::CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams { pane_id })
++            match funding {
++                // Without it the server's `[coordinator] funding` decides.
++                None => Method::CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams {
++                    pane_id,
++                }),
++                Some(funding) => Method::CoordinatorHandoffSuccessorFunded(
++                    CoordinatorHandoffSuccessorFundedParams { pane_id, funding },
++                ),
++            }
+         }
+         "handoff" => {
+             let (to_pane_id, rest) = take_string_option(rest, "--to")?;
+diff --git a/src/config.rs b/src/config.rs
+index fac804c79..154b97529 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -24,11 +24,11 @@ pub use self::{
+     },
+     model::{
+         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
+-        ConfigReloadStatus, CoordinatorAllowlistConfig, FocusAfterTabCloseConfig,
+-        HostCursorModeConfig, NewTabPositionConfig, NewTerminalCwdConfig, PaneBordersConfig,
+-        ShellModeConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle, TabBarPositionConfig,
+-        TabLabelConfig, ToastClipboardPosition, ToastConfig, ToastDelivery, ToastHerdrPosition,
+-        UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
++        ConfigReloadStatus, CoordinatorAllowlistConfig, CoordinatorFundingConfig,
++        FocusAfterTabCloseConfig, HostCursorModeConfig, NewTabPositionConfig, NewTerminalCwdConfig,
++        PaneBordersConfig, ShellModeConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle,
++        TabBarPositionConfig, TabLabelConfig, ToastClipboardPosition, ToastConfig, ToastDelivery,
++        ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
+     },
+     sidebar::{
+         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
+diff --git a/src/config/io.rs b/src/config/io.rs
+index 6e3bd75b9..33bc8ccea 100644
+--- a/src/config/io.rs
++++ b/src/config/io.rs
+@@ -1021,6 +1021,23 @@ resume_agents_on_restore = true
+         assert_eq!(loaded.invalid_sections, vec!["coordinator".to_owned()]);
+     }
+ 
++    #[test]
++    fn load_live_config_reads_the_coordinator_funding_login_by_default() {
++        use super::super::CoordinatorFundingConfig;
++        let loaded = load_live_config_from_str("").unwrap();
++        assert_eq!(
++            loaded.config.coordinator.funding,
++            CoordinatorFundingConfig::Login
++        );
++        let loaded = load_live_config_from_str("[coordinator]\nfunding = \"credits\"\n").unwrap();
++        assert_eq!(
++            loaded.config.coordinator.funding,
++            CoordinatorFundingConfig::Credits
++        );
++        let loaded = load_live_config_from_str("[coordinator]\nfunding = \"free\"\n").unwrap();
++        assert_eq!(loaded.invalid_sections, vec!["coordinator".to_owned()]);
++    }
++
+     #[test]
+     fn load_live_config_warns_about_unknown_theme_names() {
+         let loaded = load_live_config_from_str(
+diff --git a/src/config/model.rs b/src/config/model.rs
+index 2a036b531..23feb5868 100644
+--- a/src/config/model.rs
++++ b/src/config/model.rs
+@@ -1004,6 +1004,11 @@ pub struct CoordinatorConfig {
+     /// "off" lets it run unrecorded. Default: "shadow". A headless item
+     /// coordinator always enforces.
+     pub allowlist: CoordinatorAllowlistConfig,
++    /// What pays for a successor that `coordinator handoff --successor`
++    /// starts: "login" (the agent's own login, as before) or "credits" (the
++    /// Anthropic API credits, through herdr's credit proxy; Claude Code
++    /// only). `--funding` overrides it per handoff. Default: "login".
++    pub funding: CoordinatorFundingConfig,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+@@ -1028,6 +1033,14 @@ impl Default for SupervisionConfig {
+     }
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
++#[serde(rename_all = "snake_case")]
++pub enum CoordinatorFundingConfig {
++    #[default]
++    Login,
++    Credits,
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+ #[serde(rename_all = "snake_case")]
+ pub enum CoordinatorAllowlistConfig {
+diff --git a/src/platform/anthropic_proxy.rs b/src/platform/anthropic_proxy.rs
+index aa3dd0b2d..e0963caca 100644
+--- a/src/platform/anthropic_proxy.rs
++++ b/src/platform/anthropic_proxy.rs
+@@ -399,18 +399,91 @@ impl AnthropicProxy {
+     }
+ }
+ 
+-/// A run-scoped HTTP listener. Dropping it revokes the grant and wakes accept;
+-/// there is no polling thread or timeout-driven lifetime.
++/// An observable end: set once a listener's serving thread has finished, its
++/// grant killed. Waiting on it blocks on that event, not on a clock.
++#[derive(Default)]
++pub(crate) struct Termination {
++    done: Mutex<bool>,
++    changed: std::sync::Condvar,
++}
++
++impl Termination {
++    pub(crate) fn finish(&self) {
++        if let Ok(mut done) = self.done.lock() {
++            *done = true;
++        }
++        self.changed.notify_all();
++    }
++
++    pub(crate) fn is_done(&self) -> bool {
++        self.done.lock().map(|done| *done).unwrap_or(true)
++    }
++
++    /// Blocks until [`Self::finish`] ran.
++    pub(crate) fn wait(&self) {
++        let Ok(mut done) = self.done.lock() else {
++            return;
++        };
++        while !*done {
++            match self.changed.wait(done) {
++                Ok(next) => done = next,
++                Err(_) => return,
++            }
++        }
++    }
++}
++
++/// What a credit-funded session needs of a listener: where to send requests
++/// and the grant that authorizes them. Dropping it ends the grant, without
++/// waiting for a request in flight ([`Termination`] tells when it ended).
++pub(crate) trait CreditEndpoint: Send {
++    fn address(&self) -> String;
++    fn token(&self) -> String;
++    fn termination(&self) -> Arc<Termination>;
++}
++
++/// Starts the endpoint of one run and item: the real loopback listener, or a
++/// test's own, so a test never binds a socket or shares a global transport.
++pub(crate) type ListenFn = Arc<
++    dyn Fn(AnthropicProxy, std::path::PathBuf, &str, &str) -> io::Result<Box<dyn CreditEndpoint>>
++        + Send
++        + Sync,
++>;
++
++/// The real endpoint factory.
++pub(crate) fn loopback_listen() -> ListenFn {
++    Arc::new(|proxy, ledger, run, item| {
++        Ok(Box::new(LoopbackProxy::start(proxy, ledger, run, item)?) as Box<dyn CreditEndpoint>)
++    })
++}
++
++/// A run-scoped HTTP listener. Dropping it stops it and wakes accept; the
++/// serving thread then kills the grant (revoking it) once the request it may
++/// be serving is done. Drop never waits for that request: a streaming reply
++/// can run long, and the app thread must not block on it. There is no
++/// polling thread or timeout-driven lifetime.
+ pub(crate) struct LoopbackProxy {
+     pub(crate) address: String,
+     pub(crate) token: String,
+     pub(crate) ledger: std::path::PathBuf,
+     pub(crate) run: String,
+     stop: Arc<std::sync::atomic::AtomicBool>,
+-    thread: Option<std::thread::JoinHandle<()>>,
++    terminated: Arc<Termination>,
+     port: u16,
+ }
+ 
++impl CreditEndpoint for LoopbackProxy {
++    fn address(&self) -> String {
++        self.address.clone()
++    }
++    fn token(&self) -> String {
++        self.token.clone()
++    }
++    fn termination(&self) -> Arc<Termination> {
++        Arc::clone(&self.terminated)
++    }
++}
++
+ impl LoopbackProxy {
+     pub(crate) fn start(
+         proxy: AnthropicProxy,
+@@ -433,7 +506,10 @@ impl LoopbackProxy {
+         let port = listener.local_addr()?.port();
+         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+         let stopped = Arc::clone(&stop);
+-        let thread = crate::thread_spawn::spawn_named("herdr-anthropic-proxy", move || {
++        let terminated = Arc::new(Termination::default());
++        let finished = Arc::clone(&terminated);
++        // The serving thread is detached: it ends itself on `stop`.
++        crate::thread_spawn::spawn_named("herdr-anthropic-proxy", move || {
+             for client in listener.incoming() {
+                 if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                     break;
+@@ -452,6 +528,7 @@ impl LoopbackProxy {
+                 let _ = client.shutdown(std::net::Shutdown::Both);
+             }
+             proxy.kill();
++            finished.finish();
+         })?;
+         Ok(Self {
+             address: format!("http://127.0.0.1:{port}"),
+@@ -459,7 +536,7 @@ impl LoopbackProxy {
+             ledger,
+             run: run.to_owned(),
+             stop,
+-            thread: Some(thread),
++            terminated,
+             port,
+         })
+     }
+@@ -468,10 +545,8 @@ impl LoopbackProxy {
+ impl Drop for LoopbackProxy {
+     fn drop(&mut self) {
+         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
++        // Wakes accept; the thread sees `stop` for this and any later client.
+         let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+-        if let Some(thread) = self.thread.take() {
+-            let _ = thread.join();
+-        }
+     }
+ }
+ 
+diff --git a/src/platform/anthropic_proxy_tests.rs b/src/platform/anthropic_proxy_tests.rs
+index b4a806cf1..82682a1b4 100644
+--- a/src/platform/anthropic_proxy_tests.rs
++++ b/src/platform/anthropic_proxy_tests.rs
+@@ -484,6 +484,194 @@ fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
+     drop(listener);
+ }
+ 
++/// The ledger has a run and an item per request and no stage column: the
++/// stage `coordinator` of a coordinator's credit session is its item, the
++/// run is `<tenure id>-e<epoch>`. This is what a consuming query sees.
++#[test]
++fn a_coordinator_grants_spend_is_attributed_to_its_run_and_the_coordinator_item() {
++    let mut f = Fixture::new(200.0);
++    let ledger = f.dir.join("ledger.sqlite");
++    let token = f.proxy.register("tenure-1-e2", "coordinator").unwrap();
++    let mut out = Vec::new();
++    f.proxy
++        .serve(
++            Fixture::request(&token, false).as_slice(),
++            &mut out,
++            |_, _, out| out.write_all(&Fixture::response()),
++        )
++        .unwrap();
++    let (cost, pending) = AnthropicProxy::accounting(&ledger, Some("tenure-1-e2")).unwrap();
++    assert!(cost > 0.0);
++    assert_eq!(pending, 0);
++    let status = credit_status(&ledger).unwrap();
++    assert_eq!(status["entries"][0]["run"], "tenure-1-e2");
++    assert_eq!(status["entries"][0]["item"], "coordinator");
++    // Another run's spend is not counted under this one.
++    assert_eq!(
++        AnthropicProxy::accounting(&ledger, Some("tenure-1-e3"))
++            .unwrap()
++            .0,
++        0.0
++    );
++}
++
++/// Dropping a listener that is serving a request returns at once: the
++/// serving thread ends itself when that request is done, and says so
++/// through its [`Termination`]. A drop that joined the thread would never
++/// return here, because the upstream is held until after the drop.
++#[test]
++fn dropping_a_busy_loopback_listener_does_not_wait_for_its_request() {
++    use std::sync::mpsc;
++    static STARTED: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
++    static RELEASE: Mutex<Option<mpsc::Receiver<()>>> = Mutex::new(None);
++    let (started_tx, started_rx) = mpsc::channel();
++    let (release_tx, release_rx) = mpsc::channel();
++    *STARTED.lock().unwrap() = Some(started_tx);
++    *RELEASE.lock().unwrap() = Some(release_rx);
++    let f = Fixture::new(200.0);
++    let ledger = f.dir.join("busy.sqlite");
++    let config = crate::config::WorkersConfig {
++        anthropic_api_key_file: f.dir.join("key").display().to_string(),
++        ..Default::default()
++    };
++    let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
++    let listener =
++        LoopbackProxy::start_with(proxy, ledger.clone(), "busy", "coordinator", |_, _, out| {
++            let started = STARTED.lock().unwrap().take().unwrap();
++            started.send(()).unwrap();
++            let release = RELEASE.lock().unwrap().take().unwrap();
++            release.recv().unwrap();
++            out.write_all(&Fixture::response())
++        })
++        .unwrap();
++    let terminated = listener.termination();
++    let mut client = std::net::TcpStream::connect(("127.0.0.1", listener.port)).unwrap();
++    client
++        .write_all(&Fixture::request(&listener.token, false))
++        .unwrap();
++    started_rx.recv().unwrap();
++    drop(listener);
++    assert!(!terminated.is_done(), "the request is still being served");
++    release_tx.send(()).unwrap();
++    terminated.wait();
++    let mut answer = String::new();
++    client.read_to_string(&mut answer).unwrap();
++    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
++    // The request in flight was accounted, not left pending.
++    let (cost, pending) = AnthropicProxy::accounting(&ledger, Some("busy")).unwrap();
++    assert!(cost > 0.0);
++    assert_eq!(pending, 0);
++}
++
++/// Records what the installed Claude Code sends to a credit endpoint, with a
++/// fake upstream only and no paid call: it forwards each request to the real
++/// loopback proxy and prints, per request, the route, the protocol feature
++/// headers, the top-level body field names and the proxy's status line (never
++/// a prompt, tool schema, token or key). This is the evidence for whether the
++/// proxy's request allowlist, written for pi, admits Claude Code; the
++/// allowlist stays unchanged and any unknown beta or field stays refused.
++/// Run, outside a socket-denying sandbox:
++/// `cargo nextest run --run-ignored ignored-only -E 'test(installed_claude_code_request_shape_offline)' --no-capture`
++/// and read the `claude request` lines; no result is claimed until then.
++#[test]
++#[ignore = "requires Claude Code and loopback sockets; upstream is entirely fake"]
++fn installed_claude_code_request_shape_offline() {
++    let f = Fixture::new(200.0);
++    let config = crate::config::WorkersConfig {
++        anthropic_api_key_file: f.dir.join("key").display().to_string(),
++        ..Default::default()
++    };
++    let ledger = f.dir.join("claude-capture.sqlite");
++    let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
++    let listener =
++        LoopbackProxy::start_with(proxy, ledger, "capture", "coordinator", |_, req, out| {
++            eprintln!(
++                "claude request admitted: POST {} anthropic-beta={:?}",
++                req.path, req.beta
++            );
++            out.write_all(&Fixture::response())
++        })
++        .unwrap();
++    let capture = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let capture_address = format!("http://{}", capture.local_addr().unwrap());
++    let proxy_port = listener.port;
++    std::thread::spawn(move || {
++        for client in capture.incoming() {
++            let Ok(mut client) = client else { break };
++            let mut input = BufReader::new(client.try_clone().unwrap());
++            let mut raw = Vec::new();
++            let mut length = 0usize;
++            while let Ok(line) = bounded_line(&mut input, 8192) {
++                let text = String::from_utf8_lossy(&line).to_string();
++                let lower = text.to_ascii_lowercase();
++                if raw.is_empty()
++                    || lower.starts_with("anthropic-beta:")
++                    || lower.starts_with("anthropic-version:")
++                {
++                    eprintln!("claude request: {}", text.trim_end());
++                }
++                if let Some(value) = lower.strip_prefix("content-length:") {
++                    length = value.trim().parse().unwrap_or(0);
++                }
++                raw.extend_from_slice(&line);
++                if line == b"\r\n" {
++                    break;
++                }
++            }
++            let mut body = vec![0; length.min(BODY_MAX)];
++            if input.read_exact(&mut body).is_err() {
++                continue;
++            }
++            if let Ok(data) = serde_json::from_slice::<Value>(&body) {
++                eprintln!(
++                    "claude request body fields: {:?}",
++                    data.as_object().map(|o| o.keys().collect::<Vec<_>>())
++                );
++            }
++            raw.extend_from_slice(&body);
++            let mut upstream = std::net::TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
++            upstream.write_all(&raw).unwrap();
++            let mut answer = Vec::new();
++            let _ = upstream.read_to_end(&mut answer);
++            eprintln!(
++                "claude request answered: {}",
++                String::from_utf8_lossy(&answer)
++                    .lines()
++                    .next()
++                    .unwrap_or("")
++            );
++            let _ = client.write_all(&answer);
++        }
++    });
++    let env = [
++        ("ANTHROPIC_BASE_URL".to_string(), capture_address),
++        ("ANTHROPIC_AUTH_TOKEN".to_string(), listener.token.clone()),
++        ("ANTHROPIC_MODEL".to_string(), MODEL.to_string()),
++        (
++            "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
++            MODEL.to_string(),
++        ),
++    ];
++    let argv = [
++        "claude".to_string(),
++        "-p".to_string(),
++        "Reply OK".to_string(),
++    ];
++    let mut command = crate::platform::credit_launch::launch_command(
++        &argv,
++        &env,
++        std::env::vars().map(|(name, _)| name),
++    )
++    .unwrap();
++    let status = command
++        .current_dir(&f.dir)
++        .stdin(Stdio::null())
++        .status()
++        .expect("claude must be installed for this explicit test");
++    eprintln!("claude exit: {status}");
++    drop(listener);
++}
++
+ #[test]
+ fn selected_model_is_the_only_allowlisted_model_and_tariffs_fail_closed() {
+     let mut f = OfflineFixture::new(200.0);
+diff --git a/src/platform/credit_launch.rs b/src/platform/credit_launch.rs
+new file mode 100644
+index 000000000..ab4272da0
+--- /dev/null
++++ b/src/platform/credit_launch.rs
+@@ -0,0 +1,89 @@
++//! Process replacement for herdr's credit launcher: the successor's agent is
++//! started with the grant in its own environment and nowhere else.
++
++use std::os::unix::process::CommandExt;
++use std::process::Command;
++
++/// Whether an inherited variable could choose another route or login for
++/// Claude Code than the credit proxy: any `ANTHROPIC_*` setting (key, token,
++/// base URL, model, betas, headers, profile, cloud providers), the
++/// `CLAUDE_CODE_USE_*` provider switches and Claude Code's OAuth tokens.
++pub(crate) fn conflicts_with_credit_launch(name: &str) -> bool {
++    name.starts_with("ANTHROPIC_")
++        || name.starts_with("CLAUDE_CODE_USE_")
++        || name.starts_with("CLAUDE_CODE_OAUTH")
++}
++
++/// The command for `argv` with the conflicting variables of `inherited`
++/// removed and `env` set.
++pub(crate) fn launch_command(
++    argv: &[String],
++    env: &[(String, String)],
++    inherited: impl IntoIterator<Item = String>,
++) -> Option<Command> {
++    let (program, args) = argv.split_first()?;
++    let mut command = Command::new(program);
++    command.args(args);
++    for name in inherited {
++        if conflicts_with_credit_launch(&name) {
++            command.env_remove(name);
++        }
++    }
++    command.envs(env.iter().map(|(name, value)| (name, value)));
++    Some(command)
++}
++
++/// Replaces this process with `argv` under `env`. Returns only the error
++/// that stopped it.
++pub(crate) fn exec_with_env(argv: &[String], env: &[(String, String)]) -> std::io::Error {
++    let inherited = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
++    match launch_command(argv, env, inherited) {
++        Some(mut command) => command.exec(),
++        None => std::io::Error::other("no command to launch"),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::ffi::OsStr;
++
++    #[test]
++    fn conflicting_inherited_variables_are_removed_and_the_grant_set() {
++        let argv = ["claude".to_string(), "/todo".to_string()];
++        let env = [
++            (
++                "ANTHROPIC_BASE_URL".to_string(),
++                "http://127.0.0.1:9".to_string(),
++            ),
++            ("ANTHROPIC_AUTH_TOKEN".to_string(), "grant".to_string()),
++        ];
++        let inherited = [
++            "ANTHROPIC_API_KEY",
++            "ANTHROPIC_AUTH_TOKEN",
++            "ANTHROPIC_BASE_URL",
++            "ANTHROPIC_DEFAULT_OPUS_MODEL",
++            "CLAUDE_CODE_USE_BEDROCK",
++            "CLAUDE_CODE_OAUTH_TOKEN",
++            "PATH",
++        ]
++        .map(String::from);
++        let command = launch_command(&argv, &env, inherited).unwrap();
++        let get = |name: &str| {
++            command
++                .get_envs()
++                .find(|(key, _)| *key == OsStr::new(name))
++                .map(|(_, value)| value)
++        };
++        // `None` inside `Some` is an explicit removal.
++        assert_eq!(get("ANTHROPIC_API_KEY"), Some(None));
++        assert_eq!(get("ANTHROPIC_DEFAULT_OPUS_MODEL"), Some(None));
++        assert_eq!(get("CLAUDE_CODE_USE_BEDROCK"), Some(None));
++        assert_eq!(get("CLAUDE_CODE_OAUTH_TOKEN"), Some(None));
++        assert_eq!(get("PATH"), None);
++        assert_eq!(get("ANTHROPIC_AUTH_TOKEN"), Some(Some(OsStr::new("grant"))));
++        assert_eq!(command.get_program(), "claude");
++        assert_eq!(command.get_args().collect::<Vec<_>>(), ["/todo"]);
++        assert!(launch_command(&[], &[], []).is_none());
++    }
++}
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index 8dd6f0604..99a8a897a 100644
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -589,6 +589,8 @@ pub(crate) use client_state::{create_private_state_file, replace_file, sync_pare
+ #[cfg(unix)]
+ #[allow(dead_code)]
+ pub(crate) mod anthropic_proxy;
++#[cfg(unix)]
++pub(crate) mod credit_launch;
+ mod secret_file;
+ pub(crate) use secret_file::read_secret_file;
+ 
+diff --git a/src/workers/coordinator_handoff.rs b/src/workers/coordinator_handoff.rs
+index b3dcaab9c..b0393d1bd 100644
+--- a/src/workers/coordinator_handoff.rs
++++ b/src/workers/coordinator_handoff.rs
+@@ -27,6 +27,7 @@ use tracing::warn;
+ use super::registry::Registry;
+ use super::runs::Run;
+ use super::{lock, now_ms, OwnerEvent, WorkerError, WorkerSupervisor};
++pub(crate) use crate::api::schema::CoordinatorFunding;
+ use crate::api::schema::{
+     CoordinatorHandoffInfo, CoordinatorHandoffState, CoordinatorInfo, TodoRunStatus,
+ };
+@@ -65,6 +66,12 @@ struct StateFile {
+     pending: Vec<Handoff>,
+     #[serde(default)]
+     superseded: Vec<Superseded>,
++    /// The tenures (and `#successor` pending handoffs) that were started
++    /// with `--funding credits`: the intent only, never a grant or token.
++    /// What lets a restarted server say that a session's credit endpoint is
++    /// gone, instead of reporting the login.
++    #[serde(default)]
++    credit_keys: Vec<String>,
+ }
+ 
+ /// A session whose tenure its successor took over: the old pane and agent
+@@ -119,6 +126,7 @@ impl Handoff {
+             agent_kind: self.kind.clone(),
+             note_sha256: self.note_sha256.clone(),
+             snapshot_sha256: self.snapshot_sha256.clone(),
++            funding: None,
+         }
+     }
+ }
+@@ -129,6 +137,116 @@ impl Handoff {
+ pub(crate) struct Prepared {
+     pub(crate) coordinator_id: String,
+     pub(crate) prompt: String,
++    /// What the grant of a credit-funded successor gives its process; none
++    /// for the login.
++    pub(crate) credit: Option<CreditGrant>,
++}
++
++/// The proxy address, grant and model a credit-funded successor's process
++/// gets in its environment, and nothing else: never the API key. No `Debug`
++/// of the token.
++#[derive(Clone, PartialEq, Eq)]
++pub(crate) struct CreditGrant {
++    pub(crate) address: String,
++    pub(crate) token: String,
++    pub(crate) model: String,
++}
++
++impl std::fmt::Debug for CreditGrant {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("CreditGrant")
++            .field("address", &self.address)
++            .field("token", &"<redacted>")
++            .field("model", &self.model)
++            .finish()
++    }
++}
++
++impl CreditGrant {
++    /// The environment for the successor's `claude` process alone, fetched
++    /// by herdr's launcher ([`WorkerSupervisor::credit_launch_claim`]).
++    /// Claude Code's model aliases are pinned to the one model the proxy
++    /// admits (`ANTHROPIC_MODEL` and the `ANTHROPIC_DEFAULT_*_MODEL` family
++    /// are documented and present in Claude Code 2.1.296; the older
++    /// `ANTHROPIC_SMALL_FAST_MODEL` is a deprecated alias of the Haiku one).
++    pub(crate) fn launch_env(&self) -> Vec<(String, String)> {
++        let mut env = vec![
++            ("ANTHROPIC_BASE_URL".into(), self.address.clone()),
++            ("ANTHROPIC_AUTH_TOKEN".into(), self.token.clone()),
++            ("ANTHROPIC_MODEL".into(), self.model.clone()),
++        ];
++        for alias in ["SONNET", "OPUS", "HAIKU"] {
++            env.push((
++                format!("ANTHROPIC_DEFAULT_{alias}_MODEL"),
++                self.model.clone(),
++            ));
++        }
++        env
++    }
++}
++
++/// Why a credit-funded session shows no running endpoint.
++const CREDITS_UNAVAILABLE: &str = "credits: the credit endpoint of this session is not running \
++(the server restarted or handed off live after it started); its requests fail instead of using \
++the login. Start a fresh session on the login and run `herdr coordinator handoff --successor \
++--funding credits` again to put it back on the credits";
++
++/// The listener key of the successor a tenure's pending handoff started:
++/// the tenure's own listener (when it runs on credits itself) keeps its id.
++fn successor_key(coordinator_id: &str) -> String {
++    format!("{coordinator_id}#successor")
++}
++
++/// The ledger item of a coordinator's spend. The ledger keeps a run and an
++/// item per request (no stage column): the stage `coordinator` is encoded as
++/// this item, and the run is `<tenure id>-e<epoch>`.
++#[cfg(unix)]
++pub(crate) const CREDIT_ITEM: &str = "coordinator";
++
++/// The configuration, ledger and listener factory a credit-funded successor
++/// starts with.
++#[derive(Clone)]
++pub(crate) struct CreditSetup {
++    #[cfg(unix)]
++    pub(crate) config: crate::config::WorkersConfig,
++    #[cfg(unix)]
++    pub(crate) ledger: PathBuf,
++    /// Starts the endpoint; tests inject their own.
++    #[cfg(unix)]
++    pub(crate) listen: crate::platform::anthropic_proxy::ListenFn,
++}
++
++impl std::fmt::Debug for CreditSetup {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("CreditSetup")
++    }
++}
++
++impl CreditSetup {
++    /// From the live configuration; a refusal names why.
++    #[cfg(unix)]
++    pub(crate) fn live() -> Result<Self, WorkerError> {
++        let config = crate::config::load_live_config()
++            .map_err(|_| {
++                WorkerError::HandoffRefused("cannot load the credit configuration".into())
++            })?
++            .config
++            .workers;
++        let ledger = crate::platform::anthropic_proxy::ledger_path(&config)
++            .map_err(|error| WorkerError::HandoffRefused(format!("no credit ledger: {error}")))?;
++        Ok(Self {
++            config,
++            ledger,
++            listen: crate::platform::anthropic_proxy::loopback_listen(),
++        })
++    }
++
++    #[cfg(not(unix))]
++    pub(crate) fn live() -> Result<Self, WorkerError> {
++        Err(WorkerError::HandoffRefused(
++            "the Anthropic credit proxy requires Unix".into(),
++        ))
++    }
+ }
+ 
+ /// What an acknowledged handoff changed.
+@@ -192,6 +310,7 @@ impl WorkerSupervisor {
+         self.write_state(
+             registry.handoffs.values().cloned().collect(),
+             registry.superseded.clone(),
++            registry.credit_keys.iter().cloned().collect(),
+         )
+     }
+ 
+@@ -201,6 +320,7 @@ impl WorkerSupervisor {
+         &self,
+         pending: Vec<Handoff>,
+         superseded: Vec<Superseded>,
++        credit_keys: Vec<String>,
+     ) -> Result<(), WorkerError> {
+         #[cfg(test)]
+         if WRITE_FAILURES.with(|failures| {
+@@ -210,13 +330,14 @@ impl WorkerSupervisor {
+             return Err(io_error("injected write failure"));
+         }
+         let path = self.state_path();
+-        if pending.is_empty() && superseded.is_empty() && !path.exists() {
++        if pending.is_empty() && superseded.is_empty() && credit_keys.is_empty() && !path.exists() {
+             return Ok(());
+         }
+         let state = StateFile {
+             version: STATE_VERSION,
+             pending,
+             superseded,
++            credit_keys,
+         };
+         let bytes = serde_json::to_vec_pretty(&state).map_err(io_error)?;
+         self.handoffs_dir()?;
+@@ -276,6 +397,9 @@ impl WorkerSupervisor {
+         });
+         let mut dropped = superseded.len() != before;
+         registry.superseded = superseded;
++        // The funding intent comes back; the endpoints do not (they lived in
++        // the old server's memory): `with_handoff` reports that.
++        registry.credit_keys = state.credit_keys.into_iter().collect();
+         // A handoff whose recorded phase no live successor can match is
+         // aborted below: a successor-started phase without a pane, or a
+         // prepared one (the successor's start was not recorded; the write
+@@ -307,6 +431,7 @@ impl WorkerSupervisor {
+             self.persist_or_warn(&mut registry, "");
+         }
+         drop(registry);
++        self.sweep_credit_listeners();
+         for coordinator_id in inconsistent {
+             self.handoff_abort(
+                 &coordinator_id,
+@@ -326,9 +451,191 @@ impl WorkerSupervisor {
+             .handoff_persist_errors
+             .get(&info.coordinator_id)
+             .cloned();
++        // Intent is persisted; whether the endpoint runs is this server's
++        // memory. Intent without an endpoint is reported as such, never as
++        // the login: the session's base URL is dead, so it fails closed.
++        let intended = |key: &str| registry.credit_keys.contains(key);
++        #[cfg(unix)]
++        let running = |key: &str| registry.credit_listeners.contains_key(key);
++        #[cfg(not(unix))]
++        let running = |_: &str| false;
++        let mut unavailable = false;
++        let mut label = |key: &str| {
++            if intended(key) {
++                unavailable |= !running(key);
++                CoordinatorFunding::Credits
++            } else {
++                CoordinatorFunding::Login
++            }
++        };
++        if let Some(handoff) = info.handoff.as_mut() {
++            if handoff.successor_pane_id.is_some() {
++                handoff.funding = Some(label(&successor_key(&info.coordinator_id)));
++            }
++        }
++        if !info.headless {
++            info.funding = Some(label(&info.coordinator_id));
++        }
++        if unavailable {
++            info.funding_note = Some(CREDITS_UNAVAILABLE.to_owned());
++        }
+         info
+     }
+ 
++    /// Drops the credit listeners and funding intents of tenures that are
++    /// neither active nor pending a handoff: dropping a listener ends its
++    /// grant. Dropped outside the registry lock, and a drop never waits for
++    /// a request in flight.
++    pub(crate) fn sweep_credit_listeners(&self) {
++        let keys: Vec<String> = {
++            let registry = lock(&self.shared.registry);
++            #[cfg(unix)]
++            let listening = registry.credit_listeners.keys().cloned();
++            #[cfg(not(unix))]
++            let listening = std::iter::empty();
++            registry
++                .credit_keys
++                .iter()
++                .cloned()
++                .chain(listening)
++                .collect()
++        };
++        if keys.is_empty() {
++            return;
++        }
++        let Ok(store) = self.tenure_store() else {
++            return;
++        };
++        let Ok(active) = store.active_coordinators(None) else {
++            return;
++        };
++        let mut registry = lock(&self.shared.registry);
++        let stale: Vec<String> = keys
++            .into_iter()
++            .filter(|id| match id.strip_suffix("#successor") {
++                Some(base) => !registry.handoffs.contains_key(base),
++                None => !active.iter().any(|tenure| &tenure.id == id),
++            })
++            .collect();
++        if stale.is_empty() {
++            return;
++        }
++        #[cfg(unix)]
++        let mut dropped = Vec::new();
++        let mut changed = false;
++        for id in &stale {
++            changed |= registry.credit_keys.remove(id);
++            #[cfg(unix)]
++            dropped.extend(registry.credit_listeners.remove(id));
++        }
++        registry
++            .credit_launches
++            .retain(|_, (id, _)| !stale.contains(id));
++        if changed {
++            self.persist_or_warn(&mut registry, "");
++        }
++        drop(registry);
++        #[cfg(unix)]
++        drop(dropped);
++    }
++
++    /// Starts the run-scoped credit listener of the successor of tenure
++    /// `coordinator_id` at `epoch`: the run id is the tenure id and epoch,
++    /// the ledger item `coordinator`. Refused, naming why, when the key or
++    /// model is not usable, the proxy cannot start or the cap is reached.
++    #[cfg(unix)]
++    fn start_credit_listener(
++        &self,
++        coordinator_id: &str,
++        epoch: i64,
++        setup: &CreditSetup,
++    ) -> Result<CreditGrant, WorkerError> {
++        use crate::platform::anthropic_proxy::AnthropicProxy;
++        let refuse = |why: String| WorkerError::HandoffRefused(why);
++        let config = &setup.config;
++        if config.anthropic_api_model.trim().is_empty() {
++            return Err(refuse(
++                "no credit model is configured: set [workers] anthropic_api_model".into(),
++            ));
++        }
++        config
++            .validate_anthropic_model()
++            .map_err(|why| refuse(format!("the credit model is not usable: {why}")))?;
++        let proxy = AnthropicProxy::open(config, &setup.ledger)
++            .map_err(|error| refuse(format!("the credit proxy cannot start: {error}")))?;
++        proxy.available(0.0).map_err(|error| {
++            refuse(format!(
++                "the Anthropic credit cap is reached or its accounting is unavailable: {error}"
++            ))
++        })?;
++        let run = format!("{coordinator_id}-e{epoch}");
++        let listener = (setup.listen)(proxy, setup.ledger.clone(), &run, CREDIT_ITEM)
++            .map_err(|error| refuse(format!("the credit proxy cannot start: {error}")))?;
++        let grant = CreditGrant {
++            address: listener.address(),
++            token: listener.token(),
++            model: config.anthropic_api_model.clone(),
++        };
++        let key = successor_key(coordinator_id);
++        let replaced = {
++            let mut registry = lock(&self.shared.registry);
++            registry.credit_keys.insert(key.clone());
++            registry.credit_listeners.insert(key, listener)
++        };
++        drop(replaced);
++        Ok(grant)
++    }
++
++    /// Drops the successor listener and intent of `coordinator_id`'s
++    /// handoff, which ends its grant, and any launch not claimed yet.
++    fn drop_credit_listener(&self, coordinator_id: &str) {
++        let key = successor_key(coordinator_id);
++        let mut registry = lock(&self.shared.registry);
++        registry
++            .credit_launches
++            .retain(|_, (id, _)| id != coordinator_id);
++        if registry.credit_keys.remove(&key) {
++            self.persist_or_warn(&mut registry, coordinator_id);
++        }
++        #[cfg(unix)]
++        let removed = registry.credit_listeners.remove(&key);
++        drop(registry);
++        #[cfg(unix)]
++        drop(removed);
++    }
++
++    /// Holds `grant` for the one launcher that claims it from `pane_id`, the
++    /// successor's pane. Memory only.
++    pub(crate) fn credit_launch_arm(
++        &self,
++        pane_id: &str,
++        coordinator_id: &str,
++        grant: CreditGrant,
++    ) {
++        lock(&self.shared.registry)
++            .credit_launches
++            .insert(pane_id.to_owned(), (coordinator_id.to_owned(), grant));
++    }
++
++    /// Takes back an armed launch that did not start.
++    pub(crate) fn credit_launch_disarm(&self, pane_id: &str) {
++        lock(&self.shared.registry).credit_launches.remove(pane_id);
++    }
++
++    /// The launcher's one-use claim: the grant armed for `pane_id`, removed
++    /// as it is given. A second claim, or one from another pane, is refused.
++    pub(crate) fn credit_launch_claim(&self, pane_id: &str) -> Result<CreditGrant, WorkerError> {
++        lock(&self.shared.registry)
++            .credit_launches
++            .remove(pane_id)
++            .map(|(_, grant)| grant)
++            .ok_or_else(|| {
++                WorkerError::HandoffRefused(format!(
++                    "no credit launch is armed for pane {pane_id}, or it was claimed already"
++                ))
++            })
++    }
++
+     fn handoff_of_old_pane(&self, pane_id: &str) -> Option<Handoff> {
+         lock(&self.shared.registry)
+             .handoffs
+@@ -500,10 +807,26 @@ impl WorkerSupervisor {
+     /// tenure bound to `pane_id` is frozen and that agent `kind` has a
+     /// launch prompt, then writes herdr's snapshot and the manifest. Starts
+     /// nothing; a refusal changes nothing.
++    #[cfg(test)]
+     pub(crate) fn handoff_prepare(
+         &self,
+         pane_id: &str,
+         kind: &str,
++    ) -> Result<Prepared, WorkerError> {
++        self.handoff_prepare_funded(pane_id, kind, CoordinatorFunding::Login, None)
++    }
++
++    /// [`Self::handoff_prepare`] with the funding named. `Credits` needs
++    /// agent kind `claude` and the `setup` of the credit proxy: it starts the
++    /// successor's listener (kept until its tenure ends, or the handoff
++    /// aborts) and returns the grant for the launch environment. Every
++    /// refusal comes before anything is written.
++    pub(crate) fn handoff_prepare_funded(
++        &self,
++        pane_id: &str,
++        kind: &str,
++        funding: CoordinatorFunding,
++        setup: Option<&CreditSetup>,
+     ) -> Result<Prepared, WorkerError> {
+         let handoff = self.handoff_of_old_pane(pane_id).ok_or_else(|| {
+             WorkerError::HandoffRefused(format!(
+@@ -524,6 +847,14 @@ impl WorkerSupervisor {
+                  start with a skill invocation"
+             )));
+         }
++        if funding == CoordinatorFunding::Credits && kind != "claude" {
++            // pi's provider file is written per headless worker into its own
++            // agent directory; an interactive pi reads the user's own, which
++            // herdr does not rewrite. Not reusable cleanly in this slice.
++            return Err(WorkerError::HandoffRefused(format!(
++                "--funding credits supports agent kind claude only, not {kind}"
++            )));
++        }
+         let tenure = self
+             .coordinator_of_pane(pane_id)
+             .filter(|tenure| {
+@@ -535,7 +866,51 @@ impl WorkerSupervisor {
+                     handoff.coordinator_id, handoff.epoch
+                 ))
+             })?;
+-        let snapshot = self.tenure_snapshot(&tenure)?;
++        let credit = match funding {
++            CoordinatorFunding::Login => None,
++            CoordinatorFunding::Unknown => {
++                return Err(WorkerError::HandoffRefused(
++                    "unknown funding: use login or credits".into(),
++                ));
++            }
++            CoordinatorFunding::Credits => {
++                #[cfg(unix)]
++                {
++                    let setup = setup.ok_or_else(|| {
++                        WorkerError::HandoffRefused("no credit configuration".into())
++                    })?;
++                    Some(self.start_credit_listener(&tenure.coordinator_id, tenure.epoch, setup)?)
++                }
++                #[cfg(not(unix))]
++                {
++                    let _ = setup;
++                    return Err(WorkerError::HandoffRefused(
++                        "the Anthropic credit proxy requires Unix".into(),
++                    ));
++                }
++            }
++        };
++        let written = self.handoff_write(&handoff, &tenure, pane_id, kind, funding);
++        match written {
++            Ok(prepared) => Ok(Prepared { credit, ..prepared }),
++            Err(error) => {
++                self.drop_credit_listener(&tenure.coordinator_id);
++                Err(error)
++            }
++        }
++    }
++
++    /// Writes the snapshot and manifest (no secret in either) and records
++    /// the handoff's kind and snapshot.
++    fn handoff_write(
++        &self,
++        handoff: &Handoff,
++        tenure: &CoordinatorInfo,
++        pane_id: &str,
++        kind: &str,
++        funding: CoordinatorFunding,
++    ) -> Result<Prepared, WorkerError> {
++        let snapshot = self.tenure_snapshot(tenure)?;
+         let snapshot_bytes = serde_json::to_vec_pretty(&snapshot).map_err(io_error)?;
+         let snapshot_sha = sha256_hex(&snapshot_bytes);
+         let dir = self.handoffs_dir()?;
+@@ -550,6 +925,7 @@ impl WorkerSupervisor {
+             "coordinator_id": tenure.coordinator_id,
+             "repository": tenure.repo,
+             "agent_kind": kind,
++            "funding": funding.as_str(),
+             "old_pane_id": pane_id,
+             "tenure": snapshot,
+             "snapshot": {"path": snapshot_path, "sha256": snapshot_sha},
+@@ -569,8 +945,9 @@ impl WorkerSupervisor {
+             self.persist_or_warn(&mut registry, &tenure.coordinator_id);
+         }
+         Ok(Prepared {
+-            coordinator_id: tenure.coordinator_id,
++            coordinator_id: tenure.coordinator_id.clone(),
+             prompt,
++            credit: None,
+         })
+     }
+ 
+@@ -631,7 +1008,13 @@ impl WorkerSupervisor {
+                     .filter(|handoff| handoff.coordinator_id != coordinator_id)
+                     .cloned()
+                     .collect();
+-                match self.write_state(pending, registry.superseded.clone()) {
++                let mut keys = registry.credit_keys.clone();
++                keys.remove(&successor_key(coordinator_id));
++                match self.write_state(
++                    pending,
++                    registry.superseded.clone(),
++                    keys.into_iter().collect(),
++                ) {
+                     Err(error) if strict => return Err(error),
+                     Err(error) => {
+                         tracing::error!(%error, "cannot write the aborted coordinator handoff; a restart may restore it");
+@@ -649,6 +1032,9 @@ impl WorkerSupervisor {
+         let Some(handoff) = removed else {
+             return Ok(());
+         };
++        // The successor never took the tenure: its grant ends with the
++        // handoff.
++        self.drop_credit_listener(&handoff.coordinator_id);
+         self.shared.changed.notify_all();
+         super::notify_clients();
+         super::notify_user(super::UserNotice {
+@@ -786,7 +1172,11 @@ impl WorkerSupervisor {
+             .filter(|other| other.coordinator_id != handoff.coordinator_id)
+             .cloned()
+             .collect();
+-        self.write_state(remaining, staged)?;
++        self.write_state(
++            remaining,
++            staged,
++            registry.credit_keys.iter().cloned().collect(),
++        )?;
+         let tenure = match self.coordinator_handoff_locked(
+             &mut registry,
+             Some(&current.coordinator_id),
+@@ -812,6 +1202,22 @@ impl WorkerSupervisor {
+             }
+         };
+         registry.handoffs.remove(&handoff.coordinator_id);
++        // The successor's intent and listener now serve its tenure.
++        if registry
++            .credit_keys
++            .remove(&successor_key(&handoff.coordinator_id))
++        {
++            registry.credit_keys.insert(tenure.coordinator_id.clone());
++        }
++        #[cfg(unix)]
++        if let Some(listener) = registry
++            .credit_listeners
++            .remove(&successor_key(&handoff.coordinator_id))
++        {
++            registry
++                .credit_listeners
++                .insert(tenure.coordinator_id.clone(), listener);
++        }
+         record.successor_coordinator_id = tenure.coordinator_id.clone();
+         superseded.push(record);
+         let excess = superseded.len().saturating_sub(SUPERSEDED_KEPT);
+@@ -821,6 +1227,8 @@ impl WorkerSupervisor {
+         // write, which fences the same pane and session.
+         self.persist_or_warn(&mut registry, &tenure.coordinator_id);
+         drop(registry);
++        // The old tenure ended: its own listener, if it had one, goes.
++        self.sweep_credit_listeners();
+         self.shared.changed.notify_all();
+         super::notify_clients();
+         Ok(Acked {
+@@ -1789,3 +2197,438 @@ mod tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ }
++
++#[cfg(all(test, unix))]
++mod credit_tests {
++    use super::*;
++    use crate::platform::anthropic_proxy::{AnthropicProxy, CreditEndpoint, ListenFn, Termination};
++    use std::os::unix::fs::PermissionsExt;
++    use std::sync::{Arc, Mutex};
++
++    const KEY: &str = "sk-ant-fake-offline-key";
++
++    /// An endpoint that binds no socket: it registers its grant with a real
++    /// proxy over the ledger file (offline) and records its own end.
++    struct FakeEndpoint {
++        token: String,
++        termination: Arc<Termination>,
++        _proxy: AnthropicProxy,
++    }
++
++    impl CreditEndpoint for FakeEndpoint {
++        fn address(&self) -> String {
++            "http://127.0.0.1:1".into()
++        }
++        fn token(&self) -> String {
++            self.token.clone()
++        }
++        fn termination(&self) -> Arc<Termination> {
++            Arc::clone(&self.termination)
++        }
++    }
++
++    impl Drop for FakeEndpoint {
++        fn drop(&mut self) {
++            self.termination.finish();
++        }
++    }
++
++    type Started = Arc<Mutex<Vec<(String, String, Arc<Termination>)>>>;
++
++    fn fake_listen(started: &Started) -> ListenFn {
++        let started = Arc::clone(started);
++        Arc::new(move |mut proxy, _ledger, run, item| {
++            let token = proxy.register(run, item)?;
++            let termination = Arc::new(Termination::default());
++            started.lock().unwrap().push((
++                run.to_owned(),
++                item.to_owned(),
++                Arc::clone(&termination),
++            ));
++            Ok(Box::new(FakeEndpoint {
++                token,
++                termination,
++                _proxy: proxy,
++            }) as Box<dyn CreditEndpoint>)
++        })
++    }
++
++    struct Fixture {
++        root: PathBuf,
++        supervisor: WorkerSupervisor,
++        note: PathBuf,
++        setup: CreditSetup,
++        started: Started,
++    }
++
++    impl Fixture {
++        fn new(name: &str) -> Self {
++            let root = std::env::temp_dir().join(format!(
++                "herdr-handoff-credit-{name}-{}-{}",
++                std::process::id(),
++                now_ms()
++            ));
++            let _ = std::fs::remove_dir_all(&root);
++            std::fs::create_dir_all(&root).unwrap();
++            let note = root.join("note.md");
++            std::fs::write(&note, "continue\n").unwrap();
++            let key = root.join("key");
++            std::fs::write(&key, format!("{KEY}\n")).unwrap();
++            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
++            let config = crate::config::WorkersConfig {
++                anthropic_api_key_file: key.display().to_string(),
++                anthropic_api_cap_usd: 200.0,
++                anthropic_api_cycle: "t".into(),
++                ..Default::default()
++            };
++            let started: Started = Arc::default();
++            let setup = CreditSetup {
++                config,
++                ledger: root.join("ledger.sqlite"),
++                listen: fake_listen(&started),
++            };
++            let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++            Self {
++                root,
++                supervisor,
++                note,
++                setup,
++                started,
++            }
++        }
++
++        fn frozen(&self) -> CoordinatorInfo {
++            let tenure = self
++                .supervisor
++                .coordinator_start("/repo", "p1", None)
++                .unwrap();
++            self.supervisor.handoff_ready("p1", &self.note).unwrap();
++            tenure
++        }
++
++        fn credits(&self, kind: &str, setup: &CreditSetup) -> Result<Prepared, WorkerError> {
++            self.supervisor.handoff_prepare_funded(
++                "p1",
++                kind,
++                CoordinatorFunding::Credits,
++                Some(setup),
++            )
++        }
++
++        fn listeners(&self) -> usize {
++            lock(&self.supervisor.shared.registry)
++                .credit_listeners
++                .len()
++        }
++
++        fn reopen(&mut self) {
++            self.supervisor = WorkerSupervisor::open(self.root.join("workers"), "claude".into());
++        }
++
++        /// Prepares, starts and acks a credit successor; returns its grant
++        /// and the successor's tenure.
++        fn acked(&self) -> (CreditGrant, CoordinatorInfo) {
++            self.frozen();
++            let prepared = self.credits("claude", &self.setup).unwrap();
++            let grant = prepared.credit.clone().unwrap();
++            self.supervisor
++                .handoff_successor_started(&prepared.coordinator_id, "p2")
++                .unwrap();
++            let sha = self
++                .supervisor
++                .with_handoff(self.supervisor.coordinator_of_pane("p1").unwrap())
++                .handoff
++                .unwrap()
++                .snapshot_sha256
++                .unwrap();
++            let acked = self
++                .supervisor
++                .handoff_ack("p2", 1, &sha, None, None)
++                .unwrap();
++            (grant, acked.tenure)
++        }
++    }
++
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            let _ = std::fs::remove_dir_all(&self.root);
++        }
++    }
++
++    fn status_of(f: &Fixture) -> CoordinatorInfo {
++        f.supervisor.coordinator_status(None).unwrap().remove(0)
++    }
++
++    #[test]
++    fn the_launch_env_holds_the_proxy_address_grant_and_model_aliases_and_no_key() {
++        let grant = CreditGrant {
++            address: "http://127.0.0.1:1".into(),
++            token: "grant-token".into(),
++            model: "claude-sonnet-5-5".into(),
++        };
++        let env = grant.launch_env();
++        let get = |key: &str| {
++            env.iter()
++                .find(|(name, _)| name == key)
++                .map(|(_, value)| value.as_str())
++        };
++        assert_eq!(get("ANTHROPIC_BASE_URL"), Some("http://127.0.0.1:1"));
++        assert_eq!(get("ANTHROPIC_AUTH_TOKEN"), Some("grant-token"));
++        for name in [
++            "ANTHROPIC_MODEL",
++            "ANTHROPIC_DEFAULT_SONNET_MODEL",
++            "ANTHROPIC_DEFAULT_OPUS_MODEL",
++            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
++        ] {
++            assert_eq!(get(name), Some("claude-sonnet-5-5"), "{name}");
++        }
++        assert_eq!(get("ANTHROPIC_API_KEY"), None);
++        assert_eq!(get("ANTHROPIC_SMALL_FAST_MODEL"), None);
++        assert!(env.iter().all(|(_, value)| !value.starts_with("sk-ant-")));
++        assert!(!format!("{grant:?}").contains("grant-token"));
++    }
++
++    #[test]
++    fn a_credit_handoff_binds_the_grant_to_the_tenure_and_writes_no_secret_anywhere() {
++        let f = Fixture::new("grant");
++        let tenure = f.frozen();
++        let prepared = f.credits("claude", &f.setup).unwrap();
++        let grant = prepared.credit.clone().expect("a credit grant");
++        assert_eq!(grant.model, f.setup.config.anthropic_api_model);
++        assert_eq!(f.listeners(), 1);
++        {
++            // The ledger run is the tenure and epoch; the stage `coordinator`
++            // is the ledger item.
++            let started = f.started.lock().unwrap();
++            assert_eq!(started.len(), 1);
++            assert_eq!(
++                (started[0].0.as_str(), started[0].1.as_str()),
++                (
++                    format!("{}-e{}", tenure.coordinator_id, tenure.epoch).as_str(),
++                    "coordinator"
++                )
++            );
++        }
++        assert!(!format!("{prepared:?}").contains(&grant.token));
++        f.supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++
++        // Everything herdr writes or reports: manifest, snapshot, state
++        // file and the status JSON.
++        let handoffs = f.root.join("workers/handoffs");
++        let mut texts = Vec::new();
++        for entry in std::fs::read_dir(&handoffs).unwrap() {
++            texts.push(std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default());
++        }
++        texts.push(serde_json::to_string(&f.supervisor.coordinator_status(None).unwrap()).unwrap());
++        assert!(texts.len() >= 4, "manifest, snapshot, note copy and state");
++        let manifest = texts
++            .iter()
++            .find(|text| text.contains("\"funding\": \"credits\""))
++            .expect("the manifest records the funding");
++        assert!(manifest.contains("\"agent_kind\""));
++        for text in &texts {
++            for secret in [
++                KEY,
++                grant.token.as_str(),
++                grant.address.as_str(),
++                "ANTHROPIC_",
++            ] {
++                assert!(!text.contains(secret), "{secret} leaked");
++            }
++        }
++    }
++
++    #[test]
++    fn the_launcher_claims_the_armed_grant_once_and_only_from_its_pane() {
++        let f = Fixture::new("claim");
++        f.frozen();
++        let prepared = f.credits("claude", &f.setup).unwrap();
++        let grant = prepared.credit.clone().unwrap();
++        // Nothing is claimable before it is armed.
++        assert!(f.supervisor.credit_launch_claim("p2").is_err());
++        f.supervisor
++            .credit_launch_arm("p2", &prepared.coordinator_id, grant.clone());
++        assert!(f.supervisor.credit_launch_claim("p3").is_err());
++        assert_eq!(f.supervisor.credit_launch_claim("p2").unwrap(), grant);
++        let again = f.supervisor.credit_launch_claim("p2").unwrap_err();
++        assert!(again.to_string().contains("claimed already"), "{again}");
++        // A start that failed takes the armed launch back; an aborted
++        // handoff purges it with the listener.
++        f.supervisor
++            .credit_launch_arm("p2", &prepared.coordinator_id, grant.clone());
++        f.supervisor.credit_launch_disarm("p2");
++        assert!(f.supervisor.credit_launch_claim("p2").is_err());
++        f.supervisor
++            .credit_launch_arm("p2", &prepared.coordinator_id, grant);
++        f.supervisor.handoff_abort(&prepared.coordinator_id, "test");
++        assert!(f.supervisor.credit_launch_claim("p2").is_err());
++    }
++
++    #[test]
++    fn the_listener_serves_the_successor_tenure_and_its_grant_ends_with_it() {
++        let f = Fixture::new("tenure");
++        let (_, tenure) = f.acked();
++        let ended = Arc::clone(&f.started.lock().unwrap()[0].2);
++        assert!(!ended.is_done(), "still serving after the ack");
++        let status = status_of(&f);
++        assert_eq!(status.funding, Some(CoordinatorFunding::Credits));
++        assert_eq!(status.funding_note, None);
++        f.supervisor
++            .coordinator_end(&tenure.coordinator_id, "ended", None)
++            .unwrap();
++        assert_eq!(f.listeners(), 0);
++        ended.wait();
++        assert!(lock(&f.supervisor.shared.registry).credit_keys.is_empty());
++    }
++
++    #[test]
++    fn an_aborted_handoff_revokes_the_grant() {
++        let f = Fixture::new("abort");
++        f.frozen();
++        let prepared = f.credits("claude", &f.setup).unwrap();
++        let ended = Arc::clone(&f.started.lock().unwrap()[0].2);
++        f.supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        assert!(!ended.is_done());
++        f.supervisor.handoff_abort(&prepared.coordinator_id, "test");
++        assert_eq!(f.listeners(), 0);
++        ended.wait();
++        let tenure = f
++            .supervisor
++            .with_handoff(f.supervisor.coordinator_of_pane("p1").unwrap());
++        assert!(tenure.handoff.is_none());
++        assert_eq!(tenure.funding, Some(CoordinatorFunding::Login));
++        assert!(lock(&f.supervisor.shared.registry).credit_keys.is_empty());
++    }
++
++    #[test]
++    fn a_failed_manifest_write_revokes_the_grant_and_keeps_no_intent() {
++        let f = Fixture::new("write-fails");
++        let tenure = f.frozen();
++        // A directory where the snapshot goes makes its write fail.
++        let dir = f.supervisor.handoffs_dir().unwrap();
++        std::fs::create_dir(dir.join(format!(
++            "{}-e{}.snapshot.json",
++            tenure.coordinator_id, tenure.epoch
++        )))
++        .unwrap();
++        let error = f.credits("claude", &f.setup).unwrap_err();
++        assert!(!error.to_string().is_empty());
++        let ended = Arc::clone(&f.started.lock().unwrap()[0].2);
++        ended.wait();
++        assert_eq!(f.listeners(), 0);
++        assert!(lock(&f.supervisor.shared.registry).credit_keys.is_empty());
++    }
++
++    /// The listener lives in the server's memory; the intent is persisted.
++    /// After a restart or a live handoff the session still holds the dead
++    /// address: it is reported as credits with its endpoint unavailable,
++    /// never as the login.
++    #[test]
++    fn after_a_restart_the_tenure_reports_credits_unavailable_not_login() {
++        let mut f = Fixture::new("restart");
++        let (_, tenure) = f.acked();
++        f.reopen();
++        assert_eq!(f.listeners(), 0);
++        let status = status_of(&f);
++        assert_eq!(status.coordinator_id, tenure.coordinator_id);
++        assert_eq!(status.funding, Some(CoordinatorFunding::Credits));
++        let note = status.funding_note.expect("an actionable note");
++        assert!(
++            note.contains("--funding credits") && note.contains("login"),
++            "{note}"
++        );
++        // The unavailable state also survives a second restart, and ending
++        // the tenure clears the intent.
++        f.reopen();
++        assert_eq!(status_of(&f).funding, Some(CoordinatorFunding::Credits));
++        f.supervisor
++            .coordinator_end(&tenure.coordinator_id, "ended", None)
++            .unwrap();
++        assert!(lock(&f.supervisor.shared.registry).credit_keys.is_empty());
++    }
++
++    #[test]
++    fn a_pending_credit_handoff_is_reported_unavailable_after_a_restart() {
++        let mut f = Fixture::new("restart-pending");
++        f.frozen();
++        let prepared = f.credits("claude", &f.setup).unwrap();
++        f.supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        f.reopen();
++        let old = f.supervisor.coordinator_of_pane("p1").unwrap();
++        let info = f.supervisor.with_handoff(old);
++        // A successor whose agent is not detected yet keeps the handoff
++        // pending across the restart.
++        let handoff = info.handoff.expect("the handoff is still pending");
++        assert_eq!(handoff.funding, Some(CoordinatorFunding::Credits));
++        assert!(info.funding_note.is_some());
++    }
++
++    #[test]
++    fn every_refusal_comes_before_anything_starts_and_names_why() {
++        let f = Fixture::new("refusals");
++        f.frozen();
++        let refused = |result: Result<Prepared, WorkerError>, needle: &str| {
++            let error = result.expect_err("expected a refusal");
++            assert_eq!(error.code(), "handoff_refused");
++            assert!(error.to_string().contains(needle), "{error}");
++            assert_eq!(f.listeners(), 0);
++            assert!(lock(&f.supervisor.shared.registry).credit_keys.is_empty());
++            // Nothing was written: no manifest.
++            let dir = f.supervisor.handoffs_dir().unwrap();
++            assert!(
++                std::fs::read_dir(dir).unwrap().all(|entry| !entry
++                    .unwrap()
++                    .file_name()
++                    .to_string_lossy()
++                    .contains("manifest")),
++                "{needle}: a manifest was written"
++            );
++        };
++        // pi: not in this slice.
++        refused(f.credits("pi", &f.setup), "claude only");
++        // No credit configuration at all.
++        refused(
++            f.supervisor
++                .handoff_prepare_funded("p1", "claude", CoordinatorFunding::Credits, None),
++            "no credit configuration",
++        );
++        refused(
++            f.supervisor
++                .handoff_prepare_funded("p1", "claude", CoordinatorFunding::Unknown, None),
++            "unknown funding",
++        );
++        // No credit model configured, or one without a tariff.
++        let mut setup = f.setup.clone();
++        setup.config.anthropic_api_model = String::new();
++        refused(f.credits("claude", &setup), "no credit model is configured");
++        setup.config.anthropic_api_model = "claude-opus".into();
++        refused(f.credits("claude", &setup), "credit model is not usable");
++        // The proxy cannot start: no key file.
++        let mut setup = f.setup.clone();
++        setup.config.anthropic_api_key_file = String::new();
++        refused(f.credits("claude", &setup), "credit proxy cannot start");
++        // The listener cannot start.
++        let mut setup = f.setup.clone();
++        setup.listen = Arc::new(|_, _, _, _| Err(std::io::Error::other("no socket")));
++        refused(f.credits("claude", &setup), "credit proxy cannot start");
++        // The cap is reached.
++        let mut setup = f.setup.clone();
++        setup.config.anthropic_api_cap_usd = 0.0;
++        refused(f.credits("claude", &setup), "cap is reached");
++        assert!(f.started.lock().unwrap().is_empty());
++        // The tenure is still frozen and a login handoff still works.
++        assert_eq!(
++            f.supervisor
++                .handoff_prepare_funded("p1", "claude", CoordinatorFunding::Login, None)
++                .unwrap()
++                .credit,
++            None
++        );
++    }
++}
+diff --git a/src/workers/coordinators.rs b/src/workers/coordinators.rs
+index 60d0377ff..cac3437b3 100644
+--- a/src/workers/coordinators.rs
++++ b/src/workers/coordinators.rs
+@@ -317,6 +317,8 @@ pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
+         worker_id: tenure.worker_id,
+         handoff: None,
+         handoff_persist_error: None,
++        funding: None,
++        funding_note: None,
+     }
+ }
+ 
+@@ -462,6 +464,7 @@ impl WorkerSupervisor {
+         })?;
+         // A tenure that ends has nothing left to hand over.
+         lock(&self.shared.registry).handoffs.remove(id);
++        self.sweep_credit_listeners();
+         // Wakes a `worker.events` wait on the tenure, which answers once it
+         // has ended: through the registry lock, which that wait holds from
+         // its check to its block, so the wake cannot fall in between.
+@@ -718,6 +721,7 @@ impl WorkerSupervisor {
+             to_workspace,
+         );
+         drop(registry);
++        self.sweep_credit_listeners();
+         self.shared.changed.notify_all();
+         notify_clients();
+         started
+diff --git a/src/workers/registry.rs b/src/workers/registry.rs
+index b0ed043a8..4d99224fc 100644
+--- a/src/workers/registry.rs
++++ b/src/workers/registry.rs
+@@ -86,6 +86,22 @@ pub(super) struct Registry {
+     /// The sessions whose tenure a successor took over: their mutations are
+     /// refused ([`WorkerSupervisor::fence_pane`]). Persisted with `handoffs`.
+     pub(super) superseded: Vec<super::coordinator_handoff::Superseded>,
++    /// The credit proxy listeners of successors started with `--funding
++    /// credits`, by the id of the tenure they serve (the old tenure's until
++    /// the ack, the successor's after). Dropping one revokes its grant.
++    /// Only this server's memory.
++    #[cfg(unix)]
++    pub(super) credit_listeners:
++        BTreeMap<String, Box<dyn crate::platform::anthropic_proxy::CreditEndpoint>>,
++    /// The tenures (and `<id>#successor` pending handoffs) whose session was
++    /// started on the credits: the persisted intent behind `credit_listeners`.
++    /// Never holds a grant.
++    pub(super) credit_keys: std::collections::BTreeSet<String>,
++    /// Grants armed for the launcher of a successor's pane, by pane, with
++    /// the tenure they belong to; removed when claimed (once), when the
++    /// handoff ends or the start fails. Memory only: a token never reaches
++    /// a file.
++    pub(super) credit_launches: BTreeMap<String, (String, super::coordinator_handoff::CreditGrant)>,
+     /// The agent session each pane runs now, as the app last told
+     /// ([`WorkerSupervisor::note_pane_session`]); not persisted.
+     pub(super) pane_sessions: BTreeMap<String, String>,
+diff --git a/src/workers/supervision.rs b/src/workers/supervision.rs
+index 40e9577fd..5e22f5220 100644
+--- a/src/workers/supervision.rs
++++ b/src/workers/supervision.rs
+@@ -3317,6 +3317,8 @@ mod tests {
+             worker_id: None,
+             handoff: None,
+             handoff_persist_error: None,
++            funding: None,
++            funding_note: None,
+         }
+     }
+ 

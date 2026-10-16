@@ -1,0 +1,420 @@
+diff --git a/src/workers/live.rs b/src/workers/live.rs
+index c514fe97e..a18a01305 100644
+--- a/src/workers/live.rs
++++ b/src/workers/live.rs
+@@ -793,7 +793,9 @@ impl Reader {
+             .cloned()
+             .unwrap_or_else(|| json!({}));
+         let tool = tool_name.as_str().unwrap_or("");
+-        if let Some(reason) = policy::background_wait_denial(tool, &tool_input) {
++        if let Some(reason) = policy::background_wait_denial(tool, &tool_input)
++            .or_else(|| policy::process_kill_denial(tool, &tool_input))
++        {
+             supervisor.record(
+                 number,
+                 Direction::Herdr,
+diff --git a/src/workers/pi.rs b/src/workers/pi.rs
+index 3873c7926..0ee8da89b 100644
+--- a/src/workers/pi.rs
++++ b/src/workers/pi.rs
+@@ -182,7 +182,7 @@ export default function (pi) {{
+ /// the input with the path field the policy reads (`file_path` for the file
+ /// tools, `path` and `pattern` for `find`). Unknown tools keep their name,
+ /// which the policy leaves to the user.
+-fn claude_tool(tool: &str, input: &Value) -> (String, Value) {
++pub(super) fn claude_tool(tool: &str, input: &Value) -> (String, Value) {
+     let mut mapped = input.clone();
+     if !mapped.is_object() {
+         mapped = json!({});
+diff --git a/src/workers/policy.rs b/src/workers/policy.rs
+index 3e0f13b98..3f9ac9518 100644
+--- a/src/workers/policy.rs
++++ b/src/workers/policy.rs
+@@ -64,6 +64,263 @@ pub(super) fn background_wait_denial(tool_name: &str, input: &Value) -> Option<&
+     background.then_some(BACKGROUND_WAIT_DENIAL)
+ }
+ 
++/// Why a worker may not kill processes by name, pattern or group.
++pub(super) const PROCESS_KILL_DENIAL: &str = "herdr worker policy: never kill processes by name or pattern; end only processes you started, by the PID you recorded.";
++
++/// The denial for a Bash command that kills processes the worker did not
++/// start: `pkill`, `killall`, `xargs kill`, `kill` with a name, option,
++/// process group, `0`, `-1` or a substitution. `kill <pid>` with literal
++/// positive PIDs and `kill %<job>` stay allowed. A worker's broad kill once
++/// ended the coordinator's waits (they share "herdr-" in their command lines).
++pub(super) fn process_kill_denial(tool_name: &str, input: &Value) -> Option<&'static str> {
++    if tool_name != "Bash" {
++        return None;
++    }
++    let command = input.get("command").and_then(Value::as_str)?;
++    command_kills_by_pattern(command, 0).then_some(PROCESS_KILL_DENIAL)
++}
++
++/// One shell word: its text with quotes removed, and whether it is not a
++/// plain literal (it has `$`, a backtick or a glob).
++struct Word {
++    text: String,
++    dynamic: bool,
++}
++
++/// Splits a command into simple-command segments of words. Operators
++/// (`;`, `&`, `|`, newline, parentheses, backticks, `$(`) end a segment; a
++/// substitution leaves a dynamic word in the segment it interrupts.
++// The word macros reset state that the last call never reads again.
++#[allow(unused_assignments)]
++fn shell_segments(command: &str) -> Vec<Vec<Word>> {
++    let chars: Vec<char> = command.chars().collect();
++    let mut segments: Vec<Vec<Word>> = Vec::new();
++    let mut words: Vec<Word> = Vec::new();
++    let mut text = String::new();
++    let mut dynamic = false;
++    let mut in_word = false;
++    let mut quote: Option<char> = None;
++    let mut i = 0;
++    macro_rules! end_word {
++        () => {
++            if in_word {
++                words.push(Word {
++                    text: std::mem::take(&mut text),
++                    dynamic,
++                });
++                dynamic = false;
++                in_word = false;
++            }
++        };
++    }
++    macro_rules! end_segment {
++        () => {
++            end_word!();
++            if !words.is_empty() {
++                segments.push(std::mem::take(&mut words));
++            }
++        };
++    }
++    while i < chars.len() {
++        let c = chars[i];
++        let next = chars.get(i + 1).copied();
++        if quote == Some('\'') {
++            if c == '\'' {
++                quote = None;
++            } else {
++                text.push(c);
++            }
++        } else if c == '\\' {
++            in_word = true;
++            if quote.is_none() || matches!(next, Some('"' | '\\' | '$' | '`')) {
++                if let Some(n) = next {
++                    text.push(n);
++                    i += 1;
++                }
++            } else {
++                text.push(c);
++            }
++        } else if c == '`' || (c == '$' && next == Some('(')) {
++            // A substitution, also inside double quotes.
++            end_word!();
++            words.push(Word {
++                text: "$".into(),
++                dynamic: true,
++            });
++            end_segment!();
++            if c == '$' {
++                i += 1;
++            }
++        } else if quote == Some('"') {
++            if c == '"' {
++                quote = None;
++            } else {
++                dynamic |= c == '$';
++                text.push(c);
++            }
++        } else if c == '\'' || c == '"' {
++            quote = Some(c);
++            in_word = true;
++        } else if matches!(c, ';' | '&' | '|' | '\n' | '(' | ')') {
++            end_segment!();
++        } else if c.is_whitespace() {
++            end_word!();
++        } else {
++            in_word = true;
++            dynamic |= matches!(c, '$' | '*' | '?' | '[' | '{');
++            text.push(c);
++        }
++        i += 1;
++    }
++    end_segment!();
++    segments
++}
++
++fn command_kills_by_pattern(command: &str, depth: u32) -> bool {
++    if depth > 4 {
++        return true;
++    }
++    // A substitution (`kill $(pgrep x)`) leaves a dynamic word in the
++    // segment it interrupts, which `kill` then refuses.
++    shell_segments(command)
++        .iter()
++        .any(|segment| segment_kills_by_pattern(segment, depth))
++}
++
++/// Skips assignments and wrappers (`sudo`, `env`, `command`, ...) to the
++/// words of the command they run.
++fn command_words(segment: &[Word]) -> &[Word] {
++    let mut rest = segment;
++    loop {
++        let Some(first) = rest.first() else {
++            return rest;
++        };
++        let name = first.text.rsplit('/').next().unwrap_or("");
++        let is_assignment = !first.text.starts_with('-')
++            && first.text.split_once('=').is_some_and(|(key, _)| {
++                !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
++            });
++        let keyword = matches!(
++            first.text.as_str(),
++            "!" | "{" | "}" | "then" | "do" | "else" | "if" | "while" | "until"
++        );
++        if is_assignment || keyword {
++            rest = &rest[1..];
++        } else if matches!(
++            name,
++            "sudo"
++                | "doas"
++                | "env"
++                | "command"
++                | "exec"
++                | "nohup"
++                | "time"
++                | "nice"
++                | "builtin"
++                | "stdbuf"
++                | "timeout"
++                | "setsid"
++        ) {
++            rest = &rest[1..];
++            // Options of the wrapper (and the value of the few that take one).
++            while let Some(word) = rest.first() {
++                let takes_value = matches!(
++                    word.text.as_str(),
++                    "-u" | "-g" | "-n" | "-C" | "-S" | "-s" | "-k"
++                ) && matches!(name, "sudo" | "doas" | "env" | "nice" | "timeout");
++                if word.text.starts_with('-') && word.text != "--" {
++                    rest = &rest[1..];
++                    if takes_value && !rest.is_empty() {
++                        rest = &rest[1..];
++                    }
++                } else if word.text == "--"
++                    || (name == "timeout"
++                        && word.text.chars().next().is_some_and(|c| c.is_ascii_digit()))
++                {
++                    rest = &rest[1..];
++                } else {
++                    break;
++                }
++            }
++        } else {
++            return rest;
++        }
++    }
++}
++
++fn segment_kills_by_pattern(segment: &[Word], depth: u32) -> bool {
++    let words = command_words(segment);
++    let Some(first) = words.first() else {
++        return false;
++    };
++    let name = first.text.rsplit('/').next().unwrap_or("");
++    let args = &words[1..];
++    match name {
++        "pkill" | "killall" | "killall5" | "skill" | "snice" => true,
++        "kill" => !kill_args_are_own_pids(args),
++        "xargs" | "parallel" | "find" => args.iter().any(|word| {
++            matches!(
++                word.text.rsplit('/').next().unwrap_or(""),
++                "kill" | "pkill" | "killall"
++            )
++        }),
++        "bash" | "sh" | "zsh" | "dash" | "ksh" | "eval" => {
++            let script = if name == "eval" {
++                Some(
++                    args.iter()
++                        .map(|w| w.text.as_str())
++                        .collect::<Vec<_>>()
++                        .join(" "),
++                )
++            } else {
++                args.iter()
++                    .position(|w| w.text.starts_with('-') && w.text.contains('c'))
++                    .and_then(|at| args.get(at + 1))
++                    .map(|w| w.text.clone())
++            };
++            script.is_some_and(|script| command_kills_by_pattern(&script, depth + 1))
++        }
++        _ => false,
++    }
++}
++
++/// Whether `kill`'s arguments are an optional signal and literal positive
++/// PIDs or `%job`s (or a listing with `-l`).
++fn kill_args_are_own_pids(args: &[Word]) -> bool {
++    let mut rest = args;
++    if let Some(first) = rest.first() {
++        let text = first.text.as_str();
++        if !first.dynamic && matches!(text, "-l" | "-L") {
++            return true;
++        }
++        if !first.dynamic && matches!(text, "-s" | "-n") {
++            rest = rest.get(2..).unwrap_or(&[]);
++        } else if !first.dynamic
++            && text.len() > 1
++            && text.starts_with('-')
++            && text[1..].chars().all(|c| c.is_ascii_alphanumeric())
++        {
++            rest = &rest[1..];
++        }
++    }
++    if rest.first().is_some_and(|w| w.text == "--") {
++        rest = &rest[1..];
++    }
++    !rest.is_empty()
++        && rest.iter().all(|word| {
++            if word.dynamic {
++                return false;
++            }
++            let text = word.text.as_str();
++            if let Some(job) = text.strip_prefix('%') {
++                return job.is_empty() || job == "%" || job.chars().all(|c| c.is_ascii_digit());
++            }
++            !text.is_empty()
++                && text.chars().all(|c| c.is_ascii_digit())
++                && text.chars().any(|c| c != '0')
++        })
++}
++
+ /// Why the policy asks about a request the CLI's auto mode classifier
+ /// escalated.
+ pub(super) const CLASSIFIER_ASK: &str =
+@@ -139,6 +396,9 @@ impl Policy {
+         if let Some(reason) = background_wait_denial(tool_name, input) {
+             return Decision::Deny(reason.to_owned());
+         }
++        if let Some(reason) = process_kill_denial(tool_name, input) {
++            return Decision::Deny(reason.to_owned());
++        }
+         if let Some((field, _)) = file_tool_path_field(tool_name) {
+             let path = input.get(field).and_then(Value::as_str).unwrap_or(".");
+             let protected = match &self.api_key {
+@@ -638,6 +898,84 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn process_kills_by_pattern_are_denied_and_own_pids_allowed() {
++        let denied = [
++            r#"pkill -f "herdr-""#,
++            "pkill -f nextest",
++            "killall cargo",
++            "/usr/bin/pkill foo",
++            "sudo pkill foo",
++            "env FOO=1 pkill foo",
++            "command killall foo",
++            "ls; pkill foo",
++            "true && pkill foo",
++            "false || pkill foo",
++            "pgrep -f foo | xargs kill",
++            "pgrep foo | xargs -r kill -9",
++            "kill -f foo",
++            "kill foo",
++            "kill -9 -1234",
++            "kill -TERM -- -1234",
++            "kill 0",
++            "kill -1",
++            "kill -9 -1",
++            "kill $(pgrep foo)",
++            "kill `pgrep foo`",
++            "kill -9 $(pgrep -f foo)",
++            "echo $(pkill foo)",
++            "bash -c 'pkill foo'",
++            "kill 12 foo",
++        ];
++        for command in denied {
++            assert_eq!(
++                process_kill_denial("Bash", &json!({"command": command})),
++                Some(PROCESS_KILL_DENIAL),
++                "{command}"
++            );
++        }
++        for command in [
++            "kill 1234",
++            "kill -TERM 1234",
++            "kill -9 1234 5678",
++            "kill -s TERM 1234",
++            "kill %1",
++            "kill -9 %1",
++            "sleep 1 & kill 4242; wait",
++            "echo pkill foo",
++            "cargo nextest run -E 'test(/workers::/)'",
++            "pgrep foo",
++            "kill -l",
++        ] {
++            assert_eq!(
++                process_kill_denial("Bash", &json!({"command": command})),
++                None,
++                "{command}"
++            );
++        }
++        assert_eq!(
++            process_kill_denial("Read", &json!({"command": "pkill x"})),
++            None
++        );
++    }
++
++    #[test]
++    fn decide_denies_process_kills_for_every_worker_kind() {
++        let dirs = Dirs::new("kill");
++        let policy = dirs.policy();
++        assert_eq!(
++            policy.decide("Bash", &json!({"command": "pkill -f nextest"}), None, None),
++            Decision::Deny(PROCESS_KILL_DENIAL.into())
++        );
++        // pi's `bash` is named as Claude's by `claude_tool` before it gets here.
++        let (tool, input) =
++            crate::workers::pi::claude_tool("bash", &json!({"command": "pkill -f herdr-"}));
++        assert_eq!(
++            policy.decide(&tool, &input, None, None),
++            Decision::Deny(PROCESS_KILL_DENIAL.into())
++        );
++    }
++
+     #[test]
+     fn every_file_tool_maps_its_path_field() {
+         let dirs = Dirs::new("tools");
+diff --git a/src/workers/pre_tool_checks.rs b/src/workers/pre_tool_checks.rs
+index d58ff5ce5..869fc93cc 100644
+--- a/src/workers/pre_tool_checks.rs
++++ b/src/workers/pre_tool_checks.rs
+@@ -16,8 +16,9 @@
+ //! user's allow rule permits.
+ //!
+ //! The hook is registered for every worker, checks or none: it also runs
+-//! herdr's own rule against waiting in the background
+-//! ([`super::policy::background_wait_denial`]) before any check, for
++//! herdr's own rules against waiting in the background
++//! ([`super::policy::background_wait_denial`]) and killing processes by
++//! pattern ([`super::policy::process_kill_denial`]) before any check, for
+ //! [`MATCHER`]'s tools; the checks run only for [`CHECKED_TOOLS`].
+ //!
+ //! Each check runs in the worker's directory, outside the worker's sandbox,
+diff --git a/src/workers/runs.rs b/src/workers/runs.rs
+index e46d1f945..51baae70e 100644
+--- a/src/workers/runs.rs
++++ b/src/workers/runs.rs
+@@ -1138,7 +1138,7 @@ fn worker_task(run: &Run, carried: Option<&str>) -> String {
+     let info = &run.info;
+     format!(
+         "{}\n\n---\n{}Run everything in the foreground: no `run_in_background`, no Monitor. \
+-         You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this \
++         You are a headless worker: nothing wakes you after your turn ends.\nNever kill processes by name or pattern (no `pkill`, `killall`, `kill $(pgrep ...)`): end only processes you started, by the PID you recorded.\nCommit your work as exactly one commit whose message is exactly this \
+          subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
+          {}\n{}Advertised client methods keep their v1 shape: add a new method instead of \
+          changing one (AGENTS.md, Stable client endpoint contract).\nEnd your last reply with \

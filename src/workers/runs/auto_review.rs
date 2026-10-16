@@ -120,7 +120,7 @@ was cut (`diff_cut_files` not empty) is never applied: say `cut_files_reviewed: 
 or escalate instead when the cut files matter.\n\
 Never approve an attempt without a commit or one whose verify failed.";
 
-const PROMPT: Prompt<'static> = Prompt {
+pub(super) const PROMPT: Prompt<'static> = Prompt {
     schema: OUTPUT_SCHEMA,
     system: SYSTEM_PROMPT,
     intro: "Review this attempt and answer with the JSON decision only.",
@@ -263,7 +263,7 @@ impl Decision {
 /// The findings that cite their evidence (a nonempty `file`, a `line` of 1
 /// or more and a nonempty `verified_by`) and the ones that do not, each
 /// with what it lacks.
-fn cite_findings(output: &Value) -> (Vec<Value>, Vec<Value>) {
+pub(super) fn cite_findings(output: &Value) -> (Vec<Value>, Vec<Value>) {
     let (mut kept, mut dropped) = (Vec::new(), Vec::new());
     for finding in output["findings"].as_array().into_iter().flatten() {
         let text = |field: &str| {
@@ -299,7 +299,7 @@ fn cite_findings(output: &Value) -> (Vec<Value>, Vec<Value>) {
 /// `checklist_len` lines, or `free`. A finding that fails is dropped with
 /// what failed, as an uncited one is. Without a commit nothing can be
 /// checked against it and only the origin is.
-fn check_findings(
+pub(super) fn check_findings(
     repo: &Path,
     commit: Option<&str>,
     base: Option<&str>,
@@ -400,7 +400,7 @@ fn with_findings(review: &str, output: Option<&Value>) -> String {
 
 /// The review checklist's lines (at most [`CHECKLIST_MAX`]) and how many
 /// the cut left out; none for a repository without the file.
-fn checklist_of(repo: &Path) -> (Vec<String>, usize) {
+pub(super) fn checklist_of(repo: &Path) -> (Vec<String>, usize) {
     let text = std::fs::read_to_string(repo.join(CHECKLIST_FILE)).unwrap_or_default();
     let lines: Vec<String> = text
         .lines()
@@ -412,9 +412,113 @@ fn checklist_of(repo: &Path) -> (Vec<String>, usize) {
     (lines.into_iter().take(CHECKLIST_MAX).collect(), left_out)
 }
 
+/// The pieces of a review's input: read from a run by the automatic review,
+/// from a golden case by its replay ([`super::review_eval`]).
+pub(super) struct InputParts<'a> {
+    /// The repository the diff, the context pack and `[review] full_paths`
+    /// are read from.
+    pub(super) repo: &'a Path,
+    pub(super) base: Option<&'a str>,
+    /// The revision whose `DECISIONS.md` the context pack quotes.
+    pub(super) decisions_rev: &'a str,
+    pub(super) commit: Option<&'a str>,
+    pub(super) item: &'a str,
+    pub(super) item_text: String,
+    pub(super) task: &'a str,
+    pub(super) attempt: u32,
+    pub(super) commit_subject: &'a str,
+    pub(super) allowed_paths: &'a [String],
+    pub(super) worker_final_text: Option<&'a str>,
+    pub(super) diff_stat: Option<&'a str>,
+    pub(super) event_note: Option<&'a str>,
+    pub(super) history: Vec<Value>,
+    pub(super) checks: Value,
+    /// Whether the input has the context pack (a replay's ablation drops it).
+    pub(super) context_pack: bool,
+    /// The checklist's lines and how many the cut left out
+    /// ([`checklist_of`]); none leaves `review_checklist` out.
+    pub(super) checklist: (Vec<String>, usize),
+    pub(super) user_answer: Option<&'a Value>,
+}
+
+/// What the model reviews: the item, the task, the contract, the worker's
+/// final reply, the diff of the commit against the base, the checks, the
+/// context pack and the checklist, and the user's answer when there is
+/// one; with the files the diff's cut left out.
+pub(super) fn assemble_input(parts: InputParts<'_>) -> (Value, Vec<String>) {
+    let repo = parts.repo;
+    let full_paths = read_checks(repo)
+        .map(|checks| checks.review.full_paths)
+        .unwrap_or_default();
+    let cut = match (parts.base, parts.commit) {
+        (Some(base), Some(commit)) => review_diff::cut(
+            git(repo, &["diff", base, commit])
+                .unwrap_or_else(|error| format!("(the diff could not be read: {error})")),
+            DIFF_MAX,
+            &full_paths,
+        ),
+        _ => review_diff::CutDiff {
+            text: "(the attempt has no commit since the base)".to_owned(),
+            cut_files: Vec::new(),
+        },
+    };
+    let mut input = json!({
+        "item": {"id": parts.item, "text": parts.item_text},
+        "task": parts.task,
+        "attempt": parts.attempt,
+        "max_attempts": MAX_ATTEMPTS,
+        "commit_subject": parts.commit_subject,
+        "allowed_paths": parts.allowed_paths,
+        "base": parts.base,
+        "commit": parts.commit,
+        "worker_final_text": parts.worker_final_text,
+        "diff_stat": parts.diff_stat,
+        "diff": cut.text,
+        "diff_truncated": !cut.cut_files.is_empty(),
+        "diff_cut_files": cut.cut_files,
+        "event_note": parts.event_note,
+        "checks": parts.checks,
+    });
+    if parts.context_pack {
+        let decisions = git(
+            repo,
+            &["show", &format!("{}:{DECISIONS_FILE}", parts.decisions_rev)],
+        )
+        .map(|text| decisions_named(&text, &parts.item_text, parts.item))
+        .unwrap_or_default();
+        input["context_pack"] = context_pack::build(
+            repo,
+            parts.base,
+            &parts.item_text,
+            decisions,
+            parts.history,
+            LogPaths::Globs(parts.allowed_paths),
+        );
+    }
+    let (checklist, checklist_cut) = parts.checklist;
+    if !checklist.is_empty() {
+        input["review_checklist"] = json!(checklist);
+        if checklist_cut > 0 {
+            input["review_checklist_cut"] = json!(format!(
+                "{checklist_cut} lines past {CHECKLIST_MAX} were left out"
+            ));
+        }
+    }
+    if let Some(answer) = parts.user_answer {
+        input["user_answer"] = answer.clone();
+    }
+    let cut_files = input["diff_cut_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().map(str::to_owned))
+        .collect();
+    (input, cut_files)
+}
+
 /// The model of the review's call: `[review] model` of herdr's config; none
 /// keeps the run's own.
-fn review_model() -> Option<String> {
+pub(super) fn review_model() -> Option<String> {
     crate::config::load_live_config()
         .ok()
         .and_then(|loaded| loaded.config.review.model)
@@ -782,81 +886,37 @@ impl WorkerSupervisor {
     /// user's answer when the event carries one.
     fn review_input(&self, run: &Run, event: &TodoRunEvent, body: &Value) -> (Value, Vec<String>) {
         let repo = Path::new(&run.info.repo);
-        let commit = event.commits.last().cloned();
-        let full_paths = read_checks(repo)
-            .map(|checks| checks.review.full_paths)
-            .unwrap_or_default();
-        let cut = match (&run.info.base, &commit) {
-            (Some(base), Some(commit)) => review_diff::cut(
-                git(repo, &["diff", base, commit])
-                    .unwrap_or_else(|error| format!("(the diff could not be read: {error})")),
-                DIFF_MAX,
-                &full_paths,
-            ),
-            _ => review_diff::CutDiff {
-                text: "(the attempt has no commit since the base)".to_owned(),
-                cut_files: Vec::new(),
-            },
-        };
-        let item_text = self.item_text_of(run);
-        let base = run.info.base.as_deref().unwrap_or(run.target_branch());
-        let decisions = git(repo, &["show", &format!("{base}:{DECISIONS_FILE}")])
-            .map(|text| decisions_named(&text, &item_text, &run.info.item))
-            .unwrap_or_default();
-        let pack = context_pack::build(
-            repo,
-            run.info.base.as_deref(),
-            &item_text,
-            decisions,
-            self.run_history_of(run),
-            LogPaths::Globs(&run.info.paths),
-        );
-        let (checklist, checklist_cut) = checklist_of(repo);
         let verification = run
             .current
             .verification
             .as_deref()
             .and_then(|verification| serde_json::from_str::<Value>(verification).ok());
-        let mut input = json!({
-            "item": {"id": run.info.item, "text": item_text},
-            "task": run.info.task,
-            "attempt": run.info.attempt,
-            "max_attempts": MAX_ATTEMPTS,
-            "commit_subject": run.info.message,
-            "allowed_paths": run.info.paths,
-            "base": run.info.base,
-            "commit": commit,
-            "worker_final_text": event.result_text,
-            "diff_stat": event.diff_stat,
-            "diff": cut.text,
-            "diff_truncated": !cut.cut_files.is_empty(),
-            "diff_cut_files": cut.cut_files,
-            "context_pack": pack,
-            "event_note": event.error,
-            "checks": {
+        assemble_input(InputParts {
+            repo,
+            base: run.info.base.as_deref(),
+            decisions_rev: run.info.base.as_deref().unwrap_or(run.target_branch()),
+            commit: event.commits.last().map(String::as_str),
+            item: &run.info.item,
+            item_text: self.item_text_of(run),
+            task: &run.info.task,
+            attempt: run.info.attempt,
+            commit_subject: &run.info.message,
+            allowed_paths: &run.info.paths,
+            worker_final_text: event.result_text.as_deref(),
+            diff_stat: event.diff_stat.as_deref(),
+            event_note: event.error.as_deref(),
+            history: self.run_history_of(run),
+            checks: json!({
                 "registered": run.checks,
                 "added_when_the_diff_touches_their_paths": run.finish.path_checks(),
                 "verify_before_review": verification,
-            },
-        });
-        if !checklist.is_empty() {
-            input["review_checklist"] = json!(checklist);
-            if checklist_cut > 0 {
-                input["review_checklist_cut"] = json!(format!(
-                    "{checklist_cut} lines past {CHECKLIST_MAX} were left out"
-                ));
-            }
-        }
-        if body["user_answer"].is_object() {
-            input["user_answer"] = body["user_answer"].clone();
-        }
-        let cut_files = input["diff_cut_files"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|file| file.as_str().map(str::to_owned))
-            .collect();
-        (input, cut_files)
+            }),
+            context_pack: true,
+            checklist: checklist_of(repo),
+            user_answer: body["user_answer"]
+                .is_object()
+                .then(|| &body["user_answer"]),
+        })
     }
 
     /// Applies the recorded decision, checked against the run's state; an

@@ -70,6 +70,7 @@ pub(crate) use error::WorkerError;
 pub(crate) use item_coordinators::resume_item_coordinators_at_start;
 pub(crate) use log::{entry_lines, log_lines};
 pub(crate) use runs::activity::{ActiveRun, RunWait, WaitEdge};
+pub(crate) use runs::review_eval::{review_eval, EvalOptions};
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
 pub(crate) use runs::{resume_runs_at_start, usage_measurement, usage_reading_published};

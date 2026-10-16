@@ -248,6 +248,18 @@ const USAGE: &str = "usage:
       has not run its prepare yet refuses it.
   herdr todo grants [--repo DIR]
       List the stored grants (of DIR's repository with --repo).
+  herdr todo review-eval [--case NAME]... [--without-context-pack]
+                         [--without-checklist] [--credits] [--repo DIR] [--out FILE]
+      Replay the repository's golden set (.herdr/review-golden/, catches
+      made after the checklist's cut-off) blind against the automatic
+      review: each case's patch in a temporary worktree at its base, the
+      review's input without a verify, one model call through claude -p (or
+      the credit proxy with the review tools, --credits) with [review]
+      model, findings scored mechanically against the case's expected
+      entries (the same file, within 15 lines). The flags add ablation arms
+      beside the full input. Prints the summary on stderr and the report,
+      every call recorded, to FILE or stdout. Spends model calls; needs no
+      server.
   herdr todo edit [--file FILE] <command> [ARGS...]
       Herdr's own TODO editor, the scripts/todo_edit.py herdr was built
       with, embedded in the binary: verified edits of TODO.md (or FILE, such
@@ -261,6 +273,9 @@ const USAGE: &str = "usage:
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     if args.first().map(String::as_str) == Some("edit") {
         return Ok(run_todo_edit(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("review-eval") {
+        return Ok(run_review_eval(&args[1..]));
     }
     let method = match parse(args) {
         Ok(Some(method)) => method,
@@ -308,6 +323,87 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         }
     }
     Ok(code)
+}
+
+/// The options of `herdr todo review-eval`, and the repository and output
+/// file it names.
+fn parse_review_eval(
+    args: &[String],
+) -> Result<(crate::workers::EvalOptions, Option<String>, Option<String>), String> {
+    let mut options = crate::workers::EvalOptions::default();
+    let (repo, rest) = take_string_option(args, "--repo")?;
+    let (out, rest) = take_string_option(&rest, "--out")?;
+    let mut words = rest.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--case" => options
+                .cases
+                .push(words.next().ok_or("missing value for --case")?.to_owned()),
+            "--without-context-pack" => options.without_context_pack = true,
+            "--without-checklist" => options.without_checklist = true,
+            "--credits" => options.credits = true,
+            other => match other.strip_prefix("--case=") {
+                Some(name) => options.cases.push(name.to_owned()),
+                None => return Err(format!("review-eval does not take {other}")),
+            },
+        }
+    }
+    Ok((options, repo, out))
+}
+
+/// `herdr todo review-eval`: replays the repository's golden set of past
+/// review catches with the automatic review's own model call, prints the
+/// summary on stderr and the report (every call) to `--out` or stdout.
+/// Needs no server.
+fn run_review_eval(args: &[String]) -> i32 {
+    let (options, repo, out) = match parse_review_eval(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+    };
+    let dir = repo.map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from);
+    let toplevel = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output();
+    let repo = match toplevel {
+        Ok(output) if output.status.success() => {
+            std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+        }
+        _ => {
+            eprintln!("{} is not in a git repository", dir.display());
+            return 1;
+        }
+    };
+    let (report, summary) = match crate::workers::review_eval(&repo, &options) {
+        Ok(done) => done,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    eprintln!("{summary}");
+    let text = match serde_json::to_string_pretty(&report) {
+        Ok(text) => text + "\n",
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    match out {
+        Some(path) => {
+            if let Err(error) = std::fs::write(&path, text) {
+                eprintln!("cannot write {path}: {error}");
+                return 1;
+            }
+        }
+        None => print!("{text}"),
+    }
+    0
 }
 
 /// `herdr todo edit`: runs herdr's own `todo_edit.py` (embedded in the
@@ -1070,6 +1166,30 @@ mod tests {
             run_todo_edit(&args(&["--file", "/nonexistent/TODO.md", "find", "x"])),
             1
         );
+    }
+
+    #[test]
+    fn review_eval_takes_cases_ablations_the_repository_and_the_output() {
+        let (options, repo, out) = parse_review_eval(&args(&[
+            "--case",
+            "r-a-a1",
+            "--case=r-b-a2",
+            "--without-context-pack",
+            "--without-checklist",
+            "--credits",
+            "--repo",
+            "/repo",
+            "--out=report.json",
+        ]))
+        .unwrap();
+        assert_eq!(options.cases, ["r-a-a1", "r-b-a2"]);
+        assert!(options.without_context_pack && options.without_checklist && options.credits);
+        assert_eq!(repo.as_deref(), Some("/repo"));
+        assert_eq!(out.as_deref(), Some("report.json"));
+        let (options, repo, out) = parse_review_eval(&[]).unwrap();
+        assert!(options.cases.is_empty() && !options.credits && repo.is_none() && out.is_none());
+        assert!(parse_review_eval(&args(&["--case"])).is_err());
+        assert!(parse_review_eval(&args(&["--diff"])).is_err());
     }
 
     #[test]

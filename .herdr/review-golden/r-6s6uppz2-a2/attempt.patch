@@ -1,0 +1,3779 @@
+diff --git a/docs/next/api/herdr-api.schema.json b/docs/next/api/herdr-api.schema.json
+index 69af845e7..b9a57ae95 100644
+--- a/docs/next/api/herdr-api.schema.json
++++ b/docs/next/api/herdr-api.schema.json
+@@ -2289,6 +2289,30 @@
+           ],
+           "type": "object"
+         },
++        "CoordinatorAckParams": {
++          "description": "The successor takes the tenure over (`coordinator.ack`).",
++          "properties": {
++            "epoch": {
++              "description": "The epoch of the tenure being handed over, from the manifest.",
++              "format": "int64",
++              "type": "integer"
++            },
++            "pane_id": {
++              "description": "The successor's pane (the CLI sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            },
++            "snapshot_sha256": {
++              "description": "The sha256 of herdr's snapshot, from the manifest.",
++              "type": "string"
++            }
++          },
++          "required": [
++            "pane_id",
++            "epoch",
++            "snapshot_sha256"
++          ],
++          "type": "object"
++        },
+         "CoordinatorAllowlistRefusalParams": {
+           "description": "Asks what to do with one tool call the coordinator allowlist refused in\na coordinator tab. The server answers with `[coordinator] allowlist`;\nin shadow mode it also records the call as a would-deny.",
+           "properties": {
+@@ -2357,6 +2381,26 @@
+           },
+           "type": "object"
+         },
++        "CoordinatorHandoffAbortParams": {
++          "description": "Cancels a pending handoff (`coordinator.handoff_abort`): the tenure\nunfreezes and keeps its authority.",
++          "properties": {
++            "coordinator_id": {
++              "description": "The tenure whose handoff to abort; needed outside a pane.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "pane_id": {
++              "description": "The pane sending the abort (the CLI sends its `HERDR_PANE_ID`): the\nold coordinator's or the successor's; absent outside a pane.",
++              "type": [
++                "string",
++                "null"
++              ]
++            }
++          },
++          "type": "object"
++        },
+         "CoordinatorHandoffParams": {
+           "description": "Hands a repository's coordination to another pane: the tenure named,\nelse the one bound to `pane_id`, ends `handed_off`, and the next tenure\nstarts in `to_pane_id` with the next epoch, taking over the old one's\ncurrent item, workers and runs, in one transaction.",
+           "properties": {
+@@ -2383,6 +2427,37 @@
+           ],
+           "type": "object"
+         },
++        "CoordinatorHandoffSuccessorParams": {
++          "description": "Starts the successor of a frozen tenure (`coordinator.handoff_successor`):\na new pane in the caller's tab runs a fresh session of the same agent kind.",
++          "properties": {
++            "pane_id": {
++              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            }
++          },
++          "required": [
++            "pane_id"
++          ],
++          "type": "object"
++        },
++        "CoordinatorReadyParams": {
++          "description": "Freezes the caller's tenure for a self-service handoff\n(`coordinator.ready`): herdr copies the agent's note and records its hash.",
++          "properties": {
++            "note_path": {
++              "description": "The agent's note for its successor: an absolute path of a file the\nserver can read, copied into herdr's state directory.",
++              "type": "string"
++            },
++            "pane_id": {
++              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            }
++          },
++          "required": [
++            "pane_id",
++            "note_path"
++          ],
++          "type": "object"
++        },
+         "CoordinatorRecordOverrideParams": {
+           "description": "Records an exception to a coordinator tab's command allowlist: one tool\ncall that carried `# herdr-override: <reason>`. The server stores it\n(append-only, in the worker store) and notifies the user; the hook lets\nthe call run only after this succeeded.",
+           "properties": {
+@@ -6334,6 +6409,13 @@
+         "TodoGrantParams": {
+           "description": "`todo.grant`: the user's grant of a repository's operation, for the\nexact definition `master` declares now in `.herdr/operations.toml`.",
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "cwd": {
+               "description": "A directory in the repository.",
+               "type": "string"
+@@ -6695,6 +6777,13 @@
+         "TodoRevokeParams": {
+           "description": "`todo.revoke`: removes the stored grants of a repository's operation.",
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "cwd": {
+               "description": "A directory in the repository.",
+               "type": "string"
+@@ -6847,6 +6936,13 @@
+         "TodoStopParams": {
+           "description": "Stops the repository's chain of item coordinators: the one that runs\nfinishes its item, and no next one starts.",
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "cwd": {
+               "description": "A directory in the repository.",
+               "type": "string"
+@@ -6924,6 +7020,13 @@
+         "WorkerAckParams": {
+           "description": "The owner acknowledges having handled the worker's events up to `seq`.",
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "seq": {
+               "description": "The `seq` handled: the one `worker.wait` with `until: attention` or\n`worker.obligations` returned. An ack at or below the acknowledged\none changes nothing; one past the worker's latest event is refused.",
+               "format": "int64",
+@@ -7030,6 +7133,62 @@
+           ],
+           "type": "object"
+         },
++        "WorkerAnswerFromPaneParams": {
++          "description": "`worker.answer` sent from a pane (`worker.answer_from_pane`): refused with\n`coordinator_frozen` while the pane's coordinator tenure is frozen for a\nhandoff, and with `coordinator_superseded` for a pane whose tenure was\nhanded over. `worker.answer` itself keeps its shape (clients advertise it)\nand is the user's answer, never fenced.",
++          "properties": {
++            "answers": {
++              "description": "`AskUserQuestion` only: one answer per question, in order. Each is an\noption's label, its 1-based number, or free text; a multi-select\nquestion takes several labels or numbers separated by commas.",
++              "items": {
++                "type": "string"
++              },
++              "type": "array"
++            },
++            "caller_pane_id": {
++              "description": "The sending pane (the CLI sends its `HERDR_PANE_ID`).",
++              "type": "string"
++            },
++            "command_id": {
++              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "decision": {
++              "anyOf": [
++                {
++                  "$ref": "#/schemas/request/$defs/WorkerDecision"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "description": "`allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`\ndeclines to answer and `allow` (or absent) sends `answers`."
++            },
++            "message": {
++              "description": "The message the model gets with a denial.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "request_id": {
++              "description": "The question to answer. When absent, the only pending question; an\nanswer without it is refused while several are pending. A question\nthat is no longer pending is refused with `worker_question_gone`.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "worker_id": {
++              "type": "string"
++            }
++          },
++          "required": [
++            "caller_pane_id",
++            "worker_id"
++          ],
++          "type": "object"
++        },
+         "WorkerAnswerParams": {
+           "description": "Answers a worker's pending question: a tool approval or an\n`AskUserQuestion`. The worker waits for it without a time limit.",
+           "properties": {
+@@ -7178,6 +7337,13 @@
+         "WorkerEscalateParams": {
+           "description": "The owner hands one of the worker's pending questions to the user.",
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "request_id": {
+               "description": "The question to escalate; one that is no longer pending is refused\nwith `worker_question_gone`.",
+               "type": "string"
+@@ -7255,6 +7421,13 @@
+         },
+         "WorkerInterruptParams": {
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "command_id": {
+               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+               "type": [
+@@ -7322,6 +7495,13 @@
+         },
+         "WorkerPromptParams": {
+           "properties": {
++            "caller_pane_id": {
++              "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
+             "command_id": {
+               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+               "type": [
+@@ -8416,6 +8596,23 @@
+           ],
+           "type": "object"
+         },
++        {
++          "description": "`worker.answer` from a pane, fenced while its tenure hands over.",
++          "properties": {
++            "method": {
++              "const": "worker.answer_from_pane",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/WorkerAnswerFromPaneParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
+         {
+           "description": "`worker.answer` from a coordination tenure, refused with\n`ownership_transferred` once the worker is another tenure's.",
+           "properties": {
+@@ -9179,6 +9376,74 @@
+           ],
+           "type": "object"
+         },
++        {
++          "description": "Freezes the caller's tenure and records the agent's handoff note.",
++          "properties": {
++            "method": {
++              "const": "coordinator.ready",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorReadyParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
++        {
++          "description": "Starts a fresh session of the same agent kind to take the frozen\ntenure over.",
++          "properties": {
++            "method": {
++              "const": "coordinator.handoff_successor",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorHandoffSuccessorParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
++        {
++          "description": "Cancels a pending handoff; the old tenure unfreezes.",
++          "properties": {
++            "method": {
++              "const": "coordinator.handoff_abort",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorHandoffAbortParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
++        {
++          "description": "The successor takes the tenure over; the old session ends.",
++          "properties": {
++            "method": {
++              "const": "coordinator.ack",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/schemas/request/$defs/CoordinatorAckParams"
++            }
++          },
++          "required": [
++            "method",
++            "params"
++          ],
++          "type": "object"
++        },
+         {
+           "description": "Records one exception to a coordinator tab's command allowlist and\nnotifies the user.",
+           "properties": {
+@@ -12456,6 +12721,71 @@
+             }
+           ]
+         },
++        "CoordinatorHandoffInfo": {
++          "description": "A tenure's pending self-service handoff.",
++          "properties": {
++            "agent_kind": {
++              "description": "The agent kind of both sessions, once the successor started.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "epoch": {
++              "description": "The epoch the successor must acknowledge.",
++              "format": "int64",
++              "type": "integer"
++            },
++            "note_sha256": {
++              "description": "The sha256 of the copied note.",
++              "type": "string"
++            },
++            "snapshot_sha256": {
++              "description": "The sha256 of herdr's snapshot, once the successor started.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "state": {
++              "$ref": "#/schemas/success_response/$defs/CoordinatorHandoffState"
++            },
++            "successor_pane_id": {
++              "description": "The successor's pane once started.",
++              "type": [
++                "string",
++                "null"
++              ]
++            }
++          },
++          "required": [
++            "state",
++            "epoch",
++            "note_sha256"
++          ],
++          "type": "object"
++        },
++        "CoordinatorHandoffState": {
++          "description": "How far a tenure's self-service handoff has come.",
++          "oneOf": [
++            {
++              "enum": [
++                "unknown"
++              ],
++              "type": "string"
++            },
++            {
++              "const": "frozen",
++              "description": "`coordinator.ready` froze the tenure; no successor yet.",
++              "type": "string"
++            },
++            {
++              "const": "successor_started",
++              "description": "The successor was started and has not acknowledged yet.",
++              "type": "string"
++            }
++          ]
++        },
+         "CoordinatorInfo": {
+           "description": "One coordination tenure: who coordinated a repository's TODO, from when\nto when. Its id is its own, never a pane's or an agent session's: those\nare its bindings.",
+           "properties": {
+@@ -12484,6 +12814,17 @@
+               "format": "int64",
+               "type": "integer"
+             },
++            "handoff": {
++              "anyOf": [
++                {
++                  "$ref": "#/schemas/success_response/$defs/CoordinatorHandoffInfo"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "description": "The tenure's pending self-service handoff: while it is there the\ntenure is frozen."
++            },
+             "headless": {
+               "description": "A headless item coordinator's tenure (`todo.next`): no pane binds it,\nit runs as worker `worker_id`.",
+               "type": "boolean"
+@@ -16685,6 +17026,73 @@
+               ],
+               "type": "object"
+             },
++            {
++              "description": "`coordinator.ack`'s reply: the tenure the successor holds now, and\nwhether the old coordinator's pane (and with it its agent session)\nwas closed.",
++              "properties": {
++                "close_error": {
++                  "description": "Why the old pane could not be closed; its session is fenced as\nsuperseded either way.",
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "coordinator": {
++                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
++                },
++                "old_pane_closed": {
++                  "type": "boolean"
++                },
++                "old_pane_id": {
++                  "type": "string"
++                },
++                "type": {
++                  "const": "coordinator_acked",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type",
++                "coordinator",
++                "old_pane_id",
++                "old_pane_closed"
++              ],
++              "type": "object"
++            },
++            {
++              "description": "`coordinator.handoff_abort`'s reply.",
++              "properties": {
++                "coordinator": {
++                  "anyOf": [
++                    {
++                      "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
++                    },
++                    {
++                      "type": "null"
++                    }
++                  ],
++                  "description": "The tenure that unfroze, when it is still active."
++                },
++                "successor_pane_closed": {
++                  "description": "Whether that pane was closed (not when the successor itself\naborted).",
++                  "type": "boolean"
++                },
++                "successor_pane_id": {
++                  "description": "The successor's pane, when one had been started.",
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "type": {
++                  "const": "coordinator_handoff_aborted",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type"
++              ],
++              "type": "object"
++            },
+             {
+               "description": "`coordinator.status`'s reply: the active tenures, oldest first.",
+               "properties": {
+diff --git a/docs/next/website/src/content/docs/cli-reference.mdx b/docs/next/website/src/content/docs/cli-reference.mdx
+index f2db44c94..6f3b20402 100644
+--- a/docs/next/website/src/content/docs/cli-reference.mdx
++++ b/docs/next/website/src/content/docs/cli-reference.mdx
+@@ -447,8 +447,14 @@ herdr coordinator start [--repo DIR]
+ herdr coordinator end [--reason TEXT] [--id COORDINATOR_ID]
+ herdr coordinator status [--repo DIR]
+ herdr coordinator handoff --to PANE [--id COORDINATOR_ID]
++herdr coordinator ready --note FILE
++herdr coordinator handoff --successor
++herdr coordinator handoff --abort [--id COORDINATOR_ID]
++herdr coordinator ack --epoch N --snapshot SHA256
+ ```
+ 
++A coordinator can hand its tenure to a fresh session of the same agent without a person in between. `coordinator ready --note FILE` freezes the caller's tenure: herdr copies the note into its state directory and records its sha256. Run `ready` inside the turn and end the turn afterwards. While frozen, every mutation sent from the tenure's pane is refused with `coordinator_frozen`: `coordinator handoff --to`, `coordinator end`, `todo run`, `resume`, `next`, `stop`, `queue`, `grant`, `revoke`, `worker start`, `prompt`, `interrupt`, `stop`, `kill`, `answer`, `ack` and `escalate`; reads are not fenced, and neither is the user's own answer from their shell or client. `ready` is refused for an agent that is not a claude or pi session, or that is blocked on a question. `coordinator handoff --successor` writes herdr's own snapshot of the tenure (runs in flight with their last event ids, owned workers, pending question ids) and a versioned JSON manifest (epoch, snapshot and note paths with sha256, the old pane and the agent kind) to the state directory, opens a pane in the old pane's tab without moving focus and starts one fresh session of the same agent kind with a single launch prompt that names the manifest (`/todo --handoff PATH` for claude, `/skill:todo --handoff PATH` for pi). Any other agent kind is refused before anything starts. The successor reads the manifest and runs `coordinator ack --epoch N --snapshot SHA256` from its own pane; herdr then advances the epoch, moves the tenure, its workers and runs and the tab's coordinator role to the successor and closes the old pane, which ends the old agent session; if the pane cannot be closed, the reply says so and the old session stays fenced, with `coordinator_superseded`, until that pane closes. A stale or wrong ack is refused (`handoff_refused`) and changes nothing. If the successor exits, reports a limit or is blocked before its ack, or `coordinator handoff --abort` runs (from the old pane, the successor's pane, or outside a pane with `--id`), the handoff aborts: the old tenure unfreezes and keeps its authority, the successor's pane is closed (unless the successor itself aborted), and one notice says so. No timer is involved, and `coordinator status` shows a pending handoff's `state` (`frozen` or `successor_started`). A pending handoff is stored with the server's state, so a restart or a live handoff keeps the tenure frozen and the successor's ack valid; if the successor's pane is gone by then, the handoff aborts with its one notice. A relative `--note` path is made absolute by the CLI and refused by the server.
++
+ `coordinator start` claims the coordination of the repository of `--repo` (default: the caller pane's directory) for the caller's pane (`HERDR_PANE_ID`): a tenure with an id of its own (`c-...`). It is refused with `coordinator_active`, naming the other tenure and its pane, while another pane coordinates that repository. `herdr tab role <tab> coordinator` does the same for the tab's focused pane, and the tab's `♛` follows the tenure: `coordinator end` (this pane's tenure, or `--id`'s) or `herdr tab role <tab> none` ends it, and so does closing its pane or exiting its agent. `coordinator status` lists the active tenures, each with the TODO item its `herdr todo run` works on until the run ends. Workers and runs started from a coordinator's pane carry its tenure's id (`owner_coordinator_id`) and belong to the tenure, not to the pane: when the coordinator's agent session comes back in another pane (`claude --resume`), the tenure, its workers, their obligations and its runs move there, and another session in the old pane inherits none of them. A `/clear` in the coordinator's pane keeps the tenure: the agent integration reports the new session (Claude's `SessionStart` with `source: clear`), and the tenure, with its workers and runs, goes on with it, so a later `claude --resume` of the new session finds it. `coordinator handoff --to PANE` passes the coordination on: this pane's tenure (or `--id`'s) ends `handed_off`, and the next one, one epoch on, starts in `PANE` with the item, workers and runs. The repository rooted at the home directory (a dotfiles repository) is claimed only explicitly, with `coordinator start --repo ~`: a pane whose directory is in it, by `coordinator start` without `--repo` or by the coordinator tab role, is refused, while a repository nested in the home directory is claimed as itself. Such a repository often keeps its git directory outside HOME (a bare repository that a `git` wrapper pairs with HOME), which herdr cannot find by looking for `.git`; then `coordinator start` failed with `invalid_request: <HOME> is not in a git repository`. With `--repo ~` the CLI asks git in HOME, with your shell's environment, for that directory (`git rev-parse --git-common-dir`) and sends it; the server checks that it is a repository's common directory that tracks files of HOME, records it in its state directory (`home-repositories.json`, so a restarted or handed-off server keeps it) and runs git there with `--git-dir` and `--work-tree`. Its folder slot lives in `~/.local/state/herdr/worktrees/home/<slot>` (or under `[workers] folder_slots_dir`), never beside HOME, and only once the repository ignores it; its workers write only that slot and their temp directory, never HOME itself or `~/.claude`.
+ 
+ In a tab with the role `coordinator`, the Claude integration's `PreToolUse` hook holds the agent to what a coordinator does itself. It allows `herdr todo`, `worker`, `history`, `coordinator`, `report` and `reports`; `herdr agent read`, `list`, `get`, `explain`, `awaiting-reply` and `set-task`; `herdr-job wait`, `list`, `log`, `watch`, and `run` with an allowed command; read-only git (`status`, `log`, `diff`, `show`, `fetch`, `rev-parse`, `branch --list`, `ls-files`, without options that write a file or run a program); `git commit -- TODO.md DECISIONS.md` (by path, those files only); `python3 scripts/todo_edit.py`; `cat`, `head`, `tail`, `grep`, `rg`, `sed -n` (printing lines), `jq`, `ls`, `wc`, `date`, `df` and `du`; the consult helpers (`~/.claude/skills/*/ask_*`, `consult.py`); output redirected only to `/dev/null` or the session's scratchpad. Of the other tools it allows those that read or ask (`Read`, `Grep`, `Glob`, `AskUserQuestion`, `Skill`, `ToolSearch`, `TodoWrite`, and reading or stopping its own background shells), and `Write` and `Edit` only under the session's scratchpad (Claude's `<tmp>/claude-<uid>/<project>/<session>/scratchpad/`). Everything else is denied with the reason and the allowed path: builds, installs, pushes and cherry-picks happen in `herdr todo run`, code goes to a worker, `TODO.md` and `DECISIONS.md` are edited with `scripts/todo_edit.py`, work goes to a worker rather than a subagent. A compound command (`;`, `&&`, `||`, `|`, newlines, `$(...)`) runs only when every part is allowed, a quoted heredoc's body is data, and a command the hook cannot read for certain (backticks, subshells, brace or arithmetic expansion, a variable as the command or in a git argument, environment assignments, `&`) is denied. An exception is one Bash command that carries `# herdr-override: <reason>`: herdr records it (`coordinator.record_override`) and notifies you, and `herdr history overrides` lists it; when herdr cannot record it, the command is denied, so an exception is never silent. The hook asks herdr nothing for an allowed call; for any other it asks the tab's role, and outside a coordinator tab, or when herdr cannot tell, it does nothing.
+diff --git a/docs/next/website/src/content/docs/socket-api.mdx b/docs/next/website/src/content/docs/socket-api.mdx
+index b004e6e64..22d57a4be 100644
+--- a/docs/next/website/src/content/docs/socket-api.mdx
++++ b/docs/next/website/src/content/docs/socket-api.mdx
+@@ -110,7 +110,7 @@ Raw socket method names use dot notation:
+ | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
+ | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait_start`, `agent.wait`, `agent.wait_change`, `agent.verdict`, `agent.wait_verdict`, `agent.ack_verdict`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
+ | Worker | `worker.start`, `worker.start_choice`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.answer_as`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
+-| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
++| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.ready`, `coordinator.handoff_successor`, `coordinator.ack`, `coordinator.handoff_abort`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
+ | TODO runs | `todo.run`, `todo.draft_run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.open_log`, `todo.review`, `todo.next`, `todo.stop`, `todo.queue_set`, `todo.queue_status`, `todo.runnable_state`, `todo.grant`, `todo.grants`, `todo.revoke` |
+ | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
+ | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
+@@ -1026,6 +1026,40 @@ tenure. It is refused with `coordinator_not_found` without an active tenure,
+ with `invalid_request` for the tenure's own pane, with `coordinator_active`
+ when `to_pane_id` coordinates already, and with `pane_not_found` for an
+ unknown pane. Only this explicit call hands off; no timer does.
++Self-service handoff to a fresh session of the same agent is three calls
++(`coordinator.ready` runs inside the coordinator's turn; the old session ends
++its turn afterwards):
++`coordinator.ready` (`pane_id`, `note_path`) freezes the caller's tenure and
++copies the note; `coordinator.handoff_successor` (`pane_id`) writes herdr's
++snapshot and the handoff manifest and starts the successor in a new pane of
++the same tab; `coordinator.ack` (`pane_id`, `epoch`, `snapshot_sha256`), from
++the successor's pane, moves the tenure, its workers and the tab's coordinator
++role in one step, under one lock, and closes the old pane. `coordinator.ready`
++and the others answer `coordinator`, `coordinator.ack` answers
++`coordinator_acked` (`coordinator`, `old_pane_id`, `old_pane_closed` and, when
++the pane could not be closed, `close_error`). The old pane's agent session is
++then superseded: its mutations are refused with `coordinator_superseded`, also
++when its pane could not be closed, until that pane closes. A relative
++`note_path` is refused with `invalid_request`. `coordinator.handoff_abort`
++(optional `pane_id`, the old or the successor's pane, and optional
++`coordinator_id`, needed outside a pane) cancels a pending handoff; it answers
++`coordinator_handoff_aborted` (`coordinator`, `successor_pane_id`,
++`successor_pane_closed`). The handoff also aborts, with one notice, when the
++successor exits, reports a limit or is blocked before its ack. The pending
++handoff and the superseded sessions are stored in the server's state
++directory, so they survive a restart and a live handoff. While a tenure is
++frozen or superseded, worker and todo mutations carry the sender's pane in an
++optional `caller_pane_id` (`owner_pane_id` on `worker.start`, `todo.run`,
++`todo.run_anthropic`, `todo.next`, `todo.queue_set` and `todo.draft_run`) and
++are refused for that pane; a caller without a pane, such as the user's shell,
++is never fenced. `worker.answer` and `worker.deny_and_stop` keep their
++advertised shapes and are the user's own answers, never fenced; a coordinator's
++CLI sends `worker.answer_from_pane` (`caller_pane_id` and the `worker.answer`
++parameters) instead, which is. They answer `coordinator`; its
++`handoff` object (`state`: `frozen` or `successor_started`, `epoch`,
++`successor_pane_id`, `agent_kind`, `note_sha256`, `snapshot_sha256`) is also
++in `coordinator.status` while a handoff is pending. Refusals are
++`coordinator_frozen` (a mutation of a frozen tenure) and `handoff_refused`.
+ `worker.events` (`owner`, a tenure id, else `owner_pane_id`, the tenure bound
+ to that pane; optional `after`, `wait`, `limit` and `snapshot`) is one
+ coordinator's inbox over all of its workers, so it waits once, not once per
+diff --git a/src/api/mod.rs b/src/api/mod.rs
+index b82a7f24c..c30b80e3c 100644
+--- a/src/api/mod.rs
++++ b/src/api/mod.rs
+@@ -61,6 +61,10 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
+             | Method::CoordinatorStart(_)
+             | Method::CoordinatorEnd(_)
+             | Method::CoordinatorHandoff(_)
++            | Method::CoordinatorReady(_)
++            | Method::CoordinatorHandoffSuccessor(_)
++            | Method::CoordinatorAck(_)
++            | Method::CoordinatorHandoffAbort(_)
+             | Method::CoordinatorRecordOverride(_)
+             | Method::ReportRecord(_)
+             | Method::TabSetJobMetadata(_)
+diff --git a/src/api/schema.rs b/src/api/schema.rs
+index 5cac6c135..d38b351fd 100644
+--- a/src/api/schema.rs
++++ b/src/api/schema.rs
+@@ -102,6 +102,9 @@ pub enum Method {
+     WorkerKill(WorkerKillParams),
+     #[serde(rename = "worker.answer")]
+     WorkerAnswer(WorkerAnswerParams),
++    /// `worker.answer` from a pane, fenced while its tenure hands over.
++    #[serde(rename = "worker.answer_from_pane")]
++    WorkerAnswerFromPane(WorkerAnswerFromPaneParams),
+     /// `worker.answer` from a coordination tenure, refused with
+     /// `ownership_transferred` once the worker is another tenure's.
+     #[serde(rename = "worker.answer_as")]
+@@ -263,6 +266,19 @@ pub enum Method {
+     /// which takes over the workers and runs.
+     #[serde(rename = "coordinator.handoff")]
+     CoordinatorHandoff(CoordinatorHandoffParams),
++    /// Freezes the caller's tenure and records the agent's handoff note.
++    #[serde(rename = "coordinator.ready")]
++    CoordinatorReady(CoordinatorReadyParams),
++    /// Starts a fresh session of the same agent kind to take the frozen
++    /// tenure over.
++    #[serde(rename = "coordinator.handoff_successor")]
++    CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams),
++    /// Cancels a pending handoff; the old tenure unfreezes.
++    #[serde(rename = "coordinator.handoff_abort")]
++    CoordinatorHandoffAbort(CoordinatorHandoffAbortParams),
++    /// The successor takes the tenure over; the old session ends.
++    #[serde(rename = "coordinator.ack")]
++    CoordinatorAck(CoordinatorAckParams),
+     /// Records one exception to a coordinator tab's command allowlist and
+     /// notifies the user.
+     #[serde(rename = "coordinator.record_override")]
+diff --git a/src/api/schema/coordinators.rs b/src/api/schema/coordinators.rs
+index 679427421..1a084c0f6 100644
+--- a/src/api/schema/coordinators.rs
++++ b/src/api/schema/coordinators.rs
+@@ -48,6 +48,80 @@ pub struct CoordinatorHandoffParams {
+     pub pane_id: Option<String>,
+ }
+ 
++/// Freezes the caller's tenure for a self-service handoff
++/// (`coordinator.ready`): herdr copies the agent's note and records its hash.
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorReadyParams {
++    /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
++    pub pane_id: String,
++    /// The agent's note for its successor: an absolute path of a file the
++    /// server can read, copied into herdr's state directory.
++    pub note_path: String,
++}
++
++/// Starts the successor of a frozen tenure (`coordinator.handoff_successor`):
++/// a new pane in the caller's tab runs a fresh session of the same agent kind.
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorHandoffSuccessorParams {
++    /// The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).
++    pub pane_id: String,
++}
++
++/// Cancels a pending handoff (`coordinator.handoff_abort`): the tenure
++/// unfreezes and keeps its authority.
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorHandoffAbortParams {
++    /// The pane sending the abort (the CLI sends its `HERDR_PANE_ID`): the
++    /// old coordinator's or the successor's; absent outside a pane.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub pane_id: Option<String>,
++    /// The tenure whose handoff to abort; needed outside a pane.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub coordinator_id: Option<String>,
++}
++
++/// The successor takes the tenure over (`coordinator.ack`).
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorAckParams {
++    /// The successor's pane (the CLI sends its `HERDR_PANE_ID`).
++    pub pane_id: String,
++    /// The epoch of the tenure being handed over, from the manifest.
++    pub epoch: i64,
++    /// The sha256 of herdr's snapshot, from the manifest.
++    pub snapshot_sha256: String,
++}
++
++/// How far a tenure's self-service handoff has come.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++#[serde(rename_all = "snake_case")]
++pub enum CoordinatorHandoffState {
++    /// `coordinator.ready` froze the tenure; no successor yet.
++    Frozen,
++    /// The successor was started and has not acknowledged yet.
++    SuccessorStarted,
++    #[serde(other)]
++    Unknown,
++}
++
++/// A tenure's pending self-service handoff.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CoordinatorHandoffInfo {
++    pub state: CoordinatorHandoffState,
++    /// The epoch the successor must acknowledge.
++    pub epoch: i64,
++    /// The successor's pane once started.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub successor_pane_id: Option<String>,
++    /// The agent kind of both sessions, once the successor started.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub agent_kind: Option<String>,
++    /// The sha256 of the copied note.
++    pub note_sha256: String,
++    /// The sha256 of herdr's snapshot, once the successor started.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub snapshot_sha256: Option<String>,
++}
++
+ /// Lists the active tenures, of one repository when given.
+ #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+ pub struct CoordinatorStatusParams {
+@@ -93,6 +167,10 @@ pub struct CoordinatorInfo {
+     pub headless: bool,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub worker_id: Option<String>,
++    /// The tenure's pending self-service handoff: while it is there the
++    /// tenure is frozen.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub handoff: Option<CoordinatorHandoffInfo>,
+ }
+ 
+ /// Records an exception to a coordinator tab's command allowlist: one tool
+diff --git a/src/api/schema/response.rs b/src/api/schema/response.rs
+index 6d1406cf9..07956873f 100644
+--- a/src/api/schema/response.rs
++++ b/src/api/schema/response.rs
+@@ -211,6 +211,31 @@ pub enum ResponseResult {
+     Coordinator {
+         coordinator: CoordinatorInfo,
+     },
++    /// `coordinator.ack`'s reply: the tenure the successor holds now, and
++    /// whether the old coordinator's pane (and with it its agent session)
++    /// was closed.
++    CoordinatorAcked {
++        coordinator: CoordinatorInfo,
++        old_pane_id: String,
++        old_pane_closed: bool,
++        /// Why the old pane could not be closed; its session is fenced as
++        /// superseded either way.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        close_error: Option<String>,
++    },
++    /// `coordinator.handoff_abort`'s reply.
++    CoordinatorHandoffAborted {
++        /// The tenure that unfroze, when it is still active.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        coordinator: Option<CoordinatorInfo>,
++        /// The successor's pane, when one had been started.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        successor_pane_id: Option<String>,
++        /// Whether that pane was closed (not when the successor itself
++        /// aborted).
++        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
++        successor_pane_closed: bool,
++    },
+     /// `coordinator.status`'s reply: the active tenures, oldest first.
+     Coordinators {
+         coordinators: Vec<CoordinatorInfo>,
+diff --git a/src/api/schema/todo.rs b/src/api/schema/todo.rs
+index d984383f0..483524d32 100644
+--- a/src/api/schema/todo.rs
++++ b/src/api/schema/todo.rs
+@@ -769,6 +769,11 @@ pub struct TodoNextParams {
+ pub struct TodoStopParams {
+     /// A directory in the repository.
+     pub cwd: String,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ /// A repository's chain of item coordinators (`todo.next` with `chain`).
+@@ -914,6 +919,11 @@ pub struct TodoGrantParams {
+     /// The definition's hash, as the `grant_required` refusal showed it:
+     /// refused when the definition changed since.
+     pub hash: String,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ /// `todo.grants`: the stored capability grants.
+@@ -935,6 +945,11 @@ pub struct TodoRevokeParams {
+     /// operation without it.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub hash: Option<String>,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ /// A grant a run runs with, as preflight read it from its base commit.
+diff --git a/src/api/schema/workers.rs b/src/api/schema/workers.rs
+index 96a930758..d6253c8ee 100644
+--- a/src/api/schema/workers.rs
++++ b/src/api/schema/workers.rs
+@@ -331,6 +331,11 @@ pub struct WorkerAckParams {
+     /// `worker.obligations` returned. An ack at or below the acknowledged
+     /// one changes nothing; one past the worker's latest event is refused.
+     pub seq: i64,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+@@ -410,6 +415,11 @@ pub struct WorkerEscalateParams {
+     /// The question to escalate; one that is no longer pending is refused
+     /// with `worker_question_gone`.
+     pub request_id: String,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ /// A worker whose owner has an event of it to handle.
+@@ -462,6 +472,11 @@ pub struct WorkerPromptParams {
+     /// same reply, or the same refusal.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub command_id: Option<String>,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+@@ -609,6 +624,11 @@ pub struct WorkerInterruptParams {
+     /// same reply, or the same refusal.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub command_id: Option<String>,
++    /// The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused
++    /// with `coordinator_frozen` while its coordinator tenure is frozen for a
++    /// handoff, and for a pane whose tenure was handed over.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller_pane_id: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+@@ -924,6 +944,19 @@ pub struct WorkerAnswerParams {
+     pub command_id: Option<String>,
+ }
+ 
++/// `worker.answer` sent from a pane (`worker.answer_from_pane`): refused with
++/// `coordinator_frozen` while the pane's coordinator tenure is frozen for a
++/// handoff, and with `coordinator_superseded` for a pane whose tenure was
++/// handed over. `worker.answer` itself keeps its shape (clients advertise it)
++/// and is the user's answer, never fenced.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct WorkerAnswerFromPaneParams {
++    /// The sending pane (the CLI sends its `HERDR_PANE_ID`).
++    pub caller_pane_id: String,
++    #[serde(flatten)]
++    pub answer: WorkerAnswerParams,
++}
++
+ /// `worker.answer` sent by a coordination tenure (`worker.answer_as`):
+ /// applied only while that tenure owns the worker. Once the worker has moved
+ /// to another tenure the answer is refused with `ownership_transferred`,
+diff --git a/src/api/server.rs b/src/api/server.rs
+index c5a9a4244..84f60c94b 100644
+--- a/src/api/server.rs
++++ b/src/api/server.rs
+@@ -930,6 +930,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
+         Method::WorkerKill(_) => "worker.kill",
+         Method::WorkerAnswer(_) => "worker.answer",
+         Method::WorkerAnswerAs(_) => "worker.answer_as",
++        Method::WorkerAnswerFromPane(_) => "worker.answer_from_pane",
+         Method::WorkerAck(_) => "worker.ack",
+         Method::WorkerObligations(_) => "worker.obligations",
+         Method::WorkerDrain(_) => "worker.drain",
+@@ -974,6 +975,10 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
+         Method::CoordinatorEnd(_) => "coordinator.end",
+         Method::CoordinatorStatus(_) => "coordinator.status",
+         Method::CoordinatorHandoff(_) => "coordinator.handoff",
++        Method::CoordinatorReady(_) => "coordinator.ready",
++        Method::CoordinatorHandoffSuccessor(_) => "coordinator.handoff_successor",
++        Method::CoordinatorAck(_) => "coordinator.ack",
++        Method::CoordinatorHandoffAbort(_) => "coordinator.handoff_abort",
+         Method::CoordinatorRecordOverride(_) => "coordinator.record_override",
+         Method::HistoryOverrides(_) => "history.overrides",
+         Method::CoordinatorAllowlistRefusal(_) => "coordinator.allowlist_refusal",
+diff --git a/src/api/workers.rs b/src/api/workers.rs
+index ca7431cd2..cf1a1de68 100644
+--- a/src/api/workers.rs
++++ b/src/api/workers.rs
+@@ -27,6 +27,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
+             | Method::WorkerKill(_)
+             | Method::WorkerAnswer(_)
+             | Method::WorkerAnswerAs(_)
++            | Method::WorkerAnswerFromPane(_)
+             | Method::WorkerAck(_)
+             | Method::WorkerObligations(_)
+             | Method::WorkerDrain(_)
+@@ -180,23 +181,46 @@ fn handle_immediate(
+     method: Method,
+ ) -> Result<ResponseResult, WorkerError> {
+     let worker = match method {
+-        Method::WorkerStart(params) => supervisor.start(&params)?,
+-        Method::WorkerStartChoice(params) => supervisor.start_choice(params)?,
++        Method::WorkerStart(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
++            supervisor.start(&params)?
++        }
++        Method::WorkerStartChoice(params) => {
++            supervisor.fence_pane(params.start.owner_pane_id.as_deref())?;
++            supervisor.start_choice(params)?
++        }
+         Method::WorkerStatus(target) => supervisor.status(&target.worker_id)?,
+         Method::WorkerList(_) => {
+             return Ok(ResponseResult::WorkerList {
+                 workers: supervisor.list(),
+             })
+         }
+-        Method::WorkerPrompt(params) => supervisor.prompt_command(&params)?,
+-        Method::WorkerInterrupt(params) => supervisor.interrupt(&params)?,
+-        Method::WorkerStop(target) => supervisor.stop_command(&target)?,
++        Method::WorkerPrompt(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
++            supervisor.prompt_command(&params)?
++        }
++        Method::WorkerInterrupt(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
++            supervisor.interrupt(&params)?
++        }
++        Method::WorkerStop(target) => {
++            supervisor.fence_pane(target.caller_pane_id.as_deref())?;
++            supervisor.stop_command(&target)?
++        }
+         Method::WorkerKill(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             let (worker, killed) = supervisor.kill_command(&params)?;
+             return Ok(ResponseResult::WorkerKilled { worker, killed });
+         }
+         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
+-        Method::WorkerAnswerAs(params) => supervisor.answer_as(&params)?,
++        Method::WorkerAnswerFromPane(params) => {
++            supervisor.fence_pane(Some(&params.caller_pane_id))?;
++            supervisor.answer(&params.answer)?
++        }
++        Method::WorkerAnswerAs(params) => {
++            supervisor.fence_tenure(Some(&params.coordinator_id))?;
++            supervisor.answer_as(&params)?
++        }
+         Method::WorkerTranscript(params) => {
+             return Ok(ResponseResult::WorkerTranscript {
+                 transcript: supervisor.transcript(&params)?,
+@@ -207,9 +231,16 @@ fn handle_immediate(
+                 detail: supervisor.question_detail(&target.worker_id, &target.request_id)?,
+             })
+         }
++        // A user's click in a client (its shape is advertised, so it carries
++        // no caller pane); the CLI has no command for it, so no coordinator
++        // sends it.
+         Method::WorkerDenyAndStop(params) => supervisor.deny_and_stop(&params)?,
+-        Method::WorkerAck(params) => supervisor.ack(&params.worker_id, params.seq)?,
++        Method::WorkerAck(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
++            supervisor.ack(&params.worker_id, params.seq)?
++        }
+         Method::WorkerEscalate(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             supervisor.escalate(&params.worker_id, &params.request_id)?
+         }
+         Method::WorkerRuns(params) => {
+@@ -222,14 +253,16 @@ fn handle_immediate(
+             })
+         }
+         Method::TodoRun(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoRun {
+                 run: supervisor.todo_run(params)?,
+-            })
++            });
+         }
+         Method::TodoRunAnthropic(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoRun {
+                 run: supervisor.todo_run_anthropic(params)?,
+-            })
++            });
+         }
+         Method::TodoRunWait(params) => {
+             return Ok(ResponseResult::TodoRun {
+@@ -237,19 +270,22 @@ fn handle_immediate(
+             })
+         }
+         Method::TodoCancelPending(target) => {
++            supervisor.fence_pane(target.caller_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoRun {
+                 run: supervisor.todo_cancel_pending_owned(&target)?,
+-            })
++            });
+         }
+         Method::TodoDraftRun(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoRun {
+                 run: supervisor.todo_draft_run(params)?,
+-            })
++            });
+         }
+         Method::TodoResume(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoRun {
+                 run: supervisor.todo_resume(params)?,
+-            })
++            });
+         }
+         Method::TodoStatus(target) => {
+             return Ok(ResponseResult::TodoRun {
+@@ -271,6 +307,7 @@ fn handle_immediate(
+             })
+         }
+         Method::TodoNext(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+             let started = supervisor.todo_next(&params)?;
+             return Ok(ResponseResult::TodoNext {
+                 item: started.item,
+@@ -280,14 +317,16 @@ fn handle_immediate(
+             });
+         }
+         Method::TodoStop(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoChain {
+                 chain: supervisor.todo_stop(&params.cwd)?,
+-            })
++            });
+         }
+         Method::TodoQueueSet(params) => {
++            supervisor.fence_pane(params.owner_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoQueue {
+                 queue: supervisor.todo_queue_set(params)?,
+-            })
++            });
+         }
+         Method::TodoQueueStatus(target) => {
+             return Ok(ResponseResult::TodoQueue {
+@@ -300,9 +339,10 @@ fn handle_immediate(
+             })
+         }
+         Method::TodoGrant(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoGrant {
+                 grant: supervisor.todo_grant(params)?,
+-            })
++            });
+         }
+         Method::TodoGrants(params) => {
+             return Ok(ResponseResult::TodoGrants {
+@@ -310,9 +350,10 @@ fn handle_immediate(
+             })
+         }
+         Method::TodoRevoke(params) => {
++            supervisor.fence_pane(params.caller_pane_id.as_deref())?;
+             return Ok(ResponseResult::TodoGrants {
+                 grants: supervisor.todo_revoke(params)?,
+-            })
++            });
+         }
+         Method::HistoryList(params) => {
+             return Ok(ResponseResult::HistoryList {
+@@ -394,3 +435,181 @@ fn encode(id: String, result: Result<ResponseResult, WorkerError>) -> String {
+             .to_string()
+     })
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    /// One method of each fenced family, with the field that names its
++    /// caller's pane.
++    fn fenced_methods(pane: Option<&str>) -> Vec<(&'static str, Method)> {
++        let cwd = "/nonexistent-herdr-fence-test";
++        let run = json!({
++            "cwd": cwd, "item": "t-abcd2345", "task": "t", "message": "feat: x",
++            "paths": ["src/**"], "checks": ["lint"],
++        });
++        let with = |mut value: serde_json::Value, field: &str| {
++            if let Some(pane) = pane {
++                value[field] = json!(pane);
++            }
++            value
++        };
++        let cases = vec![
++            (
++                "worker.start",
++                with(json!({"cwd": cwd, "prompt": "p"}), "owner_pane_id"),
++            ),
++            (
++                "worker.prompt",
++                with(json!({"worker_id": "w99", "text": "t"}), "caller_pane_id"),
++            ),
++            (
++                "worker.interrupt",
++                with(json!({"worker_id": "w99"}), "caller_pane_id"),
++            ),
++            (
++                "worker.stop",
++                with(json!({"worker_id": "w99"}), "caller_pane_id"),
++            ),
++            (
++                "worker.kill",
++                with(json!({"worker_id": "w99"}), "caller_pane_id"),
++            ),
++            match pane {
++                Some(_) => (
++                    "worker.answer_from_pane",
++                    with(json!({"worker_id": "w99"}), "caller_pane_id"),
++                ),
++                None => ("worker.answer", json!({"worker_id": "w99"})),
++            },
++            (
++                "worker.ack",
++                with(json!({"worker_id": "w99", "seq": 1}), "caller_pane_id"),
++            ),
++            (
++                "worker.escalate",
++                with(
++                    json!({"worker_id": "w99", "request_id": "r"}),
++                    "caller_pane_id",
++                ),
++            ),
++            ("todo.run", with(run.clone(), "owner_pane_id")),
++            ("todo.run_anthropic", with(run, "owner_pane_id")),
++            (
++                "todo.cancel_pending",
++                with(json!({"run_id": "r-none"}), "caller_pane_id"),
++            ),
++            (
++                "todo.resume",
++                with(
++                    json!({"run_id": "r-none", "action": "retry", "event": 1}),
++                    "caller_pane_id",
++                ),
++            ),
++            ("todo.next", with(json!({"cwd": cwd}), "owner_pane_id")),
++            ("todo.stop", with(json!({"cwd": cwd}), "caller_pane_id")),
++            (
++                "todo.queue_set",
++                with(json!({"cwd": cwd, "mode": "paused"}), "owner_pane_id"),
++            ),
++            (
++                "todo.grant",
++                with(
++                    json!({"cwd": cwd, "operation": "prepare", "hash": "h"}),
++                    "caller_pane_id",
++                ),
++            ),
++            (
++                "todo.revoke",
++                with(
++                    json!({"cwd": cwd, "operation": "prepare"}),
++                    "caller_pane_id",
++                ),
++            ),
++        ];
++        cases
++            .into_iter()
++            .map(|(name, params)| {
++                let method = serde_json::from_value(json!({"method": name, "params": params}))
++                    .unwrap_or_else(|error| panic!("{name}: {error}"));
++                (name, method)
++            })
++            .collect()
++    }
++
++    fn codes(supervisor: &WorkerSupervisor, pane: Option<&str>) -> Vec<(&'static str, String)> {
++        fenced_methods(pane)
++            .into_iter()
++            .map(|(name, method)| {
++                let code = match handle_immediate(supervisor, method) {
++                    Ok(_) => "ok".to_owned(),
++                    Err(error) => error.code().to_owned(),
++                };
++                (name, code)
++            })
++            .collect()
++    }
++
++    /// A frozen tenure's pane is refused by every mutation family, a pane
++    /// whose tenure was handed over is refused with its own code, and a
++    /// caller outside any pane (the user's shell) is never fenced.
++    #[test]
++    fn a_frozen_or_superseded_caller_is_refused_by_every_mutation_family() {
++        let root = std::env::temp_dir().join(format!(
++            "herdr-fence-{}-{}",
++            std::process::id(),
++            std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .map_or(0, |elapsed| elapsed.as_nanos())
++        ));
++        let _ = std::fs::remove_dir_all(&root);
++        std::fs::create_dir_all(&root).unwrap();
++        let note = root.join("note.md");
++        std::fs::write(&note, "go on\n").unwrap();
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++
++        // Not frozen yet: nothing is refused for being frozen.
++        for (name, code) in codes(&supervisor, Some("p1")) {
++            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
++        }
++        supervisor.handoff_ready("p1", &note).unwrap();
++        for (name, code) in codes(&supervisor, Some("p1")) {
++            assert_eq!(code, "coordinator_frozen", "{name}");
++        }
++        // The user's own shell, and another pane, are not the caller.
++        for pane in [None, Some("p9")] {
++            for (name, code) in codes(&supervisor, pane) {
++                assert!(!code.starts_with("coordinator_"), "{name} {pane:?}: {code}");
++            }
++        }
++
++        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
++        supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        let sha = supervisor
++            .coordinator_status(None)
++            .unwrap()
++            .remove(0)
++            .handoff
++            .unwrap()
++            .snapshot_sha256
++            .unwrap();
++        for (name, code) in codes(&supervisor, Some("p1")) {
++            assert_eq!(code, "coordinator_frozen", "{name}");
++        }
++        supervisor.handoff_ack("p2", 1, &sha, None, None).unwrap();
++        for (name, code) in codes(&supervisor, Some("p1")) {
++            assert_eq!(code, "coordinator_superseded", "{name}");
++        }
++        for (name, code) in codes(&supervisor, Some("p2")) {
++            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
++        }
++        for (name, code) in codes(&supervisor, None) {
++            assert!(!code.starts_with("coordinator_"), "{name}: {code}");
++        }
++        let _ = std::fs::remove_dir_all(root);
++    }
++}
+diff --git a/src/app/api.rs b/src/app/api.rs
+index ba35bf712..7d4a88df9 100644
+--- a/src/app/api.rs
++++ b/src/app/api.rs
+@@ -1302,6 +1302,18 @@ impl App {
+             Method::CoordinatorHandoff(params) => {
+                 return self.handle_coordinator_handoff(request.id, params);
+             }
++            Method::CoordinatorReady(params) => {
++                return self.handle_coordinator_ready(request.id, params);
++            }
++            Method::CoordinatorHandoffSuccessor(params) => {
++                return self.handle_coordinator_handoff_successor(request.id, params);
++            }
++            Method::CoordinatorHandoffAbort(params) => {
++                return self.handle_coordinator_handoff_abort(request.id, params);
++            }
++            Method::CoordinatorAck(params) => {
++                return self.handle_coordinator_ack(request.id, params);
++            }
+             Method::CoordinatorRecordOverride(params) => {
+                 return self.handle_coordinator_record_override(request.id, params);
+             }
+@@ -1422,6 +1434,7 @@ impl App {
+             | Method::WorkerStop(_)
+             | Method::WorkerKill(_)
+             | Method::WorkerAnswerAs(_)
++            | Method::WorkerAnswerFromPane(_)
+             | Method::WorkerAck(_)
+             | Method::WorkerObligations(_)
+             | Method::WorkerDrain(_)
+diff --git a/src/app/api/coordinators.rs b/src/app/api/coordinators.rs
+index a0f2f7256..349d65d62 100644
+--- a/src/app/api/coordinators.rs
++++ b/src/app/api/coordinators.rs
+@@ -7,10 +7,11 @@
+ 
+ use super::responses::{encode_error, encode_success};
+ use crate::api::schema::{
+-    CoordinatorAllowlistRefusalParams, CoordinatorEndParams, CoordinatorHandoffParams,
+-    CoordinatorInfo, CoordinatorRecordOverrideParams, CoordinatorStartParams,
+-    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
+-    TabRole,
++    CoordinatorAckParams, CoordinatorAllowlistRefusalParams, CoordinatorEndParams,
++    CoordinatorHandoffAbortParams, CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams,
++    CoordinatorInfo, CoordinatorReadyParams, CoordinatorRecordOverrideParams,
++    CoordinatorStartParams, CoordinatorStatusParams, NotificationShowParams, NotificationShowSound,
++    ResponseResult, TabRole,
+ };
+ use crate::app::App;
+ use crate::workers::{WorkerError, WorkerSupervisor};
+@@ -68,6 +69,10 @@ impl App {
+         let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
+             return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
+         };
++        // A session whose tenure was handed over starts no new one.
++        if let Err(error) = coordinators.fence_pane(Some(&self.canonical_pane_id(pane))) {
++            return encode_error(id, error.code(), error.to_string());
++        }
+         let started = match (&params.repo, &params.home_git_dir) {
+             (None, Some(_)) => Err(WorkerError::Invalid(
+                 "home_git_dir needs repo, the home directory".into(),
+@@ -116,6 +121,13 @@ impl App {
+                 )
+             }
+         };
++        // From a frozen pane the end would silently drop the pending
++        // handoff; from a superseded one it is no tenure's to end.
++        if let Some(pane) = &params.pane_id {
++            if let Err(error) = coordinators.fence_pane(Some(&self.canonical_pane_id(pane))) {
++                return encode_error(id, error.code(), error.to_string());
++            }
++        }
+         let reason = params
+             .reason
+             .as_deref()
+@@ -160,6 +172,12 @@ impl App {
+             .as_deref()
+             .map(|pane| self.canonical_pane_id(pane));
+         let session = target.agent_session.map(|session| session.value);
++        let fenced = coordinators
++            .fence_tenure(params.coordinator_id.as_deref())
++            .and_then(|()| coordinators.fence_pane(from_pane.as_deref()));
++        if let Err(error) = fenced {
++            return encode_error(id, error.code(), error.to_string());
++        }
+         let handed = coordinators.coordinator_handoff(
+             params.coordinator_id.as_deref(),
+             from_pane.as_deref(),
+@@ -416,6 +434,340 @@ impl App {
+     }
+ }
+ 
++/// The name of the agent a handoff starts in the successor's pane.
++fn successor_agent_name(epoch: i64) -> String {
++    format!("successor-e{epoch}")
++}
++
++impl App {
++    /// The coordinator's pane `pane` as the handoff needs it: its position
++    /// and the label of the agent it runs.
++    fn handoff_pane(
++        &self,
++        pane: &str,
++    ) -> Result<
++        (
++            usize,
++            crate::layout::PaneId,
++            String,
++            crate::api::schema::AgentStatus,
++        ),
++        WorkerError,
++    > {
++        let (ws_idx, pane_id) = self
++            .parse_pane_id(pane)
++            .ok_or_else(|| WorkerError::Invalid(format!("pane not found: {pane}")))?;
++        let metadata = self
++            .pane_metadata(ws_idx, pane_id)
++            .ok_or_else(|| WorkerError::Invalid(format!("pane not found: {pane}")))?;
++        let kind = metadata.agent.ok_or_else(|| {
++            WorkerError::HandoffRefused(format!("pane {pane} runs no recognized agent"))
++        })?;
++        Ok((ws_idx, pane_id, kind, metadata.agent_status))
++    }
++
++    /// `coordinator.ready`: the caller's tenure freezes with the agent's note.
++    ///
++    /// The command runs from inside the agent's own turn, so its live state
++    /// is `working`; "at a turn end" is therefore enforced as: the agent is
++    /// one a handoff can start (has a launch prompt) and is not blocked on a
++    /// question or permission, and the skill ends its turn right after
++    /// `handoff --successor`. A kind without a launch prompt is refused here,
++    /// so nothing is left frozen.
++    pub(super) fn handle_coordinator_ready(
++        &mut self,
++        id: String,
++        params: CoordinatorReadyParams,
++    ) -> String {
++        let Some(coordinators) = crate::workers::coordinators() else {
++            return unavailable(id);
++        };
++        let pane = self.canonical_pane_id(&params.pane_id);
++        let result = (|| {
++            coordinators.fence_pane(Some(&pane)).or_else(|error| {
++                // A frozen tenure takes a new note.
++                if error.code() == "coordinator_frozen" {
++                    Ok(())
++                } else {
++                    Err(error)
++                }
++            })?;
++            let (_, _, kind, status) = self.handoff_pane(&pane)?;
++            if crate::workers::coordinator_handoff::launch_prompt(&kind, std::path::Path::new("/"))
++                .is_none()
++            {
++                return Err(WorkerError::HandoffRefused(format!(
++                    "agent kind {kind} cannot take a coordinator over by itself"
++                )));
++            }
++            if status == crate::api::schema::AgentStatus::Blocked {
++                return Err(WorkerError::HandoffRefused(
++                    "the agent is blocked on a question or a permission, not at a turn end".into(),
++                ));
++            }
++            coordinators.handoff_ready(&pane, std::path::Path::new(&params.note_path))
++        })();
++        match result {
++            Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
++            Err(error) => encode_error(id, error.code(), error.to_string()),
++        }
++    }
++
++    /// `coordinator.handoff_successor`: writes the snapshot and manifest,
++    /// opens a pane next to the caller's without moving focus and starts one
++    /// fresh session of the same agent kind there, with its single launch
++    /// prompt. Any failure after that aborts the handoff: the pane closes
++    /// and the tenure unfreezes.
++    pub(super) fn handle_coordinator_handoff_successor(
++        &mut self,
++        id: String,
++        params: CoordinatorHandoffSuccessorParams,
++    ) -> String {
++        let Some(coordinators) = crate::workers::coordinators() else {
++            return unavailable(id);
++        };
++        let pane = self.canonical_pane_id(&params.pane_id);
++        let prepared = match coordinators
++            .fence_pane(Some(&pane))
++            .or_else(|error| {
++                // The frozen tenure is the one that starts its successor.
++                if error.code() == "coordinator_frozen" {
++                    Ok(())
++                } else {
++                    Err(error)
++                }
++            })
++            .and_then(|()| self.handoff_pane(&pane))
++            .and_then(|(_, _, kind, _)| {
++                coordinators
++                    .handoff_prepare(&pane, &kind)
++                    .map(|prepared| (prepared, kind))
++            }) {
++            Ok(prepared) => prepared,
++            Err(error) => return encode_error(id, error.code(), error.to_string()),
++        };
++        let (prepared, kind) = prepared;
++        match self.start_successor(&pane, &kind, &prepared) {
++            Ok(successor) => {
++                let started =
++                    coordinators.handoff_successor_started(&prepared.coordinator_id, &successor);
++                match started {
++                    Ok(coordinator) => {
++                        encode_success(id, ResponseResult::Coordinator { coordinator })
++                    }
++                    Err(error) => {
++                        self.abort_started_handoff(&prepared.coordinator_id, &successor, &error);
++                        encode_error(id, error.code(), error.to_string())
++                    }
++                }
++            }
++            Err(error) => {
++                coordinators.handoff_abort(
++                    &prepared.coordinator_id,
++                    &format!("the successor could not start ({error})"),
++                );
++                encode_error(id, error.code(), error.to_string())
++            }
++        }
++    }
++
++    fn abort_started_handoff(
++        &mut self,
++        coordinator_id: &str,
++        successor: &str,
++        error: &WorkerError,
++    ) {
++        if let Some(coordinators) = crate::workers::coordinators() {
++            coordinators.handoff_abort(coordinator_id, &format!("the handoff failed ({error})"));
++        }
++        let _ = self.close_pane(
++            String::new(),
++            &crate::api::schema::PaneTarget {
++                pane_id: successor.to_owned(),
++            },
++        );
++    }
++
++    /// Opens the successor's pane beside `old_pane` and starts the agent in
++    /// it. A pane that was opened is closed again when the start fails.
++    fn start_successor(
++        &mut self,
++        old_pane: &str,
++        kind: &str,
++        prepared: &crate::workers::coordinator_handoff::Prepared,
++    ) -> Result<String, WorkerError> {
++        let epoch = crate::workers::coordinators()
++            .and_then(|c| c.coordinator_of_pane(old_pane))
++            .map(|tenure| tenure.epoch)
++            .unwrap_or_default();
++        let split = self.handle_pane_split(
++            String::new(),
++            crate::api::schema::PaneSplitParams {
++                workspace_id: None,
++                target_pane_id: Some(old_pane.to_owned()),
++                direction: crate::api::schema::SplitDirection::Right,
++                ratio: None,
++                cwd: None,
++                focus: false,
++                right_click: Default::default(),
++                env: Default::default(),
++            },
++        );
++        let split: serde_json::Value = serde_json::from_str(&split)
++            .map_err(|error| WorkerError::Invalid(format!("unreadable split response: {error}")))?;
++        let Some(successor) = split["result"]["pane"]["pane_id"]
++            .as_str()
++            .map(str::to_owned)
++        else {
++            return Err(WorkerError::Invalid(format!(
++                "cannot open the successor's pane: {}",
++                split["error"]["message"]
++                    .as_str()
++                    .unwrap_or("unknown error")
++            )));
++        };
++        let started = self.start_agent(crate::api::schema::AgentStartParams {
++            name: successor_agent_name(epoch),
++            kind: kind.to_owned(),
++            pane_id: successor.clone(),
++            args: Vec::new(),
++            timeout_ms: None,
++            prompt: Some(prepared.prompt.clone()),
++            caller_pane_id: None,
++        });
++        match started {
++            Ok(_) => Ok(successor),
++            Err(error) => {
++                let body = self.agent_start_error_body(error);
++                let _ = self.close_pane(
++                    String::new(),
++                    &crate::api::schema::PaneTarget { pane_id: successor },
++                );
++                Err(WorkerError::Invalid(format!(
++                    "cannot start the successor: {}",
++                    body.message
++                )))
++            }
++        }
++    }
++
++    /// `coordinator.ack`: the successor takes the tenure over, and in the
++    /// same step the old coordinator's pane closes (which ends its agent
++    /// session). A refused ack changes nothing.
++    pub(super) fn handle_coordinator_ack(
++        &mut self,
++        id: String,
++        params: CoordinatorAckParams,
++    ) -> String {
++        let Some(coordinators) = crate::workers::coordinators() else {
++            return unavailable(id);
++        };
++        let pane = self.canonical_pane_id(&params.pane_id);
++        let target = self
++            .parse_pane_id(&pane)
++            .and_then(|(ws_idx, pane_id)| self.pane_metadata(ws_idx, pane_id));
++        let Some(target) = target else {
++            return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
++        };
++        let session = target.agent_session.map(|session| session.value);
++        let acked = coordinators.handoff_ack(
++            &target.pane_id,
++            params.epoch,
++            &params.snapshot_sha256,
++            session.as_deref(),
++            Some(&target.workspace_id),
++        );
++        self.sync_coordinator_roles();
++        match acked {
++            Ok(acked) => {
++                // The old session ends with its pane. It is fenced as
++                // superseded already, so a pane that cannot be closed is
++                // reported, not hidden.
++                let closed = self.close_pane(
++                    String::new(),
++                    &crate::api::schema::PaneTarget {
++                        pane_id: acked.old_pane.clone(),
++                    },
++                );
++                let close_error = response_error(closed);
++                if let Some(error) = &close_error {
++                    tracing::warn!(pane = %acked.old_pane, %error, "cannot close the superseded coordinator pane");
++                }
++                self.sync_coordinator_roles();
++                encode_success(
++                    id,
++                    ResponseResult::CoordinatorAcked {
++                        coordinator: acked.tenure,
++                        old_pane_id: acked.old_pane,
++                        old_pane_closed: close_error.is_none(),
++                        close_error: close_error.map(|error| {
++                            format!(
++                                "the old pane could not be closed ({error}); its session is \
++                                 fenced as superseded"
++                            )
++                        }),
++                    },
++                )
++            }
++            Err(error) => encode_error(id, error.code(), error.to_string()),
++        }
++    }
++
++    /// `coordinator.handoff_abort`: the pending handoff ends and the old
++    /// tenure unfreezes. The successor's pane is closed unless the
++    /// successor itself asked.
++    pub(super) fn handle_coordinator_handoff_abort(
++        &mut self,
++        id: String,
++        params: CoordinatorHandoffAbortParams,
++    ) -> String {
++        let Some(coordinators) = crate::workers::coordinators() else {
++            return unavailable(id);
++        };
++        let pane = params
++            .pane_id
++            .as_deref()
++            .map(|pane| self.canonical_pane_id(pane));
++        let aborted = match coordinators
++            .handoff_abort_request(pane.as_deref(), params.coordinator_id.as_deref())
++        {
++            Ok(aborted) => aborted,
++            Err(error) => return encode_error(id, error.code(), error.to_string()),
++        };
++        let successor_pane_closed = aborted.close_pane.as_ref().is_some_and(|successor| {
++            let closed = self.close_pane(
++                String::new(),
++                &crate::api::schema::PaneTarget {
++                    pane_id: successor.clone(),
++                },
++            );
++            response_error(closed).is_none()
++        });
++        self.sync_coordinator_roles();
++        encode_success(
++            id,
++            ResponseResult::CoordinatorHandoffAborted {
++                coordinator: aborted.tenure,
++                successor_pane_id: aborted.close_pane,
++                successor_pane_closed,
++            },
++        )
++    }
++}
++
++/// The message of a failed `close_pane` (its encoded error response), `None`
++/// for a success.
++fn response_error(closed: Result<(), String>) -> Option<String> {
++    let response = closed.err()?;
++    let value: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
++    Some(
++        value["error"]["message"]
++            .as_str()
++            .unwrap_or("unknown error")
++            .to_owned(),
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -723,6 +1075,105 @@ mod tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ 
++    fn give_agent(app: &mut App, pane: &str, agent: crate::detect::Agent) {
++        let (ws_idx, pane_id) = app.parse_pane_id(pane).unwrap();
++        let terminal_id = app.state.workspaces[ws_idx]
++            .pane_state(pane_id)
++            .unwrap()
++            .attached_terminal_id
++            .clone();
++        app.state
++            .terminals
++            .get_mut(&terminal_id)
++            .unwrap()
++            .set_detected_agent_process_at(agent, std::time::Instant::now());
++    }
++
++    fn error_code(response: &str) -> String {
++        let value: serde_json::Value = serde_json::from_str(response).unwrap();
++        value["error"]["code"].as_str().unwrap_or("").to_owned()
++    }
++
++    /// A coordinator hands over through `ready` and `ack`: a kind with no
++    /// launch prompt is refused before anything freezes, a frozen tenure's
++    /// `handoff --to` is refused, a wrong ack changes nothing, and the right
++    /// one moves the tenure and the tab's role and closes the old pane.
++    #[test]
++    fn ready_and_ack_move_the_tenure_and_close_the_old_pane() {
++        let (mut app, root) = app("self-service");
++        let note = root.join("note.md");
++        std::fs::create_dir_all(&root).unwrap();
++        std::fs::write(&note, "carry on\n").unwrap();
++        set_role(&mut app, 1, Some(TabRole::Coordinator)).unwrap();
++        let old = pane_of(&app, 1);
++        let successor = pane_of(&app, 0);
++        let ready = |app: &mut App| {
++            app.handle_coordinator_ready(
++                "req".into(),
++                CoordinatorReadyParams {
++                    pane_id: old.clone(),
++                    note_path: note.display().to_string(),
++                },
++            )
++        };
++        // No recognized agent, then one without a launch prompt.
++        assert_eq!(error_code(&ready(&mut app)), "handoff_refused");
++        give_agent(&mut app, &old, crate::detect::Agent::Codex);
++        assert_eq!(error_code(&ready(&mut app)), "handoff_refused");
++        assert!(active(&app)[0].handoff.is_none());
++        let coordinators = crate::workers::coordinators().unwrap();
++        // The ack of a tenure that is not handing over is refused.
++        let ack = |app: &mut App, epoch: i64, sha: &str| {
++            app.handle_coordinator_ack(
++                "req".into(),
++                CoordinatorAckParams {
++                    pane_id: successor.clone(),
++                    epoch,
++                    snapshot_sha256: sha.into(),
++                },
++            )
++        };
++        assert_eq!(error_code(&ack(&mut app, 1, "ab")), "handoff_refused");
++
++        give_agent(&mut app, &old, crate::detect::Agent::Claude);
++        let response = ready(&mut app);
++        assert!(response.contains("\"state\":\"frozen\""), "{response}");
++        let handoff = app.handle_coordinator_handoff(
++            "req".into(),
++            CoordinatorHandoffParams {
++                to_pane_id: successor.clone(),
++                coordinator_id: None,
++                pane_id: Some(old.clone()),
++            },
++        );
++        assert_eq!(error_code(&handoff), "coordinator_frozen");
++        // The successor's start (the pane and agent launch need a real
++        // terminal) is stood in for by the supervisor's own steps.
++        let prepared = coordinators.handoff_prepare(&old, "claude").unwrap();
++        coordinators
++            .handoff_successor_started(&prepared.coordinator_id, &successor)
++            .unwrap();
++        let status = active(&app).remove(0);
++        let pending = status.handoff.unwrap();
++        let sha = pending.snapshot_sha256.unwrap();
++        assert_eq!(error_code(&ack(&mut app, 2, &sha)), "handoff_refused");
++        assert_eq!(
++            error_code(&ack(&mut app, 1, &"0".repeat(64))),
++            "handoff_refused"
++        );
++        assert_eq!(active(&app)[0].pane_id.as_deref(), Some(old.as_str()));
++
++        let response = ack(&mut app, 1, &sha);
++        assert!(response.contains("\"epoch\":2"), "{response}");
++        let tenure = active(&app).remove(0);
++        assert_eq!(tenure.pane_id.as_deref(), Some(successor.as_str()));
++        assert!(tenure.handoff.is_none());
++        // The old pane is closed (its tab with it), the role followed.
++        assert!(app.parse_pane_id(&old).is_none());
++        assert_eq!(roles(&app), vec![Some(TabRole::Coordinator)]);
++        let _ = std::fs::remove_dir_all(root);
++    }
++
+     fn report_session(app: &mut App, pane: &str, seq: u64, session: &str, start: &str) {
+         let response = app.handle_pane_report_agent_session(
+             "req".into(),
+diff --git a/src/cli/coordinator.rs b/src/cli/coordinator.rs
+index e087bf234..3bf7c2341 100644
+--- a/src/cli/coordinator.rs
++++ b/src/cli/coordinator.rs
+@@ -2,8 +2,9 @@
+ //! active coordinator per repository).
+ 
+ use crate::api::schema::{
+-    CoordinatorEndParams, CoordinatorHandoffParams, CoordinatorStartParams,
+-    CoordinatorStatusParams, Method, Request,
++    CoordinatorAckParams, CoordinatorEndParams, CoordinatorHandoffAbortParams,
++    CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams, CoordinatorReadyParams,
++    CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
+ };
+ 
+ use super::worker::take_string_option;
+@@ -26,7 +27,29 @@ const USAGE: &str = "usage:
+   herdr coordinator handoff --to PANE [--id COORDINATOR_ID]
+       Hand this pane's tenure (or the one named) to PANE: it ends
+       handed_off and the next tenure, one epoch on, starts there with its
+-      workers, runs and item.";
++      workers, runs and item.
++  herdr coordinator ready --note FILE
++      Freeze this pane's tenure for a handoff to a fresh session of the same
++      agent: herdr copies FILE (the note for the successor) and records its
++      sha256. A frozen tenure refuses handoff, todo resume, worker start,
++      answer and ack until the handoff ends. Refused when the agent is not
++      a claude or pi session, or is blocked on a question.
++  herdr coordinator handoff --successor
++      After ready: write herdr's snapshot and the handoff manifest, open a
++      pane beside this one and start a fresh session of the same agent kind
++      there with one launch prompt that names the manifest. End your turn
++      afterwards; if the successor exits or reports a limit before its ack,
++      the handoff aborts and this tenure unfreezes.
++  herdr coordinator handoff --abort [--id COORDINATOR_ID]
++      Cancel a pending handoff from the old pane, the successor's pane, or
++      (with --id) from outside a pane: the tenure unfreezes and keeps its
++      authority, and the successor's pane is closed (unless the successor
++      itself aborts). Use it when the successor never starts.
++  herdr coordinator ack --epoch N --snapshot SHA256
++      From the successor's pane: take the tenure over (the epoch, workers,
++      runs and the tab's coordinator role move here in one step). The old
++      pane is then closed, which ends its agent session; when it cannot be
++      closed the reply says so and that session stays fenced as superseded.";
+ 
+ pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
+     let method = match parse(args) {
+@@ -124,6 +147,59 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
+                 pane_id,
+             })
+         }
++        "ready" => {
++            let (note, rest) = take_string_option(rest, "--note")?;
++            if !rest.is_empty() {
++                return Err("ready takes only --note".into());
++            }
++            let note = note.ok_or("ready needs --note FILE")?;
++            let note_path = std::path::absolute(&note)
++                .map_err(|error| format!("--note {note}: {error}"))?
++                .display()
++                .to_string();
++            let pane_id = super::target::caller_pane_id()
++                .ok_or("coordinator ready runs in a herdr pane: HERDR_PANE_ID is not set")?;
++            Method::CoordinatorReady(CoordinatorReadyParams { pane_id, note_path })
++        }
++        "ack" => {
++            let (epoch, rest) = take_string_option(rest, "--epoch")?;
++            let (snapshot, rest) = take_string_option(&rest, "--snapshot")?;
++            if !rest.is_empty() {
++                return Err("ack takes only --epoch and --snapshot".into());
++            }
++            let epoch = epoch
++                .ok_or("ack needs --epoch N")?
++                .parse::<i64>()
++                .map_err(|_| "--epoch must be a number")?;
++            let snapshot_sha256 = snapshot.ok_or("ack needs --snapshot SHA256")?;
++            let pane_id = super::target::caller_pane_id()
++                .ok_or("coordinator ack runs in a herdr pane: HERDR_PANE_ID is not set")?;
++            Method::CoordinatorAck(CoordinatorAckParams {
++                pane_id,
++                epoch,
++                snapshot_sha256,
++            })
++        }
++        "handoff" if rest.first().map(String::as_str) == Some("--abort") => {
++            let (coordinator_id, extra) = take_string_option(&rest[1..], "--id")?;
++            if !extra.is_empty() {
++                return Err("handoff --abort takes only --id".into());
++            }
++            let pane_id = super::target::caller_pane_id();
++            if coordinator_id.is_none() && pane_id.is_none() {
++                return Err("handoff --abort needs --id outside a herdr pane".into());
++            }
++            Method::CoordinatorHandoffAbort(CoordinatorHandoffAbortParams {
++                pane_id,
++                coordinator_id,
++            })
++        }
++        "handoff" if rest == ["--successor"] => {
++            let pane_id = super::target::caller_pane_id().ok_or(
++                "coordinator handoff --successor runs in a herdr pane: HERDR_PANE_ID is not set",
++            )?;
++            Method::CoordinatorHandoffSuccessor(CoordinatorHandoffSuccessorParams { pane_id })
++        }
+         "handoff" => {
+             let (to_pane_id, rest) = take_string_option(rest, "--to")?;
+             let (coordinator_id, rest) = take_string_option(&rest, "--id")?;
+@@ -185,7 +261,16 @@ mod tests {
+         assert_eq!(params.to_pane_id, "w1-2");
+         assert_eq!(params.coordinator_id.as_deref(), Some("c-abcd2345"));
+         assert!(parse(&args(&["handoff", "--id", "c-abcd2345"])).is_err());
++        let Ok(Some(Method::CoordinatorHandoffAbort(params))) =
++            parse(&args(&["handoff", "--abort", "--id", "c-abcd2345"]))
++        else {
++            panic!("handoff --abort did not parse");
++        };
++        assert_eq!(params.coordinator_id.as_deref(), Some("c-abcd2345"));
++        assert!(parse(&args(&["handoff", "--abort", "--to", "w1-2"])).is_err());
+         assert!(parse(&args(&["nope"])).is_err());
++        assert!(parse(&args(&["ack", "--epoch", "x", "--snapshot", "ab"])).is_err());
++        assert!(parse(&args(&["ready"])).is_err());
+         assert!(matches!(parse(&args(&["help"])), Ok(None)));
+     }
+ }
+diff --git a/src/cli/spec.rs b/src/cli/spec.rs
+index dd2f05943..e749a599e 100644
+--- a/src/cli/spec.rs
++++ b/src/cli/spec.rs
+@@ -438,7 +438,20 @@ fn coordinator_command() -> Command {
+             Command::new("handoff")
+                 .about("Hand this pane's coordination tenure to another pane")
+                 .arg(option("to", "PANE"))
+-                .arg(option("id", "COORDINATOR_ID")),
++                .arg(option("id", "COORDINATOR_ID"))
++                .arg(flag("successor").help("Start a fresh session of the same agent to take over"))
++                .arg(flag("abort").help("Cancel a pending self-service handoff")),
++        )
++        .subcommand(
++            Command::new("ready")
++                .about("Freeze this pane's tenure for a handoff to a fresh session")
++                .arg(option("note", "FILE").value_hint(ValueHint::FilePath)),
++        )
++        .subcommand(
++            Command::new("ack")
++                .about("Take a pending handoff over from the successor's pane")
++                .arg(option("epoch", "N"))
++                .arg(option("snapshot", "SHA256")),
+         )
+ }
+ 
+diff --git a/src/cli/todo.rs b/src/cli/todo.rs
+index 21050828c..20564f3c7 100644
+--- a/src/cli/todo.rs
++++ b/src/cli/todo.rs
+@@ -834,7 +834,10 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
+                 .display()
+                 .to_string();
+             if subcommand == "stop" {
+-                Method::TodoStop(TodoStopParams { cwd })
++                Method::TodoStop(TodoStopParams {
++                    caller_pane_id: super::target::caller_pane_id(),
++                    cwd,
++                })
+             } else {
+                 let pane = super::target::caller_pane_id();
+                 Method::TodoNext(TodoNextParams {
+@@ -929,6 +932,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
+                         return Err("grant --revoke takes --operation, --hash and --repo".into());
+                     };
+                     Method::TodoRevoke(TodoRevokeParams {
++                        caller_pane_id: super::target::caller_pane_id(),
+                         cwd,
+                         operation,
+                         hash,
+@@ -939,6 +943,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
+                         return Err("grant takes --operation, --hash and --repo".into());
+                     };
+                     Method::TodoGrant(TodoGrantParams {
++                        caller_pane_id: super::target::caller_pane_id(),
+                         cwd,
+                         operation,
+                         hash,
+diff --git a/src/cli/worker.rs b/src/cli/worker.rs
+index 1c8550aaf..586ce0538 100644
+--- a/src/cli/worker.rs
++++ b/src/cli/worker.rs
+@@ -1,12 +1,12 @@
+ use std::collections::HashMap;
+ 
+ use crate::api::schema::{
+-    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams, WorkerAnswerParams,
+-    WorkerCommandTarget, WorkerDecision, WorkerDrainAction, WorkerDrainParams,
+-    WorkerEscalateParams, WorkerEventsParams, WorkerGeneratedFile, WorkerInterruptParams,
+-    WorkerKillParams, WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams,
+-    WorkerStartChoiceParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
+-    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
++    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams,
++    WorkerAnswerFromPaneParams, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
++    WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
++    WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
++    WorkerPromptParams, WorkerRunsParams, WorkerStartChoiceParams, WorkerStartParams, WorkerTarget,
++    WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
+ };
+ 
+ const USAGE: &str =
+@@ -273,6 +273,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
+         "events" => Method::WorkerEvents(parse_events(rest)?),
+         "ack" => match rest {
+             [worker_id, seq] => Method::WorkerAck(WorkerAckParams {
++                caller_pane_id: super::target::caller_pane_id(),
+                 worker_id: worker_id.clone(),
+                 seq: seq
+                     .parse()
+@@ -306,6 +307,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
+         }
+         "prompt" => match rest {
+             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
++                caller_pane_id: super::target::caller_pane_id(),
+                 worker_id: worker_id.clone(),
+                 text: text.clone(),
+                 command_id,
+@@ -318,6 +320,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
+                 return Err("interrupt takes one worker id".into());
+             };
+             Method::WorkerInterrupt(WorkerInterruptParams {
++                caller_pane_id: super::target::caller_pane_id(),
+                 worker_id: worker_id.clone(),
+                 turn,
+                 command_id,
+@@ -352,7 +355,15 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
+                     coordinator_id,
+                     answer,
+                 }),
+-                None => Method::WorkerAnswer(answer),
++                None => match super::target::caller_pane_id() {
++                    Some(caller_pane_id) => {
++                        Method::WorkerAnswerFromPane(WorkerAnswerFromPaneParams {
++                            caller_pane_id,
++                            answer,
++                        })
++                    }
++                    None => Method::WorkerAnswer(answer),
++                },
+             }
+         }
+         "take-over" => {
+@@ -369,6 +380,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
+             let (request, rest) = take_string_option(rest, "--request")?;
+             match (rest.as_slice(), request) {
+                 ([worker_id], Some(request_id)) => Method::WorkerEscalate(WorkerEscalateParams {
++                    caller_pane_id: super::target::caller_pane_id(),
+                     worker_id: worker_id.clone(),
+                     request_id,
+                 }),
+@@ -1217,6 +1229,7 @@ mod tests {
+         assert!(matches!(
+             parse_worker_args(&args(&["interrupt", "w1", "--turn", "7"])),
+             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
++                caller_pane_id: None,
+                 turn: Some(7),
+                 ..
+             })))
+@@ -1224,6 +1237,7 @@ mod tests {
+         assert!(matches!(
+             parse_worker_args(&args(&["interrupt", "w1"])),
+             Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
++                caller_pane_id: None,
+                 turn: None,
+                 ..
+             })))
+@@ -1337,6 +1351,7 @@ mod tests {
+         assert_eq!(
+             parse_worker_args(&args(&["ack", "w12", "40"])),
+             Ok(Some(Method::WorkerAck(WorkerAckParams {
++                caller_pane_id: None,
+                 worker_id: "w12".into(),
+                 seq: 40,
+             })))
+@@ -1509,6 +1524,7 @@ mod tests {
+         assert_eq!(
+             parse_worker_args(&args(&["escalate", "w12", "--request", "perm-1"])),
+             Ok(Some(Method::WorkerEscalate(WorkerEscalateParams {
++                caller_pane_id: None,
+                 worker_id: "w12".into(),
+                 request_id: "perm-1".into(),
+             })))
+diff --git a/src/workers/coordinator_handoff.rs b/src/workers/coordinator_handoff.rs
+new file mode 100644
+index 000000000..91840ea25
+--- /dev/null
++++ b/src/workers/coordinator_handoff.rs
+@@ -0,0 +1,1348 @@
++//! The self-service handoff of a coordination tenure to a fresh session of
++//! the same agent kind: `coordinator.ready` freezes the tenure and records
++//! the agent's note, `coordinator.handoff_successor` writes herdr's snapshot
++//! and the handoff manifest and (in the app) starts the successor, and
++//! `coordinator.ack` moves the tenure, its workers and runs to the successor
++//! in one step.
++//!
++//! The pending handoffs are written to the worker directory after every
++//! change (a temporary file and a rename) and read back when a server opens
++//! it, so a restart or a live handoff keeps the old tenure frozen and the
++//! successor's ack valid ([`WorkerSupervisor::restore_handoffs`]); the
++//! successor's pane is among the owner panes, so a restored handoff whose
++//! successor is gone aborts when the new server checks them. Nothing here
++//! is driven by a timer: a successor that exits, is blocked or reports a
++//! limit before its ack aborts the handoff
++//! ([`WorkerSupervisor::handoff_owner_event`]), `coordinator handoff
++//! --abort` aborts one by hand, and a stalled one stays visible in
++//! `coordinator status`.
++
++use std::path::{Path, PathBuf};
++
++use serde::{Deserialize, Serialize};
++use serde_json::{json, Value};
++use sha2::{Digest, Sha256};
++use tracing::warn;
++
++use super::registry::Registry;
++use super::runs::Run;
++use super::{lock, now_ms, OwnerEvent, WorkerError, WorkerSupervisor};
++use crate::api::schema::{
++    CoordinatorHandoffInfo, CoordinatorHandoffState, CoordinatorInfo, TodoRunStatus,
++};
++
++/// The version of the handoff manifest's JSON.
++pub(crate) const MANIFEST_VERSION: u32 = 1;
++/// The largest note herdr copies.
++const NOTE_MAX_BYTES: u64 = 1024 * 1024;
++
++/// The launch prompt of a successor of agent `kind`, naming the manifest:
++/// one message that invokes the `todo` skill, which each kind spells in its
++/// own way. A kind without a slash-skill invocation has none, and a handoff
++/// of it is refused before anything starts.
++pub(crate) fn launch_prompt(kind: &str, manifest: &Path) -> Option<String> {
++    let manifest = manifest.display();
++    match kind {
++        "claude" => Some(format!("/todo --handoff {manifest}")),
++        "pi" => Some(format!("/skill:todo --handoff {manifest}")),
++        _ => None,
++    }
++}
++
++/// The file of the pending handoffs and superseded sessions, in the
++/// `handoffs` directory of the worker directory.
++const STATE_FILE: &str = "pending.json";
++/// The version of [`StateFile`].
++const STATE_VERSION: u32 = 1;
++/// How many superseded sessions are kept.
++const SUPERSEDED_KEPT: usize = 50;
++
++/// What the state file holds.
++#[derive(Debug, Serialize, Deserialize)]
++struct StateFile {
++    version: u32,
++    #[serde(default)]
++    pending: Vec<Handoff>,
++    #[serde(default)]
++    superseded: Vec<Superseded>,
++}
++
++/// A session whose tenure its successor took over: the old pane and agent
++/// session, recorded so that whatever they still send is refused.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct Superseded {
++    /// The tenure that was handed over.
++    pub(crate) coordinator_id: String,
++    pub(crate) epoch: i64,
++    /// The tenure the successor holds now.
++    pub(crate) successor_coordinator_id: String,
++    /// The old pane, while it exists: cleared once it closed, so a pane id
++    /// that comes back is never fenced.
++    pub(crate) pane_id: Option<String>,
++    pub(crate) session_id: Option<String>,
++    pub(crate) at_ms: u64,
++}
++
++/// Where a handoff has come.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum Phase {
++    /// `ready` froze the tenure.
++    Frozen,
++    /// The successor's pane runs; its ack is awaited.
++    SuccessorStarted,
++}
++
++/// One tenure's pending handoff.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct Handoff {
++    pub(crate) coordinator_id: String,
++    pub(crate) epoch: i64,
++    pub(crate) old_pane: String,
++    pub(crate) note_path: PathBuf,
++    pub(crate) note_sha256: String,
++    pub(crate) phase: Phase,
++    pub(crate) kind: Option<String>,
++    pub(crate) successor_pane: Option<String>,
++    pub(crate) snapshot_sha256: Option<String>,
++}
++
++impl Handoff {
++    fn info(&self) -> CoordinatorHandoffInfo {
++        CoordinatorHandoffInfo {
++            state: match self.phase {
++                Phase::Frozen => CoordinatorHandoffState::Frozen,
++                Phase::SuccessorStarted => CoordinatorHandoffState::SuccessorStarted,
++            },
++            epoch: self.epoch,
++            successor_pane_id: self.successor_pane.clone(),
++            agent_kind: self.kind.clone(),
++            note_sha256: self.note_sha256.clone(),
++            snapshot_sha256: self.snapshot_sha256.clone(),
++        }
++    }
++}
++
++/// What [`WorkerSupervisor::handoff_prepare`] wrote: the manifest the
++/// successor's launch prompt names, and that prompt.
++#[derive(Debug, Clone)]
++pub(crate) struct Prepared {
++    pub(crate) coordinator_id: String,
++    pub(crate) prompt: String,
++}
++
++/// What an acknowledged handoff changed.
++#[derive(Debug, Clone)]
++pub(crate) struct Acked {
++    pub(crate) tenure: CoordinatorInfo,
++    /// The old coordinator's pane, whose agent session ends now.
++    pub(crate) old_pane: String,
++}
++
++/// What [`WorkerSupervisor::handoff_abort_request`] aborted.
++#[derive(Debug, Clone)]
++pub(crate) struct Aborted {
++    /// The tenure that unfroze, as it is now.
++    pub(crate) tenure: Option<CoordinatorInfo>,
++    /// The successor's pane, when the caller was not that pane itself.
++    pub(crate) close_pane: Option<String>,
++}
++
++fn sha256_hex(bytes: &[u8]) -> String {
++    Sha256::digest(bytes)
++        .iter()
++        .map(|byte| format!("{byte:02x}"))
++        .collect()
++}
++
++fn io_error(error: impl ToString) -> WorkerError {
++    WorkerError::Io(std::io::Error::other(error.to_string()))
++}
++
++/// Writes `bytes` to `path` whole: through a temporary file and a rename,
++/// so a reader never sees half of it.
++fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), WorkerError> {
++    let tmp = path.with_extension("tmp");
++    std::fs::write(&tmp, bytes)?;
++    std::fs::rename(&tmp, path)?;
++    Ok(())
++}
++
++impl WorkerSupervisor {
++    fn handoffs_dir(&self) -> Result<PathBuf, WorkerError> {
++        let dir = self.shared.dir.join("handoffs");
++        std::fs::create_dir_all(&dir)?;
++        Ok(dir)
++    }
++
++    fn state_path(&self) -> PathBuf {
++        self.shared.dir.join("handoffs").join(STATE_FILE)
++    }
++
++    /// Writes the pending handoffs and superseded sessions whole, under the
++    /// registry lock the caller holds, so the file is never older than a
++    /// state another call saw.
++    fn persist_locked(&self, registry: &Registry) -> Result<(), WorkerError> {
++        let path = self.state_path();
++        if registry.handoffs.is_empty() && registry.superseded.is_empty() && !path.exists() {
++            return Ok(());
++        }
++        let state = StateFile {
++            version: STATE_VERSION,
++            pending: registry.handoffs.values().cloned().collect(),
++            superseded: registry.superseded.clone(),
++        };
++        let bytes = serde_json::to_vec_pretty(&state).map_err(io_error)?;
++        self.handoffs_dir()?;
++        write_whole(&path, &bytes)
++    }
++
++    /// [`Self::persist_locked`] for a change that is made already: a write
++    /// that fails is logged, and the state in memory goes on.
++    fn persist_or_warn(&self, registry: &Registry) {
++        if let Err(error) = self.persist_locked(registry) {
++            warn!(%error, "cannot write the pending coordinator handoffs");
++        }
++    }
++
++    /// Reads the state file a previous server wrote, when this server opens
++    /// the worker directory. A pending handoff whose tenure is no longer the
++    /// active one at its epoch (it ended while no server ran) is dropped;
++    /// the others keep their old tenure frozen. A file that cannot be read
++    /// is logged and ignored.
++    pub(super) fn restore_handoffs(&self) {
++        let path = self.state_path();
++        let bytes = match std::fs::read(&path) {
++            Ok(bytes) => bytes,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
++            Err(error) => {
++                warn!(%error, path = %path.display(), "cannot read the pending coordinator handoffs");
++                return;
++            }
++        };
++        let state: StateFile = match serde_json::from_slice(&bytes) {
++            Ok(state) => state,
++            Err(error) => {
++                warn!(%error, path = %path.display(), "the pending coordinator handoffs are unreadable");
++                return;
++            }
++        };
++        let mut registry = lock(&self.shared.registry);
++        registry.superseded = state.superseded;
++        let mut dropped = false;
++        for handoff in state.pending {
++            let active = self
++                .tenure_store()
++                .ok()
++                .and_then(|store| store.coordinator(&handoff.coordinator_id).ok().flatten())
++                .is_some_and(|tenure| tenure.ended_at.is_none() && tenure.epoch == handoff.epoch);
++            if active {
++                registry
++                    .handoffs
++                    .insert(handoff.coordinator_id.clone(), handoff);
++            } else {
++                dropped = true;
++            }
++        }
++        if dropped {
++            self.persist_or_warn(&registry);
++        }
++    }
++
++    /// `info` with the tenure's pending handoff.
++    pub(crate) fn with_handoff(&self, mut info: CoordinatorInfo) -> CoordinatorInfo {
++        info.handoff = lock(&self.shared.registry)
++            .handoffs
++            .get(&info.coordinator_id)
++            .map(Handoff::info);
++        info
++    }
++
++    fn handoff_of_old_pane(&self, pane_id: &str) -> Option<Handoff> {
++        lock(&self.shared.registry)
++            .handoffs
++            .values()
++            .find(|handoff| handoff.old_pane == pane_id)
++            .cloned()
++    }
++
++    /// `coordinator.ready`: the tenure bound to `pane_id` freezes, with a
++    /// copy of the note at `note` (a file of at most 1 MiB) and its hash.
++    /// A frozen tenure that has no successor yet takes a new note.
++    pub(crate) fn handoff_ready(
++        &self,
++        pane_id: &str,
++        note: &Path,
++    ) -> Result<CoordinatorInfo, WorkerError> {
++        // The server reads the file as the agent named it: a relative path
++        // would be resolved against the server's directory, not the agent's.
++        if !note.is_absolute() {
++            return Err(WorkerError::Invalid(format!(
++                "the note path {} must be absolute",
++                note.display()
++            )));
++        }
++        let tenure = self.coordinator_of_pane(pane_id).ok_or_else(|| {
++            WorkerError::CoordinatorNotFound(format!(
++                "pane {pane_id} is bound to no active coordinator"
++            ))
++        })?;
++        if tenure.headless {
++            return Err(WorkerError::HandoffRefused(format!(
++                "coordinator {} is headless: it has no session to hand over",
++                tenure.coordinator_id
++            )));
++        }
++        if let Some(pending) = lock(&self.shared.registry)
++            .handoffs
++            .get(&tenure.coordinator_id)
++        {
++            if pending.phase != Phase::Frozen {
++                return Err(WorkerError::HandoffRefused(format!(
++                    "coordinator {} already has a successor started in pane {}",
++                    tenure.coordinator_id,
++                    pending.successor_pane.as_deref().unwrap_or("?")
++                )));
++            }
++        }
++        let metadata = std::fs::metadata(note).map_err(|error| {
++            WorkerError::Invalid(format!("cannot read the note {}: {error}", note.display()))
++        })?;
++        if !metadata.is_file() || metadata.len() > NOTE_MAX_BYTES {
++            return Err(WorkerError::Invalid(format!(
++                "the note {} must be a file of at most {NOTE_MAX_BYTES} bytes",
++                note.display()
++            )));
++        }
++        let bytes = std::fs::read(note)?;
++        let copy = self.handoffs_dir()?.join(format!(
++            "{}-e{}.note.md",
++            tenure.coordinator_id, tenure.epoch
++        ));
++        write_whole(&copy, &bytes)?;
++        let handoff = Handoff {
++            coordinator_id: tenure.coordinator_id.clone(),
++            epoch: tenure.epoch,
++            old_pane: pane_id.to_owned(),
++            note_path: copy,
++            note_sha256: sha256_hex(&bytes),
++            phase: Phase::Frozen,
++            kind: None,
++            successor_pane: None,
++            snapshot_sha256: None,
++        };
++        {
++            let mut registry = lock(&self.shared.registry);
++            let before = registry
++                .handoffs
++                .insert(tenure.coordinator_id.clone(), handoff);
++            if let Err(error) = self.persist_locked(&registry) {
++                // A freeze that a restart would lose is not made.
++                match before {
++                    Some(before) => registry
++                        .handoffs
++                        .insert(tenure.coordinator_id.clone(), before),
++                    None => registry.handoffs.remove(&tenure.coordinator_id),
++                };
++                return Err(error);
++            }
++        }
++        self.shared.changed.notify_all();
++        super::notify_clients();
++        Ok(self.with_handoff(tenure))
++    }
++
++    /// Herdr's own snapshot of `tenure`: its runs in flight with their last
++    /// event ids, its workers and their pending questions.
++    fn tenure_snapshot(&self, tenure: &CoordinatorInfo) -> Result<Value, WorkerError> {
++        let store = self.run_store()?;
++        let runs: Vec<Run> = store
++            .runs(Some(&tenure.repo))
++            .map_err(super::coordinators::store_error)?
++            .into_iter()
++            .filter(|run| {
++                run.owner_coordinator.as_deref() == Some(tenure.coordinator_id.as_str())
++                    && matches!(
++                        run.info.status,
++                        TodoRunStatus::Running | TodoRunStatus::Waiting | TodoRunStatus::Blocked
++                    )
++            })
++            .collect();
++        let mut run_rows = Vec::new();
++        for run in &runs {
++            let last_event = store
++                .latest_run_event(&run.info.run_id)
++                .map_err(super::coordinators::store_error)?
++                .map(|(seq, _)| seq);
++            run_rows.push(json!({
++                "run_id": run.info.run_id,
++                "item": run.info.item,
++                "status": run.info.status,
++                "attempt": run.info.attempt,
++                "worker_id": run.info.worker_id,
++                "pending_event": run.info.pending_event,
++                "last_event_id": last_event,
++            }));
++        }
++        let workers: Vec<_> = self
++            .list()
++            .into_iter()
++            .filter(|worker| {
++                worker.owner_coordinator_id.as_deref() == Some(tenure.coordinator_id.as_str())
++            })
++            .collect();
++        let worker_rows: Vec<Value> = workers
++            .iter()
++            .map(|worker| {
++                json!({
++                    "worker_id": worker.worker_id,
++                    "state": worker.state,
++                    "item": worker.item,
++                    "seq": worker.seq,
++                    "acked_seq": worker.acked_seq,
++                })
++            })
++            .collect();
++        let questions: Vec<Value> = workers
++            .iter()
++            .flat_map(|worker| {
++                worker.questions.iter().map(|question| {
++                    json!({
++                        "worker_id": worker.worker_id,
++                        "request_id": question.request_id,
++                    })
++                })
++            })
++            .collect();
++        Ok(json!({
++            "coordinator_id": tenure.coordinator_id,
++            "repository": tenure.repo,
++            "epoch": tenure.epoch,
++            "item": tenure.item,
++            "runs": run_rows,
++            "workers": worker_rows,
++            "pending_questions": questions,
++        }))
++    }
++
++    /// First half of `coordinator.handoff_successor`: checks that the
++    /// tenure bound to `pane_id` is frozen and that agent `kind` has a
++    /// launch prompt, then writes herdr's snapshot and the manifest. Starts
++    /// nothing; a refusal changes nothing.
++    pub(crate) fn handoff_prepare(
++        &self,
++        pane_id: &str,
++        kind: &str,
++    ) -> Result<Prepared, WorkerError> {
++        let handoff = self.handoff_of_old_pane(pane_id).ok_or_else(|| {
++            WorkerError::HandoffRefused(format!(
++                "pane {pane_id}'s tenure is not frozen: run `herdr coordinator ready --note FILE` first"
++            ))
++        })?;
++        if handoff.phase != Phase::Frozen {
++            return Err(WorkerError::HandoffRefused(format!(
++                "coordinator {} already has a successor in pane {}",
++                handoff.coordinator_id,
++                handoff.successor_pane.as_deref().unwrap_or("?")
++            )));
++        }
++        // Checked against the table before anything is written: fail closed.
++        if launch_prompt(kind, Path::new("/")).is_none() {
++            return Err(WorkerError::HandoffRefused(format!(
++                "agent kind {kind} cannot take a coordinator over by itself: only claude and pi \
++                 start with a skill invocation"
++            )));
++        }
++        let tenure = self
++            .coordinator_of_pane(pane_id)
++            .filter(|tenure| {
++                tenure.coordinator_id == handoff.coordinator_id && tenure.epoch == handoff.epoch
++            })
++            .ok_or_else(|| {
++                WorkerError::HandoffRefused(format!(
++                    "coordinator {} no longer holds pane {pane_id} at epoch {}",
++                    handoff.coordinator_id, handoff.epoch
++                ))
++            })?;
++        let snapshot = self.tenure_snapshot(&tenure)?;
++        let snapshot_bytes = serde_json::to_vec_pretty(&snapshot).map_err(io_error)?;
++        let snapshot_sha = sha256_hex(&snapshot_bytes);
++        let dir = self.handoffs_dir()?;
++        let stem = format!("{}-e{}", tenure.coordinator_id, tenure.epoch);
++        let snapshot_path = dir.join(format!("{stem}.snapshot.json"));
++        write_whole(&snapshot_path, &snapshot_bytes)?;
++        let manifest_path = dir.join(format!("{stem}.manifest.json"));
++        let manifest = json!({
++            "version": MANIFEST_VERSION,
++            "created_ms": now_ms(),
++            "epoch": tenure.epoch,
++            "coordinator_id": tenure.coordinator_id,
++            "repository": tenure.repo,
++            "agent_kind": kind,
++            "old_pane_id": pane_id,
++            "tenure": snapshot,
++            "snapshot": {"path": snapshot_path, "sha256": snapshot_sha},
++            "note": {"path": handoff.note_path, "sha256": handoff.note_sha256},
++        });
++        let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(io_error)?;
++        write_whole(&manifest_path, &manifest_bytes)?;
++        let prompt = launch_prompt(kind, &manifest_path).ok_or_else(|| {
++            WorkerError::HandoffRefused(format!("agent kind {kind} has no launch prompt"))
++        })?;
++        {
++            let mut registry = lock(&self.shared.registry);
++            if let Some(pending) = registry.handoffs.get_mut(&tenure.coordinator_id) {
++                pending.kind = Some(kind.to_owned());
++                pending.snapshot_sha256 = Some(snapshot_sha);
++            }
++            self.persist_or_warn(&registry);
++        }
++        Ok(Prepared {
++            coordinator_id: tenure.coordinator_id,
++            prompt,
++        })
++    }
++
++    /// Second half: the successor's agent was started in `successor_pane`.
++    pub(crate) fn handoff_successor_started(
++        &self,
++        coordinator_id: &str,
++        successor_pane: &str,
++    ) -> Result<CoordinatorInfo, WorkerError> {
++        let old_pane = {
++            let mut registry = lock(&self.shared.registry);
++            let handoff = registry.handoffs.get_mut(coordinator_id).ok_or_else(|| {
++                WorkerError::HandoffRefused(format!(
++                    "coordinator {coordinator_id} has no pending handoff"
++                ))
++            })?;
++            handoff.phase = Phase::SuccessorStarted;
++            handoff.successor_pane = Some(successor_pane.to_owned());
++            let old_pane = handoff.old_pane.clone();
++            self.persist_or_warn(&registry);
++            old_pane
++        };
++        self.shared.changed.notify_all();
++        super::notify_clients();
++        let tenure = self.coordinator_of_pane(&old_pane).ok_or_else(|| {
++            WorkerError::CoordinatorNotFound(format!("coordinator {coordinator_id} is not active"))
++        })?;
++        Ok(self.with_handoff(tenure))
++    }
++
++    /// Cancels the pending handoff of `coordinator_id`: the tenure unfreezes
++    /// and keeps its authority, and one notice tells the user why. Nothing
++    /// when there is none.
++    pub(crate) fn handoff_abort(&self, coordinator_id: &str, cause: &str) {
++        let removed = {
++            let mut registry = lock(&self.shared.registry);
++            let removed = registry.handoffs.remove(coordinator_id);
++            if removed.is_some() {
++                self.persist_or_warn(&registry);
++            }
++            removed
++        };
++        let Some(handoff) = removed else {
++            return;
++        };
++        self.shared.changed.notify_all();
++        super::notify_clients();
++        super::notify_user(super::UserNotice {
++            title: "Coordinator handoff aborted".to_owned(),
++            body: format!(
++                "{cause}; coordinator {} keeps its tenure in pane {}",
++                handoff.coordinator_id, handoff.old_pane
++            ),
++            pane_id: Some(handoff.old_pane),
++        });
++    }
++
++    /// `coordinator.handoff --abort`: cancels the pending handoff named by
++    /// `coordinator_id`, else the one `pane_id` is the old or the successor
++    /// pane of. The tenure unfreezes and keeps its authority; one notice
++    /// says so. The successor's pane is returned for the caller to close
++    /// unless it is the successor itself asking.
++    pub(crate) fn handoff_abort_request(
++        &self,
++        pane_id: Option<&str>,
++        coordinator_id: Option<&str>,
++    ) -> Result<Aborted, WorkerError> {
++        let found = {
++            let registry = lock(&self.shared.registry);
++            registry
++                .handoffs
++                .values()
++                .find(|handoff| match (coordinator_id, pane_id) {
++                    (Some(id), _) => handoff.coordinator_id == id,
++                    (None, Some(pane)) => {
++                        handoff.old_pane == pane || handoff.successor_pane.as_deref() == Some(pane)
++                    }
++                    (None, None) => false,
++                })
++                .cloned()
++        };
++        let handoff = found.ok_or_else(|| {
++            WorkerError::HandoffRefused(match (coordinator_id, pane_id) {
++                (None, None) => "coordinator handoff --abort needs a pane or --id".to_owned(),
++                (Some(id), _) => format!("coordinator {id} has no pending handoff"),
++                (None, Some(pane)) => format!("pane {pane} is part of no pending handoff"),
++            })
++        })?;
++        let by_successor = pane_id.is_some()
++            && coordinator_id.is_none()
++            && handoff.successor_pane.as_deref() == pane_id;
++        let cause = if by_successor {
++            "the successor aborted it"
++        } else {
++            "it was aborted by hand"
++        };
++        self.handoff_abort(&handoff.coordinator_id, cause);
++        Ok(Aborted {
++            tenure: self
++                .coordinator_of_pane(&handoff.old_pane)
++                .map(|tenure| self.with_handoff(tenure)),
++            close_pane: if by_successor {
++                None
++            } else {
++                handoff.successor_pane
++            },
++        })
++    }
++
++    /// `coordinator.ack`: the successor in `pane_id` takes the tenure over.
++    /// `epoch` and `snapshot_sha256` must be the pending handoff's, and the
++    /// caller the pane its successor was started in; anything else is
++    /// refused and changes nothing. In one step, under one registry lock,
++    /// the epoch advances, the tenure, its workers and runs move to the
++    /// successor ([`Self::coordinator_handoff_locked`]), the handoff is
++    /// removed and the old pane and agent session are recorded as
++    /// superseded. The caller closes the old pane.
++    pub(crate) fn handoff_ack(
++        &self,
++        pane_id: &str,
++        epoch: i64,
++        snapshot_sha256: &str,
++        to_session: Option<&str>,
++        to_workspace: Option<&str>,
++    ) -> Result<Acked, WorkerError> {
++        let mut registry = lock(&self.shared.registry);
++        let pending = registry
++            .handoffs
++            .values()
++            .find(|handoff| handoff.successor_pane.as_deref() == Some(pane_id))
++            .cloned();
++        let handoff = pending.ok_or_else(|| {
++            WorkerError::HandoffRefused(format!(
++                "no pending handoff started a successor in pane {pane_id}"
++            ))
++        })?;
++        if handoff.phase != Phase::SuccessorStarted
++            || handoff.epoch != epoch
++            || handoff.snapshot_sha256.as_deref() != Some(snapshot_sha256)
++        {
++            return Err(WorkerError::HandoffRefused(format!(
++                "the ack does not match coordinator {}'s pending handoff (epoch {}); read its \
++                 manifest again",
++                handoff.coordinator_id, handoff.epoch
++            )));
++        }
++        let current = self
++            .coordinator_of_pane(&handoff.old_pane)
++            .filter(|tenure| {
++                tenure.coordinator_id == handoff.coordinator_id && tenure.epoch == handoff.epoch
++            })
++            .ok_or_else(|| {
++                WorkerError::HandoffRefused(format!(
++                    "coordinator {} is no longer the active tenure at epoch {}",
++                    handoff.coordinator_id, handoff.epoch
++                ))
++            })?;
++        let tenure = self.coordinator_handoff_locked(
++            &mut registry,
++            Some(&current.coordinator_id),
++            None,
++            pane_id,
++            to_session,
++            to_workspace,
++        )?;
++        registry.handoffs.remove(&handoff.coordinator_id);
++        registry.superseded.push(Superseded {
++            coordinator_id: current.coordinator_id.clone(),
++            epoch: current.epoch,
++            successor_coordinator_id: tenure.coordinator_id.clone(),
++            pane_id: Some(handoff.old_pane.clone()),
++            session_id: current.session_id.clone(),
++            at_ms: now_ms(),
++        });
++        let excess = registry.superseded.len().saturating_sub(SUPERSEDED_KEPT);
++        registry.superseded.drain(..excess);
++        self.persist_or_warn(&registry);
++        drop(registry);
++        self.shared.changed.notify_all();
++        super::notify_clients();
++        Ok(Acked {
++            tenure,
++            old_pane: handoff.old_pane,
++        })
++    }
++
++    /// The old pane of an acknowledged handoff is gone: it can send nothing
++    /// any more, and its id is free again.
++    pub(crate) fn handoff_old_pane_closed(&self, pane_id: &str) {
++        let mut registry = lock(&self.shared.registry);
++        let mut changed = false;
++        for superseded in &mut registry.superseded {
++            if superseded.pane_id.as_deref() == Some(pane_id) {
++                superseded.pane_id = None;
++                changed = true;
++            }
++        }
++        if changed {
++            self.persist_or_warn(&registry);
++        }
++    }
++
++    /// An agent event of pane `pane_id` as far as pending handoffs care: a
++    /// successor that exits, loses its pane, is blocked or reports a limit
++    /// before its ack aborts the handoff, and so does the old coordinator's
++    /// pane closing or its agent exiting. A superseded pane that closes
++    /// needs no fence any more.
++    pub(super) fn handoff_owner_event(&self, pane_id: &str, event: OwnerEvent) {
++        let gone = matches!(event, OwnerEvent::PaneClosed | OwnerEvent::AgentExited);
++        if event == OwnerEvent::PaneClosed {
++            self.handoff_old_pane_closed(pane_id);
++        }
++        let aborts: Vec<(String, &'static str)> = lock(&self.shared.registry)
++            .handoffs
++            .values()
++            .filter_map(|handoff| {
++                let successor = handoff.successor_pane.as_deref() == Some(pane_id);
++                if successor && gone {
++                    Some((
++                        handoff.coordinator_id.clone(),
++                        "the successor exited before it acknowledged",
++                    ))
++                } else if successor && event == OwnerEvent::Limited {
++                    Some((
++                        handoff.coordinator_id.clone(),
++                        "the successor reported a limit before it acknowledged",
++                    ))
++                } else if successor && event == OwnerEvent::Blocked {
++                    Some((
++                        handoff.coordinator_id.clone(),
++                        "the successor is blocked on a question or a dialog before it acknowledged",
++                    ))
++                } else if handoff.old_pane == pane_id && gone {
++                    Some((
++                        handoff.coordinator_id.clone(),
++                        "the coordinator's own session ended",
++                    ))
++                } else {
++                    None
++                }
++            })
++            .collect();
++        for (coordinator_id, cause) in aborts {
++            self.handoff_abort(&coordinator_id, cause);
++        }
++    }
++
++    /// The panes of started successors and of superseded sessions that may
++    /// still run, which [`Self::owner_panes`] lists so their closing is
++    /// reported.
++    pub(super) fn handoff_successor_panes(&self) -> Vec<String> {
++        let registry = lock(&self.shared.registry);
++        registry
++            .handoffs
++            .values()
++            .filter_map(|handoff| handoff.successor_pane.clone())
++            .chain(
++                registry
++                    .superseded
++                    .iter()
++                    .filter_map(|superseded| superseded.pane_id.clone()),
++            )
++            .collect()
++    }
++
++    fn frozen_error(coordinator_id: &str) -> WorkerError {
++        WorkerError::CoordinatorFrozen(format!(
++            "coordinator {coordinator_id} is frozen for a handoff to a fresh session; its \
++             successor takes over with `herdr coordinator ack`, or `herdr coordinator handoff \
++             --abort` ends the handoff and it goes on"
++        ))
++    }
++
++    fn superseded_error(superseded: &Superseded) -> WorkerError {
++        WorkerError::CoordinatorSuperseded(format!(
++            "this session's coordinator tenure {} was handed over to {}; it has no authority \
++             over the repository's workers and runs any more",
++            superseded.coordinator_id, superseded.successor_coordinator_id
++        ))
++    }
++
++    /// Refuses tenure `coordinator_id` (when given) while it is frozen.
++    pub(crate) fn fence_tenure(&self, coordinator_id: Option<&str>) -> Result<(), WorkerError> {
++        match coordinator_id {
++            Some(id) if lock(&self.shared.registry).handoffs.contains_key(id) => {
++                Err(Self::frozen_error(id))
++            }
++            _ => Ok(()),
++        }
++    }
++
++    /// Refuses a mutation sent from `caller` (a pane id; none for a caller
++    /// outside any pane, such as the user's own shell) while the tenure
++    /// bound to that pane is frozen, and always from a pane whose tenure was
++    /// handed over. By caller, never by owner: the user's own commands about
++    /// a frozen coordinator's workers stay allowed. Decided under one
++    /// registry lock, so an ack cannot land between the checks.
++    pub(crate) fn fence_pane(&self, caller: Option<&str>) -> Result<(), WorkerError> {
++        let Some(pane_id) = caller.filter(|pane| !pane.trim().is_empty()) else {
++            return Ok(());
++        };
++        let registry = lock(&self.shared.registry);
++        if let Some(superseded) = registry
++            .superseded
++            .iter()
++            .find(|superseded| superseded.pane_id.as_deref() == Some(pane_id))
++        {
++            return Err(Self::superseded_error(superseded));
++        }
++        if registry.handoffs.is_empty() {
++            return Ok(());
++        }
++        if let Some(handoff) = registry
++            .handoffs
++            .values()
++            .find(|handoff| handoff.old_pane == pane_id)
++        {
++            return Err(Self::frozen_error(&handoff.coordinator_id));
++        }
++        match self.coordinator_of_pane(pane_id) {
++            Some(tenure) if registry.handoffs.contains_key(&tenure.coordinator_id) => {
++                Err(Self::frozen_error(&tenure.coordinator_id))
++            }
++            _ => Ok(()),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn scratch(name: &str) -> (PathBuf, WorkerSupervisor, PathBuf) {
++        let root = std::env::temp_dir().join(format!(
++            "herdr-handoff-{name}-{}-{}",
++            std::process::id(),
++            now_ms()
++        ));
++        let _ = std::fs::remove_dir_all(&root);
++        std::fs::create_dir_all(&root).unwrap();
++        let note = root.join("note.md");
++        std::fs::write(&note, "continue with the queue\n").unwrap();
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        (root, supervisor, note)
++    }
++
++    fn code(result: Result<impl std::fmt::Debug, WorkerError>) -> &'static str {
++        result.expect_err("expected a refusal").code()
++    }
++
++    fn state(supervisor: &WorkerSupervisor, pane: &str) -> Option<CoordinatorHandoffState> {
++        supervisor
++            .with_handoff(supervisor.coordinator_of_pane(pane)?)
++            .handoff
++            .map(|handoff| handoff.state)
++    }
++
++    /// Starts a tenure in p1 and runs it to `SuccessorStarted` in p2.
++    fn started(supervisor: &WorkerSupervisor, note: &Path) -> (CoordinatorInfo, String) {
++        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        supervisor.handoff_ready("p1", note).unwrap();
++        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
++        supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        let sha = supervisor
++            .with_handoff(supervisor.coordinator_of_pane("p1").unwrap())
++            .handoff
++            .unwrap()
++            .snapshot_sha256
++            .unwrap();
++        (tenure, sha)
++    }
++
++    #[test]
++    fn the_launch_prompt_table_has_claude_and_pi_only() {
++        let manifest = Path::new("/state/m.json");
++        assert_eq!(
++            launch_prompt("claude", manifest).as_deref(),
++            Some("/todo --handoff /state/m.json")
++        );
++        assert_eq!(
++            launch_prompt("pi", manifest).as_deref(),
++            Some("/skill:todo --handoff /state/m.json")
++        );
++        for kind in ["codex", "agy", "gemini", "", "Claude"] {
++            assert_eq!(launch_prompt(kind, manifest), None, "{kind}");
++        }
++    }
++
++    #[test]
++    fn a_handoff_goes_from_active_through_frozen_and_started_to_acked() {
++        let (root, supervisor, note) = scratch("full");
++        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        assert_eq!(state(&supervisor, "p1"), None);
++        supervisor.fence_pane(Some("p1")).unwrap();
++
++        let ready = supervisor.handoff_ready("p1", &note).unwrap();
++        assert_eq!(
++            ready.handoff.unwrap().state,
++            CoordinatorHandoffState::Frozen
++        );
++        assert_eq!(
++            code(supervisor.fence_pane(Some("p1"))),
++            "coordinator_frozen"
++        );
++        assert_eq!(
++            code(supervisor.fence_tenure(Some(&tenure.coordinator_id))),
++            "coordinator_frozen"
++        );
++        // Other panes are not fenced.
++        supervisor.fence_pane(Some("p9")).unwrap();
++        // No successor yet: nothing to ack.
++        assert_eq!(
++            code(supervisor.handoff_ack("p2", 1, "x", None, None)),
++            "handoff_refused"
++        );
++
++        let prepared = supervisor.handoff_prepare("p1", "claude").unwrap();
++        assert!(prepared.prompt.starts_with("/todo --handoff "));
++        let manifest_path = prepared.prompt.trim_start_matches("/todo --handoff ");
++        let manifest: Value =
++            serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
++        assert_eq!(manifest["version"], MANIFEST_VERSION);
++        assert_eq!(manifest["epoch"], 1);
++        assert_eq!(manifest["agent_kind"], "claude");
++        assert_eq!(manifest["old_pane_id"], "p1");
++        let snapshot_path = manifest["snapshot"]["path"].as_str().unwrap();
++        let snapshot_sha = manifest["snapshot"]["sha256"].as_str().unwrap().to_owned();
++        assert_eq!(
++            sha256_hex(&std::fs::read(snapshot_path).unwrap()),
++            snapshot_sha
++        );
++        let note_copy = manifest["note"]["path"].as_str().unwrap();
++        assert_eq!(
++            sha256_hex(&std::fs::read(note_copy).unwrap()),
++            manifest["note"]["sha256"].as_str().unwrap()
++        );
++        assert_ne!(Path::new(note_copy), note.as_path());
++
++        let pending = supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        let pending = pending.handoff.unwrap();
++        assert_eq!(pending.state, CoordinatorHandoffState::SuccessorStarted);
++        assert_eq!(pending.successor_pane_id.as_deref(), Some("p2"));
++        assert_eq!(
++            state(&supervisor, "p1"),
++            Some(CoordinatorHandoffState::SuccessorStarted)
++        );
++
++        let acked = supervisor
++            .handoff_ack("p2", 1, &snapshot_sha, None, None)
++            .unwrap();
++        assert_eq!(acked.old_pane, "p1");
++        assert_eq!(acked.tenure.epoch, 2);
++        assert_eq!(acked.tenure.pane_id.as_deref(), Some("p2"));
++        assert!(supervisor.coordinator_of_pane("p1").is_none());
++        assert_eq!(state(&supervisor, "p2"), None);
++        supervisor.fence_pane(Some("p2")).unwrap();
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_stale_or_wrong_ack_is_refused_and_changes_nothing() {
++        let (root, supervisor, note) = scratch("stale");
++        let (tenure, sha) = started(&supervisor, &note);
++        let wrong_sha = "0".repeat(64);
++        for (pane, epoch, sha) in [
++            ("p2", 2, sha.as_str()),
++            ("p2", 0, sha.as_str()),
++            ("p2", 1, wrong_sha.as_str()),
++            ("p1", 1, sha.as_str()),
++            ("p3", 1, sha.as_str()),
++        ] {
++            assert_eq!(
++                code(supervisor.handoff_ack(pane, epoch, sha, None, None)),
++                "handoff_refused",
++                "{pane} {epoch}"
++            );
++            let current = supervisor.coordinator_of_pane("p1").unwrap();
++            assert_eq!(current.coordinator_id, tenure.coordinator_id);
++            assert_eq!(current.epoch, 1);
++            assert_eq!(
++                state(&supervisor, "p1"),
++                Some(CoordinatorHandoffState::SuccessorStarted)
++            );
++        }
++        // The right ack still works afterwards, once.
++        supervisor.handoff_ack("p2", 1, &sha, None, None).unwrap();
++        assert_eq!(
++            code(supervisor.handoff_ack("p2", 1, &sha, None, None)),
++            "handoff_refused"
++        );
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn ready_needs_a_tenure_a_readable_note_and_no_started_successor() {
++        let (root, supervisor, note) = scratch("ready");
++        assert_eq!(
++            code(supervisor.handoff_ready("p1", &note)),
++            "coordinator_not_found"
++        );
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        assert_eq!(
++            code(supervisor.handoff_ready("p1", &root.join("missing.md"))),
++            "invalid_request"
++        );
++        assert_eq!(state(&supervisor, "p1"), None);
++        assert_eq!(
++            code(supervisor.handoff_ready("p1", &root)),
++            "invalid_request"
++        );
++        // Frozen: a new note replaces the old one.
++        supervisor.handoff_ready("p1", &note).unwrap();
++        supervisor.handoff_ready("p1", &note).unwrap();
++        let prepared = supervisor.handoff_prepare("p1", "pi").unwrap();
++        assert!(prepared.prompt.starts_with("/skill:todo --handoff "));
++        supervisor
++            .handoff_successor_started(&prepared.coordinator_id, "p2")
++            .unwrap();
++        assert_eq!(
++            code(supervisor.handoff_ready("p1", &note)),
++            "handoff_refused"
++        );
++        assert_eq!(
++            code(supervisor.handoff_prepare("p1", "pi")),
++            "handoff_refused"
++        );
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn handoff_successor_needs_a_frozen_tenure_and_a_known_kind() {
++        let (root, supervisor, note) = scratch("kind");
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        assert_eq!(
++            code(supervisor.handoff_prepare("p1", "claude")),
++            "handoff_refused"
++        );
++        supervisor.handoff_ready("p1", &note).unwrap();
++        for kind in ["codex", "agy", "droid", ""] {
++            assert_eq!(
++                code(supervisor.handoff_prepare("p1", kind)),
++                "handoff_refused"
++            );
++        }
++        // Nothing was written, and the tenure is still frozen, unchanged.
++        assert!(!root
++            .join("workers/handoffs")
++            .read_dir()
++            .unwrap()
++            .any(|entry| {
++                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
++                name.ends_with(".manifest.json") || name.ends_with(".snapshot.json")
++            }));
++        assert_eq!(
++            state(&supervisor, "p1"),
++            Some(CoordinatorHandoffState::Frozen)
++        );
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// The successor ends before its ack, in each of the ways herdr hears
++    /// of: the old tenure unfreezes, keeps its authority, and one notice
++    /// says so; the old pane's own end drops the handoff too.
++    #[test]
++    fn an_aborted_handoff_unfreezes_the_old_tenure_with_one_notice() {
++        for (name, pane, event, started_first) in [
++            ("exit", "p2", OwnerEvent::AgentExited, true),
++            ("closed", "p2", OwnerEvent::PaneClosed, true),
++            ("limit", "p2", OwnerEvent::Limited, true),
++            ("blocked", "p2", OwnerEvent::Blocked, true),
++            ("old-closed", "p1", OwnerEvent::PaneClosed, true),
++            ("frozen-limit", "p2", OwnerEvent::Limited, false),
++        ] {
++            let (root, supervisor, note) = scratch(name);
++            let tenure = if started_first {
++                started(&supervisor, &note).0
++            } else {
++                let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
++                supervisor.handoff_ready("p1", &note).unwrap();
++                tenure
++            };
++            let _ = crate::workers::take_user_notices();
++            supervisor.handoff_owner_event(pane, event);
++            let aborted = !started_first && pane == "p2";
++            if aborted {
++                // A frozen tenure has no successor: the event is not about it.
++                assert_eq!(
++                    state(&supervisor, "p1"),
++                    Some(CoordinatorHandoffState::Frozen)
++                );
++                continue;
++            }
++            let notices: Vec<_> = crate::workers::take_user_notices()
++                .into_iter()
++                .filter(|notice| notice.body.contains(&tenure.coordinator_id))
++                .collect();
++            assert_eq!(notices.len(), 1, "{name}");
++            assert_eq!(notices[0].title, "Coordinator handoff aborted");
++            supervisor.fence_pane(Some("p1")).unwrap();
++            if pane == "p2" {
++                let current = supervisor.coordinator_of_pane("p1").unwrap();
++                assert_eq!(current.epoch, 1, "{name}");
++                assert_eq!(current.handoff, None);
++            }
++            assert_eq!(
++                code(supervisor.handoff_ack("p2", 1, "x", None, None)),
++                "handoff_refused"
++            );
++            // Aborting again is silent.
++            supervisor.handoff_owner_event(pane, event);
++            assert!(crate::workers::take_user_notices().is_empty(), "{name}");
++            let _ = std::fs::remove_dir_all(root);
++        }
++    }
++
++    #[test]
++    fn ending_a_tenure_drops_its_pending_handoff() {
++        let (root, supervisor, note) = scratch("end");
++        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        supervisor.handoff_ready("p1", &note).unwrap();
++        supervisor
++            .coordinator_end(&tenure.coordinator_id, "ended", None)
++            .unwrap();
++        supervisor
++            .fence_tenure(Some(&tenure.coordinator_id))
++            .unwrap();
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_relative_note_is_refused_by_the_server() {
++        let (root, supervisor, _) = scratch("relative");
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        assert_eq!(
++            code(supervisor.handoff_ready("p1", Path::new("note.md"))),
++            "invalid_request"
++        );
++        assert_eq!(state(&supervisor, "p1"), None);
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// After the ack the old pane and session are superseded: refused with
++    /// their own code until the pane closes, and the successor is not.
++    #[test]
++    fn the_old_pane_is_fenced_as_superseded_until_it_closes() {
++        let (root, supervisor, note) = scratch("superseded");
++        let (tenure, sha) = started(&supervisor, &note);
++        supervisor
++            .tenure_store()
++            .unwrap()
++            .transaction(|_| Ok(()))
++            .unwrap();
++        let acked = supervisor
++            .handoff_ack("p2", 1, &sha, Some("s2"), None)
++            .unwrap();
++        assert_eq!(acked.old_pane, "p1");
++        assert_eq!(
++            code(supervisor.fence_pane(Some("p1"))),
++            "coordinator_superseded"
++        );
++        supervisor.fence_pane(Some("p2")).unwrap();
++        supervisor.fence_pane(None).unwrap();
++        {
++            let registry = lock(&supervisor.shared.registry);
++            let superseded = &registry.superseded[0];
++            assert_eq!(superseded.coordinator_id, tenure.coordinator_id);
++            assert_eq!(
++                superseded.successor_coordinator_id,
++                acked.tenure.coordinator_id
++            );
++            assert_eq!(superseded.epoch, 1);
++        }
++        // The old pane is still among the panes whose closing is reported.
++        assert!(supervisor.owner_panes().contains(&"p1".to_owned()));
++        supervisor.owner_event("p1", OwnerEvent::PaneClosed, "");
++        supervisor.fence_pane(Some("p1")).unwrap();
++        assert!(!supervisor.owner_panes().contains(&"p1".to_owned()));
++        // The superseded record survives a restart.
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(lock(&supervisor.shared.registry).superseded.len(), 1);
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_pane_that_cannot_close_stays_fenced() {
++        let (root, supervisor, note) = scratch("stays-fenced");
++        let (_, sha) = started(&supervisor, &note);
++        supervisor.handoff_ack("p2", 1, &sha, None, None).unwrap();
++        // No pane-closed event came: the fence holds, also after a restart.
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(
++            code(supervisor.fence_pane(Some("p1"))),
++            "coordinator_superseded"
++        );
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// A restart or a live handoff keeps the tenure frozen and the
++    /// successor's ack valid.
++    #[test]
++    fn a_restored_pending_handoff_accepts_the_ack() {
++        let (root, supervisor, note) = scratch("restore-ack");
++        let (_, sha) = started(&supervisor, &note);
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(
++            state(&supervisor, "p1"),
++            Some(CoordinatorHandoffState::SuccessorStarted)
++        );
++        assert_eq!(
++            code(supervisor.fence_pane(Some("p1"))),
++            "coordinator_frozen"
++        );
++        // The successor's pane is watched again, so its exit is reported.
++        assert!(supervisor.owner_panes().contains(&"p2".to_owned()));
++        // A wrong ack changes nothing, the right one moves the tenure.
++        assert_eq!(
++            code(supervisor.handoff_ack("p2", 1, &"0".repeat(64), None, None)),
++            "handoff_refused"
++        );
++        let acked = supervisor.handoff_ack("p2", 1, &sha, None, None).unwrap();
++        assert_eq!(acked.tenure.epoch, 2);
++        // The state file no longer holds the handoff.
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(state(&supervisor, "p2"), None);
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_restored_handoff_whose_successor_pane_is_gone_aborts_with_one_notice() {
++        let (root, supervisor, note) = scratch("restore-gone");
++        let (tenure, _) = started(&supervisor, &note);
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        let _ = crate::workers::take_user_notices();
++        supervisor.owners_at_start(|pane| match pane {
++            "p2" => Some(OwnerEvent::PaneClosed),
++            _ => None,
++        });
++        let notices: Vec<_> = crate::workers::take_user_notices()
++            .into_iter()
++            .filter(|notice| notice.body.contains(&tenure.coordinator_id))
++            .collect();
++        assert_eq!(notices.len(), 1);
++        assert_eq!(notices[0].title, "Coordinator handoff aborted");
++        supervisor.fence_pane(Some("p1")).unwrap();
++        // The abort is persisted too.
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(state(&supervisor, "p1"), None);
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_restored_frozen_tenure_that_ended_meanwhile_is_dropped() {
++        let (root, supervisor, note) = scratch("restore-ended");
++        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        supervisor.handoff_ready("p1", &note).unwrap();
++        drop(supervisor);
++        // The tenure is gone when the server starts again: its state names
++        // a tenure no one holds.
++        let file = root.join("workers").join("handoffs").join("pending.json");
++        let text = std::fs::read_to_string(&file).unwrap();
++        assert!(text.contains(&tenure.coordinator_id));
++        std::fs::write(&file, text.replace(&tenure.coordinator_id, "c-gone0000")).unwrap();
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert!(lock(&supervisor.shared.registry).handoffs.is_empty());
++        supervisor.fence_pane(Some("p1")).unwrap();
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_restored_frozen_tenure_can_still_be_aborted_or_given_a_successor() {
++        let (root, supervisor, note) = scratch("restore-frozen");
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        supervisor.handoff_ready("p1", &note).unwrap();
++        drop(supervisor);
++        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
++        assert_eq!(
++            state(&supervisor, "p1"),
++            Some(CoordinatorHandoffState::Frozen)
++        );
++        supervisor.handoff_prepare("p1", "claude").unwrap();
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// `handoff --abort` from each place that may send it, and its refusals.
++    #[test]
++    fn a_handoff_is_aborted_by_hand_from_either_pane_or_by_id() {
++        for (name, pane, id, closes) in [
++            ("old", Some("p1"), None, Some("p2")),
++            ("successor", Some("p2"), None, None),
++            ("id", None, Some(true), Some("p2")),
++        ] {
++            let (root, supervisor, note) = scratch(name);
++            let (tenure, sha) = started(&supervisor, &note);
++            let _ = crate::workers::take_user_notices();
++            let id = id.map(|_| tenure.coordinator_id.as_str());
++            let aborted = supervisor.handoff_abort_request(pane, id).unwrap();
++            assert_eq!(aborted.close_pane.as_deref(), closes, "{name}");
++            let current = aborted.tenure.unwrap();
++            assert_eq!(current.epoch, 1);
++            assert_eq!(current.handoff, None);
++            assert_eq!(crate::workers::take_user_notices().len(), 1, "{name}");
++            supervisor.fence_pane(Some("p1")).unwrap();
++            assert_eq!(
++                code(supervisor.handoff_ack("p2", 1, &sha, None, None)),
++                "handoff_refused"
++            );
++            // Nothing left to abort.
++            assert_eq!(
++                code(supervisor.handoff_abort_request(pane, id)),
++                "handoff_refused"
++            );
++            let _ = std::fs::remove_dir_all(root);
++        }
++        let (root, supervisor, _) = scratch("abort-none");
++        assert_eq!(
++            code(supervisor.handoff_abort_request(None, None)),
++            "handoff_refused"
++        );
++        assert_eq!(
++            code(supervisor.handoff_abort_request(Some("p7"), None)),
++            "handoff_refused"
++        );
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn a_frozen_handoff_with_no_successor_is_aborted_from_the_old_pane() {
++        let (root, supervisor, note) = scratch("abort-frozen");
++        supervisor.coordinator_start("/repo", "p1", None).unwrap();
++        supervisor.handoff_ready("p1", &note).unwrap();
++        let aborted = supervisor.handoff_abort_request(Some("p1"), None).unwrap();
++        assert_eq!(aborted.close_pane, None);
++        supervisor.fence_pane(Some("p1")).unwrap();
++        let _ = std::fs::remove_dir_all(root);
++    }
++}
+diff --git a/src/workers/coordinators.rs b/src/workers/coordinators.rs
+index f83675b1e..22c9ee096 100644
+--- a/src/workers/coordinators.rs
++++ b/src/workers/coordinators.rs
+@@ -315,6 +315,7 @@ pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
+         session_id: tenure.session_id,
+         headless: tenure.headless,
+         worker_id: tenure.worker_id,
++        handoff: None,
+     }
+ }
+ 
+@@ -458,6 +459,8 @@ impl WorkerSupervisor {
+         let tenure = ended.ok_or_else(|| {
+             WorkerError::CoordinatorNotFound(format!("coordinator {id} not found"))
+         })?;
++        // A tenure that ends has nothing left to hand over.
++        lock(&self.shared.registry).handoffs.remove(id);
+         // Wakes a `worker.events` wait on the tenure, which answers once it
+         // has ended: through the registry lock, which that wait holds from
+         // its check to its block, so the wake cannot fall in between.
+@@ -477,7 +480,7 @@ impl WorkerSupervisor {
+             .active_coordinators(repo)
+             .map_err(store_error)?
+             .into_iter()
+-            .map(info)
++            .map(|tenure| self.with_handoff(info(tenure)))
+             .collect())
+     }
+ 
+@@ -704,8 +707,35 @@ impl WorkerSupervisor {
+         to_session: Option<&str>,
+         to_workspace: Option<&str>,
+     ) -> Result<CoordinatorInfo, WorkerError> {
+-        let store = self.tenure_store()?;
+         let mut registry = lock(&self.shared.registry);
++        let started = self.coordinator_handoff_locked(
++            &mut registry,
++            coordinator_id,
++            from_pane,
++            to_pane,
++            to_session,
++            to_workspace,
++        );
++        drop(registry);
++        self.shared.changed.notify_all();
++        notify_clients();
++        started
++    }
++
++    /// [`Self::coordinator_handoff`] under the registry lock the caller
++    /// holds, so a caller that must change more in the same step (the ack of
++    /// a self-service handoff) leaves no window between them. The caller
++    /// wakes waiters and clients once it let go of the lock.
++    pub(super) fn coordinator_handoff_locked(
++        &self,
++        registry: &mut Registry,
++        coordinator_id: Option<&str>,
++        from_pane: Option<&str>,
++        to_pane: &str,
++        to_session: Option<&str>,
++        to_workspace: Option<&str>,
++    ) -> Result<CoordinatorInfo, WorkerError> {
++        let store = self.tenure_store()?;
+         let at = now_ms();
+         let outcome = store
+             .transaction(|tx| {
+@@ -754,16 +784,12 @@ impl WorkerSupervisor {
+                     workspace: to_workspace,
+                     coordinator_id: Some(&started.id),
+                 };
+-                let (moved, staged) =
+-                    Self::move_owned(&registry, tx, &from.id, &owner, &cause, at)?;
++                let (moved, staged) = Self::move_owned(registry, tx, &from.id, &owner, &cause, at)?;
+                 Ok(Ok((started, moved, staged)))
+             })
+             .map_err(store_error)?;
+         let (started, moved, staged) = outcome?;
+-        Self::settle_moves(&mut registry, staged, &moved, at);
+-        drop(registry);
+-        self.shared.changed.notify_all();
+-        notify_clients();
++        Self::settle_moves(registry, staged, &moved, at);
+         Ok(info(started))
+     }
+ 
+diff --git a/src/workers/error.rs b/src/workers/error.rs
+index a288c2e7b..64fc81636 100644
+--- a/src/workers/error.rs
++++ b/src/workers/error.rs
+@@ -71,6 +71,15 @@ pub(crate) enum WorkerError {
+     /// A `worker.answer_as` from a tenure that no longer owns the worker;
+     /// the message names the owner. The answer was not applied.
+     OwnershipTransferred(String),
++    /// A mutation from a coordinator whose tenure is frozen for a handoff;
++    /// the message names the tenure.
++    CoordinatorFrozen(String),
++    /// A mutation from a session whose tenure was handed over to its
++    /// successor; the message names the successor's tenure.
++    CoordinatorSuperseded(String),
++    /// A self-service handoff step that is not allowed now (`coordinator.ready`,
++    /// `coordinator.handoff_successor`, `coordinator.ack`); the message says why.
++    HandoffRefused(String),
+     Io(std::io::Error),
+ }
+ 
+@@ -106,6 +115,9 @@ const WORKER_ERROR_CODES: &[&str] = &[
+     "grant_needs_user",
+     "finding_ack_refused",
+     "ownership_transferred",
++    "coordinator_frozen",
++    "coordinator_superseded",
++    "handoff_refused",
+ ];
+ 
+ impl WorkerError {
+@@ -142,6 +154,9 @@ impl WorkerError {
+             Self::GrantNeedsUser(_) => "grant_needs_user",
+             Self::FindingAckRefused(_) => "finding_ack_refused",
+             Self::OwnershipTransferred(_) => "ownership_transferred",
++            Self::CoordinatorFrozen(_) => "coordinator_frozen",
++            Self::CoordinatorSuperseded(_) => "coordinator_superseded",
++            Self::HandoffRefused(_) => "handoff_refused",
+         }
+     }
+ 
+@@ -188,6 +203,9 @@ impl std::fmt::Display for WorkerError {
+             | Self::GrantRequired(message)
+             | Self::GrantNeedsUser(message)
+             | Self::FindingAckRefused(message)
++            | Self::CoordinatorFrozen(message)
++            | Self::CoordinatorSuperseded(message)
++            | Self::HandoffRefused(message)
+             | Self::OwnershipTransferred(message) => f.write_str(message),
+             Self::Io(error) => write!(f, "{error}"),
+         }
+diff --git a/src/workers/mod.rs b/src/workers/mod.rs
+index 3eac07cd3..a5a118a4c 100644
+--- a/src/workers/mod.rs
++++ b/src/workers/mod.rs
+@@ -27,6 +27,7 @@
+ #[cfg(unix)]
+ pub(crate) mod broker;
+ mod capabilities;
++pub(crate) mod coordinator_handoff;
+ pub(crate) mod coordinators;
+ mod decisions;
+ mod error;
+diff --git a/src/workers/registry.rs b/src/workers/registry.rs
+index 1c23da3d5..9de482c54 100644
+--- a/src/workers/registry.rs
++++ b/src/workers/registry.rs
+@@ -79,6 +79,13 @@ pub(super) struct Registry {
+     /// The inbox rows whose store write failed, per tenure: its next
+     /// `worker.events` answers `resync_required` ([`inbox::Losses`]).
+     pub(super) inbox_losses: inbox::Losses,
++    /// The tenures frozen for a self-service handoff, by tenure id. Written
++    /// to the worker directory after every change and restored when a
++    /// server opens it (a restart, a live handoff).
++    pub(super) handoffs: BTreeMap<String, super::coordinator_handoff::Handoff>,
++    /// The sessions whose tenure a successor took over: their mutations are
++    /// refused ([`WorkerSupervisor::fence_pane`]). Persisted with `handoffs`.
++    pub(super) superseded: Vec<super::coordinator_handoff::Superseded>,
+ }
+ 
+ /// What drains, and since when ([`WorkerSupervisor::drain`]).
+diff --git a/src/workers/supervision.rs b/src/workers/supervision.rs
+index 1c462e50a..afd7a54ad 100644
+--- a/src/workers/supervision.rs
++++ b/src/workers/supervision.rs
+@@ -3315,6 +3315,7 @@ mod tests {
+             session_id: None,
+             headless: false,
+             worker_id: None,
++            handoff: None,
+         }
+     }
+ 
+diff --git a/src/workers/supervisor/commands.rs b/src/workers/supervisor/commands.rs
+index a7c27fd84..8148830b1 100644
+--- a/src/workers/supervisor/commands.rs
++++ b/src/workers/supervisor/commands.rs
+@@ -306,6 +306,7 @@ impl WorkerSupervisor {
+     #[cfg(all(test, unix))]
+     pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
+         self.prompt_command(&WorkerPromptParams {
++            caller_pane_id: None,
+             worker_id: worker_id.to_owned(),
+             text: text.to_owned(),
+             command_id: None,
+diff --git a/src/workers/supervisor/handoff.rs b/src/workers/supervisor/handoff.rs
+index d42ccc9c6..edaa39f6a 100644
+--- a/src/workers/supervisor/handoff.rs
++++ b/src/workers/supervisor/handoff.rs
+@@ -149,6 +149,8 @@ impl WorkerSupervisor {
+         for (number, owner_lock) in owned_elsewhere {
+             supervisor.adopt_when_released(number, owner_lock);
+         }
++        // The handoffs a previous server left pending stay frozen.
++        supervisor.restore_handoffs();
+         supervisor
+     }
+ 
+diff --git a/src/workers/supervisor/questions.rs b/src/workers/supervisor/questions.rs
+index ef6c90bbd..cb69dfda1 100644
+--- a/src/workers/supervisor/questions.rs
++++ b/src/workers/supervisor/questions.rs
+@@ -303,6 +303,7 @@ impl WorkerSupervisor {
+             Vec::new()
+         });
+         let run_panes = self.run_owner_panes();
++        let successor_panes = self.handoff_successor_panes();
+         let registry = lock(&self.shared.registry);
+         let run_panes = run_panes
+             .into_iter()
+@@ -314,6 +315,7 @@ impl WorkerSupervisor {
+             .filter_map(|entry| entry.status.owner_pane.clone())
+             .chain(tenure_panes)
+             .chain(run_panes)
++            .chain(successor_panes)
+             .collect();
+         panes.sort();
+         panes.dedup();
+@@ -349,6 +351,9 @@ impl WorkerSupervisor {
+     /// quiet; the `?` list shows them as awaiting the coordinator with the
+     /// age of the owner's last event, so the user can see it and act.
+     pub(crate) fn owner_event(&self, pane_id: &str, event: OwnerEvent, cause_suffix: &str) {
++        // A successor that exits before its ack, or an old coordinator that
++        // ends, aborts a pending handoff.
++        self.handoff_owner_event(pane_id, event);
+         // The pane's coordination tenure ends with its pane or agent.
+         if let (OwnerEvent::PaneClosed | OwnerEvent::AgentExited, Some(cause)) =
+             (event, event.cause())
+diff --git a/src/workers/supervisor/takeover.rs b/src/workers/supervisor/takeover.rs
+index ef48c8180..d00f7187b 100644
+--- a/src/workers/supervisor/takeover.rs
++++ b/src/workers/supervisor/takeover.rs
+@@ -224,6 +224,7 @@ impl WorkerSupervisor {
+         );
+         if in_turn {
+             let interrupt = WorkerInterruptParams {
++                caller_pane_id: None,
+                 worker_id: worker_id.to_owned(),
+                 turn: status.turn_seq,
+                 command_id: None,
+diff --git a/src/workers/tests.rs b/src/workers/tests.rs
+index ae963d52a..16af459d8 100644
+--- a/src/workers/tests.rs
++++ b/src/workers/tests.rs
+@@ -1050,6 +1050,7 @@ fn an_interrupt_ends_the_turn_as_interrupted() {
+     fixture
+         .supervisor
+         .interrupt(&WorkerInterruptParams {
++            caller_pane_id: None,
+             worker_id: id.clone(),
+             turn: None,
+             command_id: None,
+@@ -2336,6 +2337,7 @@ fn a_drain_waits_for_the_running_turn_to_end() {
+             fixture
+                 .supervisor
+                 .interrupt(&WorkerInterruptParams {
++                    caller_pane_id: None,
+                     worker_id: busy.clone(),
+                     turn: None,
+                     command_id: None,
+@@ -3199,6 +3201,7 @@ fn a_prompt_returns_its_seq_and_an_interrupt_of_an_ended_turn_is_refused() {
+     let first = started.turn_seq.unwrap();
+     let interrupt = |turn: Option<i64>| {
+         fixture.supervisor.interrupt(&WorkerInterruptParams {
++            caller_pane_id: None,
+             worker_id: id.clone(),
+             turn,
+             command_id: None,
+@@ -3395,6 +3398,7 @@ fn a_repeated_prompt_or_refusal_does_nothing_twice() {
+     let id = fixture.start("block");
+     let prompt = |text: &str, command_id: &str| {
+         fixture.supervisor.prompt_command(&WorkerPromptParams {
++            caller_pane_id: None,
+             worker_id: id.clone(),
+             text: text.into(),
+             command_id: Some(command_id.into()),
+@@ -3405,6 +3409,7 @@ fn a_repeated_prompt_or_refusal_does_nothing_twice() {
+     fixture
+         .supervisor
+         .interrupt(&WorkerInterruptParams {
++            caller_pane_id: None,
+             worker_id: id.clone(),
+             turn: None,
+             command_id: Some("i1".into()),
+@@ -3652,6 +3657,7 @@ fn a_command_a_restart_cut_off_says_so_and_a_start_returns_its_worker() {
+         ..start_params(&fixture.repo, "finish", None)
+     };
+     let prompt = WorkerPromptParams {
++        caller_pane_id: None,
+         worker_id: id.clone(),
+         text: "finish".into(),
+         command_id: Some("p1".into()),
+@@ -5692,6 +5698,7 @@ fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches(
+ 
+     // The turn the gone server began ends through the new one.
+     next.interrupt(&WorkerInterruptParams {
++        caller_pane_id: None,
+         worker_id: id.clone(),
+         turn: None,
+         command_id: None,
+@@ -6042,6 +6049,7 @@ fn every_stdin_line_goes_through_the_broker_once_with_its_id() {
+     fixture
+         .supervisor
+         .prompt_command(&WorkerPromptParams {
++            caller_pane_id: None,
+             worker_id: id.clone(),
+             text: "finish".into(),
+             command_id: Some("cmd 1".into()),
+@@ -8840,6 +8848,7 @@ mod todo_runs {
+ 
+     fn grant_params(fixture: &Fixture, hash: &str) -> crate::api::schema::TodoGrantParams {
+         crate::api::schema::TodoGrantParams {
++            caller_pane_id: None,
+             cwd: fixture.repo.display().to_string(),
+             operation: "prepare".into(),
+             hash: hash.into(),
+@@ -9150,6 +9159,7 @@ mod todo_runs {
+             fixture
+                 .supervisor
+                 .todo_revoke(crate::api::schema::TodoRevokeParams {
++                    caller_pane_id: None,
+                     cwd: fixture.repo.display().to_string(),
+                     operation: "prepare".into(),
+                     hash: hash.map(str::to_owned),

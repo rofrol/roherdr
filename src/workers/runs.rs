@@ -84,6 +84,7 @@ pub(super) mod pending_usage;
 mod prepare;
 pub(super) mod queue;
 mod review_diff;
+pub(super) mod review_eval;
 mod review_tools;
 pub(super) mod usage_gate;
 
