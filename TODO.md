@@ -2992,293 +2992,62 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   those explicitly here. Changes to another project's script remain its
   coordinator's responsibility, not permission for this session to edit it.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-- [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07, [t-7a2ext64]
-  screenshot of the `?` list: "how do I know which tab that is?" for
-  "approve the edit in tab w4:t6Z"). The sidebar shows space names and tab
-  labels, never `w4:t6Z`. A coordinator (and any agent) should name a tab
-  as the user sees it, space plus label (or the worker's role mark), and a
-  worker that needs the user should be the one marked, so its own tab shows
-  `?` instead of the coordinator's. Options for herdr: a `herdr tab focus`
-  link in the ask, or a click on the `↳` line that jumps to a tab named in
-  it.
-
-- [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07: [t-evgrqenz]
-  `herdr agent wait <worker> --until done --until blocked` returned twice
-  while the worker kept working (its screen showed "Thundering…" with a
-  running shell, `agent get` said working right after), so a coordinator
-  waiting on the state alone reviews a worker that is not finished. Capture
-  the detection screen at the flicker (`herdr agent explain --json`) to find
-  which rule matches between tool calls. The coordinator's workaround: wait
-  for the `WORKER-` line, debounce done/idle for 120 s.
-
-- [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc, [t-e5tslo5h]
-  2026-10-07, forwarded by the user). After the user answered two "Needs a
-  decision" questions with "do it" (release rormpc-tools, install rormpc, add
-  config lines), the coordinator bumped the version, committed and tagged
-  itself; the user asked why the coordinator worked itself. The global rule
-  "Working through TODO.md" does not say: (1) whether an answer to a "Needs a
-  decision" question is a new request to queue first or an approval to act
-  now; (2) who does release steps workers may not do (push, tag, install,
-  editing the user's config after an install): the coordinator, a worker
-  with that permission, or the user; (3) a rule changed mid-session reaches
-  a running coordinator only partly (it had already done one item itself).
-  Also seen: `herdr agent prompt` right after `herdr agent start` in a fresh
-  worktree was swallowed by Claude's folder-trust dialog (`agent_prompted`
-  returned, the prompt never arrived) until `herdr worktree create` got
-  `--trust-repository`; `herdr pane wait-output` has a short default timeout,
-  so a herdr-job waiting for a worker's last line failed early.
-  The herdr coordinator showed gap (2) too (user, 2026-10-07: "why do you
-  make changes yourself when you are the coordinator?"): after the rule
-  change it still edited itself the global rule and `/todo` skill (about 15
-  lines), a code fix (the role mark's gap, with tests, build and install), a
-  flaky test, AGENTS.md notes and the launcher, reading "few-line fixes" as
-  covering them. The rule needs a line saying what the coordinator does
-  itself (TODO.md and DECISIONS.md edits, triage, answering, integrating
-  workers' commits, installs and pushes it is approved for) and that
-  everything else, code, tests and rule text included, goes to a worker,
-  however small.
-  Done 2026-10-07 (user: "plug this gap"), by a worker: dotfiles `a24546d`
-  lists what the coordinator does itself and sends everything else to a
-  worker, also after a "do it" answer (gaps 1 and 2 above). Left: gap 3 and
-  the two herdr observations.
-  Also (user, 2026-10-07): a worker needs its own worktree for code
-  changes; for documentation and rule text in files nobody else is editing,
-  the shared checkout with a commit by path is enough. Seen the same day: a
-  dotfiles worktree had to be made by hand (`herdr worktree create` does not
-  see the home repository, whose git dir lives elsewhere), and Claude
-  stopped in it on the folder-trust prompt.
-  Build cost of a worktree per worker (user: "won't the worktree slow down
-  building the Rust code? ask the models"; round `20261007-030604-5a6b`,
-  sol and MiMo). Measured 2026-10-07: one worker's cold `target/` reached
-  5.2 GB, clean-check's is 10 GB, 25 GiB were free (95% used) against the
-  15 GiB guard, so disk binds first (MiMo). Both: one shared worker
-  `CARGO_TARGET_DIR` (workers run one at a time), clean-check kept separate
-  as the correctness gate, shared-checkout work rejected for code. MiMo:
-  Cargo fingerprints path dependencies by absolute path, so a new worktree
-  path rebuilds `crates/ghostty-vt` (Zig) and `vendor/portable-pty`
-  (verified: both are path deps; Zig's own `~/.cache/zig` may soften it).
-  My addition: one persistent worker worktree at a fixed path, reset to
-  `master` per item like clean-check, keeps paths stable. Fallback (MiMo):
-  APFS clones (`cp -Rc`) of a warm target. Measure first: `cargo build
-  --timings` cold, `du` of `target/{debug,incremental,nextest}`, `cargo
-  check -v` after switching worktrees (dirty units, did build.rs rerun).
-
-- [ ] `workspace list` shows a space's repository only when the space is in a [t-uckv7wa5]
-  worktree family (its `worktree` object), so tools read `.worktree` as "the
-  space's repo" and fail for plain git spaces (2026-10-07: the todo launcher
-  found no repo for job-seeker). Expose the cached `git_space()` on every
-  space as its own object (`repo_root`, `repo_name`, explicit null for a
-  non-git space) and document `worktree` as worktree-family membership only
-  (consult round `20261007-015141-b75b`, MiMo).
-
-- [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of [t-dxhugzpt]
-  clearing it, so the tab shows nothing rather than its automatic name (the
-  agent's task or the terminal title); there is no way to return to the
-  automatic name (2026-10-07: the todo-worker launcher's `--label TODO`
-  hid the coordinator's task, and clearing it left a blank row).
-  `handle_tab_rename` calls `set_custom_name(Some(label))`; an empty or
-  whitespace-only label should clear it (`None`), in the TUI rename too.
-
-- [ ] `herdr-job clean-tree` should refuse a path that matches nothing. [t-bd7wsdn6]
-  2026-10-07: from zsh, `clean-tree $PATHS -- just check` with `PATHS="a b"`
-  passed one path with spaces (zsh does not split words); the tree got
-  "0 changed paths" and the check ran on bare `HEAD` without a warning.
-
-- [ ] Replace job pinning and folding with an explicit pin (user, [t-5rsujy34]
-  2026-10-06: "I don't like this pinning of herdr jobs and the whole
-  folding logic. Throw it out."). Remove the automatic attachment of job
-  rows to their parent and the fold/unfold logic for job squares (see
-  `DECISIONS.md`: "Unfolding job squares near the bottom", "Auto-unfolded
-  job squares", "Fold state of job squares across client restart",
-  "Folded job squares and focus"). Add only: right click on a job, "Pin"
-  in its context menu. A pinned job stays visible the way it is shown now,
-  perhaps with an icon that acts as an unpin button, and "Unpin" in the
-  same context menu. Before starting, record in `DECISIONS.md` which
-  earlier fold decisions this supersedes.
-
-- [ ] Flatten worktree spaces instead of nesting them under the creator [t-g7igxlgs]
-  tab (user, 2026-10-06: "why is a worktree tab indented and with
-  different logic? Could it be flattened and just marked as a worktree?"
-  Example: this session created the worktree space "pi: tab create" for a
-  delegated pi agent, and that space's agent starts job tabs of its own).
-  This reverses "Worktree space nested under its creator tab" in
-  `DECISIONS.md` (user, 2026-10-03/04); the user decides. Consulted Sol
-  and MiMo: both recommend flattening. A nested space is the only row
-  type with its own header (no name bar, no git details, branch label),
-  family drag/pin, a fold toggle and job counts aggregated into the
-  parent; space -> tab -> worktree -> tab -> job is deep and narrows the
-  mouse targets. Proposal: a worktree space is an ordinary top-level row
-  (same header, git details, job counts, collapse, independent drag/pin)
-  with a worktree glyph and a secondary `from herdr/7` reference that
-  jumps to the creator tab (or reads as history when it is gone);
-  `creator_tab` stays as provenance, not hierarchy. A UI-created space
-  still lands right after the active space's family, which then is just
-  its worktrees. Rejected: nesting as a config option (two navigation
-  models, double layout and tests). Note: a nested space already shows
-  its own running/failed job counts (`workspace_rows` gets `tab_jobs`);
-  the parent's counts include a folded worktree's jobs, which flattening
-  removes.
-  Screenshot (2026-10-06): tab `Koordynacja pi: tab…` with its job child
-  `wait: pi tab create` and the parent's job count, then `└ ▼ pi: tab
-  create` (worktree space, `□ A` on the right) and its pi tab `π - You are
-  working i…`: three levels of indent for one delegation, and the
-  worktree's own line shows no job count until its agent starts a job.
-
-- [ ] Header `?` list: tell the kinds of waiting apart and use the row's [t-dp7pa7y5]
-  agent, not the tab (user, 2026-10-06: "now you cannot tell which tab is
-  a plain `?` question and which is a question with a choice"; agreed to
-  the mockup). Rows draw `tab_state_icon`, the tab's dominant state, so in
-  a split tab a pi asking a plain question shows the `×` of a Claude
-  blocked on a choice next to it. Proposal (Sol, 2026-10-06): the icon of
-  the row's own agent, with `?` awaiting reply, `×` blocked on an
-  approval or choice (existing glyph, `src/client/shell.rs:206`) and `!`
-  limited, plus the text detail so colour is not required. The sidebar
-  tab line keeps the aggregate icon. Separate from the icon column bug
-  fixed on branch `pi/list-icons` (`(.., icon)` bound `detail` after
-  7f55e2c5).
-
-- [ ] Every header button looks like a button (user, 2026-10-06: "all [t-6o6ow3qe]
-  buttons in the top bar should be like buttons: a space on the left and
-  right, a highlight on hover"). Consulted Sol (read the code) and MiMo.
-  - Padding: one space each side, both cells part of the button's paint
-    and click rectangle; always reserved, never only on hover (the row
-    would jitter). Agent indicators already reserve two cells
-    (`sidebar.rs:496`); sort has a glyph-only hitbox (`space_sort.rs:121`),
-    so this is partly a consistency fix. Rejected: one space shared by
-    two neighbours (MiMo; Sol: a cell cannot belong predictably to two
-    buttons).
-  - Styles: hover a subtle neutral background; an open list keeps its
-    accent tint and glyph colour (`DECISIONS.md`, header sort button);
-    open and hovered a slightly stronger tint. Not bold alone (asking
-    counts are already bold). Check indexed-colour themes, where the open
-    style falls back to solid accent (`sidebar.rs:1910`).
-  - Hover: clear it on focus loss (`input.rs:256`), overlay change and
-    re-layout; repaint only when the hovered button changes
-    (`endpoint_navigation.rs:91`); without motion reporting only hover is
-    lost. Pointer exit without an event cannot be detected.
-  - Overflow, when the padded buttons do not fit: shorten the sort key to
-    its first letter (`⇅ m↑` for manual, `n` name, `p` prior…; user,
-    2026-10-07: the full name shows on click, in the sort menu), then to
-    `⇅` alone, then move disabled navigation, fold and zero-count history into
-    an overflow menu, a second row as last resort. Bug found on the way:
-    `sidebar.rs:482` silently skips a non-zero indicator when it does not
-    fit, against "never hide a non-zero indicator".
-
-- [ ] A coordinator that hits a gap in its own protocol (proposed by the [t-aketwwun]
-  try-roguix coordinator, 2026-10-10): it uses the smallest reversible
-  stopgap the existing rules allow, says so in its reply, and records a
-  Proposed item (a tool or skill change) for the user, rather than silently
-  inventing machinery or stopping while the user is away. A line in the
-  `todo` skill (the user's agent config: a text edit that widens nothing,
-  so no question needed per DECISIONS.md, but the user approves the item).
-
-- [ ] The `todo` skill's worker step reads as herdr-only (user, 2026-10-10: [t-cutymffq]
-  "why did the roguix-vps coordinator not use headless workers? ask the
-  models"; round 20261010-025447-fba3, sol + MiMo + DeepSeek agreeing).
-  Step 4 gates headless workers on "where herdr has headless workers (...;
-  the herdr fork)" and then gives a herdr-only recipe (`--folder-slot
-  worker`, `git rev-parse master`, "the repository's notes on headless
-  workers"); in roguix-vps none of these exist, so the coordinator took the
-  "Elsewhere ... TUI worker" path without stating a reason (its VM items
-  would have needed a pane worker anyway, but that was not why). Fix, text
-  only (no widening): headless in any repository when `herdr worker --help`
-  lists `verify` and the item's build and checks fit the worker sandbox
-  (`herdr worker start --cwd <worktree>`, base from the repository's
-  default branch; `--folder-slot worker` only where that slot exists);
-  otherwise, or when the item needs what the sandbox blocks (VM launches,
-  PTYs, local sockets, `ps`), a pane worker, with the reason said in the
-  reply. The global rule in ~/.claude/CLAUDE.md uses the same condition.
-
-- [ ] Smaller herdr and skill gaps reported by the try-roguix coordinator [t-3schklfu]
-  (2026-10-10, pane w6:pAH, at the user's request):
-  1. A pane worker's workspace was gone after a herdr restart while its
-     worktree and uncommitted work stayed; `herdr worktree open --path <it>`
-     failed with `not_git_worktree` until `--cwd <main checkout>`: the error
-     should say it checks the calling pane's cwd (or use `--path`'s repo).
-  2. `herdr agent list` (~37 KB) and `herdr worker list` (~390 KB, whole
-     journals) are too big to use: filters (`--repo`, `--cwd`, `--name`)
-     and a compact default.
-  3. The `todo` skill's step 5 says "exactly this message, no body or
-     trailers", but some repositories require a body or trailers: it
-     should say "the message the repository's rules require" (herdr's own
-     verify keeps subject-only for herdr).
-  4. `herdr tab role <tab> worker` is easy to forget: a `--role worker` on
-     `worktree create` or `agent start`.
-  5. The uncommitted-edits Stop hook fired mid-rebase listing conflict
-     resolutions as possibly other sessions' edits: during a rebase, merge
-     or cherry-pick it should say so instead.
-  6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
-     cannot inspect a `bash -c` script for `rm`); a script file passed:
-     document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] Carry the libghostty-vt `cursorChangePin` crash fix as vendored patch 0009 (deferred: the user, 2026-10-15, decision `d-xyf2vrgk`: "roherdr needs no changes for now, since its successor, herdr-bend or herdr-tov, is being built in parallel"; consult rounds `20261015-131156-0448` (if patched, a local patch, no ghostty fork) and `20261015-131527-f6f5` (defer, keep this record). Reconsider when the crash shows up in daily use, or when an oracle run of herdr-bend or herdr-tov hits it). [t-5qaljuad]
-  - The bug: SIGSEGV in `Screen.endHyperlink` (null dereference at 0x20) when `cursorAbsolute` moves a styled cursor with an open OSC 8 link onto a page whose style set is full. Found by herdr-bend; root cause and evidence in `~/personal_projects/herdr-bend/spike/RESULTS.md`, "Patched upstream baseline". Reported upstream as https://github.com/herdrdev/herdr/issues/5296; a ghostty "Issue Triage" discussion is drafted in herdr-bend (`spike/ghostty-triage-draft.md`) for the user to edit and post. Still present in ghostty main `a2e4403`.
-  - The fix: `~/personal_projects/herdr-bend/spike/upstream-cursorchangepin.patch` (detach the cursor hyperlink before the style migration, re-add it after). It applies cleanly to this repository's vendored tree (`git apply --check`, 2026-10-15). The Zig regression test is in `spike/ghostty-cursorchangepin.patch` in herdr-bend.
-  - Do: store it as `vendor/patches/libghostty-vt/0009-...patch` with an entry in `vendor/libghostty-vt.patches.md` (reason, issue 5296, base `44f2a44`, verification, removal condition: the vendored source no longer has the bug, shown by the regression test and the reproducer, whatever shape upstream's fix takes); `just check` must pass. Verify with herdr-bend's seeded generator (crashes the unpatched build, not the patched one).
-  - Consumers: herdr-tov's and herdr-bend's `tools/vt-ref`/`corpus/vt-ref` link the `libghostty-vt.a` this checkout builds, as a reference oracle. Rebuild them after the patch and re-run their corpus comparisons; expect no screen change (the patch touches only the crashing path), and report any diff to those repositories' coordinators.
-
-- [ ] herdr-job commits only on a passing check of the same tree [t-6gowvwu6]
-  (user, 2026-10-15, d-d22gg3n7 in herdr-bend: "yes, add it to Proposed").
-  In herdr-bend a coordinator committed on a failing test-reducer run
-  (`tail -1 $LOG; grep ...; git commit ... -- <paths>`: `;` let the commit
-  run although the job had ended `failed (1)`). Consult rounds
-  `20261015-212602-b7e3` and `20261015-212929-26b5` (Sol, MiMo,
-  DeepSeek, Argon, Wonder): the gate belongs in global tooling, the
-  per-repository policy (which checks gate which paths) in each
-  repository. Add a checked commit to `herdr-job`, e.g.
-  `herdr-job run --commit-on-success -m MSG -- <paths> -- <check>`: build
-  the candidate tree (HEAD plus only the given paths, as `clean-tree`
-  does), run the check on that tree, and on exit 0 commit exactly that
-  tree object with `commit-tree` and a compare-and-swap `update-ref`
-  on the parent it tested; refuse when HEAD moved, never touch other
-  sessions' index or working-tree changes. Rejected in the rounds: a
-  PreToolUse hook matching `;` before `git commit` (Claude Code only,
-  false positives, easy to bypass) and a pre-commit hook comparing a pass
-  marker (temporary index of `git commit -- <paths>`, `--no-verify`,
-  shared checkouts). The user kept the rule itself per repository
-  (d-wfiwe6sh), so global instructions do not change. Cost: a new
-  herdr-job mode and its tests; no build of the herdr binary.
-
-- [ ] An install's live handoff ends the user's attached client (user, [t-h5fibuc4]
-  2026-10-16, reported through the herdr-tov coordinator: "as if install
-  was done and I have to reconnect"). The install of run `r-wz74mc3f`
-  (build 7bca17628) replaced `~/.cargo/bin/herdr` at 10:03; the server log
-  shows "handoff import ready panes=94" and "live handoff completed; old
-  server exiting" (08:03:46Z), so panes survived, but the client log shows
-  "herdr exiting" for client pid 24952 at 08:03:44Z and a new client
-  pid 27142 at 08:03:46Z, and the user had to reconnect. Expected: the
-  attached client follows the handoff to the new server (as `herdr todo
-  wait` does since 8eaec1f2) without the user doing anything. Find why the
-  client exits instead of reconnecting, and test it with a live handoff
-  while a client is attached.
-
-- [ ] The default-branch resolver on status paths and with the server's [t-6djamgjl]
-  environment (follow-up of t-oe3wrkvz, slice 1a, run r-p2565geu): status
-  paths (`todo_runnable_state`, `todo_queue_status`, the supervisor's
-  sweep) run `git ls-remote` on every call; the grant and `worker start`
-  without `--base` ask origin with the server's environment, not the
-  caller's; a `--next` run resolves again instead of inheriting its
-  parent's stored branch; a repository with remotes but no `origin` is
-  refused. Touches the run/API interface, so not an automatic follow-up.
-
-- [ ] Point the remaining `scripts/todo_edit.py` references at `herdr todo [t-xebmqmri]
-  edit` (follow-up of t-oe3wrkvz, slice 1b, run r-wz74mc3f): the item
-  coordinator prompt (`src/workers/item_coordinators.rs:133`, `:163`),
-  the coordinator allowlist in
-  `src/integration/assets/claude/herdr-agent-state.sh` (`:994`, `:1041`,
-  `:1048`, `:1626-1628`) with its tests in `src/integration/tests.rs`,
-  and `cli-reference.mdx:460`, `:530`. The allowlist is a trust boundary
-  and the integration asset needs a version bump, so it waits for
-  approval.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do.
+- [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
+  user, 2026-10-12: "but it has to be on Anthropic credits already,
+  because the Anthropic subscription is 98% used"). Checked by the
+  coordinator: today `coordinator handoff --successor` starts the same
+  agent kind on its own login (Claude Code on the subscription), and the
+  credit proxy only serves headless pi workers with a per-run grant
+  (src/workers/pi.rs `anthropic_models`, `HERDR_ANTHROPIC_PROXY_TOKEN`)
+  at the standard Sonnet tariff (src/config/model.rs
+  `anthropic_api_model`). Needed: `coordinator handoff --successor
+  --funding credits` (and a `[coordinator] funding` default) starts the
+  successor Claude Code with `ANTHROPIC_BASE_URL` set to the credit proxy
+  and `ANTHROPIC_AUTH_TOKEN` set to a grant bound to the tenure (never
+  the API key itself), on the credit model; its spend is recorded in the
+  ledger under the tenure (stage `coordinator`) and counts against the
+  cap; a cap refusal shows to the coordinator and the user as such;
+  without a running proxy or with the cap reached the handoff is refused
+  before anything starts. Tests for the env (no key leaked into the
+  pane's environment or the manifest), the grant's binding and the
+  refusals. This comes before the live handoff of the herdr coordinator.
+  Review 2026-10-12 (round 20261012-232614-7527, MiMo and DeepSeek;
+  decided by the coordinator): attempt 1 is not approved. A grant must
+  reach only the launched process, never a typed shell command, argv,
+  terminal scrollback or shell history. Funding is a durable fact: losing
+  a listener at restart or live server handoff must not report login or
+  silently fall back to the subscription; reconcile it or report explicit
+  credit unavailability and recovery. Verify the Claude request contract
+  offline against the existing paid-feature allowlist, including supported
+  model environment overrides; do not broaden proxy permissions merely to
+  pass requests. New accounting tests use isolated injected transport, not
+  a global fake or network binds. The coordinator stage may be represented
+  by item=coordinator in the current ledger if the consuming query is
+  documented and tested; an extra column is not required without a use.
+  Models' unverified header examples and suggested full proxy ownership
+  redesign are not adopted as facts or required implementation. The proxy
+  drop join is a blocking lifecycle risk, not evidence of a reproduced
+  deadlock; no delay or timeout is authorized as its workaround.
+  Attempt 2 offline check 2026-10-12: the installed Claude Code exited 1
+  against the fake upstream because its beta headers were refused. The
+  diagnostic test incorrectly reported pass regardless of that exit.
+  Attempt 3 must configure a supported safe request shape, assert child
+  success and an admitted message, authenticate the local grant claim
+  rather than trusting a caller-supplied pane id, and preserve funding
+  intent through the transfer's crash/final-write-failure window. No paid
+  feature or proxy permission expansion is approved by this review.
+  Blocked 2026-10-13 after three attempts of r-hfp2mqpx (aborted, no
+  implementation landed or installed): the real offline Claude Code check
+  still exits 1 with HTTP 403 for a beta header outside the proxy allowlist,
+  despite the proposed client switches. Kept the work on its task branch;
+  did not broaden the proxy's paid-feature/security boundary to force it.
+  Which successor approach should replace the failed Claude credit-proxy slice?
+  Options: pi on Anthropic credits using the existing pi provider contract (Recommended; new implementation and offline/live checks) | keep the coordinator on pi with the ChatGPT login and defer credit successors | a separate bounded Claude proxy compatibility design review before any allowlist change
+  Checked: attempt 3 offline harness fails on the installed CLI; attempt 2
+  only appeared green because its diagnostic test ignored the child exit.
+  Both models confirmed transport and restart requirements; no paid
+  upstream call was made by either coordinator smoke test.
+  Decided by the user 2026-10-16 (d-3gjywgot): pi on Anthropic credits through the existing pi provider contract replaces the failed Claude credit-proxy slice; new implementation with offline and live checks.
 
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
@@ -3594,62 +3363,297 @@ user needs to decide or do.
   Options: follow the funding choice in t-x2jbucrm (Recommended) | test a pi successor on the ChatGPT login now without claiming a credit-funded handoff passed
   Checked: slice 1, the edge-case fix and the todo skill branch are landed;
   no credit-successor implementation was installed by the failed run.
+  Decided by the user 2026-10-16 (d-enlpejzi): the live handoff follows the funding decision: test the pi-on-credits successor (t-x2jbucrm) once it lands.
 
-- [ ] The coordinator's successor runs on the Anthropic API credits (the [t-x2jbucrm]
-  user, 2026-10-12: "but it has to be on Anthropic credits already,
-  because the Anthropic subscription is 98% used"). Checked by the
-  coordinator: today `coordinator handoff --successor` starts the same
-  agent kind on its own login (Claude Code on the subscription), and the
-  credit proxy only serves headless pi workers with a per-run grant
-  (src/workers/pi.rs `anthropic_models`, `HERDR_ANTHROPIC_PROXY_TOKEN`)
-  at the standard Sonnet tariff (src/config/model.rs
-  `anthropic_api_model`). Needed: `coordinator handoff --successor
-  --funding credits` (and a `[coordinator] funding` default) starts the
-  successor Claude Code with `ANTHROPIC_BASE_URL` set to the credit proxy
-  and `ANTHROPIC_AUTH_TOKEN` set to a grant bound to the tenure (never
-  the API key itself), on the credit model; its spend is recorded in the
-  ledger under the tenure (stage `coordinator`) and counts against the
-  cap; a cap refusal shows to the coordinator and the user as such;
-  without a running proxy or with the cap reached the handoff is refused
-  before anything starts. Tests for the env (no key leaked into the
-  pane's environment or the manifest), the grant's binding and the
-  refusals. This comes before the live handoff of the herdr coordinator.
-  Review 2026-10-12 (round 20261012-232614-7527, MiMo and DeepSeek;
-  decided by the coordinator): attempt 1 is not approved. A grant must
-  reach only the launched process, never a typed shell command, argv,
-  terminal scrollback or shell history. Funding is a durable fact: losing
-  a listener at restart or live server handoff must not report login or
-  silently fall back to the subscription; reconcile it or report explicit
-  credit unavailability and recovery. Verify the Claude request contract
-  offline against the existing paid-feature allowlist, including supported
-  model environment overrides; do not broaden proxy permissions merely to
-  pass requests. New accounting tests use isolated injected transport, not
-  a global fake or network binds. The coordinator stage may be represented
-  by item=coordinator in the current ledger if the consuming query is
-  documented and tested; an extra column is not required without a use.
-  Models' unverified header examples and suggested full proxy ownership
-  redesign are not adopted as facts or required implementation. The proxy
-  drop join is a blocking lifecycle risk, not evidence of a reproduced
-  deadlock; no delay or timeout is authorized as its workaround.
-  Attempt 2 offline check 2026-10-12: the installed Claude Code exited 1
-  against the fake upstream because its beta headers were refused. The
-  diagnostic test incorrectly reported pass regardless of that exit.
-  Attempt 3 must configure a supported safe request shape, assert child
-  success and an admitted message, authenticate the local grant claim
-  rather than trusting a caller-supplied pane id, and preserve funding
-  intent through the transfer's crash/final-write-failure window. No paid
-  feature or proxy permission expansion is approved by this review.
-  Blocked 2026-10-13 after three attempts of r-hfp2mqpx (aborted, no
-  implementation landed or installed): the real offline Claude Code check
-  still exits 1 with HTTP 403 for a beta header outside the proxy allowlist,
-  despite the proposed client switches. Kept the work on its task branch;
-  did not broaden the proxy's paid-feature/security boundary to force it.
-  Which successor approach should replace the failed Claude credit-proxy slice?
-  Options: pi on Anthropic credits using the existing pi provider contract (Recommended; new implementation and offline/live checks) | keep the coordinator on pi with the ChatGPT login and defer credit successors | a separate bounded Claude proxy compatibility design review before any allowlist change
-  Checked: attempt 3 offline harness fails on the installed CLI; attempt 2
-  only appeared green because its diagnostic test ignored the child exit.
-  Both models confirmed transport and restart requirements; no paid
-  upstream call was made by either coordinator smoke test.
+- [ ] The default-branch resolver on status paths and with the server's [t-6djamgjl]
+  environment (follow-up of t-oe3wrkvz, slice 1a, run r-p2565geu): status
+  paths (`todo_runnable_state`, `todo_queue_status`, the supervisor's
+  sweep) run `git ls-remote` on every call; the grant and `worker start`
+  without `--base` ask origin with the server's environment, not the
+  caller's; a `--next` run resolves again instead of inheriting its
+  parent's stored branch; a repository with remotes but no `origin` is
+  refused. Touches the run/API interface, so not an automatic follow-up.
+  Decided by the user 2026-10-16 (d-e5lo4zdd): approved.
+
+- [ ] Point the remaining `scripts/todo_edit.py` references at `herdr todo [t-xebmqmri]
+  edit` (follow-up of t-oe3wrkvz, slice 1b, run r-wz74mc3f): the item
+  coordinator prompt (`src/workers/item_coordinators.rs:133`, `:163`),
+  the coordinator allowlist in
+  `src/integration/assets/claude/herdr-agent-state.sh` (`:994`, `:1041`,
+  `:1048`, `:1626-1628`) with its tests in `src/integration/tests.rs`,
+  and `cli-reference.mdx:460`, `:530`. The allowlist is a trust boundary
+  and the integration asset needs a version bump, so it waits for
+  approval.
+  Decided by the user 2026-10-16 (d-e5lo4zdd): approved.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+- [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07, [t-7a2ext64]
+  screenshot of the `?` list: "how do I know which tab that is?" for
+  "approve the edit in tab w4:t6Z"). The sidebar shows space names and tab
+  labels, never `w4:t6Z`. A coordinator (and any agent) should name a tab
+  as the user sees it, space plus label (or the worker's role mark), and a
+  worker that needs the user should be the one marked, so its own tab shows
+  `?` instead of the coordinator's. Options for herdr: a `herdr tab focus`
+  link in the ask, or a click on the `↳` line that jumps to a tab named in
+  it.
+
+- [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07: [t-evgrqenz]
+  `herdr agent wait <worker> --until done --until blocked` returned twice
+  while the worker kept working (its screen showed "Thundering…" with a
+  running shell, `agent get` said working right after), so a coordinator
+  waiting on the state alone reviews a worker that is not finished. Capture
+  the detection screen at the flicker (`herdr agent explain --json`) to find
+  which rule matches between tool calls. The coordinator's workaround: wait
+  for the `WORKER-` line, debounce done/idle for 120 s.
+
+- [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc, [t-e5tslo5h]
+  2026-10-07, forwarded by the user). After the user answered two "Needs a
+  decision" questions with "do it" (release rormpc-tools, install rormpc, add
+  config lines), the coordinator bumped the version, committed and tagged
+  itself; the user asked why the coordinator worked itself. The global rule
+  "Working through TODO.md" does not say: (1) whether an answer to a "Needs a
+  decision" question is a new request to queue first or an approval to act
+  now; (2) who does release steps workers may not do (push, tag, install,
+  editing the user's config after an install): the coordinator, a worker
+  with that permission, or the user; (3) a rule changed mid-session reaches
+  a running coordinator only partly (it had already done one item itself).
+  Also seen: `herdr agent prompt` right after `herdr agent start` in a fresh
+  worktree was swallowed by Claude's folder-trust dialog (`agent_prompted`
+  returned, the prompt never arrived) until `herdr worktree create` got
+  `--trust-repository`; `herdr pane wait-output` has a short default timeout,
+  so a herdr-job waiting for a worker's last line failed early.
+  The herdr coordinator showed gap (2) too (user, 2026-10-07: "why do you
+  make changes yourself when you are the coordinator?"): after the rule
+  change it still edited itself the global rule and `/todo` skill (about 15
+  lines), a code fix (the role mark's gap, with tests, build and install), a
+  flaky test, AGENTS.md notes and the launcher, reading "few-line fixes" as
+  covering them. The rule needs a line saying what the coordinator does
+  itself (TODO.md and DECISIONS.md edits, triage, answering, integrating
+  workers' commits, installs and pushes it is approved for) and that
+  everything else, code, tests and rule text included, goes to a worker,
+  however small.
+  Done 2026-10-07 (user: "plug this gap"), by a worker: dotfiles `a24546d`
+  lists what the coordinator does itself and sends everything else to a
+  worker, also after a "do it" answer (gaps 1 and 2 above). Left: gap 3 and
+  the two herdr observations.
+  Also (user, 2026-10-07): a worker needs its own worktree for code
+  changes; for documentation and rule text in files nobody else is editing,
+  the shared checkout with a commit by path is enough. Seen the same day: a
+  dotfiles worktree had to be made by hand (`herdr worktree create` does not
+  see the home repository, whose git dir lives elsewhere), and Claude
+  stopped in it on the folder-trust prompt.
+  Build cost of a worktree per worker (user: "won't the worktree slow down
+  building the Rust code? ask the models"; round `20261007-030604-5a6b`,
+  sol and MiMo). Measured 2026-10-07: one worker's cold `target/` reached
+  5.2 GB, clean-check's is 10 GB, 25 GiB were free (95% used) against the
+  15 GiB guard, so disk binds first (MiMo). Both: one shared worker
+  `CARGO_TARGET_DIR` (workers run one at a time), clean-check kept separate
+  as the correctness gate, shared-checkout work rejected for code. MiMo:
+  Cargo fingerprints path dependencies by absolute path, so a new worktree
+  path rebuilds `crates/ghostty-vt` (Zig) and `vendor/portable-pty`
+  (verified: both are path deps; Zig's own `~/.cache/zig` may soften it).
+  My addition: one persistent worker worktree at a fixed path, reset to
+  `master` per item like clean-check, keeps paths stable. Fallback (MiMo):
+  APFS clones (`cp -Rc`) of a warm target. Measure first: `cargo build
+  --timings` cold, `du` of `target/{debug,incremental,nextest}`, `cargo
+  check -v` after switching worktrees (dirty units, did build.rs rerun).
+
+- [ ] `workspace list` shows a space's repository only when the space is in a [t-uckv7wa5]
+  worktree family (its `worktree` object), so tools read `.worktree` as "the
+  space's repo" and fail for plain git spaces (2026-10-07: the todo launcher
+  found no repo for job-seeker). Expose the cached `git_space()` on every
+  space as its own object (`repo_root`, `repo_name`, explicit null for a
+  non-git space) and document `worktree` as worktree-family membership only
+  (consult round `20261007-015141-b75b`, MiMo).
+
+- [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of [t-dxhugzpt]
+  clearing it, so the tab shows nothing rather than its automatic name (the
+  agent's task or the terminal title); there is no way to return to the
+  automatic name (2026-10-07: the todo-worker launcher's `--label TODO`
+  hid the coordinator's task, and clearing it left a blank row).
+  `handle_tab_rename` calls `set_custom_name(Some(label))`; an empty or
+  whitespace-only label should clear it (`None`), in the TUI rename too.
+
+- [ ] `herdr-job clean-tree` should refuse a path that matches nothing. [t-bd7wsdn6]
+  2026-10-07: from zsh, `clean-tree $PATHS -- just check` with `PATHS="a b"`
+  passed one path with spaces (zsh does not split words); the tree got
+  "0 changed paths" and the check ran on bare `HEAD` without a warning.
+
+- [ ] Replace job pinning and folding with an explicit pin (user, [t-5rsujy34]
+  2026-10-06: "I don't like this pinning of herdr jobs and the whole
+  folding logic. Throw it out."). Remove the automatic attachment of job
+  rows to their parent and the fold/unfold logic for job squares (see
+  `DECISIONS.md`: "Unfolding job squares near the bottom", "Auto-unfolded
+  job squares", "Fold state of job squares across client restart",
+  "Folded job squares and focus"). Add only: right click on a job, "Pin"
+  in its context menu. A pinned job stays visible the way it is shown now,
+  perhaps with an icon that acts as an unpin button, and "Unpin" in the
+  same context menu. Before starting, record in `DECISIONS.md` which
+  earlier fold decisions this supersedes.
+
+- [ ] Flatten worktree spaces instead of nesting them under the creator [t-g7igxlgs]
+  tab (user, 2026-10-06: "why is a worktree tab indented and with
+  different logic? Could it be flattened and just marked as a worktree?"
+  Example: this session created the worktree space "pi: tab create" for a
+  delegated pi agent, and that space's agent starts job tabs of its own).
+  This reverses "Worktree space nested under its creator tab" in
+  `DECISIONS.md` (user, 2026-10-03/04); the user decides. Consulted Sol
+  and MiMo: both recommend flattening. A nested space is the only row
+  type with its own header (no name bar, no git details, branch label),
+  family drag/pin, a fold toggle and job counts aggregated into the
+  parent; space -> tab -> worktree -> tab -> job is deep and narrows the
+  mouse targets. Proposal: a worktree space is an ordinary top-level row
+  (same header, git details, job counts, collapse, independent drag/pin)
+  with a worktree glyph and a secondary `from herdr/7` reference that
+  jumps to the creator tab (or reads as history when it is gone);
+  `creator_tab` stays as provenance, not hierarchy. A UI-created space
+  still lands right after the active space's family, which then is just
+  its worktrees. Rejected: nesting as a config option (two navigation
+  models, double layout and tests). Note: a nested space already shows
+  its own running/failed job counts (`workspace_rows` gets `tab_jobs`);
+  the parent's counts include a folded worktree's jobs, which flattening
+  removes.
+  Screenshot (2026-10-06): tab `Koordynacja pi: tab…` with its job child
+  `wait: pi tab create` and the parent's job count, then `└ ▼ pi: tab
+  create` (worktree space, `□ A` on the right) and its pi tab `π - You are
+  working i…`: three levels of indent for one delegation, and the
+  worktree's own line shows no job count until its agent starts a job.
+
+- [ ] Header `?` list: tell the kinds of waiting apart and use the row's [t-dp7pa7y5]
+  agent, not the tab (user, 2026-10-06: "now you cannot tell which tab is
+  a plain `?` question and which is a question with a choice"; agreed to
+  the mockup). Rows draw `tab_state_icon`, the tab's dominant state, so in
+  a split tab a pi asking a plain question shows the `×` of a Claude
+  blocked on a choice next to it. Proposal (Sol, 2026-10-06): the icon of
+  the row's own agent, with `?` awaiting reply, `×` blocked on an
+  approval or choice (existing glyph, `src/client/shell.rs:206`) and `!`
+  limited, plus the text detail so colour is not required. The sidebar
+  tab line keeps the aggregate icon. Separate from the icon column bug
+  fixed on branch `pi/list-icons` (`(.., icon)` bound `detail` after
+  7f55e2c5).
+
+- [ ] Every header button looks like a button (user, 2026-10-06: "all [t-6o6ow3qe]
+  buttons in the top bar should be like buttons: a space on the left and
+  right, a highlight on hover"). Consulted Sol (read the code) and MiMo.
+  - Padding: one space each side, both cells part of the button's paint
+    and click rectangle; always reserved, never only on hover (the row
+    would jitter). Agent indicators already reserve two cells
+    (`sidebar.rs:496`); sort has a glyph-only hitbox (`space_sort.rs:121`),
+    so this is partly a consistency fix. Rejected: one space shared by
+    two neighbours (MiMo; Sol: a cell cannot belong predictably to two
+    buttons).
+  - Styles: hover a subtle neutral background; an open list keeps its
+    accent tint and glyph colour (`DECISIONS.md`, header sort button);
+    open and hovered a slightly stronger tint. Not bold alone (asking
+    counts are already bold). Check indexed-colour themes, where the open
+    style falls back to solid accent (`sidebar.rs:1910`).
+  - Hover: clear it on focus loss (`input.rs:256`), overlay change and
+    re-layout; repaint only when the hovered button changes
+    (`endpoint_navigation.rs:91`); without motion reporting only hover is
+    lost. Pointer exit without an event cannot be detected.
+  - Overflow, when the padded buttons do not fit: shorten the sort key to
+    its first letter (`⇅ m↑` for manual, `n` name, `p` prior…; user,
+    2026-10-07: the full name shows on click, in the sort menu), then to
+    `⇅` alone, then move disabled navigation, fold and zero-count history into
+    an overflow menu, a second row as last resort. Bug found on the way:
+    `sidebar.rs:482` silently skips a non-zero indicator when it does not
+    fit, against "never hide a non-zero indicator".
+
+- [ ] A coordinator that hits a gap in its own protocol (proposed by the [t-aketwwun]
+  try-roguix coordinator, 2026-10-10): it uses the smallest reversible
+  stopgap the existing rules allow, says so in its reply, and records a
+  Proposed item (a tool or skill change) for the user, rather than silently
+  inventing machinery or stopping while the user is away. A line in the
+  `todo` skill (the user's agent config: a text edit that widens nothing,
+  so no question needed per DECISIONS.md, but the user approves the item).
+
+- [ ] The `todo` skill's worker step reads as herdr-only (user, 2026-10-10: [t-cutymffq]
+  "why did the roguix-vps coordinator not use headless workers? ask the
+  models"; round 20261010-025447-fba3, sol + MiMo + DeepSeek agreeing).
+  Step 4 gates headless workers on "where herdr has headless workers (...;
+  the herdr fork)" and then gives a herdr-only recipe (`--folder-slot
+  worker`, `git rev-parse master`, "the repository's notes on headless
+  workers"); in roguix-vps none of these exist, so the coordinator took the
+  "Elsewhere ... TUI worker" path without stating a reason (its VM items
+  would have needed a pane worker anyway, but that was not why). Fix, text
+  only (no widening): headless in any repository when `herdr worker --help`
+  lists `verify` and the item's build and checks fit the worker sandbox
+  (`herdr worker start --cwd <worktree>`, base from the repository's
+  default branch; `--folder-slot worker` only where that slot exists);
+  otherwise, or when the item needs what the sandbox blocks (VM launches,
+  PTYs, local sockets, `ps`), a pane worker, with the reason said in the
+  reply. The global rule in ~/.claude/CLAUDE.md uses the same condition.
+
+- [ ] Smaller herdr and skill gaps reported by the try-roguix coordinator [t-3schklfu]
+  (2026-10-10, pane w6:pAH, at the user's request):
+  1. A pane worker's workspace was gone after a herdr restart while its
+     worktree and uncommitted work stayed; `herdr worktree open --path <it>`
+     failed with `not_git_worktree` until `--cwd <main checkout>`: the error
+     should say it checks the calling pane's cwd (or use `--path`'s repo).
+  2. `herdr agent list` (~37 KB) and `herdr worker list` (~390 KB, whole
+     journals) are too big to use: filters (`--repo`, `--cwd`, `--name`)
+     and a compact default.
+  3. The `todo` skill's step 5 says "exactly this message, no body or
+     trailers", but some repositories require a body or trailers: it
+     should say "the message the repository's rules require" (herdr's own
+     verify keeps subject-only for herdr).
+  4. `herdr tab role <tab> worker` is easy to forget: a `--role worker` on
+     `worktree create` or `agent start`.
+  5. The uncommitted-edits Stop hook fired mid-rebase listing conflict
+     resolutions as possibly other sessions' edits: during a rebase, merge
+     or cherry-pick it should say so instead.
+  6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
+     cannot inspect a `bash -c` script for `rm`); a script file passed:
+     document "pass a script file, not `bash -c`" with herdr-job.
+
+- [ ] Carry the libghostty-vt `cursorChangePin` crash fix as vendored patch 0009 (deferred: the user, 2026-10-15, decision `d-xyf2vrgk`: "roherdr needs no changes for now, since its successor, herdr-bend or herdr-tov, is being built in parallel"; consult rounds `20261015-131156-0448` (if patched, a local patch, no ghostty fork) and `20261015-131527-f6f5` (defer, keep this record). Reconsider when the crash shows up in daily use, or when an oracle run of herdr-bend or herdr-tov hits it). [t-5qaljuad]
+  - The bug: SIGSEGV in `Screen.endHyperlink` (null dereference at 0x20) when `cursorAbsolute` moves a styled cursor with an open OSC 8 link onto a page whose style set is full. Found by herdr-bend; root cause and evidence in `~/personal_projects/herdr-bend/spike/RESULTS.md`, "Patched upstream baseline". Reported upstream as https://github.com/herdrdev/herdr/issues/5296; a ghostty "Issue Triage" discussion is drafted in herdr-bend (`spike/ghostty-triage-draft.md`) for the user to edit and post. Still present in ghostty main `a2e4403`.
+  - The fix: `~/personal_projects/herdr-bend/spike/upstream-cursorchangepin.patch` (detach the cursor hyperlink before the style migration, re-add it after). It applies cleanly to this repository's vendored tree (`git apply --check`, 2026-10-15). The Zig regression test is in `spike/ghostty-cursorchangepin.patch` in herdr-bend.
+  - Do: store it as `vendor/patches/libghostty-vt/0009-...patch` with an entry in `vendor/libghostty-vt.patches.md` (reason, issue 5296, base `44f2a44`, verification, removal condition: the vendored source no longer has the bug, shown by the regression test and the reproducer, whatever shape upstream's fix takes); `just check` must pass. Verify with herdr-bend's seeded generator (crashes the unpatched build, not the patched one).
+  - Consumers: herdr-tov's and herdr-bend's `tools/vt-ref`/`corpus/vt-ref` link the `libghostty-vt.a` this checkout builds, as a reference oracle. Rebuild them after the patch and re-run their corpus comparisons; expect no screen change (the patch touches only the crashing path), and report any diff to those repositories' coordinators.
+
+- [ ] herdr-job commits only on a passing check of the same tree [t-6gowvwu6]
+  (user, 2026-10-15, d-d22gg3n7 in herdr-bend: "yes, add it to Proposed").
+  In herdr-bend a coordinator committed on a failing test-reducer run
+  (`tail -1 $LOG; grep ...; git commit ... -- <paths>`: `;` let the commit
+  run although the job had ended `failed (1)`). Consult rounds
+  `20261015-212602-b7e3` and `20261015-212929-26b5` (Sol, MiMo,
+  DeepSeek, Argon, Wonder): the gate belongs in global tooling, the
+  per-repository policy (which checks gate which paths) in each
+  repository. Add a checked commit to `herdr-job`, e.g.
+  `herdr-job run --commit-on-success -m MSG -- <paths> -- <check>`: build
+  the candidate tree (HEAD plus only the given paths, as `clean-tree`
+  does), run the check on that tree, and on exit 0 commit exactly that
+  tree object with `commit-tree` and a compare-and-swap `update-ref`
+  on the parent it tested; refuse when HEAD moved, never touch other
+  sessions' index or working-tree changes. Rejected in the rounds: a
+  PreToolUse hook matching `;` before `git commit` (Claude Code only,
+  false positives, easy to bypass) and a pre-commit hook comparing a pass
+  marker (temporary index of `git commit -- <paths>`, `--no-verify`,
+  shared checkouts). The user kept the rule itself per repository
+  (d-wfiwe6sh), so global instructions do not change. Cost: a new
+  herdr-job mode and its tests; no build of the herdr binary.
+
+- [ ] An install's live handoff ends the user's attached client (user, [t-h5fibuc4]
+  2026-10-16, reported through the herdr-tov coordinator: "as if install
+  was done and I have to reconnect"). The install of run `r-wz74mc3f`
+  (build 7bca17628) replaced `~/.cargo/bin/herdr` at 10:03; the server log
+  shows "handoff import ready panes=94" and "live handoff completed; old
+  server exiting" (08:03:46Z), so panes survived, but the client log shows
+  "herdr exiting" for client pid 24952 at 08:03:44Z and a new client
+  pid 27142 at 08:03:46Z, and the user had to reconnect. Expected: the
+  attached client follows the handoff to the new server (as `herdr todo
+  wait` does since 8eaec1f2) without the user doing anything. Find why the
+  client exits instead of reconnecting, and test it with a live handoff
+  while a client is attached.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do.
 
 - [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
   baby-sitting the models through rules in AGENTS.md etc.; where are the
@@ -3696,6 +3700,7 @@ user needs to decide or do.
   Asked 2026-10-12: the user creates the credential later; the item waits.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
+  Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
 
 ### Decide
 
