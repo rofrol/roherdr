@@ -1529,3 +1529,30 @@ No model, permissions or billing-route changes were included. This is a
 bounded lexical safeguard, not a semantic proof or direct enforcement of
 pi tools. Owner-caught Rule 10 violations remain the process outcome to
 measure; no periodic audit timer was added.
+
+## The driver targets the default branch and edits with herdr's own todo_edit (t-oe3wrkvz, 2026-10-16)
+
+Item t-oe3wrkvz (rormpc reports r-8, r-9; agentic-workflow-bend-claude
+report r-81). The user rejected a per-repository branch override as a
+stopgap (2026-10-12: "what a crappy workaround") and asked for a proper
+fix; consult round `20261016-020936-68be` split it into two runs.
+
+- Slice 1a (run r-p2565geu, commit 5245e7a83): one resolver,
+  `src/workers/target_branch.rs`, used by every driver site. With an
+  `origin`, the target is what `git ls-remote --symref origin HEAD`
+  names (a cached `origin/HEAD` can be stale); an unreachable origin
+  refuses, never guesses. Without a remote, the checkout's current
+  branch; a detached HEAD without a remote refuses. A run stores the
+  resolved name (`target_branch`) and stops if it no longer resolves;
+  runs recorded before it use `master`.
+- Slice 1b (run r-wz74mc3f, commit 7bca17628): the TODO step runs
+  herdr's embedded `scripts/todo_edit.py` (`src/workers/todo_editor.rs`)
+  in every repository, and `herdr todo edit` runs it by hand.
+- Rejected: `--repo` (one coordinator driving another repository) and a
+  herdr handover between coordinators (the user, 2026-10-12).
+  Cross-repository work is plain messages between the repositories' own
+  coordinators (item on waiting on another coordinator); one space and
+  one coordinator per git repository.
+- Left open, as Proposed items: the resolver's cost and environment on
+  status paths, and the remaining references to the repository's own
+  `scripts/todo_edit.py` (allowlist, item-coordinator prompt, docs).

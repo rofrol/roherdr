@@ -11,78 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
-  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
-  repository; use herdr's own copy (a `herdr todo edit` command) so any
-  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
-  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
-  in one repository and whose worker works in another, and a configurable
-  main branch per repository (`.herdr/`); items spanning both (a tools
-  commit, a release tag, a rormpc commit) need ordered steps across
-  repositories.
-  Revised 2026-10-12 (the user rejected the override stopgap: "what a
-  crappy workaround", asked for a proper fix; round 20261012-010700, sol,
-  MiMo, DeepSeek agreeing): moved to the front. Slice 1 now: the driver
-  reads the target repository's default branch from git everywhere it
-  says `master` (base, cherry-pick target, `git cherry`, ls-remote, fetch,
-  push), tested with `main`, a detached HEAD, no remote and a stale
-  origin/HEAD. Then, by the user's own rule (one space and one coordinator
-  per git repository), rormpc-tools gets its own space, coordinator and
-  TODO.md (the rormpc coordinator and the user decide; rormpc's AGENTS.md
-  says todo-rormpc owns both today); `--repo` is deferred (all three: it
-  makes one coordinator drive another repository, the boundary the user
-  rejected). Cross-repository work becomes items in two backlogs with a
-  dependency: a handover that names the landed commit or version and
-  wakes the dependent coordinator (its own item); release recipes come
-  before the release item.
-  Revised again 2026-10-12: no herdr handover between coordinators (the
-  user rejected it); cross-repository work is plain messages between the
-  repositories' own coordinators, see the item on waiting on another
-  coordinator.
-  Moved to the top 2026-10-16 by the user ("have an agent do this
-  default-branch fix, to unblock" agentic-workflow-bend-claude, whose only
-  branch is `main`; its `herdr todo run` refused with "the repository has
-  no master commit", report r-81). Consult round `20261016-020936-68be`
-  (sol, mimo, deepseek, argon, wonder, all agreeing on the points kept):
-  slice 1a is the branch alone, slice 1b `herdr todo edit`, separate runs.
-  Slice 1a: one resolver used by every site (preflight, worker base,
-  cherry-pick, `git cherry`, log, push, queue's TODO read, capabilities'
-  operations read, draft/review fallbacks, `herdr worker start`'s default
-  REF). With an `origin`, the target is what `git ls-remote --symref origin
-  HEAD` names (the cached `origin/HEAD` can be stale, and the old branch
-  often still exists after a rename); an unreachable origin refuses with
-  that diagnostic, never guesses. Without a remote, the shared checkout's
-  current branch (no push happens); a detached HEAD without a remote
-  refuses. Never the checkout's current branch when a remote exists. A run
-  stores the resolved name and its base commit; each later step uses the
-  stored name and stops if it no longer resolves (no silent retargeting).
-  Tests: `main` only (whole run through push and queue read), `master`
-  regression, stale origin/HEAD naming a still-existing old branch,
-  detached HEAD with a remote, no remote on `main`, no remote detached
-  (refuse), feature-branch checkout with a remote (targets the default),
-  unreachable origin (refuse), branch renamed mid-run (the step stops),
-  and a source test that `src/workers` has no bare `"master"` literal
-  outside tests. Herdr's own run of this slice uses `master`, so only the
-  tests prove the `main` path (wonder).
-  Slice 1a landed 2026-10-16 (run r-p2565geu): `src/workers/target_branch.rs`
-  resolves the target once at preflight and the run stores it
-  (`target_branch`); runs recorded before it use `master`. Left for later
-  slices or a decision: status paths (`todo_runnable_state`,
-  `todo_queue_status`, the supervisor's sweep) now run `git ls-remote` on
-  every call; the grant and `worker start` without `--base` ask origin with
-  the server's environment, not the caller's; a `--next` run resolves again
-  instead of inheriting; a repository with remotes but no `origin` is
-  refused. Next: slice 1b, `herdr todo edit` in herdr itself.
-  Slice 1b landed 2026-10-16 (run r-wz74mc3f): the TODO step runs herdr's
-  embedded `scripts/todo_edit.py` (`src/workers/todo_editor.rs`) in every
-  repository, and `herdr todo edit` runs it by hand. Still naming
-  `scripts/todo_edit.py`, left for a follow-up because the allowlist is a
-  trust boundary: the item coordinator prompt
-  (`src/workers/item_coordinators.rs:133`, `:163`), the coordinator
-  allowlist in `src/integration/assets/claude/herdr-agent-state.sh`
-  (`:994`, `:1041`, `:1048`, `:1626-1628`) with its tests in
-  `src/integration/tests.rs`, and `cli-reference.mdx:460`, `:530`.
-
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
   "why is this not in a correction loop?", "why did the supervisor not
@@ -3325,6 +3253,25 @@ Items agents add. Not approved until the user moves them up.
   wait` does since 8eaec1f2) without the user doing anything. Find why the
   client exits instead of reconnecting, and test it with a live handoff
   while a client is attached.
+
+- [ ] The default-branch resolver on status paths and with the server's [t-6djamgjl]
+  environment (follow-up of t-oe3wrkvz, slice 1a, run r-p2565geu): status
+  paths (`todo_runnable_state`, `todo_queue_status`, the supervisor's
+  sweep) run `git ls-remote` on every call; the grant and `worker start`
+  without `--base` ask origin with the server's environment, not the
+  caller's; a `--next` run resolves again instead of inheriting its
+  parent's stored branch; a repository with remotes but no `origin` is
+  refused. Touches the run/API interface, so not an automatic follow-up.
+
+- [ ] Point the remaining `scripts/todo_edit.py` references at `herdr todo [t-xebmqmri]
+  edit` (follow-up of t-oe3wrkvz, slice 1b, run r-wz74mc3f): the item
+  coordinator prompt (`src/workers/item_coordinators.rs:133`, `:163`),
+  the coordinator allowlist in
+  `src/integration/assets/claude/herdr-agent-state.sh` (`:994`, `:1041`,
+  `:1048`, `:1626-1628`) with its tests in `src/integration/tests.rs`,
+  and `cli-reference.mdx:460`, `:530`. The allowlist is a trust boundary
+  and the integration asset needs a version bump, so it waits for
+  approval.
 
 ## Needs a decision
 
