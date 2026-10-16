@@ -1644,3 +1644,26 @@ otherwise it ends `blocked`. `coordinator status` shows `holder_kind`
 and `holder_pid`, never the token. Review round `20261016-201054-ee83`
 (sol, DeepSeek; the OpenRouter models refused the brief): open points
 proposed separately. The Linux pidfd code was not compiled.
+
+## The driver lands on the checked-out branch and pushes where git sends it (t-a5uup6g5, 2026-10-16)
+
+Asked by bend-bootstrap's coordinator (a fork worktree on `bootstrap` whose
+`origin` is upstream); the user, d-3y3fupx7: next; then "why does herdr
+guard this branch at all?" (upstream herdr has no TODO driver). Decided
+with the models (rounds `20261016-214721-9ab2`, `20261016-215316-cfc7`):
+no setting and no origin-HEAD resolution. Landed as run r-26mgd33n (an
+earlier run, r-t7uheqex, briefed with a rejected `[target]` table in the
+tracked checks.toml, was interrupted and abandoned before any commit):
+the target is the branch checked out where `todo run` starts (its real
+worktree path recorded, detached HEAD refused); TODO.md, checks and the
+install use that worktree; the push destination comes from git config
+step by step with each key named (`run_push_skipped` when `B@{push}` does
+not resolve or `remote.R.push` refspecs are set); a push never creates a
+remote branch, fetches first and fast-forwards with an explicit refspec;
+right before the cherry-pick the worktree must still be on the branch,
+clean, and contain the run's base (not equal to it, so the coordinator's
+notes commits do not stop runs). `worker start` without `--base` and
+`todo grant` also take the caller's checked-out branch. Superseded: the
+morning's origin-HEAD rule of t-oe3wrkvz. A fork branch needs its upstream
+on the fork too (`git branch -u R/B B` plus `branch.B.pushRemote R`):
+with `push.default simple`, `pushRemote` alone does not resolve.
