@@ -73,6 +73,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the server's environment, not the caller's; a `--next` run resolves again
   instead of inheriting; a repository with remotes but no `origin` is
   refused. Next: slice 1b, `herdr todo edit` in herdr itself.
+  Slice 1b landed 2026-10-16 (run r-wz74mc3f): the TODO step runs herdr's
+  embedded `scripts/todo_edit.py` (`src/workers/todo_editor.rs`) in every
+  repository, and `herdr todo edit` runs it by hand. Still naming
+  `scripts/todo_edit.py`, left for a follow-up because the allowlist is a
+  trust boundary: the item coordinator prompt
+  (`src/workers/item_coordinators.rs:133`, `:163`), the coordinator
+  allowlist in `src/integration/assets/claude/herdr-agent-state.sh`
+  (`:994`, `:1041`, `:1048`, `:1626-1628`) with its tests in
+  `src/integration/tests.rs`, and `cli-reference.mdx:460`, `:530`.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
