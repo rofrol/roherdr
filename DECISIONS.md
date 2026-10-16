@@ -1598,3 +1598,16 @@ asserted); the error and malformed modes run with the default 420 s
 external deadline and assert their error kind; the fake's sleep and the
 outer `timeout=10` are gone. A flaky check is fixed at its cause before
 the change it blocks is verified again, never re-run to get green.
+
+## A child holds close-on-exec descriptors only until its exec (t-5gkzkrre, 2026-10-16)
+
+The lock inheritance test failed intermittently (26 to 52 of 300 under
+load) in t-xhaho72w's verify. Cause (run r-d3idmzdq): on macOS a child has
+copies of every parent descriptor, close-on-exec ones included, from
+`fork` until its `exec` completes, and `spawn()` can return before that;
+the test checked the lock right after the spawn. The lock code was right
+(`O_CLOEXEC` at open, `FD_CLOEXEC` set on a passed copy before anything
+starts). The tests now check once the child's program runs (it echoes a
+line), and a regression test gates the child in `pre_exec` to show the
+window. In the server that window can only refuse one start made in the
+same instant; nothing holds the lock afterwards.

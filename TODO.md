@@ -26,15 +26,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   [0.001]`; moved to the top, it blocks every install. Run aborted at its
   install; its commit is on master, installed and pushed by the next run.
 
-- [ ] The lock test `a_command_started_while_the_lock_is_held_does_not_hold_it` [t-5gkzkrre]
-  fails intermittently (follow-up of t-h6dxi6wv, found by the coordinator
-  2026-10-16: the verify of r-y3lfeofq, t-xhaho72w, failed on it at
-  src/platform/unix_common.rs:1181, "a child process holds the lock it was
-  started under", while it passed in earlier verifies). Either the lock
-  really leaks into a child sometimes (a real bug: an agent outliving a
-  crashed server would block every new one) or the test is racy; find
-  which, fix the cause, and prove it. Blocks the landing of t-xhaho72w.
-
 - [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
   2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
   use of this workflow by roherdr now, narrowly"; consult round
