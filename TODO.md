@@ -27,6 +27,39 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   as its agent command (its item t-adaptrun), and herdr-bend implements the
   same contract at M3.
 
+- [ ] Coordinator tenure is the atomic, durable per-repository lease (the [t-xhaho72w]
+  user, 2026-10-16, d-ytigfuq7: "roagent is not to be used any more, only
+  roherdr + agentic-workflow-bend-claude"; queued on the user's word
+  "dopisz" from the agentic-workflow-bend-claude coordinator's plan, consult
+  round `20261016-121753-e8e5`, its decision record 0007). The tenure stops
+  mirroring roagent's lease ("the lease wins" goes): `herdr coordinator
+  start --repo` acquires or refuses atomically and returns a tenure token;
+  the server derives the holder from its own session/pane identity (or, for
+  a harness such as agentic-workflow-bend-claude's `scripts/supervise`, the
+  calling process it records) and releases it on the holder's exit event,
+  never on a timer; `herdr worker run` (t-kxejzkf7) takes the token and the
+  server checks it at each start. Afterwards roagent's `todo lock` becomes a
+  fail-closed proxy to it (a roagent item) and the supervisor takes this
+  tenure (agentic-workflow-bend-claude's t-tenurrun).
+
+- [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
+  herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
+  roagent's proxy): `roagent todo start` (open a herdr tab with a
+  coordinator) and `roagent handoff path|claim|done|show|take` (notes
+  outside repositories) become herdr commands, so the `todo` and `handoff`
+  skills can drop roagent; `roagent context` goes to a skill script, not
+  herdr. The rules and skills change with roagent's removal in the
+  dotfiles' own TODO.
+
+- [ ] Plan the retirement of herdr's TODO driver (the user, 2026-10-16, [t-54d2offk]
+  d-ytigfuq7: "also retire herdr's TODO driver: its queues move to this
+  supervisor"): `todo run`, queue mode and `todo next --continue` give way
+  to agentic-workflow-bend-claude's supervisor, one repository at a time,
+  with no window where both drive a repository; the supervisor runs its
+  agents through `herdr worker run`. First a decision record with its own
+  consult round, before any code; starts only after the supervisor runs
+  real repositories through `herdr worker run`.
+
 - [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
   user's question 2026-10-12, "loss of memory between items and shallower
   review: how do others counter it?"; round 20261012-155246-e730, see
