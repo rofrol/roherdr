@@ -57,6 +57,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   dependency of the migration; roagent gets no other new code (sol, Argon,
   Wonder).
 
+- [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
+  t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
+  the provider's usage and reserves nothing, so two starts read at the same
+  moment (two `worker run`s from an external orchestrator, or one and a
+  `todo run`) are both admitted. Serialize admission per provider and
+  count a start admitted but not yet measured, or record why the
+  measurement makes that unnecessary. Touches the gate, a safety
+  boundary, so it waits for approval.
+  Decided by the user 2026-10-16: approved ("I approve, but ask the
+  models"); the design comes from a consult round, recorded below.
+
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
   roagent's proxy): `roagent todo start` (open a herdr tab with a
@@ -3760,15 +3771,6 @@ Items agents add. Not approved until the user moves them up.
 - [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
-
-- [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
-  t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
-  the provider's usage and reserves nothing, so two starts read at the same
-  moment (two `worker run`s from an external orchestrator, or one and a
-  `todo run`) are both admitted. Serialize admission per provider and
-  count a start admitted but not yet measured, or record why the
-  measurement makes that unnecessary. Touches the gate, a safety
-  boundary, so it waits for approval.
 
 ## Needs a decision
 
