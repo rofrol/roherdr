@@ -1611,3 +1611,15 @@ starts). The tests now check once the child's program runs (it echoes a
 line), and a regression test gates the child in `pre_exec` to show the
 window. In the server that window can only refuse one start made in the
 same instant; nothing holds the lock afterwards.
+
+## The herdr-job tests record only herdr-job's own sleeps (t-t62majdo, 2026-10-16)
+
+Two installs failed (2026-10-12 and 2026-10-16) on `WaitAgentTests` seeing
+`[0.001, 0.002, ...]` in their sleep recorder. Cause (run r-47kvoz4u):
+`subprocess.run(..., timeout=...)` reaps a child that closed its output but
+has not exited with the standard library's own `time.sleep` loop (0.001 up
+to 0.05), and the tests patched `time.sleep` process-wide; herdr-job itself
+does not retry there. The tests now patch only herdr-job's own `time`
+(`patch_job_time`), a FIFO-gated stub forces the reaping path in a
+regression test, and two leaks behind `ResourceWarning` (a `caffeinate`
+kept for the test process, an unreaped `sleep` child) are fixed.
