@@ -6267,6 +6267,16 @@ mod todo_runs {
     const ITEM: &str = "t-abcd2345";
     const SUBJECT: &str = "feat: add a";
 
+    /// A holder for a gate check a test makes itself: the same `id` takes
+    /// one slot of the cap however often it is admitted.
+    pub(super) fn gate_holder(id: &str) -> runs::usage_gate::Holder {
+        runs::usage_gate::Holder::WorkerRun(id.to_owned())
+    }
+
+    /// The usage gate's cap on workers per provider and its latch per
+    /// account.
+    mod usage_cap;
+
     /// A repository on `master` with the item in `TODO.md` and the checks
     /// `ok` (an argv a shell would break: `$X;false` expanded and split),
     /// `b` (b.txt exists), `never`, `tests` (src/api/a.txt exists), which
@@ -6550,14 +6560,24 @@ mod todo_runs {
         restarted.set_usage_for_test(fresh_usage(80, 10));
         assert_eq!(
             restarted
-                .usage_gate(&repo, WorkerAgent::Claude, false)
+                .usage_gate(
+                    &repo,
+                    WorkerAgent::Claude,
+                    false,
+                    Some(&gate_holder("test"))
+                )
                 .unwrap_err()
                 .code(),
             "usage_gate"
         );
         restarted.set_usage_for_test(fresh_usage(79, 79));
         let admitted = restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test")),
+            )
             .unwrap();
         assert_eq!(admitted["decision"], "admit");
         assert_eq!(admitted["reopened"], true);
@@ -6565,17 +6585,32 @@ mod todo_runs {
         restarted.set_usage_for_test(fresh_usage(89, 89));
         assert_eq!(
             restarted
-                .usage_gate(&repo, WorkerAgent::Claude, false)
+                .usage_gate(
+                    &repo,
+                    WorkerAgent::Claude,
+                    false,
+                    Some(&gate_holder("test"))
+                )
                 .unwrap()["reopened"],
             false
         );
         restarted.set_usage_for_test(fresh_usage(90, 0));
         assert!(restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test"))
+            )
             .is_err());
         restarted.set_usage_for_test(fresh_usage(85, 0));
         assert!(restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test"))
+            )
             .is_err());
     }
 
@@ -6591,17 +6626,32 @@ mod todo_runs {
             WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
         restarted.set_usage_for_test(fresh_usage(86, 86));
         let admitted = restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test")),
+            )
             .unwrap();
         assert_eq!(admitted["state"], "open");
         assert_eq!(admitted["reopened"], true);
         restarted.set_usage_for_test(fresh_usage(91, 10));
         assert!(restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test"))
+            )
             .is_err());
         restarted.set_usage_for_test(Err("DNS lookup failed".into()));
         let failure = restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test")),
+            )
             .unwrap_err()
             .to_string();
         assert!(
@@ -6609,16 +6659,28 @@ mod todo_runs {
             "{failure}"
         );
         assert_eq!(
-            store_of(&restarted).usage_gate_body(&repo).unwrap()["state"],
+            store_of(&restarted)
+                .usage_gate_body("provider:claude")
+                .unwrap()["state"],
             "high"
         );
         restarted.set_usage_for_test(fresh_usage(86, 10));
         assert!(restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test"))
+            )
             .is_err());
         restarted.set_usage_for_test(fresh_usage(79, 79));
         assert!(restarted
-            .usage_gate(&repo, WorkerAgent::Claude, false)
+            .usage_gate(
+                &repo,
+                WorkerAgent::Claude,
+                false,
+                Some(&gate_holder("test"))
+            )
             .is_ok());
     }
 
@@ -6727,7 +6789,6 @@ mod todo_runs {
     #[test]
     fn measurements_reopen_a_latch_but_dispatch_requires_its_own_read() {
         let fixture = todo_repo("todo-pending-usage-dispatch");
-        let repo = repository_of(&fixture.repo).unwrap();
         fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
         let pending = fixture
             .supervisor
@@ -6746,7 +6807,7 @@ mod todo_runs {
                 .unwrap();
         }
         assert!(!store_of(&fixture.supervisor)
-            .usage_gate_closed(&repo)
+            .usage_gate_closed("provider:claude")
             .unwrap());
         let mut stored = fixture.supervisor.load_run(&pending.run_id).unwrap();
         fixture
@@ -6871,7 +6932,11 @@ mod todo_runs {
     fn the_usage_gate_reads_its_thresholds_from_the_config_at_each_check() {
         let fixture = todo_repo("todo-usage-gate-config");
         let repo = repository_of(&fixture.repo).unwrap();
-        let gate = |agent| fixture.supervisor.usage_gate(&repo, agent, false);
+        let gate = |agent: WorkerAgent| {
+            fixture
+                .supervisor
+                .usage_gate(&repo, agent, false, Some(&gate_holder(agent.as_str())))
+        };
         let set = |close, reopen| {
             fixture
                 .supervisor

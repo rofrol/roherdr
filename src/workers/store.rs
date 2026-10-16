@@ -755,6 +755,55 @@ ALTER TABLE coordinators ADD COLUMN token_sha256 TEXT;
 ALTER TABLE coordinators ADD COLUMN holder_pid INTEGER;
 ALTER TABLE coordinators ADD COLUMN holder_start INTEGER;
 "#,
+    r#"
+-- The usage gate's admissions, for its cap on the workers of one provider
+-- (`[usage] gate_max_workers`, across all repositories): one row per start
+-- the gate admitted, written before the worker is spawned. `holder` is
+-- `run:<run id>:<attempt>` for a `todo.run` attempt (`run_id`, `attempt`)
+-- or `worker.run:<id>` for a `worker.run`; `worker_id` the worker it
+-- started, set before the spawn. Whether a row still holds a slot is
+-- derived from the rows it names (its worker's `exited` or `lost`, its
+-- run's status and attempt), never counted; `released_ms` and `release`
+-- end it for what those rows cannot show (a failed spawn, a refusal, a
+-- server gone before the worker was recorded). `server_pid` and
+-- `server_start` name the server process that admitted it. `ignored` is an
+-- admission `--ignore-usage` made past the gate.
+CREATE TABLE usage_admissions (
+    holder TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    run_id TEXT,
+    attempt INTEGER,
+    worker_id TEXT,
+    server_pid INTEGER,
+    server_start INTEGER,
+    ignored INTEGER NOT NULL,
+    admitted_ms INTEGER NOT NULL,
+    released_ms INTEGER,
+    release TEXT
+);
+CREATE INDEX usage_admissions_by_provider ON usage_admissions (provider, released_ms);
+-- The high latch is the provider account's, not a repository's: one row per
+-- provider (`provider:claude`, `provider:openai`). Each takes the most
+-- restrictive of the provider's former rows (Claude's were keyed by the
+-- repository, OpenAI's by `openai:` and the repository): a closed high one,
+-- else a closed unknown one, else the latest open one; then those are gone.
+INSERT INTO usage_gates (repo, closed, body, updated_ms)
+    SELECT 'provider:claude', closed, body, updated_ms FROM usage_gates
+    WHERE substr(repo, 1, 7) != 'openai:'
+    ORDER BY (closed != 0 AND coalesce(CASE WHEN json_valid(body)
+                  THEN json_extract(body, '$.state') END, '') != 'unknown') DESC,
+             closed DESC, updated_ms DESC
+    LIMIT 1;
+INSERT INTO usage_gates (repo, closed, body, updated_ms)
+    SELECT 'provider:openai', closed, body, updated_ms FROM usage_gates
+    WHERE substr(repo, 1, 7) = 'openai:'
+    ORDER BY (closed != 0 AND coalesce(CASE WHEN json_valid(body)
+                  THEN json_extract(body, '$.state') END, '') != 'unknown') DESC,
+             closed DESC, updated_ms DESC
+    LIMIT 1;
+DELETE FROM usage_gates WHERE substr(repo, 1, 9) != 'provider:';
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1828,6 +1877,101 @@ pub(super) struct NewTenure<'a> {
     pub(super) holder: Option<HolderProcess>,
 }
 
+/// One admission of the usage gate (`usage_admissions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Admission {
+    pub(super) holder: String,
+    pub(super) repo: String,
+    pub(super) run_id: Option<String>,
+    pub(super) attempt: Option<u32>,
+    pub(super) worker_id: Option<String>,
+    pub(super) server_pid: Option<u32>,
+    pub(super) server_start: Option<u64>,
+}
+
+/// An admission as the gate writes it.
+pub(super) struct NewAdmission<'a> {
+    pub(super) holder: &'a str,
+    pub(super) provider: &'a str,
+    pub(super) repo: &'a str,
+    pub(super) run: Option<(&'a str, u32)>,
+    pub(super) server: (u32, Option<u64>),
+    pub(super) ignored: bool,
+    pub(super) at_ms: u64,
+}
+
+const ADMISSION_COLUMNS: &str =
+    "a.holder, a.repo, a.run_id, a.attempt, a.worker_id, a.server_pid, a.server_start";
+
+fn admission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Admission> {
+    Ok(Admission {
+        holder: row.get(0)?,
+        repo: row.get(1)?,
+        run_id: row.get(2)?,
+        attempt: row.get(3)?,
+        worker_id: row.get(4)?,
+        server_pid: row.get(5)?,
+        server_start: row.get::<_, Option<i64>>(6)?.map(|start| start as u64),
+    })
+}
+
+/// The admissions of `provider` that hold a slot, oldest first: not ended,
+/// and, by what the rows they name show now, one whose worker has not
+/// exited or been lost (a worker the store does not hold yet is being
+/// spawned), one of a run in progress whose worker is not started yet, at
+/// that attempt or a later one admitted for a retry, or a `worker.run` not
+/// yet bound to its worker.
+fn held_admissions(conn: &Connection, provider: &str) -> StoreResult<Vec<Admission>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {ADMISSION_COLUMNS} FROM usage_admissions a
+         LEFT JOIN workers w ON w.id = a.worker_id
+         LEFT JOIN runs r ON r.id = a.run_id
+         WHERE a.provider = ?1 AND a.released_ms IS NULL
+           AND CASE
+               WHEN a.worker_id IS NOT NULL THEN w.id IS NULL OR (w.exited = 0 AND w.lost = 0)
+               WHEN a.run_id IS NOT NULL THEN coalesce(r.status IN ('running', 'waiting')
+                   AND r.attempt <= a.attempt, 0)
+               ELSE 1
+           END
+         ORDER BY a.admitted_ms, a.holder"
+    ))?;
+    let rows = statement.query_map([provider], admission_from_row)?;
+    rows.collect()
+}
+
+impl Tx<'_> {
+    /// [`held_admissions`] in this transaction.
+    pub(super) fn held_admissions(&self, provider: &str) -> StoreResult<Vec<Admission>> {
+        held_admissions(self.tx, provider)
+    }
+
+    /// Writes an admission, replacing an ended one of the same holder.
+    pub(super) fn admit(&self, admission: &NewAdmission<'_>) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO usage_admissions (holder, provider, repo, run_id, attempt, worker_id,
+                 server_pid, server_start, ignored, admitted_ms, released_ms, release)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, NULL, NULL)
+             ON CONFLICT (holder) DO UPDATE SET provider = excluded.provider,
+                 repo = excluded.repo, run_id = excluded.run_id, attempt = excluded.attempt,
+                 worker_id = NULL, server_pid = excluded.server_pid,
+                 server_start = excluded.server_start, ignored = excluded.ignored,
+                 admitted_ms = excluded.admitted_ms, released_ms = NULL, release = NULL",
+            params![
+                admission.holder,
+                admission.provider,
+                admission.repo,
+                admission.run.map(|(run_id, _)| run_id),
+                admission.run.map(|(_, attempt)| attempt),
+                admission.server.0,
+                admission.server.1.map(|start| start as i64),
+                admission.ignored,
+                admission.at_ms as i64,
+            ],
+        )?;
+        Ok(())
+    }
+}
+
 /// A process that holds a tenure (`coordinator.acquire` with `holder_pid`):
 /// its pid and the start token a later process reusing the pid cannot
 /// match.
@@ -2663,6 +2807,52 @@ impl Store {
         Ok(())
     }
 
+    /// The admissions of `provider` that hold a slot of the usage gate's
+    /// cap now ([`held_admissions`]).
+    #[cfg(all(test, unix))]
+    pub(super) fn held_admissions(&self, provider: &str) -> StoreResult<Vec<Admission>> {
+        held_admissions(&lock(&self.conn), provider)
+    }
+
+    /// Names the worker an admission starts, before its spawn; an
+    /// admission that is not there, or already ended, is left alone.
+    pub(super) fn bind_admission(&self, holder: &str, worker_id: &str) -> StoreResult<()> {
+        lock(&self.conn).execute(
+            "UPDATE usage_admissions SET worker_id = ?2
+             WHERE holder = ?1 AND released_ms IS NULL",
+            params![holder, worker_id],
+        )?;
+        Ok(())
+    }
+
+    /// Ends an admission for `why` (a failed spawn, a refusal); one already
+    /// ended keeps its first end.
+    pub(super) fn release_admission(&self, holder: &str, why: &str, at_ms: u64) -> StoreResult<()> {
+        lock(&self.conn).execute(
+            "UPDATE usage_admissions SET released_ms = ?2, release = ?3
+             WHERE holder = ?1 AND released_ms IS NULL",
+            params![holder, at_ms as i64, why],
+        )?;
+        Ok(())
+    }
+
+    /// The admissions not ended whose start no row records yet: a
+    /// `worker.run` admitted but not bound to a worker, or one bound to a
+    /// worker the store does not hold. A server's start reconciles them.
+    pub(super) fn unrecorded_admissions(&self) -> StoreResult<Vec<Admission>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&format!(
+            "SELECT {ADMISSION_COLUMNS} FROM usage_admissions a
+             WHERE a.released_ms IS NULL
+               AND ((a.worker_id IS NULL AND a.run_id IS NULL)
+                 OR (a.worker_id IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM workers w WHERE w.id = a.worker_id)))
+             ORDER BY a.admitted_ms, a.holder"
+        ))?;
+        let rows = statement.query_map([], admission_from_row)?;
+        rows.collect()
+    }
+
     /// The run in progress of `repo`, if any.
     pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
         lock(&self.conn)
@@ -3442,6 +3632,7 @@ mod tests {
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
+                 DROP TABLE usage_admissions;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3461,6 +3652,47 @@ mod tests {
         assert_eq!(loaded.item_title, None);
         assert!(loaded.done_commits.is_empty());
         assert_eq!(loaded.verification, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_usage_gates_per_repository_become_one_latch_per_provider_account() {
+        let dir = scratch("usage-gate-per-account");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        // A database from before the migration, with each repository's
+        // gate: Claude's keyed by the repository, OpenAI's by `openai:`.
+        store
+            .connection()
+            .execute_batch(&format!(
+                "DROP TABLE usage_admissions;
+                 INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
+                     ('/a', 0, '{{\"state\": \"open\"}}', 40),
+                     ('/b', 1, '{{\"state\": \"unknown\"}}', 30),
+                     ('/c', 1, '{{\"state\": \"high\", \"last_good\": 1}}', 10),
+                     ('/d', 1, '{{\"decision\": \"refuse\"}}', 5),
+                     ('openai:/a', 1, '{{\"state\": \"unknown\"}}', 20),
+                     ('openai:/b', 0, '{{\"state\": \"open\"}}', 50);
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let mut keys = store.usage_gate_keys().unwrap();
+        keys.sort();
+        assert_eq!(keys, ["provider:claude", "provider:openai"]);
+        // Closed if any was: high over unknown, the latest high first.
+        assert!(store.usage_gate_closed("provider:claude").unwrap());
+        assert_eq!(
+            store.usage_gate_body("provider:claude").unwrap(),
+            json!({"state": "high", "last_good": 1})
+        );
+        assert!(store.usage_gate_closed("provider:openai").unwrap());
+        assert_eq!(
+            store.usage_gate_body("provider:openai").unwrap()["state"],
+            "unknown"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3513,8 +3745,9 @@ mod tests {
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
+                 DROP TABLE usage_admissions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 31
+                MIGRATIONS.len() - 32
             ))
             .unwrap();
         drop(store);
@@ -3583,8 +3816,9 @@ mod tests {
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
+                 DROP TABLE usage_admissions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 20
+                MIGRATIONS.len() - 21
             ))
             .unwrap();
         drop(store);

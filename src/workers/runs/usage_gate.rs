@@ -15,8 +15,22 @@
 //! The gate reads the provider of the agent the run's worker runs
 //! ([`GateProvider`]): Claude's windows for a Claude worker, the ChatGPT
 //! plan's (as Codex reads them) for a pi worker on `openai-codex`. Each
-//! provider has its own gate state per repository, so a Claude gate closed
-//! at 90% leaves pi runs to OpenAI's usage.
+//! provider has one gate state for all repositories, since the subscription
+//! is the account's (the user, 2026-10-16), so a Claude gate closed at 90%
+//! leaves pi runs to OpenAI's usage, and one closed from any repository
+//! refuses every other.
+//!
+//! The gate also caps the workers of one provider admitted and not yet
+//! exited, across all repositories (`[usage] gate_max_workers`, default 2;
+//! the user, 2026-10-16), `todo run` attempts and `worker.run` runs alike
+//! (a headless item coordinator passes the usage check only, since its
+//! runs need the slots): under the provider's lock it counts the
+//! admissions the store still holds ([`crate::workers::store`]'s
+//! `usage_admissions`, each derived from the worker or run it names, never
+//! a counter) and records the new one ([`Holder`]) before the worker is
+//! spawned. A worker's exit or loss frees its slot, and wakes the starts
+//! waiting on the gate; a failed spawn ends its admission, and a server's
+//! start ends those whose server went away before the worker was recorded.
 
 use serde_json::{json, Value};
 
@@ -64,15 +78,115 @@ impl GateProvider {
         }
     }
 
-    /// The gate's row in the store: the repository for Claude, as before
-    /// pi workers; `openai:` and the repository (an absolute path, so the
-    /// two never collide) for OpenAI.
-    pub(super) fn store_key(self, repo: &str) -> String {
+    /// The gate's row in the store: one per provider account
+    /// (`provider:claude`, `provider:openai`), whatever the repository.
+    pub(super) fn store_key(self) -> String {
+        format!("provider:{}", self.id())
+    }
+
+    /// The provider whose gate row `key` is.
+    pub(super) fn of_store_key(key: &str) -> Option<Self> {
+        [Self::Claude, Self::OpenAi]
+            .into_iter()
+            .find(|provider| provider.store_key() == key)
+    }
+}
+
+/// What an admission of the gate is held by: a run's attempt, whose worker
+/// the run's driver starts, or one `worker.run`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::workers) enum Holder {
+    Run { run_id: String, attempt: u32 },
+    WorkerRun(String),
+}
+
+impl Holder {
+    /// A new `worker.run`'s own holder.
+    pub(in crate::workers) fn new_worker_run() -> Self {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static RUNS: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let count = RUNS.fetch_add(1, Ordering::Relaxed);
+        let digest = Sha256::digest(format!("{nanos}:{}:{count}", std::process::id()));
+        Self::WorkerRun(
+            digest[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        )
+    }
+
+    /// Its key in the store.
+    pub(in crate::workers) fn key(&self) -> String {
         match self {
-            Self::Claude => repo.to_owned(),
-            Self::OpenAi => format!("openai:{repo}"),
+            Self::Run { run_id, attempt } => format!("run:{run_id}:{attempt}"),
+            Self::WorkerRun(id) => format!("worker.run:{id}"),
         }
     }
+
+    pub(super) fn run(&self) -> Option<(&str, u32)> {
+        match self {
+            Self::Run { run_id, attempt } => Some((run_id, *attempt)),
+            Self::WorkerRun(_) => None,
+        }
+    }
+
+    /// Whether `other` takes no slot from this one: the same admission, or
+    /// another attempt of the same run, whose worker the next attempt
+    /// replaces.
+    pub(super) fn shares_slot_with(&self, other: &crate::workers::store::Admission) -> bool {
+        other.holder == self.key()
+            || matches!(self, Self::Run { run_id, .. } if other.run_id.as_deref() == Some(run_id))
+    }
+}
+
+/// How an admission names itself in a refusal.
+pub(super) fn holder_label(admission: &crate::workers::store::Admission) -> String {
+    let what = match (&admission.run_id, admission.attempt) {
+        (Some(run_id), Some(attempt)) => format!("run {run_id} attempt {attempt}"),
+        _ => "worker.run".to_owned(),
+    };
+    match &admission.worker_id {
+        Some(worker_id) => format!("{what} (worker {worker_id}, {})", admission.repo),
+        None => format!("{what} (not started yet, {})", admission.repo),
+    }
+}
+
+/// The refusal for the cap: the provider, the cap and every admission that
+/// holds a slot.
+pub(super) fn cap_refusal_message(
+    provider: GateProvider,
+    max_workers: u32,
+    held: &[crate::workers::store::Admission],
+) -> String {
+    let holders = held.iter().map(holder_label).collect::<Vec<_>>().join("; ");
+    format!(
+        "usage gate: no new worker while {count} {name} workers are admitted and not exited, at \
+         most {max_workers} ([usage] gate_max_workers), across all repositories: {holders}. A \
+         slot frees when one of them exits; --ignore-usage, on the user's word, overrides",
+        count = held.len(),
+        name = provider.label(),
+    )
+}
+
+/// The cap's part of the recorded decision: `held` are the slots others
+/// hold (not this holder's own, nor its run's other attempts).
+pub(super) fn cap_json(
+    max_workers: u32,
+    held: &[crate::workers::store::Admission],
+    holder: &Holder,
+    ignored: bool,
+) -> Value {
+    json!({
+        "max_workers": max_workers,
+        "held": held.iter().map(|admission| admission.holder.clone()).collect::<Vec<_>>(),
+        "holder": holder.key(),
+        "ignored": ignored,
+    })
 }
 
 /// Durable state, independent for each repository and provider.
@@ -293,6 +407,7 @@ mod tests {
                 Thresholds {
                     close_at: 95,
                     reopen_below: 70,
+                    ..Thresholds::default()
                 },
             ] {
                 let failed = decide(provider, thresholds, Err("DNS lookup failed"), false);
@@ -466,8 +581,15 @@ mod tests {
     fn a_pi_worker_reads_openai_with_a_gate_of_its_own() {
         assert_eq!(GateProvider::of(WorkerAgent::Pi), GateProvider::OpenAi);
         assert_eq!(GateProvider::of(WorkerAgent::Claude), GateProvider::Claude);
-        assert_eq!(GateProvider::Claude.store_key("/r"), "/r");
-        assert_eq!(GateProvider::OpenAi.store_key("/r"), "openai:/r");
+        assert_eq!(GateProvider::Claude.store_key(), "provider:claude");
+        assert_eq!(GateProvider::OpenAi.store_key(), "provider:openai");
+        for provider in [GateProvider::Claude, GateProvider::OpenAi] {
+            assert_eq!(
+                GateProvider::of_store_key(&provider.store_key()),
+                Some(provider)
+            );
+        }
+        assert_eq!(GateProvider::of_store_key("/r"), None);
         let Decision::Refuse { blockers } = decide(
             GateProvider::OpenAi,
             Thresholds::default(),
@@ -524,6 +646,7 @@ mod tests {
         let thresholds = Thresholds {
             close_at: 95,
             reopen_below: 50,
+            ..Thresholds::default()
         };
         for provider in [GateProvider::Claude, GateProvider::OpenAi] {
             assert_eq!(

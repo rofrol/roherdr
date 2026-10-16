@@ -17,6 +17,17 @@ impl WorkerSupervisor {
     /// id started, as the first reply showed it; one a server restart cut
     /// off returns that worker's status now.
     pub(crate) fn start(&self, params: &WorkerStartParams) -> Result<WorkerInfo, WorkerError> {
+        self.start_admitted(params, None)
+    }
+
+    /// [`Self::start`] of a worker the usage gate admitted as `admission`
+    /// (its holder's key): the admission names the worker before it is
+    /// spawned, and ends if the spawn fails.
+    pub(in crate::workers) fn start_admitted(
+        &self,
+        params: &WorkerStartParams,
+        admission: Option<&str>,
+    ) -> Result<WorkerInfo, WorkerError> {
         self.command(
             params.command_id.as_deref(),
             "worker.start",
@@ -25,7 +36,7 @@ impl WorkerSupervisor {
                 Some(worker_id) => self.status(worker_id),
                 None => Err(Self::cut_off(stored)),
             },
-            |receipt| self.start_once(params, receipt, None),
+            |receipt| self.start_once(params, receipt, None, admission),
         )
     }
 
@@ -95,6 +106,7 @@ impl WorkerSupervisor {
         params: &WorkerStartParams,
         receipt: Option<&Receipt>,
         role: Option<&item_coordinators::CoordinatorRole>,
+        admission: Option<&str>,
     ) -> Result<WorkerInfo, WorkerError> {
         let cwd = params.cwd.as_str();
         let prompt = params.prompt.as_str();
@@ -351,12 +363,39 @@ impl WorkerSupervisor {
                 command.env(key, value);
             }
         };
+        // The usage gate's admission names its worker before the spawn,
+        // so a server that ends meanwhile leaves it to the next one's
+        // start ([`Self::reconcile_admissions`]).
+        if let Some(holder) = admission {
+            let bound = match &self.shared.store {
+                Ok(store) => store
+                    .bind_admission(holder, &worker_id)
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.clone()),
+            };
+            if let Err(error) = bound {
+                remove_temp_dir(&temp_dir);
+                if let Some(extension) = &pi_extension {
+                    let _ = std::fs::remove_file(extension);
+                }
+                return Err(WorkerError::Io(std::io::Error::other(format!(
+                    "the usage gate's admission could not name worker {worker_id}: {error}"
+                ))));
+            }
+        }
         let spawned = self
             .spawn_worker(&worker_id, &program, &args, &cwd_real, configure)
             .inspect_err(|_| {
                 remove_temp_dir(&temp_dir);
                 if let Some(extension) = &pi_extension {
                     let _ = std::fs::remove_file(extension);
+                }
+                if let (Some(holder), Ok(store)) = (admission, &self.shared.store) {
+                    if let Err(error) =
+                        store.release_admission(holder, "the worker's spawn failed", now_ms())
+                    {
+                        warn!(%error, holder, "cannot end the usage gate's admission");
+                    }
                 }
             })?;
         let pid = spawned.pid;

@@ -51,6 +51,9 @@ pub struct UsageConfig {
     /// A high usage latch reopens once every window is below this many
     /// percent (1-100, below `gate_close_percent`).
     pub gate_reopen_percent: u8,
+    /// The usage gate admits at most this many workers per provider at a
+    /// time, across all repositories (at least 1).
+    pub gate_max_workers: u32,
 }
 
 /// `[[usage.anthropic_credits]]`: one credit grant of the Anthropic Console
@@ -76,15 +79,19 @@ pub struct AnthropicCreditGrant {
 pub(crate) const MIN_USAGE_REFRESH_INTERVAL_SECS: u64 = 60;
 const DEFAULT_GATE_CLOSE_PERCENT: u8 = 90;
 const DEFAULT_GATE_REOPEN_PERCENT: u8 = 80;
+const DEFAULT_GATE_MAX_WORKERS: u32 = 2;
 
 /// The usage gate's thresholds, checked: `reopen_below` < `close_at`, both
-/// within 1-100.
+/// within 1-100, and `max_workers` at least 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UsageGateThresholds {
     /// A window at or above this many percent used closes the gate.
     pub(crate) close_at: u8,
     /// A closed gate reopens once every window is below this.
     pub(crate) reopen_below: u8,
+    /// The workers of one provider admitted and not yet exited, across all
+    /// repositories, at which the gate refuses the next one.
+    pub(crate) max_workers: u32,
 }
 
 impl Default for UsageGateThresholds {
@@ -92,6 +99,7 @@ impl Default for UsageGateThresholds {
         Self {
             close_at: DEFAULT_GATE_CLOSE_PERCENT,
             reopen_below: DEFAULT_GATE_REOPEN_PERCENT,
+            max_workers: DEFAULT_GATE_MAX_WORKERS,
         }
     }
 }
@@ -116,6 +124,7 @@ impl Default for UsageConfig {
             anthropic_credits: Vec::new(),
             gate_close_percent: DEFAULT_GATE_CLOSE_PERCENT,
             gate_reopen_percent: DEFAULT_GATE_REOPEN_PERCENT,
+            gate_max_workers: DEFAULT_GATE_MAX_WORKERS,
         }
     }
 }
@@ -128,8 +137,9 @@ impl UsageConfig {
         )
     }
 
-    /// `gate_close_percent` and `gate_reopen_percent` when both are within
-    /// 1-100 and reopen is below close; otherwise why not.
+    /// `gate_close_percent`, `gate_reopen_percent` and `gate_max_workers`
+    /// when both percents are within 1-100, reopen is below close and the
+    /// cap is at least 1; otherwise why not.
     pub(crate) fn usage_gate_thresholds(&self) -> Result<UsageGateThresholds, String> {
         let (close, reopen) = (self.gate_close_percent, self.gate_reopen_percent);
         if !(1..=100).contains(&close) || !(1..=100).contains(&reopen) {
@@ -144,9 +154,13 @@ impl UsageConfig {
                  usage.gate_close_percent ({close})"
             ));
         }
+        if self.gate_max_workers == 0 {
+            return Err("usage.gate_max_workers must be at least 1".into());
+        }
         Ok(UsageGateThresholds {
             close_at: close,
             reopen_below: reopen,
+            max_workers: self.gate_max_workers,
         })
     }
 
@@ -154,7 +168,8 @@ impl UsageConfig {
         self.usage_gate_thresholds().err().map(|why| {
             format!(
                 "{why}; the usage gate uses {DEFAULT_GATE_CLOSE_PERCENT} and \
-                     {DEFAULT_GATE_REOPEN_PERCENT}"
+                     {DEFAULT_GATE_REOPEN_PERCENT}, at most {DEFAULT_GATE_MAX_WORKERS} workers \
+                     per provider"
             )
         })
     }
@@ -176,7 +191,8 @@ mod tests {
             config.usage_gate_thresholds(),
             Ok(UsageGateThresholds {
                 close_at: 90,
-                reopen_below: 80
+                reopen_below: 80,
+                max_workers: 2
             })
         );
         assert_eq!(config.diagnostics(), None);
@@ -184,15 +200,24 @@ mod tests {
 
     #[test]
     fn usage_gate_thresholds_are_validated() {
-        let config: UsageConfig =
-            toml::from_str("gate_close_percent = 95\ngate_reopen_percent = 70").unwrap();
+        let config: UsageConfig = toml::from_str(
+            "gate_close_percent = 95\ngate_reopen_percent = 70\ngate_max_workers = 5",
+        )
+        .unwrap();
         assert_eq!(
             config.usage_gate_thresholds(),
             Ok(UsageGateThresholds {
                 close_at: 95,
-                reopen_below: 70
+                reopen_below: 70,
+                max_workers: 5
             })
         );
+        let no_workers = UsageConfig {
+            gate_max_workers: 0,
+            ..UsageConfig::default()
+        };
+        assert!(no_workers.usage_gate_thresholds().is_err());
+        assert!(no_workers.diagnostics().is_some());
         for (close, reopen) in [(80, 80), (80, 90), (0, 0), (101, 80), (90, 0), (100, 99)] {
             let config = UsageConfig {
                 gate_close_percent: close,

@@ -116,6 +116,7 @@ impl WorkerSupervisor {
             };
         };
         let shown_before = Self::shown(&entry.status);
+        let gone_before = entry.status.is_gone();
         let before = entry.status.before();
         if let store::Recorded::Event(event) = record {
             entry.status.apply(direction, event);
@@ -156,6 +157,11 @@ impl WorkerSupervisor {
             Ok(seq) => {
                 if let Some(receipt) = receipt {
                     receipt.reserved.set(true);
+                }
+                // The stored exit (or loss) frees the worker's slot of the
+                // usage gate's cap: the starts waiting on it look again.
+                if !gone_before && status.is_gone() && !foreign {
+                    self.wake_pending_after_release();
                 }
                 Some(seq)
             }

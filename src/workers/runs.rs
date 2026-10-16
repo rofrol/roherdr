@@ -851,6 +851,64 @@ fn crashes_before(repo: &str, step: TodoStep) -> bool {
     }
 }
 
+/// One admission the gate's cap decides ([`WorkerSupervisor::usage_gate`]).
+struct Admitting<'a> {
+    repo: &'a str,
+    provider: usage_gate::GateProvider,
+    holder: &'a usage_gate::Holder,
+    ignore_usage: bool,
+    max_workers: u32,
+}
+
+impl Admitting<'_> {
+    /// Under the provider's lock: counts the provider's admissions that
+    /// hold a slot (all repositories) and records the holder's in the same
+    /// transaction, or returns the refusal naming them while the cap is
+    /// reached and `--ignore-usage` is not given. The cap's part goes into
+    /// `recorded`.
+    fn admit(
+        &self,
+        store: &super::store::Store,
+        recorded: &mut Value,
+    ) -> Result<Option<String>, WorkerError> {
+        let key = self.holder.key();
+        let pid = std::process::id();
+        let server = (pid, crate::platform::process_start_token(pid));
+        let at = now_ms();
+        let (others, full) = store
+            .transaction(|tx| {
+                let held = tx.held_admissions(self.provider.id())?;
+                let holds = held.iter().any(|admission| admission.holder == key);
+                let others = held
+                    .into_iter()
+                    .filter(|admission| !self.holder.shares_slot_with(admission))
+                    .collect::<Vec<_>>();
+                let full = !holds && others.len() >= self.max_workers as usize;
+                if !holds && (!full || self.ignore_usage) {
+                    tx.admit(&super::store::NewAdmission {
+                        holder: &key,
+                        provider: self.provider.id(),
+                        repo: self.repo,
+                        run: self.holder.run(),
+                        server,
+                        ignored: self.ignore_usage,
+                        at_ms: at,
+                    })?;
+                }
+                Ok((others, full))
+            })
+            .map_err(store_error)?;
+        recorded["cap"] = usage_gate::cap_json(
+            self.max_workers,
+            &others,
+            self.holder,
+            self.ignore_usage && full,
+        );
+        Ok((full && !self.ignore_usage)
+            .then(|| usage_gate::cap_refusal_message(self.provider, self.max_workers, &others)))
+    }
+}
+
 /// A new run id: `r-` and 8 lowercase base32 characters, from a hash of the
 /// time, this process, a counter and the item.
 fn new_run_id(repo: &str, item: &str) -> String {
@@ -1623,23 +1681,31 @@ impl WorkerSupervisor {
     }
 
     /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`
-    /// whose worker runs `agent`: refused as `usage_gate` unless
-    /// `ignore_usage`; otherwise the decision the run's events record. A
-    /// refusal closes the repository's gate of that agent's provider and an
-    /// admission of a closed one reopens it, in the store; an override
-    /// changes nothing there.
+    /// whose worker runs `agent`, admitted as `holder` (none for a start
+    /// the cap does not count): refused as
+    /// `usage_gate` unless `ignore_usage`; otherwise the decision the run's
+    /// events record. A refusal for usage closes the gate of that agent's
+    /// provider (one for all repositories) and an admission of a closed one
+    /// reopens it, in the store; an override changes nothing there. An
+    /// admission past usage is then refused, also as `usage_gate`, while
+    /// the provider has `[usage] gate_max_workers` workers admitted and not
+    /// exited; otherwise it is recorded for `holder` before the worker is
+    /// spawned. `holder` admitted again while it holds its slot takes no
+    /// second one.
     pub(super) fn usage_gate(
         &self,
         repo: &str,
         agent: WorkerAgent,
         ignore_usage: bool,
+        holder: Option<&usage_gate::Holder>,
     ) -> Result<Value, WorkerError> {
         // Serialize each provider's reads and state writes independently:
-        // a failed concurrent read must not overwrite a high latch with unknown.
+        // a failed concurrent read must not overwrite a high latch with unknown,
+        // and two admissions must not both count the same free slot.
         let provider = usage_gate::GateProvider::of(agent);
         let _gate_check = usage_gate::measurement_lock(provider.id());
         let store = self.run_store()?;
-        let key = provider.store_key(repo);
+        let key = provider.store_key();
         let closed = store.usage_gate_closed(&key).map_err(store_error)?;
         let previous = store.usage_gate_body(&key).map_err(store_error)?;
         let state = usage_gate::State::from_record(closed, &previous);
@@ -1699,6 +1765,25 @@ impl WorkerSupervisor {
             usage_gate::Decision::Admit { .. } => store
                 .set_usage_gate(&key, false, &recorded, now_ms())
                 .map_err(store_error)?,
+        }
+        match (&refusal, holder) {
+            (_, None) => {}
+            // A start that waits again gives up the slot it held.
+            (Some(_), Some(holder)) => store
+                .release_admission(&holder.key(), "refused by the usage gate", now_ms())
+                .map_err(store_error)?,
+            (None, Some(holder)) => {
+                let admitted = Admitting {
+                    repo,
+                    provider,
+                    holder,
+                    ignore_usage,
+                    max_workers: thresholds.max_workers,
+                };
+                if let Some(why) = admitted.admit(store, &mut recorded)? {
+                    refusal = Some(why);
+                }
+            }
         }
         self.record_usage_measurement(
             provider.id(),
@@ -1769,6 +1854,7 @@ impl WorkerSupervisor {
         }
     }
 
+    /// The gate for the run's next attempt, a retry's.
     pub(super) fn run_usage_gate(&self, run: &Run, ignore: bool) -> Result<Value, WorkerError> {
         if run.finish.anthropic_credits {
             // A refusal is not an error here: the start falls back to pi.
@@ -1776,7 +1862,16 @@ impl WorkerSupervisor {
                 json!({"provider": "anthropic_api", "decision": "fallback", "refusal": refusal.to_string()})
             }))
         } else {
-            self.usage_gate(&run.info.repo, run.finish.agent.unwrap_or_default(), ignore)
+            let holder = usage_gate::Holder::Run {
+                run_id: run.info.run_id.clone(),
+                attempt: run.info.attempt + 1,
+            };
+            self.usage_gate(
+                &run.info.repo,
+                run.finish.agent.unwrap_or_default(),
+                ignore,
+                Some(&holder),
+            )
         }
     }
 
@@ -1949,10 +2044,15 @@ impl WorkerSupervisor {
             }
         }
         let agent = params.agent.unwrap_or_default();
+        let run_id = new_run_id(&repo, &params.item);
         let gate = if anthropic_credits {
             self.credit_gate()
         } else {
-            self.usage_gate(&repo, agent, params.ignore_usage)
+            let holder = usage_gate::Holder::Run {
+                run_id: run_id.clone(),
+                attempt: 1,
+            };
+            self.usage_gate(&repo, agent, params.ignore_usage, Some(&holder))
         };
         let (usage, pending_reason) = match gate {
             Ok(usage) => (usage, None),
@@ -1966,7 +2066,6 @@ impl WorkerSupervisor {
         let item_text = todo_titles::item_text(&todo, &params.item);
         let item_ids = todo_titles::item_ids(&todo);
         let at = now_ms();
-        let run_id = new_run_id(&repo, &params.item);
         let owner_coordinator = match params.owner_pane_id.as_deref() {
             Some(pane) => self
                 .coordinator_of_pane(pane)
@@ -3529,6 +3628,10 @@ impl WorkerSupervisor {
                 &run.info.repo,
                 run.finish.agent.unwrap_or_default(),
                 run.finish.ignore_usage,
+                Some(&usage_gate::Holder::Run {
+                    run_id: run.info.run_id.clone(),
+                    attempt: run.info.attempt,
+                }),
             ) {
                 Ok(_) => {}
                 Err(WorkerError::UsageGate(why)) => {
@@ -3577,7 +3680,12 @@ impl WorkerSupervisor {
             item: Some(run.info.item.clone()),
             command_id: Some(command_id.clone()),
         };
-        let (worker_id, model) = match self.start(&params) {
+        let admission = usage_gate::Holder::Run {
+            run_id: run.info.run_id.clone(),
+            attempt: run.info.attempt,
+        }
+        .key();
+        let (worker_id, model) = match self.start_admitted(&params, Some(&admission)) {
             Ok(worker) => (worker.worker_id, worker.model),
             // A start a crash cut off: the receipt names its worker when
             // it got that far.

@@ -8,6 +8,9 @@ use crate::api::schema::{
 };
 use crate::workers::supervisor::gated_run::GatedRunEndFailure;
 
+/// The Claude account's gate row: one for every repository.
+const CLAUDE_GATE: &str = "provider:claude";
+
 fn run_params(dir: &Path, prompt: &str) -> WorkerGatedRunParams {
     WorkerGatedRunParams {
         cwd: dir.display().to_string(),
@@ -98,20 +101,19 @@ fn an_admitted_run_answers_with_the_turns_text_and_usage_per_model() {
 #[test]
 fn a_closed_gate_refuses_the_run_and_starts_nothing_unless_usage_is_ignored() {
     let fixture = git_fixture("gated-run-refused");
-    let repo = repository_of(&fixture.repo).unwrap();
     fixture.supervisor.set_usage_for_test(fresh_usage(40, 91));
     let refused = gated_run(&fixture, &run_params(&fixture.repo, "usage")).unwrap_err();
     assert_eq!(refused.code(), "usage_gate", "{refused}");
     assert!(refused.to_string().contains("91% used"), "{refused}");
     assert!(fixture.supervisor.list().is_empty());
     assert!(store_of(&fixture.supervisor)
-        .usage_gate_closed(&repo)
+        .usage_gate_closed(CLAUDE_GATE)
         .unwrap());
 
     // --ignore-usage starts anyway, records the override in the worker's
     // journal and leaves the gate as it was.
     let body = store_of(&fixture.supervisor)
-        .usage_gate_body(&repo)
+        .usage_gate_body(CLAUDE_GATE)
         .unwrap();
     let run = gated_run(
         &fixture,
@@ -127,11 +129,11 @@ fn a_closed_gate_refuses_the_run_and_starts_nothing_unless_usage_is_ignored() {
     assert_eq!(gate["decision"], "ignored");
     assert_eq!(gate["ignore_usage"], true);
     assert!(store_of(&fixture.supervisor)
-        .usage_gate_closed(&repo)
+        .usage_gate_closed(CLAUDE_GATE)
         .unwrap());
     assert_eq!(
         store_of(&fixture.supervisor)
-            .usage_gate_body(&repo)
+            .usage_gate_body(CLAUDE_GATE)
             .unwrap(),
         body
     );
@@ -141,8 +143,6 @@ fn a_closed_gate_refuses_the_run_and_starts_nothing_unless_usage_is_ignored() {
 fn the_run_leaves_the_gate_state_todo_run_leaves_for_the_same_reading() {
     let ours = git_fixture("gated-run-gate-state");
     let todo = todo_repo("gated-run-gate-state-todo");
-    let our_repo = repository_of(&ours.repo).unwrap();
-    let todo_repo_key = repository_of(&todo.repo).unwrap();
     let todo_params = todo_params(&todo, "finish", "ok");
     // A refusal closes the gate; a reading between the thresholds keeps it
     // closed; the same readings leave the same state through both.
@@ -158,11 +158,11 @@ fn the_run_leaves_the_gate_state_todo_run_leaves_for_the_same_reading() {
         assert_eq!(refused.to_string(), todo_refused.to_string());
         let ours_store = store_of(&ours.supervisor);
         let todo_store = store_of(&todo.supervisor);
-        assert!(ours_store.usage_gate_closed(&our_repo).unwrap());
-        assert!(todo_store.usage_gate_closed(&todo_repo_key).unwrap());
+        assert!(ours_store.usage_gate_closed(CLAUDE_GATE).unwrap());
+        assert!(todo_store.usage_gate_closed(CLAUDE_GATE).unwrap());
         assert_eq!(
-            ours_store.usage_gate_body(&our_repo).unwrap(),
-            todo_store.usage_gate_body(&todo_repo_key).unwrap()
+            ours_store.usage_gate_body(CLAUDE_GATE).unwrap(),
+            todo_store.usage_gate_body(CLAUDE_GATE).unwrap()
         );
     }
     // A reading below the reopen threshold admits and reopens.
@@ -171,7 +171,7 @@ fn the_run_leaves_the_gate_state_todo_run_leaves_for_the_same_reading() {
     assert_eq!(run.usage_gate["decision"], "admit");
     assert_eq!(run.usage_gate["reopened"], true);
     assert!(!store_of(&ours.supervisor)
-        .usage_gate_closed(&our_repo)
+        .usage_gate_closed(CLAUDE_GATE)
         .unwrap());
 }
 

@@ -418,7 +418,9 @@ impl WorkerSupervisor {
         if let Some(active) = store.active_coordinator_of(repo).map_err(store_error)? {
             return Err(Self::refusal(repo, "none", active));
         }
-        self.usage_gate(repo, WorkerAgent::Claude, false)?;
+        // Usage only: the coordinator's worker takes no slot of the cap,
+        // which its own runs' workers need.
+        self.usage_gate(repo, WorkerAgent::Claude, false, None)?;
         let id = new_tenure_id(repo, &item);
         let at = now_ms();
         let claimed = store.transaction(|tx| {
@@ -500,7 +502,7 @@ impl WorkerSupervisor {
                 item: Some(item.clone()),
                 command_id: None,
             };
-            self.start_once(&params, None, Some(&role))
+            self.start_once(&params, None, Some(&role), None)
         });
         let worker = match started {
             Ok(worker) => worker,

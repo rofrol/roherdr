@@ -111,6 +111,10 @@ impl WorkerSupervisor {
             &run.info.repo,
             run.finish.agent.unwrap_or_default(),
             run.finish.ignore_usage,
+            Some(&usage_gate::Holder::Run {
+                run_id: run.info.run_id.clone(),
+                attempt: run.info.attempt,
+            }),
         ) {
             Ok(_) => {
                 // The worktree the run recorded: its preflight again checks
@@ -338,10 +342,8 @@ impl WorkerSupervisor {
             if skip == Some(key.as_str()) {
                 continue;
             }
-            let provider = if key.starts_with("openai:") {
-                usage_gate::GateProvider::OpenAi
-            } else {
-                usage_gate::GateProvider::Claude
+            let Some(provider) = usage_gate::GateProvider::of_store_key(&key) else {
+                continue;
             };
             if provider.id() != provider_id {
                 continue;
@@ -388,6 +390,105 @@ impl WorkerSupervisor {
         }
     }
 
+    /// A worker's exit or loss, once stored, freed the slot the usage
+    /// gate's cap counted for it: the starts waiting on the gate whose
+    /// provider's latch is open (refused for the cap, not for usage, which
+    /// a measurement reopens) dispatch again, each reading usage and
+    /// counting anew. Runs in a thread of its own, since the exit is
+    /// stored under the registry's lock.
+    pub(in crate::workers) fn wake_pending_after_release(&self) {
+        let supervisor = self.clone();
+        if let Err(error) = crate::thread_spawn::spawn_named("herdr-gate-release", move || {
+            supervisor.wake_pending_for_open_gates();
+        }) {
+            tracing::warn!(%error, "cannot wake the starts waiting on the usage gate");
+        }
+    }
+
+    pub(in crate::workers) fn wake_pending_for_open_gates(&self) {
+        let Ok(store) = self.run_store() else {
+            return;
+        };
+        let open = |provider: usage_gate::GateProvider| {
+            store
+                .usage_gate_closed(&provider.store_key())
+                .is_ok_and(|closed| !closed)
+        };
+        if open(usage_gate::GateProvider::Claude) {
+            if let Ok(queues) = store.queues() {
+                for queue in queues.into_iter().filter(|queue| {
+                    queue.mode == "on" && queue.status.as_deref() == Some("usage_gate")
+                }) {
+                    self.queue_event(&queue.repo);
+                }
+            }
+        }
+        let candidates = lock(&LISTED).values().cloned().collect::<Vec<_>>();
+        for run in candidates {
+            if run.finish.queued && !self.queue_is_on(&run.info.repo) {
+                continue;
+            }
+            if open(usage_gate::GateProvider::of(
+                run.finish.agent.unwrap_or_default(),
+            )) {
+                self.spawn_driver(&run.info.run_id);
+            }
+        }
+    }
+
+    /// At a server's start: ends the usage gate's admissions whose start no
+    /// row records and that no live server still makes: a `worker.run`
+    /// admitted by a server process that is gone, and one bound to a worker
+    /// the store does not hold whose journal no server owns (the server
+    /// ended between naming the worker and recording its start). A worker
+    /// that survived the restart keeps its slot, since its row shows it
+    /// running; one that did not was recorded `lost`, which frees it.
+    pub(in crate::workers) fn reconcile_admissions(&self) {
+        let Ok(store) = self.run_store() else {
+            return;
+        };
+        let admissions = match store.unrecorded_admissions() {
+            Ok(admissions) => admissions,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the usage gate's admissions");
+                return;
+            }
+        };
+        let mut released = false;
+        for admission in admissions {
+            let why = match &admission.worker_id {
+                None => {
+                    let alive = match (admission.server_pid, admission.server_start) {
+                        (Some(pid), Some(start)) => {
+                            crate::platform::process_start_token(pid) == Some(start)
+                        }
+                        _ => false,
+                    };
+                    if alive {
+                        continue;
+                    }
+                    "its server ended before the worker was started"
+                }
+                Some(worker_id) => {
+                    match crate::workers::journal::journal_ownership(&self.journal_path(worker_id))
+                    {
+                        Ok(crate::workers::journal::Ownership::Owned(_)) => continue,
+                        _ => "its server ended before the worker was recorded",
+                    }
+                }
+            };
+            match store.release_admission(&admission.holder, why, now_ms()) {
+                Ok(()) => released = true,
+                Err(error) => {
+                    tracing::warn!(%error, holder = admission.holder, "cannot end an admission")
+                }
+            }
+        }
+        if released {
+            self.wake_pending_after_release();
+        }
+    }
+
     /// A successful direct read is a wake hint, never permission to start.
     /// Only hints that could open a gate wake it, avoiding self-wake loops on high readings.
     pub(super) fn wake_pending_after_success(&self, provider_id: &str, usage: &ProviderUsage) {
@@ -401,7 +502,7 @@ impl WorkerSupervisor {
                     queue.mode == "on" && queue.status.as_deref() == Some("usage_gate")
                 }) {
                     if store
-                        .usage_gate_closed(&queue.repo)
+                        .usage_gate_closed(&usage_gate::GateProvider::Claude.store_key())
                         .is_ok_and(|closed| !closed)
                     {
                         self.queue_event(&queue.repo);
@@ -418,7 +519,7 @@ impl WorkerSupervisor {
             if provider.id() != provider_id {
                 continue;
             }
-            let key = provider.store_key(&run.info.repo);
+            let key = provider.store_key();
             let state = match (store.usage_gate_closed(&key), store.usage_gate_body(&key)) {
                 (Ok(closed), Ok(body)) => usage_gate::State::from_record(closed, &body),
                 _ => continue,

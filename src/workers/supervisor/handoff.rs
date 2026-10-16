@@ -154,6 +154,8 @@ impl WorkerSupervisor {
         }
         // The handoffs a previous server left pending stay frozen.
         supervisor.restore_handoffs();
+        // The usage gate's slots of starts a gone server left unrecorded.
+        supervisor.reconcile_admissions();
         supervisor
     }
 

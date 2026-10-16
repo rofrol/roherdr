@@ -43,9 +43,10 @@ pub(crate) enum WorkerError {
     RunOwnedElsewhere(String),
     /// A `todo.run`'s preflight refused it; the message says which check.
     Preflight(String),
-    /// A new run or attempt refused while Claude's usage is high or
-    /// unknown; the message names each window and its value, or the
-    /// failed read of Claude's usage.
+    /// A new run or attempt refused while its provider's usage is high or
+    /// unknown, or while the provider has `[usage] gate_max_workers`
+    /// workers admitted and not exited; the message names each window and
+    /// its value, the failed read, or the starts that hold the slots.
     UsageGate(String),
     /// `history.item` named an item without records.
     HistoryNotFound(String),

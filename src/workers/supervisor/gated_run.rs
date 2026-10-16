@@ -45,7 +45,8 @@ impl WorkerSupervisor {
         self.check_tenure_token(&repo, params.tenure_token.as_deref())?;
         // The gate as `todo.run` passes it: the same state, the same
         // recording; a refusal starts nothing.
-        let mut usage_gate = self.usage_gate(&repo, agent, params.ignore_usage)?;
+        let holder = runs::usage_gate::Holder::new_worker_run();
+        let mut usage_gate = self.usage_gate(&repo, agent, params.ignore_usage, Some(&holder))?;
         usage_gate["ignore_usage"] = json!(params.ignore_usage);
         let start = WorkerStartParams {
             cwd: params.cwd.clone(),
@@ -63,7 +64,21 @@ impl WorkerSupervisor {
             item: params.item.clone(),
             command_id: None,
         };
-        let worker = self.start_once(&start, None, None)?;
+        // The admission ends with the start that failed; once started, the
+        // worker's exit frees its slot.
+        let worker = self
+            .start_once(&start, None, None, Some(&holder.key()))
+            .inspect_err(|_| {
+                if let Ok(store) = self.run_store() {
+                    if let Err(error) = store.release_admission(
+                        &holder.key(),
+                        "the worker's start failed",
+                        now_ms(),
+                    ) {
+                        warn!(%error, "cannot end worker.run's usage gate admission");
+                    }
+                }
+            })?;
         let worker_id = worker.worker_id;
         if let Some(number) = worker_number(&worker_id) {
             let mut event = json!({"type": "usage_gate", "method": "worker.run", "repo": repo});
