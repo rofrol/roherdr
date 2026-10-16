@@ -1047,8 +1047,13 @@ mod tests {
     /// Whether the lock on a file in a fresh directory named `name` is free
     /// once both its holder's descriptor and a copy as a live handoff passes
     /// it are closed, while the child `start` started under them still runs.
-    /// `start` returns whether its child is still alive, after which it
-    /// ends and reaps it.
+    /// `start` returns once its child runs its program, shown by output the
+    /// program writes: until its `exec` has closed them, a child holds every
+    /// descriptor of its starter, close-on-exec ones too, and `spawn` can
+    /// return before that (see
+    /// `a_child_holds_the_lock_only_until_its_program_runs`). The closure it
+    /// returns reports whether the child is still alive, then ends and reaps
+    /// it.
     fn lock_free_while_child_runs(
         name: &str,
         start: impl FnOnce(&Path) -> Box<dyn FnOnce() -> bool>,
@@ -1165,12 +1170,23 @@ mod tests {
     // handoff import.
     #[test]
     fn a_command_started_while_the_lock_is_held_does_not_hold_it() {
+        use std::io::{BufRead as _, Write as _};
+
         let free = lock_free_while_child_runs("noinherit-cmd", |_| {
             let mut child = std::process::Command::new("cat")
                 .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
+            // `cat` echoing a line is its program running.
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(b"ready\n").unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "ready\n");
             Box::new(move || {
                 let alive = child.try_wait().unwrap().is_none();
                 drop(child.stdin.take());
@@ -1181,10 +1197,88 @@ mod tests {
         assert!(free, "a child process holds the lock it was started under");
     }
 
+    // Why the checks above wait for the child's program: between `fork` and
+    // `exec` a child holds every descriptor of its starter, the lock's
+    // close-on-exec ones too, and `spawn` may return before `exec` closed
+    // them. A check in that window sees the lock held though no program
+    // keeps it. The child is held there by its own `pre_exec` hook until the
+    // test lets it go.
+    #[test]
+    fn a_child_holds_the_lock_only_until_its_program_runs() {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        use std::os::fd::{AsRawFd as _, FromRawFd as _};
+        use std::os::unix::process::CommandExt as _;
+
+        let dir = std::env::temp_dir().join(format!("herdr-before-exec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr-server.lock");
+        let lock = super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .expect("free");
+        let passed = super::super::ExclusiveFileLock::from_passed(unsafe {
+            std::os::fd::OwnedFd::from_raw_fd(libc::dup(lock.file().as_raw_fd()))
+        })
+        .unwrap();
+
+        // Both pipes are close-on-exec, so only the hook's child uses them.
+        let (mut forked_reader, forked_writer) = std::io::pipe().unwrap();
+        let (gate_reader, mut gate_writer) = std::io::pipe().unwrap();
+        let (forked_raw, gate_raw) = (forked_writer.as_raw_fd(), gate_reader.as_raw_fd());
+        let mut command = std::process::Command::new("cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        unsafe {
+            command.pre_exec(move || {
+                // Async-signal-safe: only `write` and `read` run in the child.
+                let mut byte = 0u8;
+                libc::write(forked_raw, (&raw const byte).cast(), 1);
+                libc::read(gate_raw, (&raw mut byte).cast(), 1);
+                Ok(())
+            });
+        }
+        // `spawn` returns only after the `exec`, so it waits on its own thread.
+        let spawner = std::thread::spawn(move || command.spawn());
+        let mut byte = [0u8; 1];
+        forked_reader.read_exact(&mut byte).unwrap();
+
+        drop(lock);
+        drop(passed);
+        let before_exec = super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .is_some();
+
+        gate_writer.write_all(b"g").unwrap();
+        let mut child = spawner.join().unwrap().unwrap();
+        drop((forked_writer, gate_reader));
+        let stdin = child.stdin.as_mut().unwrap();
+        stdin.write_all(b"ready\n").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let running = super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .is_some();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(line, "ready\n");
+        assert!(
+            !before_exec,
+            "the child before its exec did not hold the lock"
+        );
+        assert!(running, "the child's program holds the lock");
+    }
+
     // A PTY starts agents and shells in panes.
     #[test]
     fn a_pty_child_started_while_the_lock_is_held_does_not_hold_it() {
         use portable_pty::{CommandBuilder, PtySize};
+        use std::io::Read as _;
 
         let free = lock_free_while_child_runs("noinherit-pty", |dir| {
             let pty = portable_pty::native_pty_system()
@@ -1195,9 +1289,19 @@ mod tests {
                     pixel_height: 0,
                 })
                 .unwrap();
-            let mut command = CommandBuilder::new("cat");
+            // The shell writes `ready` once it runs, then becomes `cat`.
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "echo ready; exec cat"]);
             command.cwd(dir);
             let mut child = pty.slave.spawn_command(command).unwrap();
+            let mut output = Vec::new();
+            let mut reader = pty.master.try_clone_reader().unwrap();
+            while !String::from_utf8_lossy(&output).contains("ready") {
+                let mut chunk = [0u8; 256];
+                let read = reader.read(&mut chunk).unwrap();
+                assert!(read > 0, "the pane's process ended before it ran");
+                output.extend_from_slice(&chunk[..read]);
+            }
             Box::new(move || {
                 let alive = child.try_wait().unwrap().is_none();
                 child.kill().unwrap();
