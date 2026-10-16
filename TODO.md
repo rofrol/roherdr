@@ -139,17 +139,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   killed-holder test (t-5p6nblgy); fd411e50e is on master, installed and
   pushed by the next run.
 
-- [ ] A `--next` run starts from the landing worktree, not the repository's [t-uw6inia5]
-  main checkout (follow-up of t-a5uup6g5, report r-101 from bend-bootstrap,
-  2026-10-16): `todo resume --action approve --close ... --next t-wxinrqzi`
-  on run r-2nyhdsyx landed on the worktree's branch, but the next run's
-  preflight read `.../bend/bend/TODO.md` (the main checkout, which has none)
-  instead of the run's `landing_worktree` `.../bend/bend-bootstrap`; a
-  direct `herdr todo run` from that worktree works. The chained start (and
-  queue mode, if it has the same path) must take the item, TODO.md, checks
-  and target from the previous run's landing worktree. Workaround meanwhile:
-  bend-bootstrap starts each next item by hand.
-
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
   roagent's proxy): `roagent todo start` (open a herdr tab with a

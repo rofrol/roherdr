@@ -1687,3 +1687,15 @@ per provider, migrated as closed when any repository's row was. Decided by
 the coordinator: headless item coordinators take no slot (counting them
 would let two coordinators hold both slots while their own runs wait).
 Open points are proposed separately.
+
+## Chained and queued runs start from their recorded worktree (t-uw6inia5, 2026-10-17)
+
+Report r-101 from bend-bootstrap: a `--next` run read the main checkout's
+TODO.md instead of the previous run's landing worktree. Landed as run
+r-yjuuqlgo: a `--next` run starts from the previous run's
+`landing_worktree` (item, TODO.md, checks, target branch, push destination
+and the disk check all from there); queue mode records the worktree `queue
+on` was sent from (`todo_queues.worktree`) and runs there; `todo next`
+coordinators work in the caller's worktree and a `--continue` chain keeps
+it (`todo_chains.worktree`); a woken pending start already used its
+recorded worktree. Records made before keep the main checkout.
