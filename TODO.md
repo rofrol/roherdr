@@ -11,6 +11,21 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Two concurrent queue steps both report starting the same run (found [t-djdhewk3]
+  by the coordinator 2026-10-16: `just check` in r-6ahe2rtv's install
+  retry failed on `workers::tests::todo_runs::auto_review::queue::
+  concurrent_events_start_one_run`, src/workers/tests.rs:12770, with
+  `[Idle, Idle, Idle, Idle, Idle, Started("r-ycdoisx3"), Idle,
+  Started("r-ycdoisx3"), Idle, ...]`; the run's own verify had passed the
+  same test, so it is intermittent; the change under install,
+  204a4512a, does not touch the queue). Two `queue_step` callers return
+  `Started` for one run id: find whether a second worker start can
+  follow (duplicate state) or only the report is doubled, fix it at the
+  claim, and make the test force the interleaving with a latch instead
+  of a 12-thread barrier. Blocks every install while it fails.
+  Decided by the user 2026-10-16 (d-astkzjod): fix it first, with a
+  worker; the install of r-6ahe2rtv waits for it.
+
 - [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
   2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
   use of this workflow by roherdr now, narrowly"; consult round
@@ -3807,19 +3822,6 @@ Items agents add. Not approved until the user moves them up.
 - [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
-
-- [ ] Two concurrent queue steps both report starting the same run (found [t-djdhewk3]
-  by the coordinator 2026-10-16: `just check` in r-6ahe2rtv's install
-  retry failed on `workers::tests::todo_runs::auto_review::queue::
-  concurrent_events_start_one_run`, src/workers/tests.rs:12770, with
-  `[Idle, Idle, Idle, Idle, Idle, Started("r-ycdoisx3"), Idle,
-  Started("r-ycdoisx3"), Idle, ...]`; the run's own verify had passed the
-  same test, so it is intermittent; the change under install,
-  204a4512a, does not touch the queue). Two `queue_step` callers return
-  `Started` for one run id: find whether a second worker start can
-  follow (duplicate state) or only the report is doubled, fix it at the
-  claim, and make the test force the interleaving with a latch instead
-  of a 12-thread barrier. Blocks every install while it fails.
 
 ## Needs a decision
 
