@@ -3951,6 +3951,22 @@ Items agents add. Not approved until the user moves them up.
   acknowledgement (or the stream's close) and decide what a stop at that
   point does. Touches handoff, so it waits for approval.
 
+- [ ] `herdr server stop` waits for the server process to end, not for its [t-v3tdfgzp]
+  sockets to go quiet (follow-up of t-h6dxi6wv, found by its worker, run
+  r-j2phuths): the stop returns once the sockets stop answering, but the
+  process releases the session lock just after, so a `herdr` typed right
+  after a stop can be refused as "still exiting". Make `server stop` and
+  `session stop` (src/session.rs) wait for the lock's release (a blocking
+  shared `flock`, the positive event) or the process's exit.
+
+- [ ] Received handoff descriptors get `FD_CLOEXEC` atomically where the [t-f25xqv6x]
+  platform can (follow-up of t-h6dxi6wv, round `20261016-170554-f593`,
+  Argon): `recv_fd_batch` sets it with `fcntl` after `recvmsg`, so a
+  fork-and-exec on another thread in between could inherit a pane, a
+  listener or the session lock; use `MSG_CMSG_CLOEXEC` on Linux and say
+  why the window cannot occur on macOS (no other thread spawns then) or
+  close it there too.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
