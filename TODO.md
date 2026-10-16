@@ -147,6 +147,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Once installed, send the contract (flags, where the token comes from, the
   checks at start and at cherry-pick/install/push) to agentic-workflow-bend-
   claude's coordinator: its t-tenurrun waits on it (asked 2026-10-16).
+  In flight 2026-10-16: run r-y3lfeofq (r-aidmz7tz aborted: it needed a
+  process-exit watch in src/platform/, now allowed). Decided by the
+  coordinator: a run started with no tenure does not land while another
+  holder holds the repository's tenure.
 
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
