@@ -66,6 +66,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   dated cut-off (round 20261012-183707-2629 in this item).
   In flight 2026-10-16: slice 3 run r-7zvq2hh2 (golden set, cut-off,
   `herdr todo review-eval` with a fake reviewer in tests; no real model run).
+  Paused 2026-10-16 by the user (coordination stopped, lease released):
+  run r-7zvq2hh2 is left running unowned; the next `/todo` attaches with
+  `herdr todo status r-7zvq2hh2` and `herdr todo wait r-7zvq2hh2`, then
+  reviews its diff (`herdr todo review r-7zvq2hh2 --diff`). Its task:
+  build the golden set from the coordinator dumps of r-6s6uppz2,
+  r-qbxvgpgv, r-23475ciu and r-hfp2mqpx; no real model run without the user.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
