@@ -30,6 +30,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the new method needs src/api/schema.rs, server.rs, workers.rs and
   src/app/api.rs, now allowed).
 
+- [ ] A live handoff fails when the old server's public sockets stay open [t-qgtdc57s]
+  (report r-86, 2026-10-16, run r-6ahe2rtv's install: "handoff replacement
+  server did not become ready ... old server sockets did not close before
+  handoff import bind"; the previous binary was restored).
+  `wait_for_old_public_sockets_to_close` (src/server/headless/lifecycle.rs,
+  around line 435) polls every 50 ms until a deadline, a timed wait that
+  Rule 10 forbids; find what keeps the old listeners accepting (an open
+  wait connection, a worker broker, a client) and make the old server
+  acknowledge its listeners closed as an event the new one waits on.
+  Reproduce first with a stress loop of live handoffs while open waits
+  (`todo wait`, `worker wait`) and brokered workers are attached. Touches
+  handoff, so it waits for approval.
+  Decided by the user 2026-10-16 (d-fhaul4cr): approved, before t-xhaho72w.
+
 - [ ] Coordinator tenure is the atomic, durable per-repository lease (the [t-xhaho72w]
   user, 2026-10-16, d-ytigfuq7: "roagent is not to be used any more, only
   roherdr + agentic-workflow-bend-claude"; queued on the user's word
@@ -3793,19 +3807,6 @@ Items agents add. Not approved until the user moves them up.
 - [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
-
-- [ ] A live handoff fails when the old server's public sockets stay open [t-qgtdc57s]
-  (report r-86, 2026-10-16, run r-6ahe2rtv's install: "handoff replacement
-  server did not become ready ... old server sockets did not close before
-  handoff import bind"; the previous binary was restored).
-  `wait_for_old_public_sockets_to_close` (src/server/headless/lifecycle.rs,
-  around line 435) polls every 50 ms until a deadline, a timed wait that
-  Rule 10 forbids; find what keeps the old listeners accepting (an open
-  wait connection, a worker broker, a client) and make the old server
-  acknowledge its listeners closed as an event the new one waits on.
-  Reproduce first with a stress loop of live handoffs while open waits
-  (`todo wait`, `worker wait`) and brokered workers are attached. Touches
-  handoff, so it waits for approval.
 
 ## Needs a decision
 
