@@ -121,6 +121,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   reviews its diff (`herdr todo review r-7zvq2hh2 --diff`). Its task:
   build the golden set from the coordinator dumps of r-6s6uppz2,
   r-qbxvgpgv, r-23475ciu and r-hfp2mqpx; no real model run without the user.
+  Slice 3 landed 2026-10-16 (run r-7zvq2hh2): the checklist names its
+  cut-off (`# Cut-off: 2026-10-12T18:46:06+02:00`), `.herdr/review-golden/`
+  holds 5 post-cut-off cases (r-6s6uppz2 a1, a2; r-hfp2mqpx a1, a2;
+  r-qbxvgpgv a1; r-23475ciu skipped as a process remark, see its README),
+  and `herdr todo review-eval` (`src/workers/runs/review_eval.rs`) replays
+  them blind through the review's own input (`assemble_input`) and call
+  path, scores by file and a 15-line window, runs the ablation arms and
+  reports severe regressions; tests use a fake reviewer only. Not yet run
+  against a real model: the first real run spends credits and waits for
+  the user. Its `--credits` path books to a synthetic run id and falls
+  back to `claude -p` when the proxy refuses it.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
