@@ -160,6 +160,27 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   process-exit watch in src/platform/, now allowed). Decided by the
   coordinator: a run started with no tenure does not land while another
   holder holds the repository's tenure.
+  Its first landing attempt, run r-y3lfeofq (commit 309284995, reviewed and
+  approved, note below), was aborted at its verify: a lock test from
+  t-h6dxi6wv failed intermittently (t-5gkzkrre, fixed first). Redo it by
+  cherry-picking 309284995.
+  Landed 2026-10-16 (run r-y3lfeofq; r-aidmz7tz aborted for paths):
+  `coordinator.acquire` (CLI `herdr coordinator acquire [--repo DIR]
+  [--pid PID]`, default the caller's parent; `herdr coordinator start
+  --token` for a pane) returns a 64-hex token from the OS random source;
+  the store keeps its sha256; every acquire rotates it. A process holder
+  is recorded by pid and start token and its tenure ends `orphaned` on the
+  kernel exit event (`platform::watch_process_exit`: kqueue, pidfd,
+  process handle; unsupported platforms refuse), reconciled at startup
+  and handoff. `worker.run` takes `tenure_token` (`--tenure-token` or
+  `HERDR_TENURE_TOKEN`); with an active tenure a missing, wrong or stale
+  token is refused (`tenure_token_refused`, naming the holder). `todo
+  run` checks its recorded owner tenure before cherry-pick, install, TODO
+  edit and push; a run with no owner lands only when no tenure is active;
+  otherwise it ends `blocked`. `coordinator status` shows `holder_kind`
+  and `holder_pid`, never the token. Review round `20261016-201054-ee83`
+  (sol, DeepSeek; the OpenRouter models refused the brief): open points
+  proposed separately. The Linux pidfd code was not compiled.
 
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
