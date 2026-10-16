@@ -64,6 +64,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and a source test that `src/workers` has no bare `"master"` literal
   outside tests. Herdr's own run of this slice uses `master`, so only the
   tests prove the `main` path (wonder).
+  Slice 1a landed 2026-10-16 (run r-p2565geu): `src/workers/target_branch.rs`
+  resolves the target once at preflight and the run stores it
+  (`target_branch`); runs recorded before it use `master`. Left for later
+  slices or a decision: status paths (`todo_runnable_state`,
+  `todo_queue_status`, the supervisor's sweep) now run `git ls-remote` on
+  every call; the grant and `worker start` without `--base` ask origin with
+  the server's environment, not the caller's; a `--next` run resolves again
+  instead of inheriting; a repository with remotes but no `origin` is
+  refused. Next: slice 1b, `herdr todo edit` in herdr itself.
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
