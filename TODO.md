@@ -3970,6 +3970,16 @@ Items agents add. Not approved until the user moves them up.
   `retry` (or a resume action) record the leftover diff with the attempt
   and reset the slot, so a known-bad attempt can be replaced in one step.
 
+- [ ] Usage gate cap follow-ups (from t-6mjgooqu, its worker, run [t-3v3cgqcf]
+  r-woxzlg7o): `worker.run` has no caller identity, so a retried call
+  admits again (deduplication needs a new method or capability, per the
+  endpoint contract); an admission made by a server before a live handoff
+  and not yet bound to a worker keeps its slot until a later server start
+  (reconcile at handoff too); a worker marked `lost` whose process still
+  runs frees its slot, so the cap can be exceeded after a crash (keep the
+  slot while the process lives). Touches the gate, so it waits for
+  approval.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
