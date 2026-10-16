@@ -3656,6 +3656,14 @@ Items agents add. Not approved until the user moves them up.
   client exits instead of reconnecting, and test it with a live handoff
   while a client is attached.
 
+- [ ] Headless workers get `TMPDIR` set to their own temp dir (short enough for a Unix socket, macOS keeps 104 bytes), instead of a contract line telling them never to use `$TMPDIR`: tools such as `mktemp`, compilers and test runners read it, and a worker in agentic-workflow-bend-claude could not run that repository's tests (`mktemp -d` denied). Consult rounds `20261016-101122-79f1` and `20261016-101852-b403` (deepseek, argon, wonder); from agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-u2w7au4k]
+
+- [ ] `todo run`'s TODO step refuses to close an item in a repository without `DECISIONS.md` ("main has no DECISIONS.md", agentic-workflow-bend-claude run r-ckv77gyg, 2026-10-16); the preflight should say so before a worker runs, or the step should create the file. From agentic-workflow-bend-claude's coordinator. [t-nvlv7hrd]
+
+- [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
+
+- [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
