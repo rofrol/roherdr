@@ -89,6 +89,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   skills that still call `roagent todo lock` until t-kl75fxva, not a
   dependency of the migration; roagent gets no other new code (sol, Argon,
   Wonder).
+  Once installed, send the contract (flags, where the token comes from, the
+  checks at start and at cherry-pick/install/push) to agentic-workflow-bend-
+  claude's coordinator: its t-tenurrun waits on it (asked 2026-10-16).
 
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
