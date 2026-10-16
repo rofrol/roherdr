@@ -26,6 +26,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   timer. agentic-workflow-bend-claude's `scripts/agent-worker` then runs it
   as its agent command (its item t-adaptrun), and herdr-bend implements the
   same contract at M3.
+  In flight 2026-10-16: run r-6ahe2rtv (the first, r-orzdxtqq, was aborted:
+  the new method needs src/api/schema.rs, server.rs, workers.rs and
+  src/app/api.rs, now allowed).
 
 - [ ] Coordinator tenure is the atomic, durable per-repository lease (the [t-xhaho72w]
   user, 2026-10-16, d-ytigfuq7: "roagent is not to be used any more, only
