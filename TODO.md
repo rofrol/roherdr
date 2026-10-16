@@ -173,6 +173,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (sol, DeepSeek; the OpenRouter models refused the brief): open points
   proposed separately. The Linux pidfd code was not compiled.
 
+- [ ] `herdr todo run` targets a configured branch and pushes to a [t-a5uup6g5]
+  configured remote or nowhere (the user, 2026-10-16, d-3y3fupx7: queue it
+  next; asked by bend-bootstrap's coordinator, its d-nqumjilh): today the
+  target is what `git ls-remote --symref origin HEAD` names
+  (src/workers/target_branch.rs), and landing pushes it to origin
+  (src/workers/runs/finish.rs). ~/personal_projects/bend/bend-bootstrap is
+  a worktree of bend on branch `bootstrap` whose origin is upstream
+  bendlang/bend and whose fork remote is another one: a run there would
+  base on upstream main, land on main and push upstream. Add a setting
+  read from the worktree the coordinator runs in (the lease covers every
+  worktree of a repository), naming the target branch and the push remote
+  or no push; checked at preflight and stored in the run like today's
+  resolved branch; without it, behaviour stays as today. This is a
+  different target branch, not an override of the default-branch
+  detection the user rejected on 2026-10-12. Tell bend-bootstrap's
+  coordinator when it lands.
+
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
   the provider's usage and reserves nothing, so two starts read at the same
