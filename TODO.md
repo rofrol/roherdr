@@ -64,6 +64,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-16 (d-fhaul4cr): approved, before t-xhaho72w.
   Decided by the user 2026-10-16 (d-wwhkh2ix): the first install of this fix
   runs live as usual; the user accepts its one transitional window.
+  In flight 2026-10-16: run r-cults2sq (listener transfer; r-i2bmn5y7 aborted:
+  attempt 1 de6fdc82d rename design rejected in review round
+  20261016-150857-ff68, attempt 2 blocked on src/api/server.rs).
 
 - [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
   t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
