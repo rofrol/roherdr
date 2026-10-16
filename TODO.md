@@ -3761,6 +3761,15 @@ Items agents add. Not approved until the user moves them up.
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
 
+- [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
+  t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
+  the provider's usage and reserves nothing, so two starts read at the same
+  moment (two `worker run`s from an external orchestrator, or one and a
+  `todo run`) are both admitted. Serialize admission per provider and
+  count a start admitted but not yet measured, or record why the
+  measurement makes that unnecessary. Touches the gate, a safety
+  boundary, so it waits for approval.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
