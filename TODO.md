@@ -44,6 +44,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   In flight 2026-10-16: run r-6ahe2rtv (the first, r-orzdxtqq, was aborted:
   the new method needs src/api/schema.rs, server.rs, workers.rs and
   src/app/api.rs, now allowed).
+  Landed 2026-10-16 (run r-6ahe2rtv, attempt 2; r-orzdxtqq aborted for
+  its paths): `herdr worker run` / `worker.run` passes `usage_gate` for the
+  repository of `--cwd`, records the decision as a `usage_gate` journal
+  event, runs one turn without a folder slot, stops the worker and prints
+  JSON (outcome `ended|failed|stopped|policy_refused`, text, per-model
+  usage, gate); exit 0 ended, 3 other outcome, 4 gate refusal, 2 usage, 1
+  error; a client that goes away kills the worker. Review with round
+  `20261016-130105-cc17` (sol, MiMo, DeepSeek; Argon and Wonder failed on
+  OpenRouter limits) fixed in attempt 2: a folder slot is refused by its
+  path (`slot::places_of`), used or not; a failed stop kills a live worker
+  or returns the error. Interpretations kept: a non-git `--cwd` is refused;
+  pi reports no usage. Open: the gate reads usage, it reserves nothing, so
+  two concurrent starts (two `worker run`s, or one and a `todo run`) can
+  both be admitted (DeepSeek; the same holds for `todo run` today), see
+  the Proposed item on admitting concurrent starts.
+  The run was aborted at its install (d-astkzjod): the live handoff failed
+  (report r-87, t-qgtdc57s), and the retry's `just check` failed on the
+  queue race t-djdhewk3; 204a4512a is on master, installed and pushed by
+  the next run.
 
 - [ ] A live handoff fails when the old server's public sockets stay open [t-qgtdc57s]
   (report r-86, 2026-10-16, run r-6ahe2rtv's install: "handoff replacement
