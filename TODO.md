@@ -131,6 +131,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the equivalent in its platform module. Touches server start, so it
   waits for approval.
   Decided by the user 2026-10-16 (d-j7tcusiv): approved, right after t-qgtdc57s.
+  Landed 2026-10-16 (run r-j2phuths, attempt 2): the server takes an
+  exclusive lock on `herdr-server.lock` beside the API socket before any
+  startup effect (Unix `flock`, Windows `LockFileEx`; `O_CLOEXEC`, never
+  unlinked; a pid record only names the holder); a second start refuses
+  before it binds or restores anything; a live handoff passes the locked
+  descriptor (optional manifest field, `take-server-lock`) and the source
+  keeps its copy until the commit; the importer checks it by file
+  identity. No probe takes the lock: the client learns a spawned server's
+  outcome from a start-report pipe (`ready`, `refused <pid>`, or the
+  pipe's close). Every descriptor received over SCM_RIGHTS gets
+  `FD_CLOEXEC` (listeners passed since t-qgtdc57s could leak to children
+  before). Review rounds `20261016-151348-2ae6` (design) and
+  `20261016-170554-f593` (diff). Remaining: a handoff to an older build
+  leaves that server unlocked; on Windows the start report is not passed
+  (the client waits for the socket as before); a client that spawns an
+  older binary waits on the inherited pipe until that server ends.
+  Proposed: stop waits for the process, atomic CLOEXEC on Linux.
+  The run was aborted at its install: `just check` failed on its own
+  killed-holder test (t-5p6nblgy); fd411e50e is on master, installed and
+  pushed by the next run.
 
 - [ ] Coordinator tenure is the atomic, durable per-repository lease (the [t-xhaho72w]
   user, 2026-10-16, d-ytigfuq7: "roagent is not to be used any more, only
