@@ -3967,6 +3967,14 @@ Items agents add. Not approved until the user moves them up.
   why the window cannot occur on macOS (no other thread spawns then) or
   close it there too.
 
+- [ ] A client that auto-starts an older herdr binary hangs on the start [t-2dvtdnpt]
+  report (follow-up of t-h6dxi6wv, its worker, run r-j2phuths): an older
+  server does not know `HERDR_SERVER_START_REPORT_FD`, keeps the inherited
+  pipe open, and the client waits for `ready` until that server ends (for
+  example right after a rollback replaced the binary). End the client's
+  wait also on the client socket accepting (a second positive event), and
+  bring Windows to the same report instead of its socket wait.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
