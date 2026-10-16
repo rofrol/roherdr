@@ -62,6 +62,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (`todo wait`, `worker wait`) and brokered workers are attached. Touches
   handoff, so it waits for approval.
   Decided by the user 2026-10-16 (d-fhaul4cr): approved, before t-xhaho72w.
+  Decided by the user 2026-10-16 (d-wwhkh2ix): the first install of this fix
+  runs live as usual; the user accepts its one transitional window.
+
+- [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
+  t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
+  2026-10-16 a client that found no socket during a failed handoff
+  auto-started a second full server, which resumed every agent session a
+  second time. The live server holds an exclusive `flock` on a lock file
+  in the state directory for its whole life (opened `O_CLOEXEC`, never
+  unlinked or replaced, passed to the importer in a live handoff with the
+  other descriptors); any server start takes it first and refuses, naming
+  the holder, when it is held; a client that cannot connect while the
+  lock is held says a server is starting or handing off instead of
+  starting one. Every spawn path is checked not to inherit it (an agent
+  holding it after a crash would block every new server). Windows gets
+  the equivalent in its platform module. Touches server start, so it
+  waits for approval.
+  Decided by the user 2026-10-16 (d-j7tcusiv): approved, right after t-qgtdc57s.
 
 - [ ] Coordinator tenure is the atomic, durable per-repository lease (the [t-xhaho72w]
   user, 2026-10-16, d-ytigfuq7: "roagent is not to be used any more, only
@@ -3875,21 +3893,6 @@ Items agents add. Not approved until the user moves them up.
 - [ ] A worker slot's Zig cache (`slot.zig_cache_dir()`, under the slot's `target/`) shows as an untracked file in a repository that does not ignore `target/`, and the verify's clean-tree check fails ("?? target/zig-cache/p", agentic-workflow-bend-claude run r-ckv77gyg); keep slot caches out of the worktree or exclude them in the slot. The coordinator worked around it with `zig-cache/` in the global ignore. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kcbbxogj]
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
-
-- [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
-  t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
-  2026-10-16 a client that found no socket during a failed handoff
-  auto-started a second full server, which resumed every agent session a
-  second time. The live server holds an exclusive `flock` on a lock file
-  in the state directory for its whole life (opened `O_CLOEXEC`, never
-  unlinked or replaced, passed to the importer in a live handoff with the
-  other descriptors); any server start takes it first and refuses, naming
-  the holder, when it is held; a client that cannot connect while the
-  lock is held says a server is starting or handing off instead of
-  starting one. Every spawn path is checked not to inherit it (an agent
-  holding it after a crash would block every new server). Windows gets
-  the equivalent in its platform module. Touches server start, so it
-  waits for approval.
 
 ## Needs a decision
 
