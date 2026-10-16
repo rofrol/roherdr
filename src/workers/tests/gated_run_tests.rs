@@ -18,6 +18,7 @@ fn run_params(dir: &Path, prompt: &str) -> WorkerGatedRunParams {
         workspace_id: None,
         item: None,
         ignore_usage: false,
+        tenure_token: None,
     }
 }
 
@@ -358,4 +359,72 @@ fn a_stop_that_fails_while_the_worker_runs_kills_it_instead_of_waiting() {
         .set_gated_run_end_failure_for_test(GatedRunEndFailure::None);
     fixture.supervisor.kill(&left.worker_id, false).unwrap();
     fixture.wait(&left.worker_id, WorkerWaitUntil::Exit);
+}
+
+#[test]
+fn an_active_tenure_admits_only_a_run_with_its_current_token() {
+    let fixture = git_fixture("gated-run-tenure-token");
+    let repo = repository_of(&fixture.repo).unwrap();
+    let with_token = |token: Option<&str>| WorkerGatedRunParams {
+        tenure_token: token.map(str::to_owned),
+        ..run_params(&fixture.repo, "finish")
+    };
+    // No tenure: a run is admitted with or without a token, as before.
+    for token in [None, Some("anything")] {
+        let run = gated_run(&fixture, &with_token(token)).unwrap();
+        assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+    }
+    let started = fixture.supervisor.list().len();
+
+    // A pane holds the repository and was given a token.
+    fixture
+        .supervisor
+        .coordinator_start(&repo, "p1", None)
+        .unwrap();
+    let (tenure, token) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    for (given, what) in [
+        (None, "none was given"),
+        (Some("wrong"), "not that tenure's"),
+    ] {
+        let refused = gated_run(&fixture, &with_token(given)).unwrap_err();
+        assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+        let message = refused.to_string();
+        assert!(message.contains(what), "{message}");
+        assert!(
+            message.contains(&tenure.coordinator_id) && message.contains("p1"),
+            "{message}"
+        );
+    }
+    assert_eq!(
+        fixture.supervisor.list().len(),
+        started,
+        "a refusal starts nothing"
+    );
+    let run = gated_run(&fixture, &with_token(Some(&token))).unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+
+    // Released and acquired again: the earlier token is stale.
+    fixture
+        .supervisor
+        .coordinator_end(
+            &tenure.coordinator_id,
+            crate::workers::coordinators::ENDED,
+            None,
+        )
+        .unwrap();
+    fixture
+        .supervisor
+        .coordinator_start(&repo, "p2", None)
+        .unwrap();
+    let (_, current) = fixture.supervisor.coordinator_token_for_pane("p2").unwrap();
+    let refused = gated_run(&fixture, &with_token(Some(&token))).unwrap_err();
+    assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+    // The new holder's token is admitted.
+    let run = gated_run(&fixture, &with_token(Some(&current))).unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+    // Acquiring again replaces the token.
+    let (_, replaced) = fixture.supervisor.coordinator_token_for_pane("p2").unwrap();
+    assert_ne!(replaced, current);
+    let refused = gated_run(&fixture, &with_token(Some(&current))).unwrap_err();
+    assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
 }

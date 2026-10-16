@@ -9,6 +9,18 @@
 //! events herdr already has about its pane (it closed, its agent exited),
 //! which a server re-evaluates when it starts. No timer ends one.
 //!
+//! A tenure is the repository's lease. `coordinator.acquire` gives its
+//! holder a token (only its sha256 is stored), which `worker.run` must
+//! present while the tenure is active, and lets a process outside herdr's
+//! panes (a supervisor started from a shell) hold the tenure itself: the
+//! server records the process (its pid and start token) and ends the tenure
+//! on the process's exit event ([`crate::platform::watch_process_exit`]),
+//! and a server that starts, also after a live handoff, watches the
+//! recorded holders again and ends the tenures of those that are gone. A
+//! `todo.run` lands (cherry-pick, install, TODO edit, push) only while the
+//! tenure it was claimed under is still the repository's active one
+//! ([`WorkerSupervisor::tenure_fence`]).
+//!
 //! The workers and `todo.run`s a coordinator starts belong to its tenure,
 //! not to its pane: when its agent session comes back in another pane
 //! (`claude --resume`), the tenure's binding moves there with them
@@ -23,13 +35,13 @@ use tracing::warn;
 
 use serde_json::{json, Value};
 
-use super::store::{NewTenure, RunOwner, StoredTenure, Tx};
+use super::store::{HolderProcess, NewTenure, RunOwner, StoredTenure, Tx};
 use super::{
     lock, notify_clients, now_ms, Registry, StagedMoves, WorkerError, WorkerSupervisor, SUPERVISOR,
 };
 use crate::api::schema::{
-    CoordinatorAllowlistMode, CoordinatorAllowlistRefusalParams, CoordinatorInfo,
-    CoordinatorOverride, CoordinatorRecordOverrideParams, CoordinatorWouldDeny,
+    CoordinatorAllowlistMode, CoordinatorAllowlistRefusalParams, CoordinatorHolderKind,
+    CoordinatorInfo, CoordinatorOverride, CoordinatorRecordOverrideParams, CoordinatorWouldDeny,
     CoordinatorWouldDenyShape,
 };
 
@@ -302,8 +314,54 @@ pub(super) fn new_tenure_id(repo: &str, pane_id: &str) -> String {
     format!("c-{id}")
 }
 
+/// A new tenure token: 64 hex characters from the system's secure random
+/// source.
+fn new_token() -> Result<String, WorkerError> {
+    crate::platform::random_hex_token().map_err(|error| {
+        WorkerError::Io(std::io::Error::other(format!(
+            "cannot draw a tenure token: {error}"
+        )))
+    })
+}
+
+/// The sha256 of `token`, as the store keeps it.
+fn token_sha256(token: &str) -> String {
+    Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Who holds `tenure`, as refusals name it.
+pub(super) fn holder_description(tenure: &StoredTenure) -> String {
+    if let Some(holder) = tenure.holder {
+        return format!("coordinator {} held by process {}", tenure.id, holder.pid);
+    }
+    if tenure.headless {
+        return format!(
+            "headless item coordinator {} (worker {})",
+            tenure.id,
+            tenure.worker_id.as_deref().unwrap_or("not started yet")
+        );
+    }
+    format!(
+        "coordinator {} in pane {}",
+        tenure.id,
+        tenure.pane_id.as_deref().unwrap_or("an unknown pane")
+    )
+}
+
 pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
+    let holder_kind = if tenure.holder.is_some() {
+        CoordinatorHolderKind::Process
+    } else if tenure.headless {
+        CoordinatorHolderKind::Headless
+    } else {
+        CoordinatorHolderKind::Pane
+    };
     CoordinatorInfo {
+        holder_kind: Some(holder_kind),
+        holder_pid: tenure.holder.map(|holder| holder.pid),
         coordinator_id: tenure.id,
         repo: tenure.repo,
         item: tenure.item,
@@ -383,6 +441,7 @@ impl WorkerSupervisor {
                 repo,
                 pane_id: Some(pane_id),
                 session_id,
+                holder: None,
             };
             tx.coordinator_started(&tenure, now_ms()).map(Ok)
         });
@@ -412,7 +471,288 @@ impl WorkerSupervisor {
         Err(Self::refusal(repo, pane_id, refused))
     }
 
+    /// `coordinator.acquire` by a pane: a new token for the active tenure
+    /// bound to `pane_id` (claimed with `coordinator.start`), which replaces
+    /// its earlier token, so a token handed out before stops being accepted.
+    /// Refused with `coordinator_not_found` while the pane holds none.
+    pub(crate) fn coordinator_token_for_pane(
+        &self,
+        pane_id: &str,
+    ) -> Result<(CoordinatorInfo, String), WorkerError> {
+        let token = new_token()?;
+        let hash = token_sha256(&token);
+        let issued = self
+            .tenure_store()?
+            .transaction(|tx| {
+                let Some(tenure) = tx.coordinator_of_pane(pane_id)? else {
+                    return Ok(None);
+                };
+                tx.coordinator_token(&tenure.id, &hash, now_ms()).map(Some)
+            })
+            .map_err(store_error)?;
+        let tenure = issued.ok_or_else(|| {
+            WorkerError::CoordinatorNotFound(format!(
+                "pane {pane_id} holds no active coordinator tenure; claim the repository with \
+                 `herdr coordinator start` first"
+            ))
+        })?;
+        Ok((info(tenure), token))
+    }
+
+    /// `coordinator.acquire` by a process outside herdr's panes (a
+    /// supervisor started from a shell): starts a tenure of `repo` held by
+    /// process `pid`, recorded with its start token, and returns it with a
+    /// new token. The same process asking again gets the same tenure with a
+    /// new token, which replaces the earlier one. Refused with
+    /// `coordinator_active`, naming the holder, while another pane or
+    /// process holds the repository; with `invalid_request` when `pid` is
+    /// not running; and with `worker_unsupported` where herdr cannot watch
+    /// a process's exit, since only that exit event releases the tenure.
+    pub(crate) fn coordinator_acquire_process(
+        &self,
+        repo: &str,
+        pid: u32,
+    ) -> Result<(CoordinatorInfo, String), WorkerError> {
+        let start = crate::platform::process_start_token(pid).ok_or_else(|| {
+            WorkerError::Invalid(format!(
+                "process {pid} is not running, or herdr cannot read when it started"
+            ))
+        })?;
+        let holder = HolderProcess { pid, start };
+        let token = new_token()?;
+        let hash = token_sha256(&token);
+        let store = self.tenure_store()?;
+        let id = new_tenure_id(repo, &format!("pid:{pid}"));
+        let at = now_ms();
+        let outcome = store.transaction(|tx| {
+            if let Some(active) = tx.active_coordinator(repo)? {
+                if active.holder != Some(holder) {
+                    return Ok(Err(active));
+                }
+                return tx.coordinator_token(&active.id, &hash, at).map(Ok);
+            }
+            let tenure = NewTenure {
+                id: &id,
+                repo,
+                pane_id: None,
+                session_id: None,
+                holder: Some(holder),
+            };
+            let started = tx.coordinator_started(&tenure, at)?;
+            tx.coordinator_token(&started.id, &hash, at).map(Ok)
+        });
+        let tenure = match outcome {
+            Ok(Ok(tenure)) => tenure,
+            Ok(Err(other)) => return Err(Self::refusal(repo, "none", other)),
+            Err(error) if is_unique_violation(&error) => {
+                return match store.active_coordinators(Some(repo)) {
+                    Ok(mut active) if !active.is_empty() => {
+                        Err(Self::refusal(repo, "none", active.remove(0)))
+                    }
+                    _ => Err(WorkerError::CoordinatorActive(format!(
+                        "repository {repo} already has an active coordinator"
+                    ))),
+                };
+            }
+            Err(error) => return Err(store_error(error)),
+        };
+        notify_clients();
+        if let Err(error) = self.watch_holder(holder) {
+            let cause = format!("herdr cannot watch holder process {pid}'s exit: {error}");
+            if let Err(end_error) = self.coordinator_end(&tenure.id, ENDED, Some(&cause)) {
+                warn!(%end_error, coordinator_id = %tenure.id, "cannot end the unwatched tenure");
+            }
+            return Err(WorkerError::Unsupported(format!(
+                "{cause}; without its exit event nothing would release the tenure, so it was \
+                 not kept"
+            )));
+        }
+        // The process may have exited before its watch was in place, which
+        // ended the tenure at once.
+        let tenure = store
+            .coordinator(&tenure.id)
+            .map_err(store_error)?
+            .ok_or_else(|| {
+                WorkerError::CoordinatorNotFound(format!("coordinator {} not found", tenure.id))
+            })?;
+        if tenure.ended_at.is_some() {
+            return Err(WorkerError::Invalid(format!(
+                "process {pid} exited before herdr watched it; its tenure {} ended",
+                tenure.id
+            )));
+        }
+        Ok((info(tenure), token))
+    }
+
+    /// Watches `holder`'s exit, once per process for this server: its exit
+    /// event ends the tenures it holds ([`Self::holder_exited`]), at once
+    /// when it is gone already.
+    fn watch_holder(&self, holder: HolderProcess) -> std::io::Result<()> {
+        if !lock(&self.shared.holder_watches).insert(holder) {
+            return Ok(());
+        }
+        let shared = std::sync::Arc::clone(&self.shared);
+        let watched = crate::platform::watch_process_exit(
+            holder.pid,
+            holder.start,
+            Box::new(move || {
+                let supervisor = WorkerSupervisor { shared };
+                lock(&supervisor.shared.holder_watches).remove(&holder);
+                supervisor.holder_exited(holder);
+            }),
+        );
+        if watched.is_err() {
+            lock(&self.shared.holder_watches).remove(&holder);
+        }
+        watched
+    }
+
+    /// Process `holder` exited (its exit event, or found gone when this
+    /// server started): every active tenure it holds ends `orphaned`.
+    fn holder_exited(&self, holder: HolderProcess) {
+        let held = match self
+            .tenure_store()
+            .and_then(|store| store.active_coordinators(None).map_err(store_error))
+        {
+            Ok(active) => active,
+            Err(error) => {
+                warn!(%error, pid = holder.pid, "cannot read the tenures of an exited holder");
+                return;
+            }
+        };
+        let cause = format!("its holder process {} exited", holder.pid);
+        for tenure in held
+            .into_iter()
+            .filter(|tenure| tenure.holder == Some(holder))
+        {
+            if let Err(error) = self.coordinator_end(&tenure.id, ORPHANED, Some(&cause)) {
+                warn!(%error, coordinator_id = %tenure.id, "cannot end the exited holder's tenure");
+            }
+        }
+    }
+
+    /// Reconciles the process holders from the store when this server
+    /// starts (also after a live handoff, whose new server starts here): a
+    /// recorded holder that is gone, or whose pid names a later process,
+    /// releases its tenure now; a live one is watched for its exit event.
+    /// A holder whose exit cannot be watched releases its tenure too.
+    pub(super) fn holders_at_start(&self) {
+        let active = match self
+            .tenure_store()
+            .and_then(|store| store.active_coordinators(None).map_err(store_error))
+        {
+            Ok(active) => active,
+            Err(error) => {
+                warn!(%error, "cannot read the tenures' holder processes");
+                return;
+            }
+        };
+        for tenure in active {
+            let Some(holder) = tenure.holder else {
+                continue;
+            };
+            if let Err(error) = self.watch_holder(holder) {
+                let cause = format!(
+                    "herdr cannot watch holder process {}'s exit (found when herdr started): \
+                     {error}",
+                    holder.pid
+                );
+                if let Err(error) = self.coordinator_end(&tenure.id, ORPHANED, Some(&cause)) {
+                    warn!(%error, coordinator_id = %tenure.id, "cannot end the unwatched tenure");
+                }
+            }
+        }
+    }
+
+    /// Refuses a start in `repo` (`worker.run`) with `tenure_token_refused`
+    /// while the repository's tenure is active and `token` is not its
+    /// current one: none given, another tenure's, or one its holder was
+    /// given before acquiring again. With no active tenure nothing is
+    /// checked.
+    pub(crate) fn check_tenure_token(
+        &self,
+        repo: &str,
+        token: Option<&str>,
+    ) -> Result<(), WorkerError> {
+        let Some(active) = self
+            .tenure_store()?
+            .active_coordinator_of(repo)
+            .map_err(store_error)?
+        else {
+            return Ok(());
+        };
+        let holder = holder_description(&active);
+        match (token, active.token_sha256.as_deref()) {
+            (Some(token), Some(current)) if token_sha256(token) == current => Ok(()),
+            (None, _) => Err(WorkerError::TenureToken(format!(
+                "repository {repo} is coordinated by {holder}; a start there needs that \
+                 tenure's token (`herdr coordinator acquire`, or `herdr coordinator start \
+                 --token` in its pane), and none was given; nothing started"
+            ))),
+            (Some(_), _) => Err(WorkerError::TenureToken(format!(
+                "repository {repo} is coordinated by {holder}, and the token given is not that \
+                 tenure's current one (another tenure's, or one replaced by a later acquire); \
+                 nothing started"
+            ))),
+        }
+    }
+
+    /// Whether a `todo.run` of `repo` claimed under tenure `owner` (none for
+    /// a run claimed outside any tenure) may take a step that lands
+    /// (cherry-pick, install, TODO edit, push): only while that tenure is
+    /// still the repository's active one, or, for a run without a tenure,
+    /// while none is active. The refusal names the current holder; a store
+    /// that cannot say refuses too.
+    pub(super) fn tenure_fence(&self, repo: &str, owner: Option<&str>) -> Result<(), String> {
+        let unreadable =
+            |error: WorkerError| format!("cannot read repository {repo}'s tenure: {error}");
+        let store = self.tenure_store().map_err(unreadable)?;
+        let Some(owner) = owner else {
+            return match store
+                .active_coordinator_of(repo)
+                .map_err(|error| unreadable(store_error(error)))?
+            {
+                None => Ok(()),
+                Some(active) => Err(format!(
+                    "it was claimed under no coordinator tenure, and repository {repo}'s tenure \
+                     is held by {} now; the run lands nothing while another holder holds it",
+                    holder_description(&active)
+                )),
+            };
+        };
+        // An active tenure is its repository's only one (the store's
+        // unique index), so the owner's own row decides.
+        let tenure = store
+            .coordinator(owner)
+            .map_err(|error| unreadable(store_error(error)))?;
+        let tenure_repo = match &tenure {
+            Some(tenure) if tenure.ended_at.is_none() => return Ok(()),
+            Some(tenure) => tenure.repo.clone(),
+            None => repo.to_owned(),
+        };
+        let held_by = match store
+            .active_coordinator_of(&tenure_repo)
+            .map_err(|error| unreadable(store_error(error)))?
+        {
+            Some(active) => format!("it is held by {}", holder_description(&active)),
+            None => "no coordinator holds it now".to_owned(),
+        };
+        Err(format!(
+            "its coordinator {owner} no longer holds repository {tenure_repo}'s tenure \
+             ({held_by}); the run lands nothing for a coordinator that lost the tenure"
+        ))
+    }
+
     pub(super) fn refusal(repo: &str, pane_id: &str, other: StoredTenure) -> WorkerError {
+        if other.holder.is_some() {
+            return WorkerError::CoordinatorActive(format!(
+                "repository {} already has {}; it ends when that process exits, or with \
+                 `herdr coordinator end --id {}`",
+                other.repo,
+                holder_description(&other),
+                other.id
+            ));
+        }
         if other.headless {
             return WorkerError::CoordinatorActive(format!(
                 "repository {} already has headless item coordinator {} (worker {}) on item {}; \
@@ -773,6 +1113,7 @@ impl WorkerSupervisor {
                     repo: &from.repo,
                     pane_id: Some(to_pane),
                     session_id: to_session,
+                    holder: None,
                 };
                 let (_, started) = tx.coordinator_handoff(&from, &next, at)?;
                 let cause = format!(
@@ -1282,6 +1623,260 @@ mod tests {
             assert!(body.contains(cause), "{body}");
         }
         assert!(supervisor.owner_panes().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A process that runs until its input closes.
+    #[cfg(unix)]
+    fn holder_process() -> std::process::Child {
+        std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Tenure `id` once it has ended: woken by `coordinator_end`'s notify,
+    /// which comes after its commit, so the check under the registry lock
+    /// cannot miss it.
+    #[cfg(unix)]
+    fn wait_ended(supervisor: &WorkerSupervisor, id: &str) -> StoredTenure {
+        let store = supervisor.tenure_store().unwrap();
+        let mut registry = lock(&supervisor.shared.registry);
+        loop {
+            let tenure = store.coordinator(id).unwrap().unwrap();
+            if tenure.ended_at.is_some() {
+                return tenure;
+            }
+            registry = supervisor
+                .shared
+                .changed
+                .wait(registry)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    #[cfg(unix)]
+    fn ended_cause(supervisor: &WorkerSupervisor, id: &str) -> String {
+        supervisor
+            .tenure_store()
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT body FROM events WHERE worker_id = ?1 AND type = 'coordinator_ended'",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_holds_the_repository_until_its_exit_event() {
+        let (root, supervisor) = scratch("process-holder");
+        let mut holder = holder_process();
+        let pid = holder.id();
+        let (tenure, token) = supervisor
+            .coordinator_acquire_process("/repo", pid)
+            .unwrap();
+        assert_eq!(token.len(), 64);
+        assert_eq!(
+            (
+                tenure.holder_kind,
+                tenure.holder_pid,
+                tenure.pane_id.as_deref()
+            ),
+            (Some(CoordinatorHolderKind::Process), Some(pid), None)
+        );
+        assert!(!tenure.headless);
+        // The store keeps the token's hash, never the token.
+        let stored = supervisor
+            .tenure_store()
+            .unwrap()
+            .coordinator(&tenure.coordinator_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.token_sha256.as_deref(),
+            Some(token_sha256(&token).as_str())
+        );
+        let events: Vec<String> = supervisor
+            .tenure_store()
+            .unwrap()
+            .connection()
+            .prepare("SELECT body FROM events WHERE worker_id = ?1")
+            .unwrap()
+            .query_map([&tenure.coordinator_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            events.iter().all(|body| !body.contains(&token)
+                && !body.contains(stored.token_sha256.as_deref().unwrap())),
+            "{events:?}"
+        );
+        // Status names the holder process, never the token.
+        let status = supervisor.coordinator_status(Some("/repo")).unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].holder_pid, Some(pid));
+        assert!(!serde_json::to_string(&status).unwrap().contains(&token));
+
+        // The same process acquiring again keeps the tenure, with a new token.
+        let (again, replaced) = supervisor
+            .coordinator_acquire_process("/repo", pid)
+            .unwrap();
+        assert_eq!(again.coordinator_id, tenure.coordinator_id);
+        assert_ne!(replaced, token);
+        // Another process, and a pane, are refused, named with the holder.
+        let mut other = holder_process();
+        let refused = supervisor
+            .coordinator_acquire_process("/repo", other.id())
+            .unwrap_err();
+        assert_eq!(refused.code(), "coordinator_active");
+        let message = refused.to_string();
+        assert!(
+            message.contains(&tenure.coordinator_id) && message.contains(&format!("process {pid}")),
+            "{message}"
+        );
+        let refused = supervisor
+            .coordinator_start("/repo", "p1", None)
+            .unwrap_err();
+        assert_eq!(refused.code(), "coordinator_active");
+        assert!(
+            refused.to_string().contains(&format!("process {pid}")),
+            "{refused}"
+        );
+        // A pane that holds nothing gets no token.
+        assert_eq!(
+            supervisor
+                .coordinator_token_for_pane("p1")
+                .unwrap_err()
+                .code(),
+            "coordinator_not_found"
+        );
+        // A process that is not running holds nothing.
+        drop(other.stdin.take());
+        let other_pid = other.id();
+        other.wait().unwrap();
+        assert_eq!(
+            supervisor
+                .coordinator_acquire_process("/elsewhere", other_pid)
+                .unwrap_err()
+                .code(),
+            "invalid_request"
+        );
+
+        // Its exit event releases the tenure.
+        drop(holder.stdin.take());
+        let ended = wait_ended(&supervisor, &tenure.coordinator_id);
+        holder.wait().unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ORPHANED));
+        let cause = ended_cause(&supervisor, &tenure.coordinator_id);
+        assert!(
+            cause.contains(&format!("holder process {pid} exited")),
+            "{cause}"
+        );
+        // The repository is free again.
+        supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_starting_server_releases_a_gone_holder_and_watches_a_live_one() {
+        let (root, supervisor) = scratch("holder-restart");
+        let mut gone = holder_process();
+        let gone_holder = HolderProcess {
+            pid: gone.id(),
+            start: crate::platform::process_start_token(gone.id()).unwrap(),
+        };
+        let mut alive = holder_process();
+        let alive_holder = HolderProcess {
+            pid: alive.id(),
+            start: crate::platform::process_start_token(alive.id()).unwrap(),
+        };
+        // Recorded by a previous server, which watched them until it ended.
+        let store = supervisor.tenure_store().unwrap();
+        for (id, repo, holder) in [
+            ("c-gonehold", "/repo", gone_holder),
+            ("c-livehold", "/other", alive_holder),
+        ] {
+            store
+                .transaction(|tx| {
+                    let tenure = NewTenure {
+                        id,
+                        repo,
+                        pane_id: None,
+                        session_id: None,
+                        holder: Some(holder),
+                    };
+                    tx.coordinator_started(&tenure, now_ms())
+                })
+                .unwrap();
+        }
+        drop(supervisor);
+        // One holder exits while no server runs.
+        drop(gone.stdin.take());
+        gone.wait().unwrap();
+
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        assert_eq!(supervisor.coordinator_status(None).unwrap().len(), 2);
+        supervisor.owners_at_start(|_| None);
+        let store = supervisor.tenure_store().unwrap();
+        let released = store.coordinator("c-gonehold").unwrap().unwrap();
+        assert_eq!(released.end_reason.as_deref(), Some(ORPHANED));
+        let cause = ended_cause(&supervisor, "c-gonehold");
+        assert!(
+            cause.contains(&format!("holder process {}", gone_holder.pid)),
+            "{cause}"
+        );
+        assert!(store
+            .coordinator("c-livehold")
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_none());
+        // The live one is watched from now on: its exit releases it.
+        drop(alive.stdin.take());
+        let ended = wait_ended(&supervisor, "c-livehold");
+        alive.wait().unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ORPHANED));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_run_lands_only_under_the_tenure_it_was_claimed_under() {
+        let (root, supervisor) = scratch("fence");
+        // No tenure, then and now: it lands.
+        assert_eq!(supervisor.tenure_fence("/repo", None), Ok(()));
+        let first = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        assert_eq!(
+            supervisor.tenure_fence("/repo", Some(&first.coordinator_id)),
+            Ok(())
+        );
+        // Claimed under no tenure while a holder holds the repository.
+        let refused = supervisor.tenure_fence("/repo", None).unwrap_err();
+        assert!(
+            refused.contains("p1") && refused.contains(&first.coordinator_id),
+            "{refused}"
+        );
+        // Its tenure ended: nobody holds it, and still it does not land.
+        supervisor
+            .coordinator_end(&first.coordinator_id, ENDED, None)
+            .unwrap();
+        let refused = supervisor
+            .tenure_fence("/repo", Some(&first.coordinator_id))
+            .unwrap_err();
+        assert!(refused.contains("no coordinator holds it now"), "{refused}");
+        // Another holder now: named.
+        let second = supervisor.coordinator_start("/repo", "p2", None).unwrap();
+        let refused = supervisor
+            .tenure_fence("/repo", Some(&first.coordinator_id))
+            .unwrap_err();
+        assert!(
+            refused.contains(&second.coordinator_id) && refused.contains("p2"),
+            "{refused}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1320,6 +1320,9 @@ impl App {
             Method::CoordinatorStart(params) => {
                 return self.handle_coordinator_start(request.id, params);
             }
+            Method::CoordinatorAcquire(params) => {
+                return self.handle_coordinator_acquire(request.id, params);
+            }
             Method::CoordinatorEnd(params) => {
                 return self.handle_coordinator_end(request.id, params);
             }

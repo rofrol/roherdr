@@ -333,6 +333,9 @@ impl WorkerSupervisor {
 
     /// [`owners_at_start`] for this supervisor.
     pub(in crate::workers) fn owners_at_start(&self, state: impl Fn(&str) -> Option<OwnerEvent>) {
+        // The tenures' holder processes too: a gone one releases its
+        // tenure, a live one is watched for its exit.
+        self.holders_at_start();
         for pane in self.owner_panes() {
             if let Some(event) = state(&pane) {
                 self.owner_event(&pane, event, " (found when herdr started)");

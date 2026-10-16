@@ -473,6 +473,9 @@ struct Shared {
     /// Held while a folder slot is prepared and its worker registered, so
     /// two starts never prepare one slot at once.
     slot_lock: Mutex<()>,
+    /// The tenure holder processes whose exit this server watches
+    /// ([`crate::platform::watch_process_exit`]), each once.
+    holder_watches: Mutex<BTreeSet<store::HolderProcess>>,
     /// Set once a live handoff succeeded: this server's `todo run` drivers
     /// let go of their runs (and their run locks) for the new server.
     handed_off: std::sync::atomic::AtomicBool,

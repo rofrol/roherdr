@@ -433,6 +433,7 @@ impl WorkerSupervisor {
                 repo,
                 pane_id: None,
                 session_id: None,
+                holder: None,
             };
             tx.coordinator_started(&tenure, at)?;
             tx.coordinator_item(&id, Some(&item), at)?;

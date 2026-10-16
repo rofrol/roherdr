@@ -1764,6 +1764,67 @@ pub fn process_start_token(pid: u32) -> Option<u64> {
     ProcessIdentity::open(pid)?.creation_time()
 }
 
+/// [`super::watch_process_exit`] on Windows: a handle to the process opened
+/// with `SYNCHRONIZE`, which is signalled when the process exits.
+pub(super) fn watch_process_exit(
+    pid: u32,
+    start_token: u64,
+    on_exit: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE,
+    };
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        // No process has that id any more.
+        if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            on_exit();
+            return Ok(());
+        }
+        return Err(error);
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+    // Checked on the open handle: a pid reused before it is not the process
+    // asked for, and an exited process keeps its creation time.
+    if process_creation_time(handle.as_raw_handle().cast()) != Some(start_token) {
+        on_exit();
+        return Ok(());
+    }
+    crate::thread_spawn::spawn_named("herdr-process-exit", move || {
+        let waited = unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), INFINITE) };
+        drop(handle);
+        if waited == WAIT_OBJECT_0 {
+            on_exit();
+        } else {
+            tracing::warn!(
+                pid,
+                error = %std::io::Error::last_os_error(),
+                "cannot wait for the process's exit"
+            );
+        }
+    })?;
+    Ok(())
+}
+
+/// Fills `bytes` from version 4 GUIDs, which the system draws from its
+/// secure random source (122 random bits in each 16 bytes).
+pub(super) fn fill_secure_random(bytes: &mut [u8]) -> std::io::Result<()> {
+    for chunk in bytes.chunks_mut(16) {
+        let random = notifications::random_token()?.to_le_bytes();
+        chunk.copy_from_slice(&random[..chunk.len()]);
+    }
+    Ok(())
+}
+
 /// Returns `pid` while that same process, matched by its creation time, is
 /// still running for the pane shell `shell_pid`. Windows has no job control,
 /// so the process stands in for its own group.

@@ -743,6 +743,18 @@ ALTER TABLE workers ADD COLUMN end_by_owner INTEGER NOT NULL DEFAULT 0;
     super::supervision::SUPERVISION_INBOX_MIGRATION,
     super::supervision::SUPERVISION_DELIVERY_MIGRATION,
     super::supervision::SUPERVISION_HOLDS_MIGRATION,
+    r#"
+-- A tenure as the repository's lease (`coordinator.acquire`).
+-- `token_sha256` is the sha256 (hex) of the token its holder was last given,
+-- which `worker.run` must present; the token itself is never stored. NULL
+-- until a token is issued. `holder_pid` and `holder_start` name a process
+-- holder: its pid and its start token (`process_start_token`), which a later
+-- process reusing the pid cannot match; NULL for a pane's or a headless
+-- tenure.
+ALTER TABLE coordinators ADD COLUMN token_sha256 TEXT;
+ALTER TABLE coordinators ADD COLUMN holder_pid INTEGER;
+ALTER TABLE coordinators ADD COLUMN holder_start INTEGER;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1254,6 +1266,7 @@ impl Tx<'_> {
             [tenure.repo],
             |row| row.get(0),
         )?;
+        let headless = tenure.pane_id.is_none() && tenure.holder.is_none();
         let event = serde_json::json!({
             "type": "coordinator_started",
             "coordinator_id": tenure.id,
@@ -1261,19 +1274,22 @@ impl Tx<'_> {
             "pane_id": tenure.pane_id,
             "session_id": tenure.session_id,
             "epoch": epoch,
-            "headless": tenure.pane_id.is_none(),
+            "headless": headless,
+            "holder_pid": tenure.holder.map(|holder| holder.pid),
         });
         self.coordinator_event(tenure.id, &event, at_ms)?;
         self.tx.execute(
             "INSERT INTO coordinators (id, repo, item, started_at, ended_at, end_reason, epoch,
-                 headless)
-             VALUES (?1, ?2, NULL, ?3, NULL, NULL, ?4, ?5)",
+                 headless, holder_pid, holder_start)
+             VALUES (?1, ?2, NULL, ?3, NULL, NULL, ?4, ?5, ?6, ?7)",
             params![
                 tenure.id,
                 tenure.repo,
                 at_ms as i64,
                 epoch,
-                i64::from(tenure.pane_id.is_none())
+                i64::from(headless),
+                tenure.holder.map(|holder| i64::from(holder.pid)),
+                tenure.holder.map(|holder| holder.start as i64),
             ],
         )?;
         if let Some(pane_id) = tenure.pane_id {
@@ -1507,6 +1523,27 @@ impl Tx<'_> {
     /// Tenure `id` as this transaction sees it.
     pub(super) fn coordinator(&self, id: &str) -> StoreResult<Option<StoredTenure>> {
         tenure_by_id(self.tx, id)
+    }
+
+    /// Records `coordinator_token` and makes `token_sha256` tenure `id`'s
+    /// current token: the one its holder was given last, which replaces any
+    /// earlier one. The event names no token or hash.
+    pub(super) fn coordinator_token(
+        &self,
+        id: &str,
+        token_sha256: &str,
+        at_ms: u64,
+    ) -> StoreResult<StoredTenure> {
+        let event = serde_json::json!({
+            "type": "coordinator_token",
+            "coordinator_id": id,
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE coordinators SET token_sha256 = ?2 WHERE id = ?1",
+            params![id, token_sha256],
+        )?;
+        tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
     /// Records `coordinator_worker`: headless tenure `id` runs as worker
@@ -1779,13 +1816,25 @@ pub(super) struct RunOwner<'a> {
     pub(super) coordinator_id: Option<&'a str>,
 }
 
-/// A tenure as `coordinator.start` asks for it.
+/// A tenure as `coordinator.start` (or `coordinator.acquire`) asks for it.
 pub(super) struct NewTenure<'a> {
     pub(super) id: &'a str,
     pub(super) repo: &'a str,
-    /// None for a headless item coordinator's tenure, which no pane binds.
+    /// None for a headless item coordinator's tenure, which no pane binds,
+    /// and for a process holder's.
     pub(super) pane_id: Option<&'a str>,
     pub(super) session_id: Option<&'a str>,
+    /// The process that holds the tenure when no pane does.
+    pub(super) holder: Option<HolderProcess>,
+}
+
+/// A process that holds a tenure (`coordinator.acquire` with `holder_pid`):
+/// its pid and the start token a later process reusing the pid cannot
+/// match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct HolderProcess {
+    pub(super) pid: u32,
+    pub(super) start: u64,
 }
 
 /// One coordination tenure with its latest binding.
@@ -1804,6 +1853,10 @@ pub(super) struct StoredTenure {
     /// it runs as once that started.
     pub(super) headless: bool,
     pub(super) worker_id: Option<String>,
+    /// The process that holds it, when no pane does.
+    pub(super) holder: Option<HolderProcess>,
+    /// The sha256 of the token its holder was last given.
+    pub(super) token_sha256: Option<String>,
 }
 
 const ACTIVE_OF_PANE: &str = "t.ended_at IS NULL AND t.id IN (SELECT coordinator_id \
@@ -1818,7 +1871,8 @@ fn tenures(
 ) -> StoreResult<Vec<StoredTenure>> {
     let mut statement = conn.prepare(&format!(
         "SELECT t.id, t.repo, t.item, t.started_at, t.ended_at, t.end_reason, t.epoch,
-             b.pane_id, b.session_id, t.headless, t.worker_id
+             b.pane_id, b.session_id, t.headless, t.worker_id, t.holder_pid, t.holder_start,
+             t.token_sha256
          FROM coordinators t
          LEFT JOIN coordinator_bindings b ON b.rowid = (SELECT rowid FROM coordinator_bindings
              WHERE coordinator_id = t.id ORDER BY from_at DESC, rowid DESC LIMIT 1)
@@ -1838,6 +1892,17 @@ fn tenures(
             session_id: row.get(8)?,
             headless: row.get::<_, i64>(9)? != 0,
             worker_id: row.get(10)?,
+            holder: match (
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+            ) {
+                (Some(pid), Some(start)) => Some(HolderProcess {
+                    pid: pid as u32,
+                    start: start as u64,
+                }),
+                _ => None,
+            },
+            token_sha256: row.get(13)?,
         })
     })?;
     rows.collect()
@@ -3447,7 +3512,7 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 30
+                MIGRATIONS.len() - 31
             ))
             .unwrap();
         drop(store);
@@ -3498,6 +3563,9 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN coordinates;
                  ALTER TABLE coordinators DROP COLUMN worker_id;
                  ALTER TABLE coordinators DROP COLUMN headless;
+                 ALTER TABLE coordinators DROP COLUMN token_sha256;
+                 ALTER TABLE coordinators DROP COLUMN holder_pid;
+                 ALTER TABLE coordinators DROP COLUMN holder_start;
                  DROP TABLE todo_chains;
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
@@ -3514,7 +3582,7 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 19
+                MIGRATIONS.len() - 20
             ))
             .unwrap();
         drop(store);

@@ -3290,6 +3290,24 @@ impl WorkerSupervisor {
             if activity::observe(&run.info, None, now_ms()) {
                 announce();
             }
+            // A step that lands goes on only while the tenure the run was
+            // claimed under still holds the repository: a coordinator that
+            // lost it lands nothing.
+            let landing = match run.info.step {
+                TodoStep::CherryPick => Some("cherry-pick"),
+                TodoStep::Install => Some("install"),
+                TodoStep::Todo => Some("TODO edit"),
+                TodoStep::Push => Some("push"),
+                _ => None,
+            };
+            if let Some(landing) = landing {
+                if let Err(why) =
+                    self.tenure_fence(&run.info.repo, run.owner_coordinator.as_deref())
+                {
+                    self.block_run(&mut run, format!("stopped before its {landing}: {why}"));
+                    continue;
+                }
+            }
             let stepped = match run.info.step {
                 TodoStep::Draft => self.step_draft(&mut run),
                 TodoStep::Preflight | TodoStep::Start => self.step_start(&mut run),

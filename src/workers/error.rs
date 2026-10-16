@@ -80,6 +80,10 @@ pub(crate) enum WorkerError {
     /// A self-service handoff step that is not allowed now (`coordinator.ready`,
     /// `coordinator.handoff_successor`, `coordinator.ack`); the message says why.
     HandoffRefused(String),
+    /// A start (`worker.run`) in a repository whose coordination tenure is
+    /// active, without that tenure's current token or with another one;
+    /// the message names the tenure and its holder. Nothing started.
+    TenureToken(String),
     Io(std::io::Error),
 }
 
@@ -118,6 +122,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "coordinator_frozen",
     "coordinator_superseded",
     "handoff_refused",
+    "tenure_token_refused",
 ];
 
 impl WorkerError {
@@ -157,6 +162,7 @@ impl WorkerError {
             Self::CoordinatorFrozen(_) => "coordinator_frozen",
             Self::CoordinatorSuperseded(_) => "coordinator_superseded",
             Self::HandoffRefused(_) => "handoff_refused",
+            Self::TenureToken(_) => "tenure_token_refused",
         }
     }
 
@@ -206,6 +212,7 @@ impl std::fmt::Display for WorkerError {
             | Self::CoordinatorFrozen(message)
             | Self::CoordinatorSuperseded(message)
             | Self::HandoffRefused(message)
+            | Self::TenureToken(message)
             | Self::OwnershipTransferred(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }

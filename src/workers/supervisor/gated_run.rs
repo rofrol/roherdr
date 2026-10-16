@@ -3,6 +3,9 @@
 //! ([`WorkerSupervisor::usage_gate`], one gate, never a second), starts the
 //! worker as `worker.start` does without a folder slot, runs one turn,
 //! stops the worker and answers with the turn's text, usage and outcome.
+//! While the repository has an active coordination tenure, only a run with
+//! that tenure's current token is admitted
+//! ([`WorkerSupervisor::check_tenure_token`]); with none active, any is.
 
 use super::super::*;
 use crate::api::schema::{
@@ -37,6 +40,9 @@ impl WorkerSupervisor {
     ) -> Result<Option<WorkerGatedRun>, WorkerError> {
         let agent = params.agent.unwrap_or_default();
         let repo = self.gated_run_repository(params)?;
+        // The repository's tenure, when one is active, admits only its
+        // holder's current token: a refusal starts nothing.
+        self.check_tenure_token(&repo, params.tenure_token.as_deref())?;
         // The gate as `todo.run` passes it: the same state, the same
         // recording; a refusal starts nothing.
         let mut usage_gate = self.usage_gate(&repo, agent, params.ignore_usage)?;

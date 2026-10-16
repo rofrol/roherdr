@@ -77,7 +77,8 @@ impl Drop for ComApartment {
     }
 }
 
-fn random_token() -> io::Result<u128> {
+/// A version 4 GUID: 122 bits from the system's secure random source.
+pub(super) fn random_token() -> io::Result<u128> {
     winrt(unsafe { CoCreateGuid() }).map(|guid| guid.to_u128())
 }
 

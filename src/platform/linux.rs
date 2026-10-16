@@ -672,6 +672,59 @@ pub fn process_start_token(pid: u32) -> Option<u64> {
     process_job_stat(pid).map(|stat| stat.start_time)
 }
 
+/// [`super::watch_process_exit`] on Linux: a pidfd (`pidfd_open`, Linux 5.3),
+/// which becomes readable when the process exits, also when it is not a
+/// child.
+pub(super) fn watch_process_exit(
+    pid: u32,
+    start_token: u64,
+    on_exit: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if raw < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            on_exit();
+            return Ok(());
+        }
+        return Err(error);
+    }
+    let pidfd = unsafe { OwnedFd::from_raw_fd(raw as RawFd) };
+    // Checked once the pidfd pins the process: a pid reused before it is
+    // not the process asked for.
+    if process_start_token(pid) != Some(start_token) {
+        on_exit();
+        return Ok(());
+    }
+    crate::thread_spawn::spawn_named("herdr-process-exit", move || {
+        let mut poll = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let exited = loop {
+            let ready = unsafe { libc::poll(&mut poll, 1, -1) };
+            if ready > 0 {
+                break true;
+            }
+            if ready < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                tracing::warn!(
+                    pid,
+                    error = %std::io::Error::last_os_error(),
+                    "cannot wait for the process's exit"
+                );
+                break false;
+            }
+        };
+        drop(pidfd);
+        if exited {
+            on_exit();
+        }
+    })?;
+    Ok(())
+}
+
 /// Process group of `pid` while that same process, matched by its start
 /// token, is alive in the terminal session of the pane shell `shell_pid`.
 /// A stopped or backgrounded job still counts.

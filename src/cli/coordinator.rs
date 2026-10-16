@@ -2,28 +2,44 @@
 //! active coordinator per repository).
 
 use crate::api::schema::{
-    CoordinatorAckParams, CoordinatorEndParams, CoordinatorHandoffAbortParams,
-    CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams, CoordinatorReadyParams,
-    CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
+    CoordinatorAckParams, CoordinatorAcquireParams, CoordinatorEndParams,
+    CoordinatorHandoffAbortParams, CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams,
+    CoordinatorReadyParams, CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
 };
 
 use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
-  herdr coordinator start [--repo DIR]
+  herdr coordinator start [--repo DIR] [--token]
       Claim the repository's coordination for this pane ($HERDR_PANE_ID):
-      refused (coordinator_active) while another pane coordinates it. DIR is
-      a directory in the repository; this pane's directory by default.
-      Setting a tab's role to coordinator does the same. The repository
-      rooted at the home directory (dotfiles) is claimed only explicitly,
-      with --repo ~: a pane's directory there is never a claim. When it
-      keeps its git directory outside HOME, this asks git in HOME for it
-      (as your shell's git finds it) and the server records it.
+      refused (coordinator_active, naming the holder) while another pane or
+      process holds it. DIR is a directory in the repository; this pane's
+      directory by default. Setting a tab's role to coordinator does the
+      same. The repository rooted at the home directory (dotfiles) is
+      claimed only explicitly, with --repo ~: a pane's directory there is
+      never a claim. When it keeps its git directory outside HOME, this asks
+      git in HOME for it (as your shell's git finds it) and the server
+      records it. With --token the reply is coordinator.acquire's for this
+      pane: the tenure and a new token, which replaces any earlier one;
+      herdr worker run needs it while the tenure is active.
+  herdr coordinator acquire [--repo DIR] [--pid PID]
+      Acquire the repository's tenure for a process outside herdr's panes
+      (an orchestrator started from a shell): PID, else the process that ran
+      this command (its parent). Prints the tenure and its token, the only
+      place the token is shown; herdr keeps its sha256. Refused
+      (coordinator_active, naming the holder) while another pane or process
+      holds the repository. The same process acquiring again gets the same
+      tenure with a new token, which replaces the earlier one. The tenure
+      ends when that process exits (herdr watches its exit event; a server
+      that starts, also after an update, ends it when the process is gone),
+      or with herdr coordinator end --id. DIR is a directory in the
+      repository; the current directory by default.
   herdr coordinator end [--reason TEXT] [--id COORDINATOR_ID]
       End this pane's tenure, or the one named.
   herdr coordinator status [--repo DIR]
       List the active tenures, of one repository with --repo, each with
-      the TODO item its run works on.
+      the TODO item its run works on and its holder (holder_kind pane,
+      process with holder_pid, or headless); never a token.
   herdr coordinator handoff --to PANE [--id COORDINATOR_ID]
       Hand this pane's tenure (or the one named) to PANE: it ends
       handed_off and the next tenure, one epoch on, starts there with its
@@ -67,7 +83,23 @@ pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
         }
     };
     let id = format!("cli:coordinator:{}", args[0]);
-    super::print_response(&super::send_request(&Request { id, method })?)
+    let token_for_pane = match &method {
+        Method::CoordinatorStart(params) if args.iter().any(|arg| arg == "--token") => {
+            params.pane_id.clone()
+        }
+        _ => None,
+    };
+    let response = super::send_request(&Request { id, method })?;
+    let Some(pane_id) = token_for_pane.filter(|_| response.get("error").is_none()) else {
+        return super::print_response(&response);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:coordinator:acquire".into(),
+        method: Method::CoordinatorAcquire(CoordinatorAcquireParams {
+            pane_id: Some(pane_id),
+            ..CoordinatorAcquireParams::default()
+        }),
+    })?)
 }
 
 fn absolute(dir: Option<String>) -> Result<Option<String>, String> {
@@ -117,9 +149,10 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let rest = &args[1..];
     Ok(Some(match subcommand {
         "start" => {
-            let (repo, rest) = take_string_option(rest, "--repo")?;
+            let (repo, mut rest) = take_string_option(rest, "--repo")?;
+            rest.retain(|arg| arg != "--token");
             if !rest.is_empty() {
-                return Err("start takes only --repo".into());
+                return Err("start takes only --repo and --token".into());
             }
             let pane_id = super::target::caller_pane_id()
                 .ok_or("coordinator start runs in a herdr pane: HERDR_PANE_ID is not set")?;
@@ -128,6 +161,35 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             Method::CoordinatorStart(CoordinatorStartParams {
                 repo,
                 pane_id: Some(pane_id),
+                home_git_dir,
+            })
+        }
+        "acquire" => {
+            let (repo, rest) = take_string_option(rest, "--repo")?;
+            let (pid, rest) = take_string_option(&rest, "--pid")?;
+            if !rest.is_empty() {
+                return Err("acquire takes only --repo and --pid".into());
+            }
+            let holder_pid = match pid {
+                Some(pid) => pid
+                    .parse::<u32>()
+                    .map_err(|_| format!("--pid must be a process id, not {pid}"))?,
+                None => crate::platform::process_parent(std::process::id())
+                    .ok_or("acquire cannot find the process that ran it here: pass --pid")?,
+            };
+            let repo = match repo {
+                Some(repo) => repo,
+                None => std::env::current_dir()
+                    .map_err(|error| format!("the current directory: {error}"))?
+                    .display()
+                    .to_string(),
+            };
+            let repo = absolute(Some(repo))?;
+            let home_git_dir = repo.as_deref().and_then(home_git_dir);
+            Method::CoordinatorAcquire(CoordinatorAcquireParams {
+                repo,
+                holder_pid: Some(holder_pid),
+                pane_id: None,
                 home_git_dir,
             })
         }
@@ -272,5 +334,31 @@ mod tests {
         assert!(parse(&args(&["ack", "--epoch", "x", "--snapshot", "ab"])).is_err());
         assert!(parse(&args(&["ready"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
+    }
+
+    #[test]
+    fn acquire_names_its_holder_process_and_repository() {
+        let Ok(Some(Method::CoordinatorAcquire(params))) =
+            parse(&args(&["acquire", "--repo", "/repo", "--pid", "4242"]))
+        else {
+            panic!("acquire did not parse");
+        };
+        assert_eq!(params.holder_pid, Some(4242));
+        assert_eq!(params.repo.as_deref(), Some("/repo"));
+        assert_eq!(params.pane_id, None);
+        // Without --pid the holder is the process that ran the command,
+        // where the platform can name it.
+        match (
+            parse(&args(&["acquire", "--repo", "/repo"])),
+            crate::platform::process_parent(std::process::id()),
+        ) {
+            (Ok(Some(Method::CoordinatorAcquire(params))), Some(parent)) => {
+                assert_eq!(params.holder_pid, Some(parent));
+            }
+            (Err(message), None) => assert!(message.contains("--pid"), "{message}"),
+            _ => panic!("acquire without --pid parsed against the platform's parent"),
+        }
+        assert!(parse(&args(&["acquire", "--pid", "x"])).is_err());
+        assert!(parse(&args(&["acquire", "--extra"])).is_err());
     }
 }

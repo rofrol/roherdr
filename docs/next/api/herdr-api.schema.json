@@ -2313,6 +2313,42 @@
           ],
           "type": "object"
         },
+        "CoordinatorAcquireParams": {
+          "description": "Acquires a repository's coordination tenure as its lease, with a token\n(`coordinator.acquire`). Exactly one holder: `holder_pid`, a process\noutside herdr's panes (an orchestrator started from a shell), which\nstarts a tenure of `repo` held by that process, refused\n(`coordinator_active`, naming the holder) while another one holds the\nrepository and released on that process's exit; or `pane_id`, whose\ntenure (claimed with `coordinator.start`) gets a new token. Every acquire\nissues a new token and the earlier one stops being accepted.",
+          "properties": {
+            "holder_pid": {
+              "description": "The process that holds the tenure. The server records it with its\nstart time, so a later process reusing the pid is not the holder.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "home_git_dir": {
+              "description": "With `repo` the home directory, as in `coordinator.start`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The pane whose active tenure gets a new token.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "A directory in the repository; required with `holder_pid`, refused\nwith `pane_id` (the pane's tenure names its repository).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "CoordinatorAllowlistRefusalParams": {
           "description": "Asks what to do with one tool call the coordinator allowlist refused in\na coordinator tab. The server answers with `[coordinator] allowlist`;\nin shadow mode it also records the call as a would-deny.",
           "properties": {
@@ -7449,6 +7485,13 @@
               "description": "The worker's one user message.",
               "type": "string"
             },
+            "tenure_token": {
+              "description": "The token of the repository's coordination tenure\n(`coordinator.acquire`). While the repository of `cwd` has an active\ntenure, a run without its current token, or with another one, is\nrefused as `tenure_token_refused` and nothing starts; with no active\ntenure it is not checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "workspace_id": {
               "description": "The space the worker is listed under.",
               "type": [
@@ -9395,6 +9438,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/CoordinatorStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Acquires a repository's coordination tenure as its lease and returns\nthe tenure's token: for a process outside herdr's panes\n(`holder_pid`), released on that process's exit, or a new token for\nthe tenure a pane claimed with `coordinator.start` (`pane_id`).",
+          "properties": {
+            "method": {
+              "const": "coordinator.acquire",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorAcquireParams"
             }
           },
           "required": [
@@ -12864,6 +12924,31 @@
             }
           ]
         },
+        "CoordinatorHolderKind": {
+          "description": "What holds a coordination tenure.",
+          "oneOf": [
+            {
+              "const": "pane",
+              "description": "A pane (`coordinator.start`, a tab's coordinator role).",
+              "type": "string"
+            },
+            {
+              "const": "process",
+              "description": "A process outside herdr's panes (`coordinator.acquire` with\n`holder_pid`), named by `holder_pid`.",
+              "type": "string"
+            },
+            {
+              "const": "headless",
+              "description": "A headless item coordinator (`todo.next`).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A holder this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "CoordinatorInfo": {
           "description": "One coordination tenure: who coordinated a repository's TODO, from when\nto when. Its id is its own, never a pane's or an agent session's: those\nare its bindings.",
           "properties": {
@@ -12872,7 +12957,7 @@
               "type": "string"
             },
             "end_reason": {
-              "description": "Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's\nrole was cleared), `orphaned` (its pane closed or its agent exited,\nalso when found at server start), `handed_off`\n(`coordinator.handoff`), or the reason `coordinator.end` was given.",
+              "description": "Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's\nrole was cleared), `orphaned` (its pane closed, its agent exited or\nits holder process exited, also when found at server start),\n`handed_off`\n(`coordinator.handoff`), or the reason `coordinator.end` was given.",
               "type": [
                 "string",
                 "null"
@@ -12913,6 +12998,26 @@
             "headless": {
               "description": "A headless item coordinator's tenure (`todo.next`): no pane binds it,\nit runs as worker `worker_id`.",
               "type": "boolean"
+            },
+            "holder_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorHolderKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What holds the tenure. Never its token, which only\n`coordinator.acquire`'s reply carries."
+            },
+            "holder_pid": {
+              "description": "The holder process's pid, for a process holder.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "item": {
               "description": "The TODO item it works on: the item of the `todo.run` it claimed,\nuntil that run ends.",
@@ -17108,6 +17213,27 @@
               "required": [
                 "type",
                 "coordinator"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.acquire`'s reply: the tenure and its token, which only\nthis reply carries (the server keeps its sha256, never the token).\n`worker.run` needs it while the tenure is active; an acquire by the\nsame holder replaces it.",
+              "properties": {
+                "coordinator": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                },
+                "token": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "coordinator_acquired",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "coordinator",
+                "token"
               ],
               "type": "object"
             },

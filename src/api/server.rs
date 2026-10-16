@@ -1354,6 +1354,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::HistoryItem(_) => "history.item",
         Method::HistoryReconcile(_) => "history.reconcile",
         Method::CoordinatorStart(_) => "coordinator.start",
+        Method::CoordinatorAcquire(_) => "coordinator.acquire",
         Method::CoordinatorEnd(_) => "coordinator.end",
         Method::CoordinatorStatus(_) => "coordinator.status",
         Method::CoordinatorHandoff(_) => "coordinator.handoff",

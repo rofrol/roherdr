@@ -211,6 +211,14 @@ pub enum ResponseResult {
     Coordinator {
         coordinator: CoordinatorInfo,
     },
+    /// `coordinator.acquire`'s reply: the tenure and its token, which only
+    /// this reply carries (the server keeps its sha256, never the token).
+    /// `worker.run` needs it while the tenure is active; an acquire by the
+    /// same holder replaces it.
+    CoordinatorAcquired {
+        coordinator: CoordinatorInfo,
+        token: String,
+    },
     /// `coordinator.ack`'s reply: the tenure the successor holds now, and
     /// whether the old coordinator's pane (and with it its agent session)
     /// was closed.

@@ -260,6 +260,63 @@ fn process_group_alive_platform(leader_pid: u32) -> bool {
     !session_processes(leader_pid).is_empty()
 }
 
+/// Calls `on_exit` once, on a thread of its own, when the process `pid` that
+/// started at `start_token` ([`process_start_token`]) exits; at once (on the
+/// caller's thread) when it is gone already or `pid` names a later process
+/// now. The identity is checked after the watch is in place, so an exit
+/// between the two is never missed. The wake is the kernel's exit event
+/// (kqueue `NOTE_EXIT` on macOS, a pidfd on Linux, the process handle on
+/// Windows), never a poll. `Unsupported` where the platform has none: a
+/// caller then must not rely on an exit event.
+pub(crate) fn watch_process_exit(
+    pid: u32,
+    start_token: u64,
+    on_exit: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos::watch_process_exit(pid, start_token, on_exit);
+    #[cfg(target_os = "linux")]
+    return linux::watch_process_exit(pid, start_token, on_exit);
+    #[cfg(target_os = "windows")]
+    return windows::watch_process_exit(pid, start_token, on_exit);
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (pid, start_token, on_exit);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "watching a process's exit is supported on Linux, macOS and Windows only",
+        ))
+    }
+}
+
+/// 32 bytes from the operating system's secure random source, as 64
+/// lowercase hex characters: a secret nobody can guess, such as a tenure's
+/// token.
+pub(crate) fn random_hex_token() -> std::io::Result<String> {
+    let mut bytes = [0u8; 32];
+    fill_secure_random(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg(unix)]
+fn fill_secure_random(bytes: &mut [u8]) -> std::io::Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+}
+
+#[cfg(windows)]
+fn fill_secure_random(bytes: &mut [u8]) -> std::io::Result<()> {
+    windows::fill_secure_random(bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn fill_secure_random(_bytes: &mut [u8]) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no secure random source on this platform",
+    ))
+}
+
 /// The bytes an unprivileged process may still write on the file system
 /// that holds `path`; `None` when the platform cannot say.
 pub(crate) fn available_disk_bytes(path: &std::path::Path) -> Option<u64> {
@@ -1108,6 +1165,64 @@ fn child_exit_classification_only_checkpoints_interruptions() {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_watched_process_reports_its_exit_once_and_a_gone_one_at_once() {
+        use std::sync::mpsc;
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cat");
+        let pid = child.id();
+        let token = process_start_token(pid).expect("start token");
+        let (exited, exits) = mpsc::channel();
+        let sender = exited.clone();
+        watch_process_exit(pid, token, Box::new(move || sender.send("cat").unwrap()))
+            .expect("watch");
+        // It runs: nothing reported yet.
+        assert!(exits.try_recv().is_err());
+        // Closing its input ends it; the watch reports that exit.
+        drop(child.stdin.take());
+        assert_eq!(exits.recv().unwrap(), "cat");
+        child.wait().expect("reap");
+
+        // Gone (reaped) before the watch: reported on the caller's thread.
+        let sender = exited.clone();
+        watch_process_exit(pid, token, Box::new(move || sender.send("gone").unwrap()))
+            .expect("watch a gone process");
+        assert_eq!(exits.try_recv(), Ok("gone"));
+
+        // A live process whose start token is not the one asked for is not
+        // the process asked for: reported at once.
+        let mut other = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let other_token = process_start_token(other.id()).expect("start token");
+        let sender = exited.clone();
+        watch_process_exit(
+            other.id(),
+            other_token.wrapping_add(1),
+            Box::new(move || sender.send("reused").unwrap()),
+        )
+        .expect("watch a reused pid");
+        assert_eq!(exits.try_recv(), Ok("reused"));
+        drop(other.stdin.take());
+        other.wait().expect("reap");
+        assert!(exits.try_recv().is_err());
+    }
+
+    #[test]
+    fn random_tokens_are_64_hex_characters_and_differ() {
+        let first = random_hex_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(first, random_hex_token().unwrap());
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]

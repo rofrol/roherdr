@@ -120,6 +120,7 @@ impl WorkerSupervisor {
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
+                holder_watches: Mutex::new(BTreeSet::new()),
                 handed_off: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(unix)]
                 broker,

@@ -34,6 +34,7 @@ const USAGE: &str =
     become the worker's owner.
   herdr worker run [--cwd DIR] [--agent claude|pi] [--model MODEL] [--name TASK]
                    [--workspace ID] [--item ID] [--ignore-usage] [--prompt-file FILE]
+                   [--tenure-token TOKEN]
     A gated, blocking headless run for an orchestrator outside herdr's TODO
     driver (todo run). The server admits it through the same usage gate as
     todo run, for the repository of DIR (default: the current directory) and
@@ -44,7 +45,12 @@ const USAGE: &str =
     only to DIR, its temp dir and caches) but in DIR itself, a git worktree
     the caller owns outside herdr's folder slots (refused by the slot's path,
     whether or not a worker ran there), with no branch, verify, landing or
-    TODO edit. It sends the
+    TODO edit. While the repository has an active coordination tenure, the
+    run needs that tenure's current token (from herdr coordinator acquire,
+    or coordinator start --token in its pane): TOKEN, else
+    $HERDR_TENURE_TOKEN; without it, or with another or a replaced one, it
+    is refused (tenure_token_refused) and nothing starts. With no active
+    tenure no token is checked. It sends the
     prompt (FILE's text, else standard input) as the one turn, waits for that
     turn's end on the worker's own events, stops the worker and waits for its
     exit, then prints one JSON object: worker_id, outcome (ended, failed,
@@ -278,6 +284,10 @@ fn gated_run_exit(response: &serde_json::Value) -> i32 {
     }
 }
 
+/// Where `worker run` finds the tenure token without `--tenure-token`, so
+/// it need not show in the process list.
+const TENURE_TOKEN_ENV: &str = "HERDR_TENURE_TOKEN";
+
 /// `worker run`'s options; the prompt from `--prompt-file`, else from
 /// `stdin`.
 fn parse_gated_run(
@@ -291,6 +301,12 @@ fn parse_gated_run(
     let (workspace_id, rest) = take_string_option(&rest, "--workspace")?;
     let (item, rest) = take_string_option(&rest, "--item")?;
     let (prompt_file, rest) = take_string_option(&rest, "--prompt-file")?;
+    let (tenure_token, rest) = take_string_option(&rest, "--tenure-token")?;
+    let tenure_token = tenure_token.or_else(|| {
+        std::env::var(TENURE_TOKEN_ENV)
+            .ok()
+            .filter(|token| !token.is_empty())
+    });
     let ignore_usage = match rest.as_slice() {
         [] => false,
         [flag] if flag == "--ignore-usage" => true,
@@ -335,6 +351,7 @@ fn parse_gated_run(
         workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
         item,
         ignore_usage,
+        tenure_token,
     })
 }
 

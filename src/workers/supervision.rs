@@ -3315,6 +3315,8 @@ mod tests {
             session_id: None,
             headless: false,
             worker_id: None,
+            holder_kind: None,
+            holder_pid: None,
             handoff: None,
             handoff_persist_error: None,
         }

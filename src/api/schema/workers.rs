@@ -115,6 +115,13 @@ pub struct WorkerGatedRunParams {
     /// journal.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ignore_usage: bool,
+    /// The token of the repository's coordination tenure
+    /// (`coordinator.acquire`). While the repository of `cwd` has an active
+    /// tenure, a run without its current token, or with another one, is
+    /// refused as `tenure_token_refused` and nothing starts; with no active
+    /// tenure it is not checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenure_token: Option<String>,
 }
 
 /// How a `worker.run` ended.

@@ -260,6 +260,12 @@ pub enum Method {
     /// while another one of the repository is active.
     #[serde(rename = "coordinator.start")]
     CoordinatorStart(CoordinatorStartParams),
+    /// Acquires a repository's coordination tenure as its lease and returns
+    /// the tenure's token: for a process outside herdr's panes
+    /// (`holder_pid`), released on that process's exit, or a new token for
+    /// the tenure a pane claimed with `coordinator.start` (`pane_id`).
+    #[serde(rename = "coordinator.acquire")]
+    CoordinatorAcquire(CoordinatorAcquireParams),
     /// Ends a coordination tenure with a reason.
     #[serde(rename = "coordinator.end")]
     CoordinatorEnd(CoordinatorEndParams),

@@ -7,11 +7,11 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    CoordinatorAckParams, CoordinatorAllowlistRefusalParams, CoordinatorEndParams,
-    CoordinatorHandoffAbortParams, CoordinatorHandoffParams, CoordinatorHandoffSuccessorParams,
-    CoordinatorInfo, CoordinatorReadyParams, CoordinatorRecordOverrideParams,
-    CoordinatorStartParams, CoordinatorStatusParams, NotificationShowParams, NotificationShowSound,
-    ResponseResult, TabRole,
+    CoordinatorAckParams, CoordinatorAcquireParams, CoordinatorAllowlistRefusalParams,
+    CoordinatorEndParams, CoordinatorHandoffAbortParams, CoordinatorHandoffParams,
+    CoordinatorHandoffSuccessorParams, CoordinatorInfo, CoordinatorReadyParams,
+    CoordinatorRecordOverrideParams, CoordinatorStartParams, CoordinatorStatusParams,
+    NotificationShowParams, NotificationShowSound, ResponseResult, TabRole,
 };
 use crate::app::App;
 use crate::workers::{WorkerError, WorkerSupervisor};
@@ -89,6 +89,73 @@ impl App {
         self.sync_coordinator_roles();
         match started {
             Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `coordinator.acquire`: the tenure as the repository's lease, with a
+    /// token. For `holder_pid` a tenure of `repo` held by that process
+    /// ([`WorkerSupervisor::coordinator_acquire_process`]); for `pane_id` a
+    /// new token for the tenure the pane claimed
+    /// ([`WorkerSupervisor::coordinator_token_for_pane`]). Neither changes a
+    /// tab's coordinator role: a process holds no pane, and a pane's tenure
+    /// exists already.
+    pub(super) fn handle_coordinator_acquire(
+        &mut self,
+        id: String,
+        params: CoordinatorAcquireParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        let acquired = match (&params.holder_pid, &params.pane_id) {
+            (Some(pid), None) => {
+                let Some(repo) = params.repo.as_deref() else {
+                    return encode_error(
+                        id,
+                        "invalid_request",
+                        "coordinator.acquire with holder_pid needs repo, a directory in the \
+                         repository",
+                    );
+                };
+                match params.home_git_dir.as_deref() {
+                    Some(git_dir) => register_home(repo, git_dir),
+                    None => Ok(()),
+                }
+                .and_then(|()| repository(repo))
+                .and_then(|repo| coordinators.coordinator_acquire_process(&repo, *pid))
+            }
+            (None, Some(pane)) => {
+                if params.repo.is_some() || params.home_git_dir.is_some() {
+                    return encode_error(
+                        id,
+                        "invalid_request",
+                        "coordinator.acquire with pane_id takes no repo: the pane's tenure \
+                         names its repository",
+                    );
+                }
+                if self.parse_pane_id(pane).is_none() {
+                    return encode_error(id, "pane_not_found", format!("pane not found: {pane}"));
+                }
+                let pane = self.canonical_pane_id(pane);
+                // A frozen or superseded session gets no token.
+                coordinators
+                    .fence_pane_session(Some(&pane), self.pane_agent_session(&pane).as_deref())
+                    .and_then(|()| coordinators.coordinator_token_for_pane(&pane))
+            }
+            _ => {
+                return encode_error(
+                    id,
+                    "invalid_request",
+                    "coordinator.acquire needs exactly one of holder_pid and pane_id",
+                )
+            }
+        };
+        match acquired {
+            Ok((coordinator, token)) => encode_success(
+                id,
+                ResponseResult::CoordinatorAcquired { coordinator, token },
+            ),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

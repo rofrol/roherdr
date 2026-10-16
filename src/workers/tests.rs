@@ -6494,6 +6494,7 @@ mod todo_runs {
                     repo: &repo,
                     pane_id: None,
                     session_id: None,
+                    holder: None,
                 };
                 tx.coordinator_started(&tenure, 1)
             })
@@ -8211,6 +8212,60 @@ mod todo_runs {
             .obligations(Some("p-coordinator"))
             .is_empty());
         assert!(run_events(&fixture, &run.run_id, "run_owner_taken").is_empty());
+    }
+
+    #[test]
+    fn a_run_whose_tenure_moved_to_another_holder_stops_before_its_cherry_pick() {
+        let fixture = todo_repo("todo-tenure-moved");
+        let repo = fixture.repo.display().to_string();
+        let tenure = fixture
+            .supervisor
+            .coordinator_start(&repo, "p-coordinator", Some("s-coordinator"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let master = git_in(&fixture.repo, &["rev-parse", "master"]);
+
+        // While the run waits, its coordinator loses the tenure and another
+        // pane holds the repository now.
+        fixture
+            .supervisor
+            .coordinator_end(
+                &tenure.coordinator_id,
+                crate::workers::coordinators::ENDED,
+                None,
+            )
+            .unwrap();
+        let other = fixture
+            .supervisor
+            .coordinator_start(&repo, "p-other", None)
+            .unwrap();
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (blocked, info) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        assert_eq!(info.status, TodoRunStatus::Blocked);
+        let error = blocked.error.unwrap_or_default();
+        assert!(error.contains("stopped before its cherry-pick"), "{error}");
+        assert!(
+            error.contains(&tenure.coordinator_id)
+                && error.contains(&other.coordinator_id)
+                && error.contains("p-other"),
+            "{error}"
+        );
+        // Nothing landed.
+        assert_eq!(git_in(&fixture.repo, &["rev-parse", "master"]), master);
+        assert!(run_events(&fixture, &run.run_id, "run_picked").is_empty());
     }
 
     #[test]

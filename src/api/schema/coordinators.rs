@@ -20,6 +20,48 @@ pub struct CoordinatorStartParams {
     pub home_git_dir: Option<String>,
 }
 
+/// Acquires a repository's coordination tenure as its lease, with a token
+/// (`coordinator.acquire`). Exactly one holder: `holder_pid`, a process
+/// outside herdr's panes (an orchestrator started from a shell), which
+/// starts a tenure of `repo` held by that process, refused
+/// (`coordinator_active`, naming the holder) while another one holds the
+/// repository and released on that process's exit; or `pane_id`, whose
+/// tenure (claimed with `coordinator.start`) gets a new token. Every acquire
+/// issues a new token and the earlier one stops being accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorAcquireParams {
+    /// A directory in the repository; required with `holder_pid`, refused
+    /// with `pane_id` (the pane's tenure names its repository).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// The process that holds the tenure. The server records it with its
+    /// start time, so a later process reusing the pid is not the holder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_pid: Option<u32>,
+    /// The pane whose active tenure gets a new token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// With `repo` the home directory, as in `coordinator.start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_git_dir: Option<String>,
+}
+
+/// What holds a coordination tenure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorHolderKind {
+    /// A pane (`coordinator.start`, a tab's coordinator role).
+    Pane,
+    /// A process outside herdr's panes (`coordinator.acquire` with
+    /// `holder_pid`), named by `holder_pid`.
+    Process,
+    /// A headless item coordinator (`todo.next`).
+    Headless,
+    /// A holder this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 /// Ends a tenure: the one named, else the one bound to the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CoordinatorEndParams {
@@ -149,8 +191,9 @@ pub struct CoordinatorInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_ms: Option<u64>,
     /// Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's
-    /// role was cleared), `orphaned` (its pane closed or its agent exited,
-    /// also when found at server start), `handed_off`
+    /// role was cleared), `orphaned` (its pane closed, its agent exited or
+    /// its holder process exited, also when found at server start),
+    /// `handed_off`
     /// (`coordinator.handoff`), or the reason `coordinator.end` was given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_reason: Option<String>,
@@ -167,6 +210,13 @@ pub struct CoordinatorInfo {
     pub headless: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+    /// What holds the tenure. Never its token, which only
+    /// `coordinator.acquire`'s reply carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_kind: Option<CoordinatorHolderKind>,
+    /// The holder process's pid, for a process holder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_pid: Option<u32>,
     /// The tenure's pending self-service handoff: while it is there the
     /// tenure is frozen.
     #[serde(default, skip_serializing_if = "Option::is_none")]

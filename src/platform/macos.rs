@@ -1049,6 +1049,72 @@ pub fn process_start_token(pid: u32) -> Option<u64> {
     process_bsdinfo(pid).map(|info| bsdinfo_start_token(&info))
 }
 
+/// [`super::watch_process_exit`] on macOS: a kqueue `EVFILT_PROC`
+/// `NOTE_EXIT` watch, which also works for a process that is not a child.
+/// A process gone (or a zombie) when the watch is added fails it with
+/// `ESRCH`.
+pub(super) fn watch_process_exit(
+    pid: u32,
+    start_token: u64,
+    on_exit: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<()> {
+    let kq = unsafe { libc::kqueue() };
+    if kq < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let change = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    let added = unsafe { libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+    if added < 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(kq) };
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            on_exit();
+            return Ok(());
+        }
+        return Err(error);
+    }
+    // Checked once the watch is in place: a pid reused before it is not
+    // the process asked for.
+    if process_start_token(pid) != Some(start_token) {
+        unsafe { libc::close(kq) };
+        on_exit();
+        return Ok(());
+    }
+    crate::thread_spawn::spawn_named("herdr-process-exit", move || {
+        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+        let exited = loop {
+            let count =
+                unsafe { libc::kevent(kq, std::ptr::null(), 0, &mut event, 1, std::ptr::null()) };
+            if count > 0 {
+                break true;
+            }
+            if count < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                tracing::warn!(
+                    pid,
+                    error = %std::io::Error::last_os_error(),
+                    "cannot wait for the process's exit"
+                );
+                break false;
+            }
+        };
+        unsafe { libc::close(kq) };
+        if exited {
+            on_exit();
+        }
+    })
+    .inspect_err(|_| {
+        unsafe { libc::close(kq) };
+    })?;
+    Ok(())
+}
+
 /// Process group of `pid` while that same process, matched by its start
 /// token, is alive on the terminal of the pane shell `shell_pid`. A stopped or
 /// backgrounded job still counts.
