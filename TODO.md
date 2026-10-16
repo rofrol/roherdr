@@ -3985,6 +3985,15 @@ Items agents add. Not approved until the user moves them up.
   never compiled: add a Linux compile check. Touches the trust boundary,
   so it waits for approval.
 
+- [ ] A retry after an interrupted attempt is blocked by the slot's leftover [t-ga3lubqp]
+  changes (found by the coordinator 2026-10-16, run r-t7uheqex): an
+  attempt interrupted before it committed leaves uncommitted changes in the
+  folder slot, and the retry's start ends `blocked` with only `abort`
+  ("folder slot has changes left by an earlier worker"); the coordinator
+  saved the diff, reset the slot by hand and started a new run. Let
+  `retry` (or a resume action) record the leftover diff with the attempt
+  and reset the slot, so a known-bad attempt can be replaced in one step.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
