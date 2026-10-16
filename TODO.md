@@ -41,6 +41,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   server checks it at each start. Afterwards roagent's `todo lock` becomes a
   fail-closed proxy to it (a roagent item) and the supervisor takes this
   tenure (agentic-workflow-bend-claude's t-tenurrun).
+  Decided with the models 2026-10-16 (the user: "decide with the models";
+  round `20261016-122723-d650`, sol, MiMo, DeepSeek, Argon, Wonder): the
+  roagent lease on herdr stays held until this item lands (all five), as
+  a temporary guard only; no new roagent coordinator starts. The token is
+  checked at every consequential step, not only at a start: a `worker run`
+  start, and the merge (cherry-pick), install and push of a run, so a
+  holder that lost the tenure mid-run cannot land (sol). Ownership is
+  reconciled from durable state at startup, handoff and the holder's turn
+  end, never on a timer. roagent's proxy is compatibility containment for
+  skills that still call `roagent todo lock` until t-kl75fxva, not a
+  dependency of the migration; roagent gets no other new code (sol, Argon,
+  Wonder).
 
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
@@ -50,6 +62,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   skills can drop roagent; `roagent context` goes to a skill script, not
   herdr. The rules and skills change with roagent's removal in the
   dotfiles' own TODO.
+  Kept after round `20261016-122723-d650` (Argon proposed dropping it):
+  per-session handoff notes serve every agent session, not only the TODO
+  driver; `todo start` is reviewed against the supervisor's needs when
+  this item starts, since the driver it opens a coordinator for is being
+  retired. Order 1 -> 2 -> 3 stands (four of five).
 
 - [ ] Plan the retirement of herdr's TODO driver (the user, 2026-10-16, [t-54d2offk]
   d-ytigfuq7: "also retire herdr's TODO driver: its queues move to this
@@ -59,6 +76,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   agents through `herdr worker run`. First a decision record with its own
   consult round, before any code; starts only after the supervisor runs
   real repositories through `herdr worker run`.
+  Decided with the models 2026-10-16 (round `20261016-122723-d650`): the
+  decision record comes forward now, while the workers build t-kxejzkf7
+  and t-xhaho72w (docs only, no double-driver window; sol, MiMo, Wonder);
+  the retirement itself stays behind the conditions below. The record
+  inventories the driver's contract (usage gate, one folder slot, verify,
+  cherry-pick, install, push, handoff) as the supervisor's acceptance
+  tests (Wonder). Before herdr itself moves: t-xhaho72w landed with a
+  token-mismatched `worker run` and a stale holder's landing refused; the
+  supervisor drove at least two real repositories end to end, including a
+  holder killed mid-run with a takeover and no second driver, and a
+  handoff whose notification was lost recovered from durable state (MiMo,
+  DeepSeek); herdr's TODO dispatch stopped and its active worker accounted
+  for, then ownership moved atomically. The supervisor's first repository
+  is a small leaf repository with a cheap verify and a trivial revert, not
+  herdr and not the supervisor itself (MiMo, DeepSeek, Wonder; sol and
+  Argon preferred the supervisor's own repository); its coordinator
+  chooses which. Herdr moves last.
 
 - [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
   user's question 2026-10-12, "loss of memory between items and shallower
