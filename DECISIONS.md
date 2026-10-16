@@ -1570,3 +1570,15 @@ requires no queue token), the loser gets `RunActive` and reports `Idle`.
 A latch between the token read and the start
 (`runs::queue::hold_next_start`) forces the interleaving in the regression
 test, which failed on the unfixed code.
+
+## A child's stdin is held until it is reaped in the lock test (t-5p6nblgy, 2026-10-16)
+
+Found when `just check` in the lock's install failed on
+`a_killed_holder_frees_the_exclusive_lock_for_the_next_start`. Cause (run
+r-jyq6rby3): `std::process::Child::wait` closes the child's stdin before it
+waits, so between `kill()` and the signal's delivery the holder saw the end
+of its stdin and exited 0 (2 to 6 of 40 runs). The test now takes the
+child's stdin and keeps it until the status is collected, asserts the
+status names SIGKILL, and the holder exits 2 on an early end of stdin. The
+other tests that start the test binary as a child were checked and do not
+depend on stdin staying open.

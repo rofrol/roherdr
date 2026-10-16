@@ -11,18 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The lock's killed-holder test sees its holder exit 0 before the kill [t-5p6nblgy]
-  (follow-up of t-h6dxi6wv, found by the coordinator 2026-10-16: `just
-  check` in r-j2phuths's install failed on
-  `platform::unix_common::tests::a_killed_holder_frees_the_exclusive_lock_for_the_next_start`,
-  src/platform/unix_common.rs:1027, `assertion failed:
-  !holder.wait().unwrap().success()`; the same test passed in the run's
-  verify). The holder (`hold_lock_process_entry`, the test binary
-  re-run with `--exact`) should block on its stdin until killed; find
-  what lets it exit 0 first, fix that cause, and make the test observe
-  the kill's effect without depending on timing. Blocks the install of
-  fd411e50e.
-
 - [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
   2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
   use of this workflow by roherdr now, narrowly"; consult round
