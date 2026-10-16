@@ -3313,6 +3313,19 @@ Items agents add. Not approved until the user moves them up.
   (d-wfiwe6sh), so global instructions do not change. Cost: a new
   herdr-job mode and its tests; no build of the herdr binary.
 
+- [ ] An install's live handoff ends the user's attached client (user, [t-h5fibuc4]
+  2026-10-16, reported through the herdr-tov coordinator: "as if install
+  was done and I have to reconnect"). The install of run `r-wz74mc3f`
+  (build 7bca17628) replaced `~/.cargo/bin/herdr` at 10:03; the server log
+  shows "handoff import ready panes=94" and "live handoff completed; old
+  server exiting" (08:03:46Z), so panes survived, but the client log shows
+  "herdr exiting" for client pid 24952 at 08:03:44Z and a new client
+  pid 27142 at 08:03:46Z, and the user had to reconnect. Expected: the
+  attached client follows the handoff to the new server (as `herdr todo
+  wait` does since 8eaec1f2) without the user doing anything. Find why the
+  client exits instead of reconnecting, and test it with a live handoff
+  while a client is attached.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
