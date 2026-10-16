@@ -3876,6 +3876,21 @@ Items agents add. Not approved until the user moves them up.
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
 
+- [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
+  t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
+  2026-10-16 a client that found no socket during a failed handoff
+  auto-started a second full server, which resumed every agent session a
+  second time. The live server holds an exclusive `flock` on a lock file
+  in the state directory for its whole life (opened `O_CLOEXEC`, never
+  unlinked or replaced, passed to the importer in a live handoff with the
+  other descriptors); any server start takes it first and refuses, naming
+  the holder, when it is held; a client that cannot connect while the
+  lock is held says a server is starting or handing off instead of
+  starting one. Every spawn path is checked not to inherit it (an agent
+  holding it after a crash would block every new server). Windows gets
+  the equivalent in its platform module. Touches server start, so it
+  waits for approval.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
