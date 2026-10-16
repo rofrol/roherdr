@@ -1667,3 +1667,23 @@ notes commits do not stop runs). `worker start` without `--base` and
 morning's origin-HEAD rule of t-oe3wrkvz. A fork branch needs its upstream
 on the fork too (`git branch -u R/B B` plus `branch.B.pushRemote R`):
 with `push.default simple`, `pushRemote` alone does not resolve.
+
+## The usage gate caps admitted workers per provider and latches per account (t-6mjgooqu, 2026-10-16)
+
+The user approved it ("I approve, but ask the models", d-tjavtlw6); design
+from round `20261016-133303-742a` (all five: a cap counted from durable
+rows, not a reservation, timer or per-measurement admission); the user
+chose a default of 2 per provider across repositories (d-t4luph5r) and a
+latch per provider account (d-wkjyhabm). Landed as run r-woxzlg7o: `[usage]
+gate_max_workers` (default 2, at least 1); every admission is a row in
+`usage_admissions`, written under the provider lock in the same transaction
+as the count and before the spawn; the count derives from those rows and
+the workers' recorded exits (a duplicate exit frees once; the same holder
+takes one slot); a refusal for the cap names the holders and keeps the
+`usage_gate` code (decision field `cap`); `--ignore-usage` passes the cap
+and is counted and recorded; a recorded worker exit wakes pending starts
+and queues; startup removes orphaned admissions; the high latch is one row
+per provider, migrated as closed when any repository's row was. Decided by
+the coordinator: headless item coordinators take no slot (counting them
+would let two coordinators hold both slots while their own runs wait).
+Open points are proposed separately.

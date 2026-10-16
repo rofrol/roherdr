@@ -118,39 +118,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   killed-holder test (t-5p6nblgy); fd411e50e is on master, installed and
   pushed by the next run.
 
-- [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
-  t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
-  the provider's usage and reserves nothing, so two starts read at the same
-  moment (two `worker run`s from an external orchestrator, or one and a
-  `todo run`) are both admitted. Serialize admission per provider and
-  count a start admitted but not yet measured, or record why the
-  measurement makes that unnecessary. Touches the gate, a safety
-  boundary, so it waits for approval.
-  Decided by the user 2026-10-16: approved ("I approve, but ask the
-  models"); the design comes from a consult round, recorded below.
-  Design decided with the models 2026-10-16 (round `20261016-133303-742a`,
-  all five for option b): a cap on concurrently admitted workers per
-  provider, counted across all repositories (the subscription is per
-  account), inside `usage_gate` and nowhere else. Under the provider lock:
-  read usage, apply the latch, count admitted workers, persist the new
-  admission against the run/attempt or `worker.run` id before the spawn
-  (admitted-but-not-yet-spawned counts too). The count is derived from
-  durable worker rows (admitted, not exited), never an incremented counter;
-  a slot is released by the worker's persisted exit event or a definitive
-  spawn failure, and reconciled at server startup against live processes
-  (a worker that survives a restart keeps its slot); no expiry. A
-  `worker.run` retried with the same id does not admit twice. A refusal
-  for the cap names the holding runs. Rejected: documenting the 90% margin
-  as the budget, headroom reservation by median cost (no cost-to-percent
-  conversion exists), one admission per measurement (a lagging poll).
-  Found too (Argon, Wonder; verified: `GateProvider::store_key` keys the
-  latch by repository): the high latch is per repository while the
-  subscription is per account. Open, for the user: the cap's default and
-  the latch's scope (d-... below).
-  Decided by the user 2026-10-16: the cap defaults to 2 per provider,
-  configurable (d-t4luph5r); the high latch is per provider account, not
-  per repository (d-wkjyhabm).
-
 - [ ] A `--next` run starts from the landing worktree, not the repository's [t-uw6inia5]
   main checkout (follow-up of t-a5uup6g5, report r-101 from bend-bootstrap,
   2026-10-16): `todo resume --action approve --close ... --next t-wxinrqzi`
