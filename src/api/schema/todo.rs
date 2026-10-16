@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::workers::{WorkerDecision, WorkerQuestion, WorkerVerification};
 
 /// Drives one TODO item from preflight to a cherry-pick onto the
-/// repository's `master` and on through the registered install, the TODO
+/// repository's default branch and on through the registered install, the TODO
 /// update, a fast-forward push to `origin` and the cleanup of its merged
 /// branches: a persisted, resumable run that starts a headless worker in the
 /// repository's folder slot, turns what needs the coordinator (a question
@@ -270,11 +270,11 @@ pub enum TodoLandingSource {
     Unknown,
 }
 
-/// A commit a run landed on `master`, with the run and attempt it came
+/// A commit a run landed on its target branch, with the run and attempt it came
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoLanding {
-    /// The commit on `master`, which carries the trailers.
+    /// The commit on the target branch, which carries the trailers.
     pub landed_sha: String,
     pub run_id: String,
     pub attempt: u32,
@@ -331,7 +331,7 @@ pub enum TodoAction {
     ApproveLanding,
     /// End the run as `aborted` where it stands, from any event it waits
     /// on or from `blocked`: its worker is stopped when it still runs, and
-    /// its branches and commits (also one already on `master`) stay as
+    /// its branches and commits (also one already on the target branch) stay as
     /// they are.
     Abort,
     #[serde(other)]
@@ -359,7 +359,7 @@ pub enum TodoStep {
     /// Appends the coordinator's note to the item, or closes it into
     /// `DECISIONS.md`, and commits that by path.
     Todo,
-    /// Pushes `master` to `origin`, only as a fast-forward.
+    /// Pushes the target branch to `origin`, only as a fast-forward.
     Push,
     /// Deletes the run's branches that are fully merged.
     Cleanup,
@@ -382,7 +382,7 @@ pub enum TodoRunStatus {
     /// attempts used up. Nothing more happens unless the coordinator
     /// aborts it.
     Blocked,
-    /// The commit is on `master`, installed, recorded and pushed (each as
+    /// The commit is on the target branch, installed, recorded and pushed (each as
     /// far as registered and approved), and the merged branches are gone.
     Done,
     /// The coordinator aborted it; its worker exited, its branches and
@@ -414,7 +414,7 @@ pub enum TodoEventKind {
     InstallFailed,
     /// The TODO edit or its commit failed: retry it, skip it or abort.
     TodoFailed,
-    /// `master` could not be pushed as a fast-forward (or the push failed):
+    /// The target branch could not be pushed as a fast-forward (or the push failed):
     /// retry it or abort. Never forced.
     PushFailed,
     /// The run is blocked; it takes `abort`.
@@ -454,10 +454,15 @@ pub struct TodoRunInfo {
     pub status: TodoRunStatus,
     /// 1 for the first worker; each retry adds one, at most 3.
     pub attempt: u32,
-    /// `master`'s commit when the run started, which each attempt's branch
-    /// starts from.
+    /// The target branch's commit when the run started, which each
+    /// attempt's branch starts from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// The branch the run lands on: the repository's default branch as the
+    /// preflight resolved it. Absent for a run recorded before runs stored
+    /// it, which targets `master`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -478,7 +483,7 @@ pub struct TodoRunInfo {
     /// Why it is blocked or was aborted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The commit the cherry-pick made on `master`, with the `Herdr-Item`
+    /// The commit the cherry-pick made on the target branch, with the `Herdr-Item`
     /// and `Herdr-Run` trailers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<String>,
@@ -486,10 +491,10 @@ pub struct TodoRunInfo {
     /// first line), or `installed` when none is registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_build: Option<String>,
-    /// The commit of the TODO update on `master`.
+    /// The commit of the TODO update on the target branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_commit: Option<String>,
-    /// The `master` commit `origin` has after the push.
+    /// The target branch's commit `origin` has after the push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pushed: Option<String>,
     /// Merged branches of the run the cleanup kept because a worktree has
@@ -665,7 +670,7 @@ pub struct TodoReview {
     /// With `approve`: the commit and base the approval is bound to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<TodoApproval>,
-    /// The commit on `master` the attempt landed as.
+    /// The commit on the target branch the attempt landed as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed_sha: Option<String>,
     /// The server's draft the run started with (`todo.draft_run`).
@@ -874,7 +879,7 @@ pub struct TodoQueueTarget {
 
 /// `todo.runnable_state`'s reply: whether a repository's TODO waits on its
 /// coordinator, from the driver's and the queue's state (`TODO.md` on
-/// `master`, never the checkout's file).
+/// the default branch, never the checkout's file).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoRunnableState {
     pub repo: String,
@@ -909,7 +914,7 @@ pub struct TodoRunnableState {
 }
 
 /// `todo.grant`: the user's grant of a repository's operation, for the
-/// exact definition `master` declares now in `.herdr/operations.toml`.
+/// exact definition the default branch declares now in `.herdr/operations.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoGrantParams {
     /// A directory in the repository.

@@ -71,7 +71,7 @@ built without a model (the item's text from TODO.md, the DECISIONS.md sections i
 item's run history with each earlier attempt's failure reason, the recent commits of the paths \
 the item names, and lines of code the item names in backticks, with what was cut), the \
 repository's code, test and commit rules from AGENTS.md, its registered checks \
-(.herdr/checks.toml), the last 20 commits of master, and the user's answers to your earlier \
+(.herdr/checks.toml), the last 20 commits of the target branch, and the user's answers to your earlier \
 questions. Decide one action and answer only \
 with JSON matching the schema:\n\
 - draft when the item can be done as it stands: `task` says what the worker must change and \
@@ -483,7 +483,11 @@ impl WorkerSupervisor {
     fn draft_input(&self, run: &Run, answers: &[Value], checks: &ChecksFile) -> Value {
         let repo = Path::new(&run.info.repo);
         let item_text = self.item_text_of(run);
-        let base = run.info.base.clone().unwrap_or_else(|| "master".into());
+        let base = run
+            .info
+            .base
+            .clone()
+            .unwrap_or_else(|| run.target_branch().to_owned());
         let at_base = |path: &str| git(repo, &["show", &format!("{base}:{path}")]).ok();
         let decisions = at_base(DECISIONS_FILE)
             .map(|text| decisions_named(&text, &item_text, &run.info.item))

@@ -6322,7 +6322,7 @@
             },
             {
               "const": "abort",
-              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on `master`) stay as\nthey are.",
+              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on the target branch) stay as\nthey are.",
               "type": "string"
             }
           ]
@@ -6407,7 +6407,7 @@
           "type": "object"
         },
         "TodoGrantParams": {
-          "description": "`todo.grant`: the user's grant of a repository's operation, for the\nexact definition `master` declares now in `.herdr/operations.toml`.",
+          "description": "`todo.grant`: the user's grant of a repository's operation, for the\nexact definition the default branch declares now in `.herdr/operations.toml`.",
           "properties": {
             "caller_pane_id": {
               "description": "The pane that sends this (the CLI sends its `HERDR_PANE_ID`): refused\nwith `coordinator_frozen` while its coordinator tenure is frozen for a\nhandoff, and for a pane whose tenure was handed over.",
@@ -6807,7 +6807,7 @@
           "type": "object"
         },
         "TodoRunParams": {
-          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
+          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's default branch and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
             "agent": {
               "anyOf": [
@@ -7598,7 +7598,7 @@
               "description": "The agent CLI the worker runs; Claude when absent."
             },
             "base": {
-              "description": "With `folder_slot`: what the branch starts from; `master` when absent.",
+              "description": "With `folder_slot`: what the branch starts from; the\nrepository's default branch when absent.",
               "type": [
                 "string",
                 "null"
@@ -13955,7 +13955,7 @@
               ]
             },
             "landed_sha": {
-              "description": "The commit the attempt landed on `master`.",
+              "description": "The commit the attempt landed on its target branch.",
               "type": [
                 "string",
                 "null"
@@ -19825,7 +19825,7 @@
             },
             {
               "const": "abort",
-              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on `master`) stay as\nthey are.",
+              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on the target branch) stay as\nthey are.",
               "type": "string"
             }
           ]
@@ -19988,7 +19988,7 @@
             },
             {
               "const": "push_failed",
-              "description": "`master` could not be pushed as a fast-forward (or the push failed):\nretry it or abort. Never forced.",
+              "description": "The target branch could not be pushed as a fast-forward (or the push failed):\nretry it or abort. Never forced.",
               "type": "string"
             },
             {
@@ -20055,7 +20055,7 @@
           "type": "object"
         },
         "TodoLanding": {
-          "description": "A commit a run landed on `master`, with the run and attempt it came\nfrom.",
+          "description": "A commit a run landed on its target branch, with the run and attempt it came\nfrom.",
           "properties": {
             "attempt": {
               "format": "uint32",
@@ -20066,7 +20066,7 @@
               "type": "string"
             },
             "landed_sha": {
-              "description": "The commit on `master`, which carries the trailers.",
+              "description": "The commit on the target branch, which carries the trailers.",
               "type": "string"
             },
             "run_id": {
@@ -20378,7 +20378,7 @@
               "type": "string"
             },
             "landed_sha": {
-              "description": "The commit on `master` the attempt landed as.",
+              "description": "The commit on the target branch the attempt landed as.",
               "type": [
                 "string",
                 "null"
@@ -20635,7 +20635,7 @@
               "type": "boolean"
             },
             "base": {
-              "description": "`master`'s commit when the run started, which each attempt's branch\nstarts from.",
+              "description": "The target branch's commit when the run started, which each\nattempt's branch starts from.",
               "type": [
                 "string",
                 "null"
@@ -20748,14 +20748,14 @@
               ]
             },
             "picked": {
-              "description": "The commit the cherry-pick made on `master`, with the `Herdr-Item`\nand `Herdr-Run` trailers.",
+              "description": "The commit the cherry-pick made on the target branch, with the `Herdr-Item`\nand `Herdr-Run` trailers.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "pushed": {
-              "description": "The `master` commit `origin` has after the push.",
+              "description": "The target branch's commit `origin` has after the push.",
               "type": [
                 "string",
                 "null"
@@ -20808,12 +20808,19 @@
                 "null"
               ]
             },
+            "target_branch": {
+              "description": "The branch the run lands on: the repository's default branch as the\npreflight resolved it. Absent for a run recorded before runs stored\nit, which targets `master`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "task": {
               "description": "The current attempt's task text: the first attempt's is the run's,\neach later one is the previous attempt's with its review appended.",
               "type": "string"
             },
             "todo_commit": {
-              "description": "The commit of the TODO update on `master`.",
+              "description": "The commit of the TODO update on the target branch.",
               "type": [
                 "string",
                 "null"
@@ -20872,7 +20879,7 @@
             },
             {
               "const": "done",
-              "description": "The commit is on `master`, installed, recorded and pushed (each as\nfar as registered and approved), and the merged branches are gone.",
+              "description": "The commit is on the target branch, installed, recorded and pushed (each as\nfar as registered and approved), and the merged branches are gone.",
               "type": "string"
             },
             {
@@ -20883,7 +20890,7 @@
           ]
         },
         "TodoRunnableState": {
-          "description": "`todo.runnable_state`'s reply: whether a repository's TODO waits on its\ncoordinator, from the driver's and the queue's state (`TODO.md` on\n`master`, never the checkout's file).",
+          "description": "`todo.runnable_state`'s reply: whether a repository's TODO waits on its\ncoordinator, from the driver's and the queue's state (`TODO.md` on\nthe default branch, never the checkout's file).",
           "properties": {
             "active_coordinator": {
               "description": "The repository's active headless item coordinator.",
@@ -20989,7 +20996,7 @@
             },
             {
               "const": "push",
-              "description": "Pushes `master` to `origin`, only as a fast-forward.",
+              "description": "Pushes the target branch to `origin`, only as a fast-forward.",
               "type": "string"
             },
             {

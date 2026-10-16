@@ -54,6 +54,7 @@ mod store;
 pub(crate) mod supervision;
 mod supervision_rules;
 mod supervisor;
+mod target_branch;
 #[cfg(test)]
 mod tests;
 mod todo_titles;

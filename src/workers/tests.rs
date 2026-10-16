@@ -6262,9 +6262,14 @@ mod todo_runs {
     /// the verify adds to a diff under `src/api/`, and `maintenance`
     /// (docs/next/a.txt exists), which it adds to a diff under `docs/next/`.
     pub(super) fn todo_repo(name: &str) -> Fixture {
+        todo_repo_on(name, "master")
+    }
+
+    /// [`todo_repo`] whose only branch is `branch`.
+    fn todo_repo_on(name: &str, branch: &str) -> Fixture {
         let fixture = Fixture::new(name);
         let repo = &fixture.repo;
-        git_in(repo, &["init", "-q", "-b", "master"]);
+        git_in(repo, &["init", "-q", "-b", branch]);
         for (key, value) in [
             ("user.name", "t"),
             ("user.email", "t@example.com"),
@@ -9293,6 +9298,12 @@ mod todo_runs {
     /// `HEAD` as the build `build_id` prints), `scripts/todo_edit.py`,
     /// `DECISIONS.md` and a second item. Returns the bare repository.
     fn with_finish(fixture: &Fixture) -> PathBuf {
+        with_finish_on(fixture, "master")
+    }
+
+    /// [`with_finish`] for a repository whose branch is `branch`: its
+    /// `origin`'s `HEAD` names that branch.
+    fn with_finish_on(fixture: &Fixture, branch: &str) -> PathBuf {
         let repo = &fixture.repo;
         std::fs::write(
             repo.join("install.sh"),
@@ -9325,13 +9336,13 @@ mod todo_runs {
         let remote = fixture.root.join("origin.git");
         git_in(
             &fixture.root,
-            &["init", "-q", "--bare", "-b", "master", "origin.git"],
+            &["init", "-q", "--bare", "-b", branch, "origin.git"],
         );
         git_in(
             repo,
             &["remote", "add", "origin", &remote.display().to_string()],
         );
-        git_in(repo, &["push", "-q", "origin", "master"]);
+        git_in(repo, &["push", "-q", "origin", branch]);
         remote
     }
 
@@ -9828,6 +9839,151 @@ mod todo_runs {
             .unwrap()
     }
 
+    /// A repository whose only branch is `main`: its queue reads `TODO.md`
+    /// from `main`, and a run targets `main` from preflight to its push.
+    #[test]
+    fn a_main_only_repository_runs_through_its_push_and_queue_read() {
+        let fixture = todo_repo_on("todo-main-only", "main");
+        let remote = with_finish_on(&fixture, "main");
+        assert!(git_in(&fixture.repo, &["branch", "--list", "master"])
+            .trim()
+            .is_empty());
+        let state = fixture
+            .supervisor
+            .todo_runnable_state(&fixture.repo.display().to_string())
+            .unwrap();
+        assert_eq!(state.runnable_items, [ITEM, ITEM2], "{state:#?}");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        assert_eq!(run.target_branch.as_deref(), Some("main"));
+        assert_eq!(
+            run.base.as_deref(),
+            Some(rev(&fixture.repo, "main").as_str())
+        );
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        approve_with(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            Some("Done by the driver.\n"),
+            None,
+        );
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let main = rev(&fixture.repo, "main");
+        assert_eq!(
+            git_in(&fixture.repo, &["log", "--format=%s", "main"])
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "docs(todo): note on t-abcd2345",
+                SUBJECT,
+                "finish setup",
+                "init"
+            ]
+        );
+        assert_eq!(finished.todo_commit.as_deref(), Some(main.as_str()));
+        assert_eq!(rev(&remote, "main"), main);
+        assert_eq!(finished.pushed.as_deref(), Some(main.as_str()));
+        assert_eq!(finished.target_branch.as_deref(), Some("main"));
+        assert!(git_in(&remote, &["branch", "--list", "master"])
+            .trim()
+            .is_empty());
+    }
+
+    /// A checkout on a feature branch of a repository with an `origin`:
+    /// the run targets origin's default branch, and its landing refuses
+    /// while the checkout is not on it.
+    #[test]
+    fn a_checkout_on_a_feature_branch_targets_the_default_and_refuses_to_land() {
+        let fixture = todo_repo("todo-feature-checkout");
+        with_finish(&fixture);
+        git_in(&fixture.repo, &["checkout", "-q", "-b", "feature"]);
+        let before = rev(&fixture.repo, "master");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        assert_eq!(run.target_branch.as_deref(), Some("master"));
+        assert_eq!(run.base.as_deref(), Some(before.as_str()));
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (blocked, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        let error = blocked.error.unwrap_or_default();
+        assert!(error.contains("is on feature, not master"), "{error}");
+        assert_eq!(rev(&fixture.repo, "master"), before);
+        assert_eq!(rev(&fixture.repo, "feature"), before);
+    }
+
+    /// The stored branch renamed during the run: the cherry-pick stops with
+    /// an error naming it and lands nowhere, never on the renamed branch.
+    #[test]
+    fn a_target_branch_renamed_mid_run_stops_the_next_step() {
+        // No remote: the target is the checkout's current branch.
+        let fixture = todo_repo_on("todo-renamed-target", "main");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        assert_eq!(run.target_branch.as_deref(), Some("main"));
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        git_in(&fixture.repo, &["branch", "-m", "main", "trunk"]);
+        let before = rev(&fixture.repo, "trunk");
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (blocked, ended) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        let error = blocked.error.unwrap_or_default();
+        assert!(
+            error.contains("target branch main no longer exists"),
+            "{error}"
+        );
+        assert_eq!(ended.target_branch.as_deref(), Some("main"));
+        assert_eq!(ended.picked, None);
+        assert_eq!(rev(&fixture.repo, "trunk"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_cherry_pick_intent").is_empty());
+    }
+
+    /// A detached HEAD without a remote, or an `origin` that cannot be
+    /// reached, has no target branch: preflight refuses and names why.
+    #[test]
+    fn preflight_refuses_without_a_resolvable_default_branch() {
+        let fixture = todo_repo("todo-detached-no-remote");
+        git_in(&fixture.repo, &["checkout", "-q", "--detach"]);
+        let task = format!("commit a.txt {SUBJECT}");
+        let refused = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("detached HEAD"), "{refused}");
+
+        let fixture = todo_repo("todo-unreachable-origin");
+        let missing = fixture.root.join("missing.git");
+        git_in(
+            &fixture.repo,
+            &["remote", "add", "origin", &missing.display().to_string()],
+        );
+        let refused = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("git ls-remote --symref origin HEAD"),
+            "{refused}"
+        );
+        assert!(fixture
+            .supervisor
+            .todo_runs(None, None)
+            .unwrap()
+            .0
+            .is_empty());
+    }
+
     #[test]
     fn a_run_installs_notes_the_item_pushes_and_cleans_up() {
         let fixture = todo_repo("todo-finish");
@@ -9857,6 +10013,8 @@ mod todo_runs {
         );
         let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        // origin's HEAD names master: the run targeted it and said so.
+        assert_eq!(finished.target_branch.as_deref(), Some("master"));
         let master = rev(&fixture.repo, "master");
         let picked = finished.picked.clone().unwrap();
         assert_eq!(

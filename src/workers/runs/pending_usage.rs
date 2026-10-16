@@ -132,7 +132,14 @@ impl WorkerSupervisor {
                 // A gate that closed after drafting must not draft a second task.
                 let needs_draft = run.finish.draft && run.info.step == TodoStep::Preflight;
                 run.finish.pending_usage = false;
-                match self.preflight(&params, std::path::Path::new(&run.info.repo), needs_draft) {
+                // The branch the run resolved at its start: never retargeted.
+                let pinned = run.target_branch().to_owned();
+                match self.preflight(
+                    &params,
+                    std::path::Path::new(&run.info.repo),
+                    needs_draft,
+                    Some(&pinned),
+                ) {
                     Ok(ready) => {
                         run.info.base = Some(ready.base.clone());
                         run.current.base = Some(ready.base);

@@ -106,7 +106,7 @@ pub struct HistoryAttempt {
     /// The attempt's latest verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<WorkerVerdict>,
-    /// The commit the attempt landed on `master`.
+    /// The commit the attempt landed on its target branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed_sha: Option<String>,
 }

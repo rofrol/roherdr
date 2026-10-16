@@ -765,7 +765,22 @@ impl WorkerSupervisor {
             .branch
             .as_deref()
             .ok_or_else(|| WorkerError::Invalid("folder_slot needs branch".into()))?;
-        let base = params.base.as_deref().unwrap_or("master");
+        // Without a base, the repository's default branch, resolved as a
+        // run's ([`super::super::target_branch`]).
+        let base = match params.base.clone() {
+            Some(base) => base,
+            None => {
+                let repo = super::super::repository_of(caller_cwd).ok_or_else(|| {
+                    WorkerError::Invalid(format!(
+                        "{} is not in a git repository",
+                        caller_cwd.display()
+                    ))
+                })?;
+                super::super::target_branch::resolve(Path::new(&repo), None)
+                    .map_err(WorkerError::Invalid)?
+            }
+        };
+        let base = base.as_str();
         let (path, created) = slot::locate_or_create(caller_cwd, name, base)?;
         let killed = self.end_slot_leftovers(&path)?;
         // Before the switch, so a refused start leaves no branch behind.

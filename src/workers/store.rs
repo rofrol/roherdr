@@ -1936,6 +1936,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             installed_build: finish.installed_build.clone(),
             todo_commit: finish.todo_commit.clone(),
             pushed: finish.pushed.clone(),
+            target_branch: finish.target_branch.clone(),
             kept_branches: finish.kept_branches.clone(),
             next_item: finish.next.as_ref().map(|next| next.item.clone()),
             next_run_id: finish.next_run_id.clone(),
@@ -2461,7 +2462,7 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Records a commit the run landed on `master`; a landing recorded
+    /// Records a commit the run landed on its target branch; a landing recorded
     /// already (a step a crash cut off) is replaced by the same row.
     pub(super) fn landing(&self, landing: &TodoLanding) -> StoreResult<()> {
         self.tx.execute(

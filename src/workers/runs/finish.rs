@@ -2,7 +2,9 @@
 //! TODO update, the push and the cleanup. Each records its intent before its
 //! side effect and its result after it, and asks the repository first
 //! whether a driver a crash cut off already did it: the installed build is
-//! `master`'s, `master` has the TODO commit, `origin` has `master`. A failed
+//! the target branch's, the target branch has the TODO commit, `origin` has
+//! the target branch. Each step reads the branch the run stored
+//! ([`Run::target_branch`]) and stops when it no longer resolves. A failed
 //! install, TODO edit or push is an event the run waits on; nothing is
 //! forced, rebased or retried on its own.
 
@@ -55,12 +57,12 @@ fn decision_section(decision: &str, fallback: &str) -> (String, String) {
     (title, body)
 }
 
-/// Whether the build id a `build_id` command printed is `master`'s commit:
+/// Whether the build id a `build_id` command printed is the target branch's commit:
 /// its first word is that sha or a prefix of it (a dirty build, `<sha>~<tree>`,
 /// is not).
-fn build_is(build: &str, master: &str) -> bool {
+fn build_is(build: &str, target: &str) -> bool {
     let word = build.split_whitespace().next().unwrap_or_default();
-    word.len() >= 7 && !word.contains('~') && master.starts_with(word)
+    word.len() >= 7 && !word.contains('~') && target.starts_with(word)
 }
 
 fn describe_exit(status: std::process::ExitStatus) -> String {
@@ -139,11 +141,20 @@ fn installed_build(
     }
 }
 
-/// The newest commit in `since..master` whose subject is `subject`.
-fn commit_with_subject(repo: &Path, since: &str, subject: &str) -> Result<Option<String>, String> {
+/// The newest commit in `since..target` whose subject is `subject`.
+fn commit_with_subject(
+    repo: &Path,
+    since: &str,
+    target: &str,
+    subject: &str,
+) -> Result<Option<String>, String> {
     Ok(git(
         repo,
-        &["log", "--format=%H %s", &format!("{since}..master")],
+        &[
+            "log",
+            "--format=%H %s",
+            &format!("{since}..refs/heads/{target}"),
+        ],
     )?
     .lines()
     .find_map(|line| {
@@ -161,12 +172,19 @@ fn checked_out(repo: &Path) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
-/// Whether every commit of `branch` has its change on `master` (`git
+/// Whether every commit of `branch` has its change on `target` (`git
 /// cherry` marks none `+`): a cherry-picked branch is merged though its
-/// commits are not ancestors of `master`.
-fn merged(repo: &Path, branch: &str) -> bool {
-    git(repo, &["cherry", "master", &format!("refs/heads/{branch}")])
-        .is_ok_and(|out| !out.lines().any(|line| line.starts_with('+')))
+/// commits are not ancestors of `target`.
+fn merged(repo: &Path, target: &str, branch: &str) -> bool {
+    git(
+        repo,
+        &[
+            "cherry",
+            &format!("refs/heads/{target}"),
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok_and(|out| !out.lines().any(|line| line.starts_with('+')))
 }
 
 fn branch_exists(repo: &Path, branch: &str) -> bool {
@@ -214,7 +232,7 @@ impl WorkerSupervisor {
 
     /// Runs the registered install in the repository's checkout with the
     /// caller's environment, then records the build its `build_id` command
-    /// names. A build id that already is `master`'s (an install a crash did
+    /// names. A build id that already is the target branch's (an install a crash did
     /// not record, or one made by hand) is not installed again. Without
     /// `[install]` the step is skipped.
     pub(super) fn step_install(&self, run: &mut Run) -> Result<(), String> {
@@ -241,12 +259,11 @@ impl WorkerSupervisor {
                     .into(),
             );
         };
-        let master = git(&repo, &["rev-parse", "--verify", "master^{commit}"])?
-            .trim()
-            .to_owned();
+        let branch = run.target_branch().to_owned();
+        let target = run.target_commit()?;
         if !install.build_id.is_empty() {
             if let Ok(build) = installed_build(&repo, &install.build_id, &env) {
-                if build_is(&build, &master) {
+                if build_is(&build, &target) {
                     run.info.installed_build = Some(build.clone());
                     run.info.step = TodoStep::Todo;
                     self.run_step(
@@ -271,7 +288,8 @@ impl WorkerSupervisor {
             json!({
                 "type": "run_install_intent",
                 "command": install.command,
-                "master": master,
+                "target": target,
+                "target_branch": branch,
                 "log": log.display().to_string(),
             }),
         )?;
@@ -303,7 +321,7 @@ impl WorkerSupervisor {
     /// section, with `scripts/todo_edit.py`, and commits that by path. The
     /// edit is made on copies of `HEAD`'s files first; a file with changes
     /// another session left uncommitted is not touched (a `todo_failed`
-    /// event). A commit `master` already has with the step's message is not
+    /// event). A commit the target branch already has with the step's message is not
     /// made again. Without a note or decision the step is skipped.
     pub(super) fn step_todo(&self, run: &mut Run) -> Result<(), String> {
         let repo = PathBuf::from(&run.info.repo);
@@ -333,18 +351,20 @@ impl WorkerSupervisor {
             .clone()
             .or_else(|| run.info.base.clone())
             .ok_or("the run has no base")?;
-        if let Some(commit) = commit_with_subject(&repo, &since, &message)? {
+        let target = run.target_branch().to_owned();
+        run.target_commit()?;
+        if let Some(commit) = commit_with_subject(&repo, &since, &target, &message)? {
             return self.todo_committed(run, commit, &message, true);
         }
         let on = git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .map(|branch| branch.trim().to_owned())
             .unwrap_or_default();
-        if on != "master" {
+        if on != target {
             return self.wait_on_failure(
                 run,
                 TodoEventKind::TodoFailed,
                 format!(
-                    "the shared checkout {} is not on master; nothing was edited",
+                    "the shared checkout {} is not on {target}; nothing was edited",
                     repo.display()
                 ),
             );
@@ -376,14 +396,14 @@ impl WorkerSupervisor {
                 );
             }
         }
-        let master = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+        let target_commit = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
         self.run_step(
             run,
             json!({
                 "type": "run_todo_intent",
                 "message": message,
                 "files": files,
-                "master": master,
+                "target": target_commit,
             }),
         )?;
         for (file, bytes) in &edited {
@@ -494,7 +514,7 @@ impl WorkerSupervisor {
             .map_err(|error| format!("cannot create {}: {error}", scratch.display()))?;
         for file in files {
             let text = git(repo, &["show", &format!("HEAD:{file}")])
-                .map_err(|error| format!("master has no {file}: {error}"))?;
+                .map_err(|error| format!("{} has no {file}: {error}", run.target_branch()))?;
             std::fs::write(scratch.join(file), text)
                 .map_err(|error| format!("cannot write a copy of {file}: {error}"))?;
         }
@@ -563,10 +583,10 @@ impl WorkerSupervisor {
             .collect()
     }
 
-    /// Pushes `master` to `origin` with the caller's environment, only as
-    /// a fast-forward: when `origin`'s `master` is not an ancestor of the
-    /// local one the push is refused (a `push_failed` event), and it is
-    /// never forced. When `origin` already has `master` (a push a crash did
+    /// Pushes the target branch to `origin` with the caller's environment,
+    /// only as a fast-forward: when `origin`'s branch is not an ancestor of
+    /// the local one the push is refused (a `push_failed` event), and it is
+    /// never forced. When `origin` already has the branch (a push a crash did
     /// not record) nothing is pushed. A repository without `origin` skips
     /// the step.
     pub(super) fn step_push(&self, run: &mut Run) -> Result<(), String> {
@@ -593,14 +613,10 @@ impl WorkerSupervisor {
                     .into(),
             );
         };
-        let master = git(&repo, &["rev-parse", "--verify", "master^{commit}"])?
-            .trim()
-            .to_owned();
-        let remote = match git_with(
-            &repo,
-            &["ls-remote", "origin", "refs/heads/master"],
-            Some(&env),
-        ) {
+        let branch = run.target_branch().to_owned();
+        let head_ref = format!("refs/heads/{branch}");
+        let target_commit = run.target_commit()?;
+        let remote = match git_with(&repo, &["ls-remote", "origin", &head_ref], Some(&env)) {
             Ok(out) => out
                 .split_whitespace()
                 .next()
@@ -610,33 +626,43 @@ impl WorkerSupervisor {
                 return self.wait_on_failure(
                     run,
                     TodoEventKind::PushFailed,
-                    format!("reading origin's master: {why}"),
+                    format!("reading origin's {branch}: {why}"),
                 )
             }
         };
         if let Some(remote) = &remote {
             if let Err(why) = git_with(
                 &repo,
-                &["fetch", "--quiet", "origin", "refs/heads/master"],
+                &["fetch", "--quiet", "origin", &head_ref],
                 Some(&env),
             ) {
                 return self.wait_on_failure(
                     run,
                     TodoEventKind::PushFailed,
-                    format!("fetching origin's master: {why}"),
+                    format!("fetching origin's {branch}: {why}"),
                 );
             }
-            if git(&repo, &["merge-base", "--is-ancestor", &master, remote]).is_ok() {
-                return self.pushed(run, master, Some(remote.clone()), true);
+            if git(
+                &repo,
+                &["merge-base", "--is-ancestor", &target_commit, remote],
+            )
+            .is_ok()
+            {
+                return self.pushed(run, target_commit, Some(remote.clone()), true);
             }
-            if git(&repo, &["merge-base", "--is-ancestor", remote, &master]).is_err() {
+            if git(
+                &repo,
+                &["merge-base", "--is-ancestor", remote, &target_commit],
+            )
+            .is_err()
+            {
                 return self.wait_on_failure(
                     run,
                     TodoEventKind::PushFailed,
                     format!(
-                        "origin's master {remote} is not an ancestor of master {master}: the push \
-                         would not be a fast-forward, and it is never forced; bring master up to \
-                         date with origin, then retry-push"
+                        "origin's {branch} {remote} is not an ancestor of {branch} \
+                         {target_commit}: the push would not be a fast-forward, and it is never \
+                         forced; bring {branch} up to date with origin, then retry-push"
                     ),
                 );
             }
@@ -644,40 +670,45 @@ impl WorkerSupervisor {
         if let Err(why) = super::check_private_details(
             &repo,
             remote.as_deref().unwrap_or(""),
-            &master,
+            &target_commit,
             Some(&env),
         ) {
             return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
         }
         self.run_step(
             run,
-            json!({"type": "run_push_intent", "master": master, "origin": remote}),
+            json!({
+                "type": "run_push_intent",
+                "target": target_commit,
+                "target_branch": branch,
+                "origin": remote,
+            }),
         )?;
         // Push exactly the inspected commit, not a ref another process could
         // advance between the privacy check and Git reading the push source.
-        let refspec = format!("{master}:refs/heads/master");
+        let refspec = format!("{target_commit}:{head_ref}");
         if let Err(why) = git_with(&repo, &["push", "--quiet", "origin", &refspec], Some(&env)) {
             return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
         }
         #[cfg(test)]
         super::crashes_after(&run.info.repo, TodoStep::Push)?;
-        self.pushed(run, master, remote, false)
+        self.pushed(run, target_commit, remote, false)
     }
 
     fn pushed(
         &self,
         run: &mut Run,
-        master: String,
+        target_commit: String,
         before: Option<String>,
         already: bool,
     ) -> Result<(), String> {
-        run.info.pushed = Some(master.clone());
+        run.info.pushed = Some(target_commit.clone());
         run.info.step = TodoStep::Cleanup;
         self.run_step(
             run,
             json!({
                 "type": "run_pushed",
-                "master": master,
+                "target": target_commit,
                 "origin_before": before,
                 "already": already,
                 "step": run.info.step,
@@ -686,11 +717,11 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// Deletes the run's attempt branches whose changes `master` has, and
+    /// Deletes the run's attempt branches whose changes the target branch has, and
     /// the ones earlier runs of the repository kept, except a branch a
     /// worktree has checked out (the folder slot's): that one is kept and
     /// recorded, for a later run's cleanup once the slot moved on. A branch
-    /// with a change `master` lacks (a rejected attempt) stays. Then the run
+    /// with a change the target branch lacks (a rejected attempt) stays. Then the run
     /// is done.
     pub(super) fn step_cleanup(&self, run: &mut Run) -> Result<(), String> {
         let own: Vec<String> = (1..=run.info.attempt)
@@ -1010,7 +1041,7 @@ impl WorkerSupervisor {
     }
 
     /// Deletes `own` and the branches earlier runs of the repository kept
-    /// when `master` has their changes and no worktree has them checked
+    /// when the run's target branch has their changes and no worktree has them checked
     /// out; keeps a checked-out one of `own`, and leaves an unmerged one.
     /// Earlier runs no longer keep what is deleted or gone.
     fn sweep_branches(&self, run: &Run, own: &[String]) -> Result<Swept, String> {
@@ -1044,7 +1075,7 @@ impl WorkerSupervisor {
                 gone.insert(branch.clone());
                 continue;
             }
-            if !merged(&repo, branch) {
+            if !merged(&repo, run.target_branch(), branch) {
                 unmerged.push(branch.clone());
             } else if checked_out.contains(branch) {
                 if own.contains(branch) {

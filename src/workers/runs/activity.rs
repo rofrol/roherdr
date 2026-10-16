@@ -243,6 +243,7 @@ mod tests {
             status,
             attempt: 1,
             base: None,
+            target_branch: None,
             worker_id: None,
             branch: None,
             task: String::new(),

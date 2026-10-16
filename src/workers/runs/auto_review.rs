@@ -799,7 +799,7 @@ impl WorkerSupervisor {
             },
         };
         let item_text = self.item_text_of(run);
-        let base = run.info.base.as_deref().unwrap_or("master");
+        let base = run.info.base.as_deref().unwrap_or(run.target_branch());
         let decisions = git(repo, &["show", &format!("{base}:{DECISIONS_FILE}")])
             .map(|text| decisions_named(&text, &item_text, &run.info.item))
             .unwrap_or_default();

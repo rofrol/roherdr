@@ -577,8 +577,8 @@ impl WorkerSupervisor {
         })
     }
 
-    /// The user's grant of the repository's operation as `master` defines
-    /// it now, refused unless `hash` is that definition's: the user grants
+    /// The user's grant of the repository's operation as its default branch
+    /// defines it now, refused unless `hash` is that definition's: the user grants
     /// exactly the definition they were shown. The CLI sends it only after
     /// the user's confirmation on a terminal.
     pub(crate) fn todo_grant(&self, params: TodoGrantParams) -> Result<TodoGrant, WorkerError> {
@@ -595,8 +595,8 @@ impl WorkerSupervisor {
         Ok(grant)
     }
 
-    /// Stores and records the grant of `repo`'s `prepare` as `master`
-    /// defines it now, refused (`invalid_request`) unless its hash is
+    /// Stores and records the grant of `repo`'s `prepare` as its default
+    /// branch ([`super::target_branch`]) defines it now, refused (`invalid_request`) unless its hash is
     /// `hash`. Granting a stored grant again records nothing.
     pub(super) fn store_grant(
         &self,
@@ -604,19 +604,21 @@ impl WorkerSupervisor {
         hash: &str,
         source: &str,
     ) -> Result<TodoGrant, WorkerError> {
-        let file = read_operations_at(Path::new(repo), "master")
+        let branch =
+            super::target_branch::resolve(Path::new(repo), None).map_err(WorkerError::Invalid)?;
+        let file = read_operations_at(Path::new(repo), &branch)
             .map_err(WorkerError::Invalid)?
             .and_then(|file| file.prepare)
             .ok_or_else(|| {
                 WorkerError::Invalid(format!(
-                    "master of {repo} declares no [{PREPARE}] in {OPERATIONS_FILE}"
+                    "{branch} of {repo} declares no [{PREPARE}] in {OPERATIONS_FILE}"
                 ))
             })?;
         let definition = file.definition();
         let defined = definition_hash(&definition);
         if defined != hash {
             return Err(WorkerError::Invalid(format!(
-                "[{PREPARE}] of {repo} at master has hash {defined}, not {hash}: its definition \
+                "[{PREPARE}] of {repo} at {branch} has hash {defined}, not {hash}: its definition \
                  is {definition}"
             )));
         }

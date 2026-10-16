@@ -1,5 +1,5 @@
 //! `herdr todo`: drives a TODO item from preflight through the cherry-pick
-//! onto `master`, the install, the TODO update, the push and the cleanup
+//! onto the repository's default branch, the install, the TODO update, the push and the cleanup
 //! (`todo.run`), and lets the coordinator wait on and answer the run's
 //! events.
 
@@ -34,8 +34,10 @@ const USAGE: &str = "usage:
       --ignore-usage, on the user's word, starts anyway), then
       start a headless worker in the repository's folder slot
       ../herdr-worktrees/<repository>/worker (see `herdr worker start`) on
-      the branch todo/<item-id>-<attempt> from master with FILE's text as its
-      task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
+      the branch todo/<item-id>-<attempt> from the repository's default
+      branch (origin's HEAD as git ls-remote --symref origin HEAD names it,
+      or without a remote the checkout's current branch; the run stores it
+      and lands on it) with FILE's text as its task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
       With --agent pi-anthropic the run spends configured Anthropic API credits
@@ -82,7 +84,7 @@ const USAGE: &str = "usage:
       itself (todo.draft_run): one claude -p call (structured JSON output, no
       tools, no session) with the item's text, the DECISIONS.md sections it
       names, AGENTS.md's code, test and commit rules, .herdr/checks.toml, git
-      log -20 of master and the item's history. The server checks the draft
+      log -20 of the default branch and the item's history. The server checks the draft
       as todo run checks those flags (only registered checks), records it and
       starts the run with it; an invalid draft or a failed call is asked once
       more, then escalated: a draft event whose error holds the question,
@@ -131,13 +133,13 @@ const USAGE: &str = "usage:
       folder slot's target sweep and preflight once more. With --stop-reason, TEXT goes into the item's history
       when the run is done and to the user as a notification.
       approve stops the worker, verifies its commit with the checks,
-      cherry-picks it onto master with the trailers Herdr-Item: <item-id> and
+      cherry-picks it onto the run's branch with the trailers Herdr-Item: <item-id> and
       Herdr-Run: <run-id>/<attempt> (only when the branch is still at the
       commit the event showed; otherwise a new review event), runs the
       [install] of .herdr/checks.toml,
       appends --note FILE's lines to the item in TODO.md (or, with --close
       FILE, removes the item and adds FILE as a section of DECISIONS.md)
-      with scripts/todo_edit.py and commits that by path, pushes master to
+      with scripts/todo_edit.py and commits that by path, pushes that branch to
       origin only as a fast-forward, and deletes the run's merged branches;
       retry starts the next attempt with FILE's text as the review of this
       one: its branch starts from this attempt's commit (cherry-picked onto
@@ -157,7 +159,7 @@ const USAGE: &str = "usage:
       abort answers any event the run waits on, or the blocked
       event of a blocked run: the run stops its worker when it still runs,
       waits for its exit and ends aborted, with --message TEXT as the reason;
-      its branches and commits (a commit already on master too) stay as they
+      its branches and commits (a commit already on its branch too) stay as they
       are and the aborted event names them. Every resume sends this shell's environment again, which the
       checks, the install and the push run with (the server never stores
       it); without it a check is unavailable and an install or push fails.
@@ -208,7 +210,7 @@ const USAGE: &str = "usage:
       current directory's) repository. on (kept across restarts): whenever
       no run of the repository is active, no escalation is pending and the
       usage gate admits, the server starts the top item of \"Next, in
-      order\" (TODO.md as master has it) that is not blocked as todo run
+      order\" (TODO.md as the default branch has it) that is not blocked as todo run
       --draft would, owned by this pane, its checks, install and push with
       this shell's environment (kept in memory only; after a cold restart the
       queue pauses with \"environment needed\" and a notification until on is
@@ -225,7 +227,7 @@ const USAGE: &str = "usage:
       prints the mode and the status with its reason: running,
       waiting_on_user, escalation_pending, usage_gate, blocked or empty.
   herdr todo grant --operation prepare --hash HASH [--repo DIR]
-      Grant the [prepare] operation that master of DIR's (default: the
+      Grant the [prepare] operation that the default branch of DIR's (default: the
       current directory's) repository declares in .herdr/operations.toml:
       its argv and requested capabilities, exactly the definition whose
       hash todo run's grant_required refusal showed (refused when it changed

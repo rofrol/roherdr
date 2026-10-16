@@ -4,11 +4,14 @@
 //! headless worker in the repository's folder slot, turning what needs the
 //! coordinator into run events, stopping the worker, verifying its commit
 //! with the registered check (typed argv, never a shell string),
-//! cherry-picking it onto the repository's `master`, running the registered
-//! install, recording the coordinator's note or closing decision in
-//! `TODO.md` (with `scripts/todo_edit.py`, committed by path), pushing
-//! `master` to `origin` only as a fast-forward and deleting the run's merged
-//! branches.
+//! cherry-picking it onto the repository's default branch (resolved once at
+//! preflight and stored with the run, [`target_branch`]), running the
+//! registered install, recording the coordinator's note or closing decision
+//! in `TODO.md` (with `scripts/todo_edit.py`, committed by path), pushing
+//! that branch to `origin` only as a fast-forward and deleting the run's
+//! merged branches.
+//!
+//! [`target_branch`]: super::target_branch
 //!
 //! A run lives in the worker store: its row in `runs`, its current
 //! attempt's row in `attempts` and its `run_*` events, written in one
@@ -18,10 +21,10 @@
 //! after a crash: the start and the stop carry command ids derived from the
 //! run, the attention wait is level-triggered from the run's acknowledged
 //! seq, the verify only reads, the cherry-pick first asks git whether
-//! `master` already has the commit, the install first asks the registered
-//! build id whether `master` is installed already, the TODO step looks for
-//! its commit on `master` and the push compares `origin`'s `master` with
-//! the local one. A server that starts drives every run in progress again
+//! the target branch already has the commit, the install first asks the
+//! registered build id whether that branch is installed already, the TODO
+//! step looks for its commit on the branch and the push compares `origin`'s
+//! branch with the local one. A server that starts drives every run in progress again
 //! from its step ([`resume_runs_at_start`]).
 //!
 //! The run waits for the coordinator on its `run_event`s (a question the
@@ -172,6 +175,10 @@ pub(super) struct RunFinish {
     pub(super) todo_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pushed: Option<String>,
+    /// The branch the preflight resolved ([`TodoRunInfo::target_branch`]),
+    /// kept here so the store needs no new column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) target_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) kept_branches: Vec<String>,
     /// The `tests` check a run stored by an older build added for an API
@@ -475,7 +482,7 @@ impl RunFinish {
 }
 
 /// `[install]` of `.herdr/checks.toml`: the program and arguments that
-/// install `master` (no shell), and optionally one whose first output line
+/// install the target branch (no shell), and optionally one whose first output line
 /// names the build that is installed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -493,6 +500,7 @@ impl Run {
             installed_build: self.info.installed_build.clone(),
             todo_commit: self.info.todo_commit.clone(),
             pushed: self.info.pushed.clone(),
+            target_branch: self.info.target_branch.clone(),
             kept_branches: self.info.kept_branches.clone(),
             next_run_id: self.info.next_run_id.clone(),
             next_refusal: self.info.next_refusal.clone(),
@@ -500,6 +508,22 @@ impl Run {
             ran_model: self.info.model.clone(),
             ..self.finish.clone()
         }
+    }
+
+    /// The branch the run lands on: the one its preflight resolved, or
+    /// [`super::target_branch::LEGACY_TARGET_BRANCH`] for a run recorded
+    /// before runs stored it.
+    pub(super) fn target_branch(&self) -> &str {
+        self.info
+            .target_branch
+            .as_deref()
+            .unwrap_or(super::target_branch::LEGACY_TARGET_BRANCH)
+    }
+
+    /// The target branch's commit now; an error naming the branch when it
+    /// no longer resolves, never another branch.
+    pub(super) fn target_commit(&self) -> Result<String, String> {
+        super::target_branch::commit_of(Path::new(&self.info.repo), self.target_branch())
     }
 
     /// Whether the run is done and what its close named after it is not
@@ -529,7 +553,7 @@ struct ChecksFile {
     checks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     preflight: PreflightConfig,
-    /// The command the run installs `master` with after the cherry-pick;
+    /// The command the run installs the target branch with after the cherry-pick;
     /// none skips the install.
     #[serde(default)]
     install: Option<InstallCommand>,
@@ -1100,7 +1124,7 @@ fn command_with(program: &str, env: Option<&HashMap<String, String>>) -> Command
 
 /// `git` in `dir`, with `env` in place of the server's environment when
 /// given (a push or a fetch needs the caller's credentials).
-fn git_with(
+pub(super) fn git_with(
     dir: &Path,
     args: &[&str],
     env: Option<&HashMap<String, String>>,
@@ -1413,13 +1437,13 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
 
 /// What a `landing_approval` event tells the owner: what landing does, how
 /// to approve it, the backup and how to roll back.
-fn landing_note(run_id: &str, repo: &Path, commit: &str, head: &str) -> String {
+fn landing_note(run_id: &str, repo: &Path, branch: &str, commit: &str, head: &str) -> String {
     format!(
         "landing commit {commit} in {repo} changes the live files of the home directory, and the \
          registered install runs after it. Its owner reviews the whole patch (result_text) and \
          approves it with `herdr todo resume {run_id} --event <this event> --action \
          approve-landing` from a pane that coordinates no repository, or aborts the run. Backup: \
-         master is at {head} before the pick. Roll back with `git revert <the landed commit>` \
+         {branch} is at {head} before the pick. Roll back with `git revert <the landed commit>` \
          in {repo}, or `git reset --keep {head}` there while nothing else has landed.",
         repo = repo.display()
     )
@@ -1493,6 +1517,8 @@ pub(super) fn low_usage_for_test() -> crate::api::schema::ProviderUsage {
 
 /// What preflight found.
 struct Preflighted {
+    /// The branch the run lands on ([`super::target_branch`]).
+    target_branch: String,
     base: String,
     checks: Vec<RunCheck>,
     install: Option<InstallCommand>,
@@ -1871,7 +1897,12 @@ impl WorkerSupervisor {
             }
             return Err(Self::run_active(&active));
         }
-        let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
+        let preflighted = self.preflight(
+            &params,
+            Path::new(&repo),
+            draft,
+            queue.map(|start| start.target_branch.as_str()),
+        )?;
         let mut params = params;
         let mut anthropic_credits = anthropic_credits;
         // A credit proxy or cap refusal falls back to pi once, recorded in
@@ -1957,6 +1988,7 @@ impl WorkerSupervisor {
                 },
                 attempt: 1,
                 base: Some(preflighted.base.clone()),
+                target_branch: Some(preflighted.target_branch.clone()),
                 worker_id: None,
                 branch: Some(branch_of(&params.item, &run_id, 1)),
                 task: params.task.clone(),
@@ -2024,6 +2056,7 @@ impl WorkerSupervisor {
             "type": "run_created",
             "item": params.item,
             "base": preflighted.base,
+            "target_branch": preflighted.target_branch,
             "checks": preflighted.checks,
             "install": preflighted.install,
             "path_checks": preflighted.path_checks,
@@ -2186,8 +2219,10 @@ impl WorkerSupervisor {
 
     /// Checks everything a run needs before it starts anything: the task,
     /// the message, the paths, the item in `TODO.md`, the registered check,
-    /// the free disk, a free and clean folder slot, `master`'s commit, and
-    /// the operations file at that commit: its requests enforceable and its
+    /// the free disk, a free and clean folder slot, the target branch
+    /// ([`super::target_branch`]: `pinned` when the run has one already,
+    /// otherwise the repository's default branch) and its commit, and the
+    /// operations file at that commit: its requests enforceable and its
     /// prepare granted ([`super::capabilities`]).
     /// A run the server drafts has no task, message, paths or checks yet:
     /// its draft is checked when it comes ([`auto_draft`]).
@@ -2196,6 +2231,7 @@ impl WorkerSupervisor {
         params: &TodoRunParams,
         repo: &Path,
         draft: bool,
+        pinned: Option<&str>,
     ) -> Result<Preflighted, WorkerError> {
         let refuse = |why: String| WorkerError::Preflight(format!("preflight: {why}"));
         super::check_item_id(&params.item)?;
@@ -2265,13 +2301,15 @@ impl WorkerSupervisor {
         }
         check_free_disk(repo, &checks.preflight).map_err(refuse)?;
         self.check_slot_free(repo).map_err(refuse)?;
-        let base = git(repo, &["rev-parse", "--verify", "master^{commit}"])
-            .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
-            .trim()
-            .to_owned();
+        let target_branch = match pinned {
+            Some(branch) => branch.to_owned(),
+            None => super::target_branch::resolve(repo, params.env.as_ref()).map_err(refuse)?,
+        };
+        let base = super::target_branch::commit_of(repo, &target_branch).map_err(refuse)?;
         let path_checks = path_checks_of(&checks, &registered);
         let prepare = self.plan_operations(repo, &base)?;
         Ok(Preflighted {
+            target_branch,
             base,
             checks: registered,
             install: checks.install,
@@ -3733,7 +3771,8 @@ impl WorkerSupervisor {
     /// for its exit event ([`Self::stop_worker`]), then records the run
     /// `aborted` with the coordinator's reason and what it leaves as it is:
     /// its attempts' branches with their commits since the base, and a
-    /// commit already picked onto `master`. Nothing is deleted or reverted.
+    /// commit already picked onto the target branch. Nothing is deleted or
+    /// reverted.
     fn step_abort(&self, run: &mut Run) -> Result<(), String> {
         self.stop_worker(run)?;
         let repo = PathBuf::from(&run.info.repo);
@@ -3792,7 +3831,10 @@ impl WorkerSupervisor {
             why.push_str(&format!("; branches left as they are: {}", left.join(", ")));
         }
         if let Some(picked) = &run.info.picked {
-            why.push_str(&format!("; commit {picked} stays on master"));
+            why.push_str(&format!(
+                "; commit {picked} stays on {}",
+                run.target_branch()
+            ));
         }
         run.info.status = TodoRunStatus::Aborted;
         run.info.error = Some(why.clone());
@@ -3984,17 +4026,17 @@ impl WorkerSupervisor {
             .collect())
     }
 
-    /// Picks the attempt's verified commit onto `master` in the
-    /// repository's shared checkout, with the `Herdr-Item` and `Herdr-Run`
+    /// Picks the attempt's verified commit onto the run's target branch
+    /// ([`Run::target_branch`]) in the repository's shared checkout, with the `Herdr-Item` and `Herdr-Run`
     /// trailers added to the landed commit's message, and records the
     /// landing. The branch's tip must be the commit and base the approval
     /// named: otherwise the run raises a new `review` instead of landing
-    /// another commit. Refused (blocked) when that checkout is not on
-    /// `master`, has uncommitted changes or a cherry-pick in progress, or
-    /// its `master` no longer contains the base; a conflict is aborted and
-    /// blocks too. A commit `master` already has (a pick a crash did not
-    /// record) is not picked again, and its trailers are added only while
-    /// it is `master`'s head.
+    /// another commit. Refused (blocked) when the target branch no longer
+    /// exists, that checkout is not on it, has uncommitted changes or a
+    /// cherry-pick in progress, or the branch no longer contains the base;
+    /// a conflict is aborted and blocks too. A commit the branch already
+    /// has (a pick a crash did not record) is not picked again, and its
+    /// trailers are added only while it is the branch's head.
     fn step_cherry_pick(&self, run: &mut Run) -> Result<(), String> {
         let repo = PathBuf::from(&run.info.repo);
         let branch = run.info.branch.clone().ok_or("the run has no branch")?;
@@ -4015,12 +4057,14 @@ impl WorkerSupervisor {
         {
             return self.review_again(run, &repo, &branch, &base, &commit);
         }
+        let target = run.target_branch().to_owned();
+        run.target_commit()?;
         let on = git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .map(|branch| branch.trim().to_owned())
             .unwrap_or_default();
-        if on != "master" {
+        if on != target {
             return Err(format!(
-                "the shared checkout {} is on {}, not master; commit {commit} was not picked",
+                "the shared checkout {} is on {}, not {target}; commit {commit} was not picked",
                 repo.display(),
                 if on.is_empty() {
                     "a detached HEAD"
@@ -4050,12 +4094,12 @@ impl WorkerSupervisor {
         }
         if git(&repo, &["merge-base", "--is-ancestor", &base, "HEAD"]).is_err() {
             return Err(format!(
-                "master in {} no longer contains the run's base {base} (rewritten?); commit \
+                "{target} in {} no longer contains the run's base {base} (rewritten?); commit \
                  {commit} was not picked",
                 repo.display()
             ));
         }
-        // Master already has the commit itself (a pick made in the same
+        // The branch already has the commit itself (a pick made in the same
         // second reproduces its sha), or its change: `git cherry` marks
         // that `-`.
         let parent = format!("{commit}^");
@@ -4074,12 +4118,12 @@ impl WorkerSupervisor {
             let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
             self.run_step(
                 run,
-                json!({"type": "run_cherry_pick_intent", "commit": commit, "master": head}),
+                json!({"type": "run_cherry_pick_intent", "commit": commit, "target": head}),
             )?;
             if let Err(error) = git(&repo, &["cherry-pick", &commit]) {
                 let aborted = git(&repo, &["cherry-pick", "--abort"]);
                 return Err(format!(
-                    "cherry-picking {commit} onto master failed{}: {error}",
+                    "cherry-picking {commit} onto {target} failed{}: {error}",
                     if aborted.is_ok() {
                         " and was aborted"
                     } else {
@@ -4088,7 +4132,7 @@ impl WorkerSupervisor {
                 ));
             }
         }
-        // The commit on master carrying the change: the newest one since
+        // The commit on the branch carrying the change: the newest one since
         // the base with the run's subject.
         let mut picked = git(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?
             .lines()
@@ -4096,7 +4140,12 @@ impl WorkerSupervisor {
                 let (sha, subject) = line.split_once(' ')?;
                 (subject == run.info.message).then(|| sha.to_owned())
             })
-            .ok_or_else(|| format!("master has no commit {:?} after the pick", run.info.message))?;
+            .ok_or_else(|| {
+                format!(
+                    "{target} has no commit {:?} after the pick",
+                    run.info.message
+                )
+            })?;
         let trailer = run_trailer(&run.info);
         let mut trailers = landing_trailers(&repo, &picked)
             .is_some_and(|(_, run_id, attempt)| format!("{run_id}/{attempt}") == trailer);
@@ -4178,7 +4227,13 @@ impl WorkerSupervisor {
             .filter(|stat| !stat.is_empty());
         event.commits = vec![commit.to_owned()];
         event.result_text = Some(patch);
-        event.error = Some(landing_note(&run.info.run_id, repo, commit, &head));
+        event.error = Some(landing_note(
+            &run.info.run_id,
+            repo,
+            run.target_branch(),
+            commit,
+            &head,
+        ));
         run.info.status = TodoRunStatus::Waiting;
         self.record_run_event(run, &event)?;
         Ok(())
@@ -4585,6 +4640,36 @@ mod tests {
             old.worker_model(),
             Some("herdr-anthropic/claude-sonnet-4-5-20250929")
         );
+    }
+
+    /// A run recorded before runs stored their target branch could only
+    /// have targeted `master`; a stored one is kept in the finish column.
+    #[test]
+    fn a_run_without_a_stored_branch_targets_the_legacy_one() {
+        let info: TodoRunInfo = serde_json::from_value(json!({
+            "run_id": "r-aaaaaaaa", "repo": "/repo", "item": "t-aaaaaaaa",
+            "step": "push", "status": "running", "attempt": 1, "task": "",
+            "message": "", "paths": [], "checks": [], "created_ms": 0, "updated_ms": 0,
+        }))
+        .unwrap();
+        let mut run = Run {
+            info,
+            checks: Vec::new(),
+            owner_pane: None,
+            owner_session: None,
+            workspace: None,
+            owner_coordinator: None,
+            finish: RunFinish::default(),
+            current: Attempt::default(),
+        };
+        assert_eq!(
+            run.target_branch(),
+            super::super::target_branch::LEGACY_TARGET_BRANCH
+        );
+        run.info.target_branch = Some("main".into());
+        assert_eq!(run.target_branch(), "main");
+        let stored = serde_json::to_value(run.finish_with_results()).unwrap();
+        assert_eq!(stored["target_branch"], "main");
     }
 
     #[test]

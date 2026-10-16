@@ -14,7 +14,7 @@
 //! repository ended (done, blocked or aborted), an escalation was answered,
 //! the server started, the mode was set, and, for a queue the usage gate
 //! stopped, the usage poller published a new reading. `TODO.md` is read
-//! from `master` at each of them (git's own state, not a watched file), and
+//! from the repository's default branch at each of them (git's own state, not a watched file), and
 //! the items by their stable ids.
 //!
 //! Guarantees:
@@ -186,11 +186,13 @@ fn skips_event(repo: &str) -> bool {
     }
 }
 
-/// What a start of the queue claims: the fencing token it read and the
-/// item with the digest of its text.
+/// What a start of the queue claims: the fencing token it read, the
+/// item with the digest of its text, and the target branch whose `TODO.md`
+/// it read, which the run it starts lands on.
 pub(super) struct QueueStart {
     pub(super) token: i64,
     pub(super) item_digest: String,
+    pub(super) target_branch: String,
 }
 
 impl QueueStart {
@@ -229,10 +231,17 @@ fn item_digest(text: &str) -> String {
         .collect()
 }
 
-/// `master`'s `TODO.md`: git's own state, not the checkout's file.
-fn todo_on_master(repo: &str) -> Result<String, String> {
-    git(Path::new(repo), &["show", &format!("master:{TODO_FILE}")])
-        .map_err(|error| format!("cannot read {TODO_FILE} on master: {error}"))
+/// The repository's default branch ([`super::super::target_branch`]),
+/// `env` for the question to `origin`, and its `TODO.md`: git's own state,
+/// not the checkout's file.
+fn todo_on_default(
+    repo: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<(String, String), String> {
+    let branch = super::super::target_branch::resolve(Path::new(repo), env)?;
+    let todo = git(Path::new(repo), &["show", &format!("{branch}:{TODO_FILE}")])
+        .map_err(|error| format!("cannot read {TODO_FILE} on {branch}: {error}"))?;
+    Ok((branch, todo))
 }
 
 fn mode_of(queue: Option<&StoredQueue>) -> TodoQueueMode {
@@ -359,8 +368,9 @@ impl WorkerSupervisor {
         let queue = store.queue(&repo).map_err(store_error)?;
         let mode = mode_of(queue.as_ref());
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let blocked = todo_on_master(&repo)
-            .map(|todo| blocked_items(&todo, &runs))
+        let env = lock(&QUEUE_ENV).get(&repo).cloned();
+        let blocked = todo_on_default(&repo, env.as_ref())
+            .map(|(_, todo)| blocked_items(&todo, &runs))
             .unwrap_or_default();
         let active = store.active_run(&repo).map_err(store_error)?;
         let (status, reason) = match (&active, &queue) {
@@ -428,9 +438,10 @@ impl WorkerSupervisor {
             .filter(|tenure| tenure.headless)
             .map(|tenure| tenure.id);
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let todo = todo_on_master(&repo);
+        let env = lock(&QUEUE_ENV).get(&repo).cloned();
+        let todo = todo_on_default(&repo, env.as_ref());
         let runnable_items: Vec<String> = match &todo {
-            Ok(todo) => todo_titles::next_items(todo)
+            Ok((_, todo)) => todo_titles::next_items(todo)
                 .into_iter()
                 .filter(|item| {
                     let text = todo_titles::item_text(todo, item).unwrap_or_default();
@@ -456,8 +467,10 @@ impl WorkerSupervisor {
             why.clone()
         } else if runnable_items.is_empty() {
             format!(
-                "\"{}\" in {TODO_FILE} on master has no item the driver can run",
-                todo_titles::NEXT_SECTION
+                "\"{}\" in {TODO_FILE} on {} has no item the driver can run",
+                todo_titles::NEXT_SECTION,
+                todo.as_ref()
+                    .map_or("the default branch", |(branch, _)| branch.as_str())
             )
         } else {
             format!(
@@ -618,14 +631,17 @@ impl WorkerSupervisor {
             );
             return self.queue_record(repo, TodoQueueStatus::Running, &reason);
         }
-        let todo = match todo_on_master(repo) {
-            Ok(todo) => todo,
+        // Resolved once, before the read: the run it starts lands on the
+        // branch whose TODO.md chose its item.
+        let env = lock(&QUEUE_ENV).get(repo).cloned();
+        let (target_branch, todo) = match todo_on_default(repo, env.as_ref()) {
+            Ok(read) => read,
             Err(why) => return self.queue_record(repo, TodoQueueStatus::Blocked, &why),
         };
         let items = todo_titles::next_items(&todo);
         if items.is_empty() {
             let reason = format!(
-                "\"{}\" in {TODO_FILE} on master has no open item",
+                "\"{}\" in {TODO_FILE} on {target_branch} has no open item",
                 todo_titles::NEXT_SECTION
             );
             return self.queue_record(repo, TodoQueueStatus::Empty, &reason);
@@ -654,12 +670,13 @@ impl WorkerSupervisor {
         };
         // A server that started cold has no environment for the checks,
         // install and push: a run would only fail them as unavailable.
-        let Some(env) = lock(&QUEUE_ENV).get(repo).cloned() else {
+        let Some(env) = env else {
             return self.queue_pause_for_env(repo);
         };
         let start = QueueStart {
             token: queue.token,
             item_digest,
+            target_branch,
         };
         let params = TodoRunParams {
             cwd: repo.to_owned(),

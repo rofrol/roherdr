@@ -10,7 +10,7 @@
 //! refused with `grant_needs_user`, so no agent pane grants.
 //!
 //! A grant stores the definition as `todo.grant` does (checked again
-//! against `master`), records it, and lets the repository's queue look
+//! against the default branch), records it, and lets the repository's queue look
 //! again; a coordinator starts the refused run again itself. Not now takes
 //! the question off the list, recorded; the next refused run lists it
 //! again. The list is kept in memory only: a server that starts lists a
@@ -363,7 +363,7 @@ impl WorkerSupervisor {
     }
 
     /// The user's answer: Grant stores the grant (refused as gone when
-    /// `master` defines the operation otherwise now), records it and lets
+    /// the default branch defines the operation otherwise now), records it and lets
     /// the queue look again; Not now or a denial takes the question off
     /// the list, recorded.
     fn answer_grant_question(
@@ -378,7 +378,7 @@ impl WorkerSupervisor {
         if granted {
             match self.store_grant(&question.repo, &question.hash, "client") {
                 Ok(_) => {}
-                // The definition changed on master: this question is stale,
+                // The definition changed on the default branch: this question is stale,
                 // and the next refused run asks about the new one.
                 Err(WorkerError::Invalid(why)) => {
                     take(&question.repo, &question.operation, &question.hash);
