@@ -11,6 +11,22 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
+  2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
+  use of this workflow by roherdr now, narrowly"; consult round
+  `20261016-120247-cf00`, all five models: the usage gate must cover the
+  supervisor's agents or do not integrate). `herdr worker run` (or a flag of
+  `worker start` that waits) admits the start through the same server-side
+  usage gate as `todo run` (`WorkerSupervisor::usage_gate`, one gate, never a
+  second), runs the headless worker in the directory the caller names (a
+  worktree the orchestrator owns; no folder slot, no landing, no TODO edit)
+  under the same sandbox, blocks until the worker's turn ends and prints one
+  JSON result (final text, usage per model, status); a refusal exits with
+  its own status and message, which the caller records, never a retry on a
+  timer. agentic-workflow-bend-claude's `scripts/agent-worker` then runs it
+  as its agent command (its item t-adaptrun), and herdr-bend implements the
+  same contract at M3.
+
 - [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
   user's question 2026-10-12, "loss of memory between items and shallower
   review: how do others counter it?"; round 20261012-155246-e730, see
