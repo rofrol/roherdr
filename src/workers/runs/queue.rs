@@ -174,6 +174,36 @@ pub(crate) fn set_env_for_test(repo: &str, env: Option<HashMap<String, String>>)
     };
 }
 
+/// Test only: a latch the next evaluation of a repository stops at after it
+/// read the queue's fencing token and before it starts the run: it says it
+/// got there, then waits for the go.
+#[cfg(test)]
+type StartLatch = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+#[cfg(test)]
+static BEFORE_START: Mutex<BTreeMap<String, StartLatch>> = Mutex::new(BTreeMap::new());
+
+/// Test only: the next evaluation of `repo` that gets to its start sends on
+/// the returned receiver, then starts only once the returned sender sends.
+#[cfg(all(test, unix))]
+pub(crate) fn hold_next_start(
+    repo: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached, on_reached) = std::sync::mpsc::channel();
+    let (go, on_go) = std::sync::mpsc::channel();
+    lock(&BEFORE_START).insert(repo.to_owned(), (reached, on_go));
+    (on_reached, go)
+}
+
+#[cfg(test)]
+fn before_start(repo: &str) {
+    let latch = lock(&BEFORE_START).remove(repo);
+    if let Some((reached, go)) = latch {
+        let _ = reached.send(());
+        let _ = go.recv();
+    }
+}
+
 #[cfg(test)]
 fn skips_event(repo: &str) -> bool {
     let mut skips = lock(&SKIP_EVENT);
@@ -695,6 +725,8 @@ impl WorkerSupervisor {
             auto_answer: true,
         };
         let choice = Self::choice_of(None, None);
+        #[cfg(test)]
+        before_start(repo);
         match self.start_run_as(params, true, Some(&start), true, choice) {
             Ok(run) => Ok(QueueStep::Started(run.run_id)),
             // Another start claimed the token, or a run started meanwhile:

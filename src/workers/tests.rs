@@ -12788,6 +12788,48 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             }
 
             #[test]
+            fn a_step_that_loses_the_start_never_reports_the_run_as_its_own() {
+                let (fixture, repo) = queued("todo-queue-lost-start", &[ITEM, ITEM2], &[ESCALATE]);
+                runs::queue::set_env_for_test(&repo, Some(caller_env()));
+                store_of(&fixture.supervisor)
+                    .transaction(|tx| {
+                        tx.queue_on(
+                            &repo,
+                            &store::RunOwner {
+                                pane_id: Some("p-coordinator"),
+                                session_id: None,
+                                workspace: Some("ws-coordinator"),
+                                coordinator_id: None,
+                            },
+                            now_ms(),
+                        )
+                    })
+                    .unwrap();
+                // The loser read the queue's token and found nothing active;
+                // it stops at the latch before its start, the winner starts
+                // the run, then the loser goes on.
+                let (reached, go) = runs::queue::hold_next_start(&repo);
+                let (lost, won) = std::thread::scope(|scope| {
+                    let loser = scope.spawn(|| fixture.supervisor.queue_step(&repo).unwrap());
+                    reached.recv().unwrap();
+                    let won = fixture.supervisor.queue_step(&repo).unwrap();
+                    go.send(()).unwrap();
+                    (loser.join().unwrap(), won)
+                });
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(runs.len(), 1, "{runs:#?}");
+                assert_eq!(won, QueueStep::Started(runs[0].run_id.clone()));
+                assert_eq!(lost, QueueStep::Idle, "the loser reported the winner's run");
+                let store = store_of(&fixture.supervisor);
+                assert_eq!(store.queue_runs(&repo).unwrap().len(), 1);
+                assert_eq!(store.queue(&repo).unwrap().unwrap().token, 1);
+
+                set(&fixture, TodoQueueMode::Paused);
+                let (escalated, _) = wait(&fixture, &runs[0].run_id, None);
+                abort(&fixture, &runs[0].run_id, escalated.event_id);
+            }
+
+            #[test]
             fn a_close_in_queue_mode_names_no_next_item() {
                 let (fixture, repo) = queued("todo-queue-close", &[ITEM, ITEM2], &[ESCALATE]);
                 set(&fixture, TodoQueueMode::Paused);

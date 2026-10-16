@@ -1890,8 +1890,18 @@ impl WorkerSupervisor {
             WorkerError::Preflight(format!("{} is not in a git repository", params.cwd))
         })?;
         let store = self.run_store()?;
+        // A caller's retry of its own start waiting for usage gets that run
+        // back; a start of the queue never does: the run is the start that
+        // moved the token, and this one reports it as its own otherwise.
+        let item = params.item.clone();
+        let adopts = move |active: &Run| {
+            queue.is_none()
+                && wait_usage
+                && active.finish.usage_dispatch
+                && active.info.item == item
+        };
         if let Some(active) = store.active_run(&repo).map_err(store_error)? {
-            if wait_usage && active.finish.usage_dispatch && active.info.item == params.item {
+            if adopts(&active) {
                 return self.existing_wait_start(&params, active);
             }
             return Err(Self::run_active(&active));
@@ -2105,11 +2115,7 @@ impl WorkerSupervisor {
             // Another run of the repository committed since the check.
             Err(error) if is_unique_violation(&error) => {
                 return Err(match store.active_run(&repo) {
-                    Ok(Some(active))
-                        if wait_usage
-                            && active.finish.usage_dispatch
-                            && active.info.item == params.item =>
-                    {
+                    Ok(Some(active)) if adopts(&active) => {
                         return self.existing_wait_start(&params, active);
                     }
                     Ok(Some(active)) => Self::run_active(&active),
