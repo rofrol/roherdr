@@ -3794,6 +3794,19 @@ Items agents add. Not approved until the user moves them up.
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
 
+- [ ] A live handoff fails when the old server's public sockets stay open [t-qgtdc57s]
+  (report r-86, 2026-10-16, run r-6ahe2rtv's install: "handoff replacement
+  server did not become ready ... old server sockets did not close before
+  handoff import bind"; the previous binary was restored).
+  `wait_for_old_public_sockets_to_close` (src/server/headless/lifecycle.rs,
+  around line 435) polls every 50 ms until a deadline, a timed wait that
+  Rule 10 forbids; find what keeps the old listeners accepting (an open
+  wait connection, a worker broker, a client) and make the old server
+  acknowledge its listeners closed as an event the new one waits on.
+  Reproduce first with a stress loop of live handoffs while open waits
+  (`todo wait`, `worker wait`) and brokered workers are attached. Touches
+  handoff, so it waits for approval.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
