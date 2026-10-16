@@ -22,6 +22,26 @@ JOB = runpy.run_path(str(Path(__file__).with_name("herdr-job"))) if os.name == "
 Footer = JOB.get("Footer")
 
 
+class JobTime:
+    """herdr-job's own `time`: the given attributes, the rest from the real module."""
+
+    def __init__(self, attrs):
+        self.__dict__.update(attrs)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def patch_job_time(**attrs):
+    """Replaces `time.sleep` and friends for herdr-job's code only. Patching
+    the `time` module would also catch the standard library: `Popen.wait`
+    with a timeout reaps a child that closed its pipes but has not exited yet
+    in a doubling sleep loop, which the recorders saw as herdr-job's own
+    retries (2026-10-12 and 2026-10-16, under load). `run_path` returns a
+    copy of the module's globals, so this patches the functions' own globals."""
+    return patch.dict(JOB["herdr"].__globals__, {"time": JobTime(attrs)})
+
+
 def announced_watch(_path, _stream):
     """A `job_watch` whose every wait returns at once: the patched `status`
     stands for the state each event would have announced."""
@@ -121,7 +141,9 @@ class ExecutorFooterTests(unittest.TestCase):
                 stream = io.TextIOWrapper(output, encoding="utf-8", write_through=True)
                 overrides = {"job_dir": lambda _: path, "read_meta": lambda _: dict(meta),
                              "write_meta": Mock(), "Footer": Mock(return_value=footer),
-                             "set_final_tab_status": Mock(), "update_owner_token": Mock(), "notify": Mock()}
+                             "set_final_tab_status": Mock(), "update_owner_token": Mock(), "notify": Mock(),
+                             # `caffeinate -w` would outlive the call, held by this test process.
+                             "keep_awake": Mock()}
                 with patch.dict(executor.__globals__, overrides), \
                         patch.object(executor.__globals__["signal"], "signal") as signal_mock, \
                         contextlib.redirect_stdout(stream):
@@ -491,7 +513,7 @@ class WaitEdgeTests(unittest.TestCase):
         # records' (random) file names: p9 starts first, p7 and p8 tie.
         starts = iter([30.0, 20.0, 20.0, 10.0, 5.0])
         with patch.dict(os.environ, {"HERDR_PANE_ID": "p1"}), contextlib.ExitStack() as stack:
-            with patch.object(time, "time", lambda: next(starts)):
+            with patch_job_time(time=lambda: next(starts)):
                 for target in ("p8", "p8", "p7", "p9"):
                     stack.enter_context(JOB["wait_edge"]("agent", target_pane=target, request=None))
                 with patch.dict(os.environ, {"HERDR_PANE_ID": "p2"}):
@@ -661,7 +683,7 @@ class WaitForExitTests(unittest.TestCase):
         wait_for_exit = JOB["wait_for_exit"]
         no_sleep = Mock(side_effect=AssertionError("polled"))
         with patch.dict(wait_for_exit.__globals__, {"os": SimpleNamespace(), "select": SimpleNamespace()}), \
-                patch.object(time, "sleep", no_sleep):
+                patch_job_time(sleep=no_sleep):
             with self.assertRaises(SystemExit) as result:
                 wait_for_exit(12345)
         self.assertIn("not polling pid 12345", str(result.exception.code))
@@ -708,7 +730,7 @@ class WaitEventTests(unittest.TestCase):
             "job_watch": SignallingWatch, "follow_server_tabs": lambda _wake: None})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.sleep = patch.object(time, "sleep", Mock(side_effect=AssertionError("paused")))
+        self.sleep = patch_job_time(sleep=Mock(side_effect=AssertionError("paused")))
         self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
@@ -858,7 +880,7 @@ class CloseTabTests(unittest.TestCase):
             patches["TabEvents"] = SimpleNamespace(subscribe=events)
         err = io.StringIO()
         with patch.dict(globs, patches), patch.dict(os.environ, {"HERDR_SOCKET_PATH": socket_path}), \
-                patch.object(time, "sleep", Mock(side_effect=AssertionError("paused"))), \
+                patch_job_time(sleep=Mock(side_effect=AssertionError("paused"))), \
                 contextlib.redirect_stderr(err):
             done = JOB["close_job_tab"](self.META)
         return done, closed, err.getvalue()
@@ -962,7 +984,7 @@ class CloseTabTests(unittest.TestCase):
         sleeps = []
         err = io.StringIO()
         with patch.dict(JOB["set_final_tab_status"].__globals__, {"herdr_ok": lambda *_a: False}), \
-                patch.object(time, "sleep", sleeps.append), contextlib.redirect_stderr(err):
+                patch_job_time(sleep=sleeps.append), contextlib.redirect_stderr(err):
             self.assertFalse(JOB["set_final_tab_status"](self.META, 0))
         self.assertEqual(tuple(sleeps), JOB["TRANSPORT_BACKOFF_S"])
         self.assertIn("did not take tab w:t1's final status", err.getvalue())
@@ -1057,6 +1079,7 @@ class WatchPidTests(unittest.TestCase):
 
     def test_it_returns_when_the_process_exits_and_does_not_claim_its_status(self):
         child = subprocess.Popen(["sleep", "0.3"])
+        self.addCleanup(child.wait)
         started, command = JOB["process_identity"](child.pid)
         # Reap the child as its parent would, so its pid really goes away.
         threading.Thread(target=child.wait, daemon=True).start()
@@ -1431,6 +1454,17 @@ with open(os.path.join(d, "lock"), "a") as lock:
         sys.stdout.write(stdout)
         sys.stderr.write(stderr)
         sys.exit(code)
+# Closes its output, then stays alive until the test writes to the `linger`
+# FIFO: STUB_LINGER="pane get" etc. Only the first such call claims the FIFO.
+linger = os.path.join(d, "linger")
+if os.environ.get("STUB_LINGER") == " ".join(args[:2]) and os.path.exists(linger):
+    os.rename(linger, linger + ".claimed")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    open(linger + ".claimed").read()
 """
 
 
@@ -1659,7 +1693,7 @@ class WaitAgentTests(unittest.TestCase):
         (self.stub_dir / "agent.json").write_text(json.dumps(answers))
         args = SimpleNamespace(pane="w:p5", until=flags.get("until", []), request=flags.get("request"))
         out = io.StringIO()
-        with patch.object(time, "sleep", self.sleeps.append), contextlib.redirect_stdout(out):
+        with patch_job_time(sleep=self.sleeps.append), contextlib.redirect_stdout(out):
             try:
                 self.wait_agent(args)
                 code = 0
@@ -1700,6 +1734,25 @@ class WaitAgentTests(unittest.TestCase):
                 self.assertEqual((code, len(calls), self.sleeps), (3, 1, []))
                 self.assertIn("gone", text)
 
+    def test_the_standard_library_reaping_a_herdr_call_is_not_a_retry(self):
+        # The `pane get` stub closes its output and stays alive, so
+        # `subprocess.run`'s timed reap goes to sleep; that sleep releases it
+        # and returns at once.
+        os.mkfifo(self.stub_dir / "linger")
+        reaped = []
+
+        def stdlib_sleep(seconds):
+            if not reaped:
+                reaped.append(seconds)
+                with open(self.stub_dir / "linger.claimed", "w"):
+                    pass  # EOF: the stub exits
+
+        gone = [1, "", json.dumps({"error": {"code": "agent_not_found", "message": "no agent"}}) + "\n"]
+        with patch.dict(os.environ, {"STUB_LINGER": "pane get"}), patch.object(time, "sleep", stdlib_sleep):
+            code, _, calls = self.run_wait([gone])
+        self.assertEqual((code, len(calls), self.sleeps), (3, 1, []))
+        self.assertTrue(reaped, "the reap loop never slept")
+
     def test_an_error_that_waiting_cannot_fix_ends_the_wait(self):
         mismatch = [1, "", json.dumps({"error": {"code": "protocol_mismatch", "message": "x"}}) + "\n"]
         code, _, calls = self.run_wait([mismatch])
@@ -1715,7 +1768,7 @@ class WaitAgentTests(unittest.TestCase):
 
         (self.stub_dir / "agent.json").write_text(json.dumps([empty]))
         args = SimpleNamespace(pane="w:p5", until=[], request=None)
-        with patch.object(time, "sleep", sleep), patch.object(time, "monotonic", lambda: clock[0]), \
+        with patch_job_time(sleep=sleep, monotonic=lambda: clock[0]), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(SystemExit) as result:
                 self.wait_agent(args)
