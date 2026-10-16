@@ -9406,7 +9406,8 @@ mod todo_runs {
             repo,
             &["remote", "add", "origin", &remote.display().to_string()],
         );
-        git_in(repo, &["push", "-q", "origin", branch]);
+        // Tracking its namesake: git's push destination for the branch.
+        git_in(repo, &["push", "-q", "-u", "origin", branch]);
         remote
     }
 
@@ -9958,14 +9959,12 @@ mod todo_runs {
             .is_empty());
     }
 
-    /// A checkout on a feature branch of a repository with an `origin`:
-    /// the run targets origin's default branch, and its landing refuses
-    /// while the checkout is not on it.
+    /// The landing worktree switched to another branch after the preflight:
+    /// the cherry-pick stops, naming both, and nothing lands.
     #[test]
-    fn a_checkout_on_a_feature_branch_targets_the_default_and_refuses_to_land() {
+    fn a_landing_worktree_switched_before_the_pick_stops_the_run() {
         let fixture = todo_repo("todo-feature-checkout");
         with_finish(&fixture);
-        git_in(&fixture.repo, &["checkout", "-q", "-b", "feature"]);
         let before = rev(&fixture.repo, "master");
         let run = fixture
             .supervisor
@@ -9974,6 +9973,7 @@ mod todo_runs {
         assert_eq!(run.target_branch.as_deref(), Some("master"));
         assert_eq!(run.base.as_deref(), Some(before.as_str()));
         let (review, _) = wait(&fixture, &run.run_id, None);
+        git_in(&fixture.repo, &["checkout", "-q", "-b", "feature"]);
         approve_with(&fixture, &run.run_id, review.event_id, None, None);
         let (blocked, _) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
@@ -9981,6 +9981,209 @@ mod todo_runs {
         assert!(error.contains("is on feature, not master"), "{error}");
         assert_eq!(rev(&fixture.repo, "master"), before);
         assert_eq!(rev(&fixture.repo, "feature"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_cherry_pick_intent").is_empty());
+    }
+
+    /// The landing worktree dirtied after the preflight: the cherry-pick
+    /// stops, naming the change, and nothing lands.
+    #[test]
+    fn a_landing_worktree_dirtied_before_the_pick_stops_the_run() {
+        let fixture = todo_repo("todo-dirtied-landing");
+        with_finish(&fixture);
+        let before = rev(&fixture.repo, "master");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        std::fs::write(fixture.repo.join("install.sh"), "echo changed\n").unwrap();
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (blocked, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        let error = blocked.error.unwrap_or_default();
+        assert!(
+            error.contains("has uncommitted changes") && error.contains("install.sh"),
+            "{error}"
+        );
+        assert_eq!(rev(&fixture.repo, "master"), before);
+        assert!(run_events(&fixture, &run.run_id, "run_cherry_pick_intent").is_empty());
+    }
+
+    /// A linked worktree of the repository (`bootstrap`, whose upstream is
+    /// `origin/main`), the fork's branch `fork/bootstrap` set up as git
+    /// says: upstream and `pushRemote` on the fork. A run started there
+    /// lands on `bootstrap` in that worktree and pushes to `fork`, never
+    /// touching `main` or `origin`.
+    #[test]
+    fn a_fork_worktree_lands_on_its_branch_and_pushes_to_the_fork() {
+        let fixture = todo_repo_on("todo-fork-worktree", "main");
+        let origin = with_finish_on(&fixture, "main");
+        let (worktree, fork) = fork_worktree(&fixture, true);
+        let main_before = rev(&fixture.repo, "main");
+        let origin_before = rev(&origin, "main");
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                cwd: worktree.display().to_string(),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        assert_eq!(run.target_branch.as_deref(), Some("bootstrap"));
+        assert_eq!(
+            run.landing_worktree.as_deref(),
+            Some(
+                worktree
+                    .canonicalize()
+                    .unwrap()
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        let push = run.push.clone().unwrap();
+        assert_eq!(push.remote.as_deref(), Some("fork"), "{push:?}");
+        assert_eq!(
+            push.remote_from.as_deref(),
+            Some("branch.bootstrap.pushRemote")
+        );
+        assert_eq!(push.dst_ref.as_deref(), Some("refs/heads/bootstrap"));
+        let created = run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["push"]["remote"], "fork", "{created:?}");
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let landed = rev(&worktree, "bootstrap");
+        assert_eq!(rev(&worktree, "HEAD"), landed);
+        assert_eq!(
+            git_in(&worktree, &["log", "-1", "--format=%s", "bootstrap"]).trim(),
+            SUBJECT
+        );
+        assert_eq!(rev(&fork, "bootstrap"), landed);
+        assert_eq!(finished.pushed.as_deref(), Some(landed.as_str()));
+        assert_eq!(rev(&fixture.repo, "main"), main_before);
+        assert_eq!(rev(&origin, "main"), origin_before);
+        assert!(git_in(&origin, &["branch", "--list", "bootstrap"])
+            .trim()
+            .is_empty());
+    }
+
+    /// The same worktree without `pushRemote`: git names no single push
+    /// destination (`simple` with an upstream of another name), so the run
+    /// lands and does not push, and says so in its events and status.
+    #[test]
+    fn a_branch_git_names_no_push_destination_for_lands_without_a_push() {
+        let fixture = todo_repo_on("todo-fork-no-push", "main");
+        let origin = with_finish_on(&fixture, "main");
+        let (worktree, fork) = fork_worktree(&fixture, false);
+        let fork_before = rev(&fork, "bootstrap");
+        let origin_before = rev(&origin, "main");
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                cwd: worktree.display().to_string(),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        let skipped = run.push.clone().unwrap().skipped.unwrap_or_default();
+        assert!(skipped.contains("no single push destination"), "{skipped}");
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(
+            git_in(&worktree, &["log", "-1", "--format=%s", "bootstrap"]).trim(),
+            SUBJECT
+        );
+        assert_eq!(finished.pushed, None);
+        let status = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(status.push.and_then(|push| push.skipped), Some(skipped));
+        let events = run_events(&fixture, &run.run_id, "run_push_skipped");
+        assert!(
+            events[0]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no single push destination"),
+            "{events:?}"
+        );
+        assert_eq!(rev(&fork, "bootstrap"), fork_before);
+        assert_eq!(rev(&origin, "main"), origin_before);
+    }
+
+    /// A destination branch the remote does not have: the push is refused,
+    /// never creating it.
+    #[test]
+    fn a_push_that_would_create_a_remote_branch_is_refused() {
+        let fixture = todo_repo("todo-push-missing-branch");
+        let remote = with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        assert_eq!(
+            run.push.clone().unwrap().dst_ref.as_deref(),
+            Some("refs/heads/master")
+        );
+        // The branch goes away on the remote after the preflight.
+        git_in(&remote, &["branch", "-q", "-m", "master", "trunk"]);
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (failed, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::PushFailed, "{failed:#?}");
+        let error = failed.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("origin has no refs/heads/master")
+                && error.contains("never creates a branch"),
+            "{error}"
+        );
+        assert!(git_in(&remote, &["branch", "--list", "master"])
+            .trim()
+            .is_empty());
+        assert!(run_events(&fixture, &run.run_id, "run_push_intent").is_empty());
+        abort(&fixture, &run.run_id, failed.event_id);
+    }
+
+    /// A linked worktree of `fixture`'s repository on `bootstrap`, whose
+    /// upstream is `origin/main`, and a bare `fork` remote that has
+    /// `bootstrap`; with `push_remote`, the branch's upstream and
+    /// `pushRemote` are the fork's, as a fork branch needs under `simple`.
+    fn fork_worktree(fixture: &Fixture, push_remote: bool) -> (PathBuf, PathBuf) {
+        let repo = &fixture.repo;
+        let worktree = fixture.root.join("bootstrap");
+        git_in(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "bootstrap",
+                &worktree.display().to_string(),
+                "main",
+            ],
+        );
+        git_in(
+            &worktree,
+            &["branch", "-q", "-u", "origin/main", "bootstrap"],
+        );
+        let fork = fixture.root.join("fork.git");
+        git_in(&fixture.root, &["init", "-q", "--bare", "fork.git"]);
+        git_in(
+            repo,
+            &["remote", "add", "fork", &fork.display().to_string()],
+        );
+        git_in(&worktree, &["push", "-q", "fork", "bootstrap"]);
+        if push_remote {
+            git_in(
+                &worktree,
+                &["branch", "-q", "-u", "fork/bootstrap", "bootstrap"],
+            );
+            git_in(
+                &worktree,
+                &["config", "branch.bootstrap.pushRemote", "fork"],
+            );
+        }
+        (worktree, fork)
     }
 
     /// The stored branch renamed during the run: the cherry-pick stops with
@@ -10011,11 +10214,12 @@ mod todo_runs {
         assert!(run_events(&fixture, &run.run_id, "run_cherry_pick_intent").is_empty());
     }
 
-    /// A detached HEAD without a remote, or an `origin` that cannot be
-    /// reached, has no target branch: preflight refuses and names why.
+    /// A detached HEAD where `todo run` starts has no target branch:
+    /// preflight refuses and names why, with or without a remote.
     #[test]
-    fn preflight_refuses_without_a_resolvable_default_branch() {
-        let fixture = todo_repo("todo-detached-no-remote");
+    fn preflight_refuses_a_detached_head() {
+        let fixture = todo_repo("todo-detached-head");
+        with_finish(&fixture);
         git_in(&fixture.repo, &["checkout", "-q", "--detach"]);
         let task = format!("commit a.txt {SUBJECT}");
         let refused = fixture
@@ -10024,22 +10228,6 @@ mod todo_runs {
             .unwrap_err()
             .to_string();
         assert!(refused.contains("detached HEAD"), "{refused}");
-
-        let fixture = todo_repo("todo-unreachable-origin");
-        let missing = fixture.root.join("missing.git");
-        git_in(
-            &fixture.repo,
-            &["remote", "add", "origin", &missing.display().to_string()],
-        );
-        let refused = fixture
-            .supervisor
-            .todo_run(params(&fixture, &task, "ok"))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refused.contains("git ls-remote --symref origin HEAD"),
-            "{refused}"
-        );
         assert!(fixture
             .supervisor
             .todo_runs(None, None)
@@ -10077,8 +10265,15 @@ mod todo_runs {
         );
         let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
-        // origin's HEAD names master: the run targeted it and said so.
+        // herdr's own case: the checkout is on master, which tracks
+        // origin/master; the run targeted it and pushed there.
         assert_eq!(finished.target_branch.as_deref(), Some("master"));
+        let push = finished.push.clone().unwrap();
+        assert_eq!(
+            (push.remote.as_deref(), push.remote_from.as_deref()),
+            (Some("origin"), Some("branch.master.remote"))
+        );
+        assert_eq!(push.dst_ref.as_deref(), Some("refs/heads/master"));
         let master = rev(&fixture.repo, "master");
         let picked = finished.picked.clone().unwrap();
         assert_eq!(

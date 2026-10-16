@@ -765,19 +765,12 @@ impl WorkerSupervisor {
             .branch
             .as_deref()
             .ok_or_else(|| WorkerError::Invalid("folder_slot needs branch".into()))?;
-        // Without a base, the repository's default branch, resolved as a
-        // run's ([`super::super::target_branch`]).
+        // Without a base, the branch checked out where the caller is,
+        // resolved as a run's ([`super::super::target_branch`]).
         let base = match params.base.clone() {
             Some(base) => base,
             None => {
-                let repo = super::super::repository_of(caller_cwd).ok_or_else(|| {
-                    WorkerError::Invalid(format!(
-                        "{} is not in a git repository",
-                        caller_cwd.display()
-                    ))
-                })?;
-                super::super::target_branch::resolve(Path::new(&repo), None)
-                    .map_err(WorkerError::Invalid)?
+                super::super::target_branch::resolve(caller_cwd).map_err(WorkerError::Invalid)?
             }
         };
         let base = base.as_str();

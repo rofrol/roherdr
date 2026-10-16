@@ -244,6 +244,8 @@ mod tests {
             attempt: 1,
             base: None,
             target_branch: None,
+            landing_worktree: None,
+            push: None,
             worker_id: None,
             branch: None,
             task: String::new(),

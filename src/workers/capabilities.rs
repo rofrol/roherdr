@@ -596,7 +596,8 @@ impl WorkerSupervisor {
     }
 
     /// Stores and records the grant of `repo`'s `prepare` as its default
-    /// branch ([`super::target_branch`]) defines it now, refused (`invalid_request`) unless its hash is
+    /// branch ([`super::target_branch`]: the one its checkout has checked
+    /// out) defines it now, refused (`invalid_request`) unless its hash is
     /// `hash`. Granting a stored grant again records nothing.
     pub(super) fn store_grant(
         &self,
@@ -605,7 +606,7 @@ impl WorkerSupervisor {
         source: &str,
     ) -> Result<TodoGrant, WorkerError> {
         let branch =
-            super::target_branch::resolve(Path::new(repo), None).map_err(WorkerError::Invalid)?;
+            super::target_branch::resolve(Path::new(repo)).map_err(WorkerError::Invalid)?;
         let file = read_operations_at(Path::new(repo), &branch)
             .map_err(WorkerError::Invalid)?
             .and_then(|file| file.prepare)

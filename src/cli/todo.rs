@@ -1,5 +1,5 @@
 //! `herdr todo`: drives a TODO item from preflight through the cherry-pick
-//! onto the repository's default branch, the install, the TODO update, the push and the cleanup
+//! onto the checked-out branch, the install, the TODO update, the push and the cleanup
 //! (`todo.run`), and lets the coordinator wait on and answer the run's
 //! events.
 
@@ -36,10 +36,13 @@ const USAGE: &str = "usage:
       passes this same gate), then
       start a headless worker in the repository's folder slot
       ../herdr-worktrees/<repository>/worker (see `herdr worker start`) on
-      the branch todo/<item-id>-<attempt> from the repository's default
-      branch (origin's HEAD as git ls-remote --symref origin HEAD names it,
-      or without a remote the checkout's current branch; the run stores it
-      and lands on it) with FILE's text as its task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
+      the branch todo/<item-id>-<attempt> from the branch checked out where
+      you run this (a detached HEAD refuses; the run stores it and that
+      worktree, lands there and pushes it where git's push configuration
+      sends it: branch.B.pushRemote, remote.pushDefault or the upstream,
+      fast-forward only, never creating a remote branch, and not at all
+      when git rev-parse B@{push} names no single destination) with FILE's
+      text as its task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
       With --agent pi-anthropic the run spends configured Anthropic API credits

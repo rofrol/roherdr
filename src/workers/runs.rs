@@ -4,11 +4,12 @@
 //! headless worker in the repository's folder slot, turning what needs the
 //! coordinator into run events, stopping the worker, verifying its commit
 //! with the registered check (typed argv, never a shell string),
-//! cherry-picking it onto the repository's default branch (resolved once at
-//! preflight and stored with the run, [`target_branch`]), running the
-//! registered install, recording the coordinator's note or closing decision
-//! in `TODO.md` (with herdr's own `todo_edit.py`, committed by path), pushing
-//! that branch to `origin` only as a fast-forward and deleting the run's
+//! cherry-picking it onto the branch checked out where the run was started
+//! (read once at preflight with that worktree and stored with the run,
+//! [`target_branch`]), running the registered install, recording the
+//! coordinator's note or closing decision in `TODO.md` (with herdr's own
+//! `todo_edit.py`, committed by path), pushing that branch where git's push
+//! configuration sends it, only as a fast-forward, and deleting the run's
 //! merged branches.
 //!
 //! [`target_branch`]: super::target_branch
@@ -178,6 +179,12 @@ pub(super) struct RunFinish {
     /// kept here so the store needs no new column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) target_branch: Option<String>,
+    /// The worktree the run lands in ([`TodoRunInfo::landing_worktree`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) landing_worktree: Option<String>,
+    /// Where the run pushes ([`TodoRunInfo::push`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) push: Option<crate::api::schema::TodoRunPush>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) kept_branches: Vec<String>,
     /// The `tests` check a run stored by an older build added for an API
@@ -500,6 +507,8 @@ impl Run {
             todo_commit: self.info.todo_commit.clone(),
             pushed: self.info.pushed.clone(),
             target_branch: self.info.target_branch.clone(),
+            landing_worktree: self.info.landing_worktree.clone(),
+            push: self.info.push.clone(),
             kept_branches: self.info.kept_branches.clone(),
             next_run_id: self.info.next_run_id.clone(),
             next_refusal: self.info.next_refusal.clone(),
@@ -517,6 +526,17 @@ impl Run {
             .target_branch
             .as_deref()
             .unwrap_or(super::target_branch::LEGACY_TARGET_BRANCH)
+    }
+
+    /// The worktree the run lands in: the one its preflight recorded, or
+    /// the repository's checkout for a run recorded before runs stored it.
+    pub(super) fn landing_dir(&self) -> PathBuf {
+        PathBuf::from(
+            self.info
+                .landing_worktree
+                .as_deref()
+                .unwrap_or(&self.info.repo),
+        )
     }
 
     /// The target branch's commit now; an error naming the branch when it
@@ -1518,6 +1538,10 @@ pub(super) fn low_usage_for_test() -> crate::api::schema::ProviderUsage {
 struct Preflighted {
     /// The branch the run lands on ([`super::target_branch`]).
     target_branch: String,
+    /// The worktree that has it checked out, where the run lands.
+    landing_worktree: PathBuf,
+    /// Where the run pushes, or why it does not.
+    push: crate::api::schema::TodoRunPush,
     base: String,
     checks: Vec<RunCheck>,
     install: Option<InstallCommand>,
@@ -1937,7 +1961,8 @@ impl WorkerSupervisor {
         };
         // The item as the claim records it: its text and every id in TODO.md
         // now, which the close compares with to name the follow-ups.
-        let todo = std::fs::read_to_string(Path::new(&repo).join(TODO_FILE)).unwrap_or_default();
+        let todo = std::fs::read_to_string(preflighted.landing_worktree.join(TODO_FILE))
+            .unwrap_or_default();
         let item_text = todo_titles::item_text(&todo, &params.item);
         let item_ids = todo_titles::item_ids(&todo);
         let at = now_ms();
@@ -1998,6 +2023,8 @@ impl WorkerSupervisor {
                 attempt: 1,
                 base: Some(preflighted.base.clone()),
                 target_branch: Some(preflighted.target_branch.clone()),
+                landing_worktree: Some(preflighted.landing_worktree.display().to_string()),
+                push: Some(preflighted.push.clone()),
                 worker_id: None,
                 branch: Some(branch_of(&params.item, &run_id, 1)),
                 task: params.task.clone(),
@@ -2066,6 +2093,8 @@ impl WorkerSupervisor {
             "item": params.item,
             "base": preflighted.base,
             "target_branch": preflighted.target_branch,
+            "landing_worktree": preflighted.landing_worktree.display().to_string(),
+            "push": preflighted.push,
             "checks": preflighted.checks,
             "install": preflighted.install,
             "path_checks": preflighted.path_checks,
@@ -2225,10 +2254,12 @@ impl WorkerSupervisor {
     /// Checks everything a run needs before it starts anything: the task,
     /// the message, the paths, the item in `TODO.md`, the registered check,
     /// the free disk, a free and clean folder slot, the target branch
-    /// ([`super::target_branch`]: `pinned` when the run has one already,
-    /// otherwise the repository's default branch) and its commit, and the
-    /// operations file at that commit: its requests enforceable and its
-    /// prepare granted ([`super::capabilities`]).
+    /// ([`super::target_branch`]: the branch checked out in the worktree of
+    /// `params.cwd`, which must be `pinned` when the run has one already)
+    /// and its commit, where git pushes it, and the operations file at that
+    /// commit: its requests enforceable and its prepare granted
+    /// ([`super::capabilities`]). The TODO and the checks are read in that
+    /// worktree.
     /// A run the server drafts has no task, message, paths or checks yet:
     /// its draft is checked when it comes ([`auto_draft`]).
     fn preflight(
@@ -2247,6 +2278,18 @@ impl WorkerSupervisor {
             check_message(&params.message).map_err(refuse)?;
             check_paths(&params.paths).map_err(refuse)?;
         }
+        let landing = super::target_branch::checked_out(Path::new(&params.cwd)).map_err(refuse)?;
+        if let Some(pinned) = pinned.filter(|pinned| *pinned != landing.branch) {
+            return Err(refuse(format!(
+                "{} is on {}, not the run's target branch {pinned}; the run does not retarget",
+                landing.worktree.display(),
+                landing.branch
+            )));
+        }
+        // `repository` keys the slot and the grants; the files are read in
+        // the landing worktree.
+        let repository = repo;
+        let repo = landing.worktree.as_path();
         // What a run needs and herdr never makes up itself: a triaged TODO
         // and the repository's registered checks.
         let todo_path = repo.join(TODO_FILE);
@@ -2305,16 +2348,16 @@ impl WorkerSupervisor {
             }
         }
         check_free_disk(repo, &checks.preflight).map_err(refuse)?;
-        self.check_slot_free(repo).map_err(refuse)?;
-        let target_branch = match pinned {
-            Some(branch) => branch.to_owned(),
-            None => super::target_branch::resolve(repo, params.env.as_ref()).map_err(refuse)?,
-        };
+        self.check_slot_free(repository).map_err(refuse)?;
+        let target_branch = landing.branch.clone();
         let base = super::target_branch::commit_of(repo, &target_branch).map_err(refuse)?;
+        let push = super::target_branch::push_of(repo, &target_branch);
         let path_checks = path_checks_of(&checks, &registered);
-        let prepare = self.plan_operations(repo, &base)?;
+        let prepare = self.plan_operations(repository, &base)?;
         Ok(Preflighted {
             target_branch,
+            landing_worktree: landing.worktree,
+            push,
             base,
             checks: registered,
             install: checks.install,
@@ -4050,12 +4093,13 @@ impl WorkerSupervisor {
     }
 
     /// Picks the attempt's verified commit onto the run's target branch
-    /// ([`Run::target_branch`]) in the repository's shared checkout, with the `Herdr-Item` and `Herdr-Run`
+    /// ([`Run::target_branch`]) in the worktree the run recorded
+    /// ([`Run::landing_dir`]), with the `Herdr-Item` and `Herdr-Run`
     /// trailers added to the landed commit's message, and records the
     /// landing. The branch's tip must be the commit and base the approval
     /// named: otherwise the run raises a new `review` instead of landing
     /// another commit. Refused (blocked) when the target branch no longer
-    /// exists, that checkout is not on it, has uncommitted changes or a
+    /// exists, that worktree is not on it, has uncommitted changes or a
     /// cherry-pick in progress, or the branch no longer contains the base;
     /// a conflict is aborted and blocks too. A commit the branch already
     /// has (a pick a crash did not record) is not picked again, and its
@@ -4082,46 +4126,11 @@ impl WorkerSupervisor {
         }
         let target = run.target_branch().to_owned();
         run.target_commit()?;
-        let on = git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .map(|branch| branch.trim().to_owned())
-            .unwrap_or_default();
-        if on != target {
-            return Err(format!(
-                "the shared checkout {} is on {}, not {target}; commit {commit} was not picked",
-                repo.display(),
-                if on.is_empty() {
-                    "a detached HEAD"
-                } else {
-                    &on
-                }
-            ));
-        }
-        if git(
-            &repo,
-            &["rev-parse", "--quiet", "--verify", "CHERRY_PICK_HEAD"],
-        )
-        .is_ok()
-        {
-            return Err(format!(
-                "the shared checkout {} has a cherry-pick in progress",
-                repo.display()
-            ));
-        }
-        let dirty = git(&repo, &["status", "--porcelain", "--untracked-files=no"])?;
-        if !dirty.trim().is_empty() {
-            return Err(format!(
-                "the shared checkout {} has uncommitted changes; commit {commit} was not picked:\n{}",
-                repo.display(),
-                dirty.trim_end()
-            ));
-        }
-        if git(&repo, &["merge-base", "--is-ancestor", &base, "HEAD"]).is_err() {
-            return Err(format!(
-                "{target} in {} no longer contains the run's base {base} (rewritten?); commit \
-                 {commit} was not picked",
-                repo.display()
-            ));
-        }
+        // The recorded worktree, rechecked right before the pick: still on
+        // the target branch, clean, and the branch still has the base.
+        let repo = run.landing_dir();
+        super::target_branch::check_landing(&repo, &target, &base)
+            .map_err(|why| format!("{why}; commit {commit} was not picked"))?;
         // The branch already has the commit itself (a pick made in the same
         // second reproduces its sha), or its change: `git cherry` marks
         // that `-`.

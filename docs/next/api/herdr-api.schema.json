@@ -6843,7 +6843,7 @@
           "type": "object"
         },
         "TodoRunParams": {
-          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's default branch and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
+          "description": "Drives one TODO item from preflight to a cherry-pick onto the branch\nchecked out in the worktree of `cwd` and on through the registered\ninstall, the TODO update, a fast-forward push to where git's push\nconfiguration sends that branch (`push`) and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
             "agent": {
               "anyOf": [
@@ -7702,7 +7702,7 @@
               "description": "The agent CLI the worker runs; Claude when absent."
             },
             "base": {
-              "description": "With `folder_slot`: what the branch starts from; the\nrepository's default branch when absent.",
+              "description": "With `folder_slot`: what the branch starts from; the branch\nchecked out in `cwd` when absent.",
               "type": [
                 "string",
                 "null"
@@ -20915,6 +20915,13 @@
               },
               "type": "array"
             },
+            "landing_worktree": {
+              "description": "The worktree the run lands in (its real path): the one `todo.run`\nwas started from. Absent for a run recorded before runs stored it,\nwhich lands in the repository's checkout.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "last_acked_seq": {
               "description": "The highest worker event the run has handled (acknowledged).",
               "format": "int64",
@@ -20975,6 +20982,17 @@
                 "null"
               ]
             },
+            "push": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunPush"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the run pushes the target branch, as git's configuration for\nthat branch named it at the preflight, or why it does not push.\nAbsent for a run recorded before runs stored it, which pushes to\n`origin`'s branch of the same name."
+            },
             "pushed": {
               "description": "The target branch's commit `origin` has after the push.",
               "type": [
@@ -21030,7 +21048,7 @@
               ]
             },
             "target_branch": {
-              "description": "The branch the run lands on: the repository's default branch as the\npreflight resolved it. Absent for a run recorded before runs stored\nit, which targets `master`.",
+              "description": "The branch the run lands on: the branch checked out in the worktree\n`todo.run` was started from, as the preflight read it. Absent for a\nrun recorded before runs stored it, which targets `master`.",
               "type": [
                 "string",
                 "null"
@@ -21073,6 +21091,46 @@
             "created_ms",
             "updated_ms"
           ],
+          "type": "object"
+        },
+        "TodoRunPush": {
+          "description": "Where a run pushes its target branch, resolved at its preflight from\ngit's configuration for that branch: the remote from\n`branch.<B>.pushRemote`, else `remote.pushDefault`, else\n`branch.<B>.remote`; the destination ref from `push.default` (and\n`branch.<B>.merge` for `upstream`). Either `remote` and `dst_ref` are\nset, or `skipped` says why the run lands without pushing.",
+          "properties": {
+            "dst_from": {
+              "description": "The configuration the destination ref came from (`push.default` and\nits value, with `branch.<B>.merge` for `upstream`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dst_ref": {
+              "description": "The ref on the remote (`refs/heads/<name>`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "remote": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "remote_from": {
+              "description": "The configuration the remote came from (`branch.<B>.pushRemote`,\n`remote.pushDefault`, `branch.<B>.remote`, or git's default\n`origin`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped": {
+              "description": "Why the run does not push: git names no single push destination for\nthe branch.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "TodoRunStatus": {

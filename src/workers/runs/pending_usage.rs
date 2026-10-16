@@ -113,8 +113,10 @@ impl WorkerSupervisor {
             run.finish.ignore_usage,
         ) {
             Ok(_) => {
+                // The worktree the run recorded: its preflight again checks
+                // that it still has the run's branch checked out.
                 let params = crate::api::schema::TodoRunParams {
-                    cwd: run.info.repo.clone(),
+                    cwd: run.landing_dir().display().to_string(),
                     item: run.info.item.clone(),
                     task: run.info.task.clone(),
                     message: run.info.message.clone(),
@@ -143,6 +145,9 @@ impl WorkerSupervisor {
                     Ok(ready) => {
                         run.info.base = Some(ready.base.clone());
                         run.current.base = Some(ready.base);
+                        run.info.landing_worktree =
+                            Some(ready.landing_worktree.display().to_string());
+                        run.info.push = Some(ready.push);
                         run.checks = ready.checks;
                         run.finish.install = ready.install;
                         run.finish.path_checks = ready.path_checks;

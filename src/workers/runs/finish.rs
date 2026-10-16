@@ -2,8 +2,8 @@
 //! TODO update, the push and the cleanup. Each records its intent before its
 //! side effect and its result after it, and asks the repository first
 //! whether a driver a crash cut off already did it: the installed build is
-//! the target branch's, the target branch has the TODO commit, `origin` has
-//! the target branch. Each step reads the branch the run stored
+//! the target branch's, the target branch has the TODO commit, the push
+//! destination has the target branch. Each step reads the branch the run stored
 //! ([`Run::target_branch`]) and stops when it no longer resolves. A failed
 //! install, TODO edit or push is an event the run waits on; nothing is
 //! forced, rebased or retried on its own.
@@ -20,7 +20,8 @@ use super::{
     RUN_ENV, TODO_FILE,
 };
 use crate::api::schema::{
-    HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunStatus, TodoStep,
+    HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunPush, TodoRunStatus,
+    TodoStep,
 };
 use crate::workers::todo_editor::{self, SCRIPT_NAME};
 use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
@@ -237,7 +238,7 @@ impl WorkerSupervisor {
     /// not record, or one made by hand) is not installed again. Without
     /// `[install]` the step is skipped.
     pub(super) fn step_install(&self, run: &mut Run) -> Result<(), String> {
-        let repo = PathBuf::from(&run.info.repo);
+        let repo = run.landing_dir();
         let Some(install) = run.finish.install.clone() else {
             run.info.step = TodoStep::Todo;
             self.run_step(
@@ -326,7 +327,7 @@ impl WorkerSupervisor {
     /// event). A commit the target branch already has with the step's message is not
     /// made again. Without a note or decision the step is skipped.
     pub(super) fn step_todo(&self, run: &mut Run) -> Result<(), String> {
-        let repo = PathBuf::from(&run.info.repo);
+        let repo = run.landing_dir();
         let item = run.info.item.clone();
         let (message, files) = match (&run.finish.note, &run.finish.close) {
             (None, None) => {
@@ -366,7 +367,7 @@ impl WorkerSupervisor {
                 run,
                 TodoEventKind::TodoFailed,
                 format!(
-                    "the shared checkout {} is not on {target}; nothing was edited",
+                    "the landing worktree {} is not on {target}; nothing was edited",
                     repo.display()
                 ),
             );
@@ -585,26 +586,62 @@ impl WorkerSupervisor {
             .collect()
     }
 
-    /// Pushes the target branch to `origin` with the caller's environment,
-    /// only as a fast-forward: when `origin`'s branch is not an ancestor of
-    /// the local one the push is refused (a `push_failed` event), and it is
-    /// never forced. When `origin` already has the branch (a push a crash did
-    /// not record) nothing is pushed. A repository without `origin` skips
-    /// the step.
+    /// Where the run pushes: what its preflight recorded from git's
+    /// configuration ([`super::super::target_branch::push_of`]), or, for a
+    /// run recorded before runs stored it, `origin`'s branch of the same
+    /// name when the repository has `origin`.
+    fn push_plan(run: &Run, repo: &Path) -> TodoRunPush {
+        if let Some(push) = &run.info.push {
+            return push.clone();
+        }
+        let legacy = "a run recorded before runs stored their push destination".to_owned();
+        if git(repo, &["remote", "get-url", "origin"]).is_err() {
+            return TodoRunPush {
+                remote: None,
+                remote_from: None,
+                dst_ref: None,
+                dst_from: None,
+                skipped: Some("the repository has no origin remote".into()),
+            };
+        }
+        TodoRunPush {
+            remote: Some("origin".into()),
+            remote_from: Some(legacy.clone()),
+            dst_ref: Some(format!("refs/heads/{}", run.target_branch())),
+            dst_from: Some(legacy),
+            skipped: None,
+        }
+    }
+
+    /// Pushes the target branch where the run's push destination names
+    /// ([`Self::push_plan`]) with the caller's environment, with an
+    /// explicit refspec and only as a fast-forward: it fetches that remote
+    /// branch first, and when it is not an ancestor of the local one the
+    /// push is refused (a `push_failed` event); it is never forced. A
+    /// remote that lacks the branch is refused too: herdr never creates a
+    /// branch on a remote (a fork's branch would leak upstream that way),
+    /// the first push is the user's. When the remote already has the
+    /// commit (a push a crash did not record) nothing is pushed. A run
+    /// whose branch git names no single destination for skips the step,
+    /// saying why.
     pub(super) fn step_push(&self, run: &mut Run) -> Result<(), String> {
-        let repo = PathBuf::from(&run.info.repo);
-        if git(&repo, &["remote", "get-url", "origin"]).is_err() {
+        let repo = run.landing_dir();
+        let plan = Self::push_plan(run, &repo);
+        let (Some(remote_name), Some(dst_ref)) = (plan.remote.clone(), plan.dst_ref.clone()) else {
             run.info.step = TodoStep::Cleanup;
             self.run_step(
                 run,
                 json!({
                     "type": "run_push_skipped",
-                    "reason": "the repository has no origin remote",
+                    "reason": plan
+                        .skipped
+                        .clone()
+                        .unwrap_or_else(|| "the run names no push destination".into()),
                     "step": run.info.step,
                 }),
             )?;
             return Ok(());
-        }
+        };
         let Some(env) = lock(&RUN_ENV).get(&run.info.run_id).cloned() else {
             return self.wait_on_failure(
                 run,
@@ -616,65 +653,75 @@ impl WorkerSupervisor {
             );
         };
         let branch = run.target_branch().to_owned();
-        let head_ref = format!("refs/heads/{branch}");
         let target_commit = run.target_commit()?;
-        let remote = match git_with(&repo, &["ls-remote", "origin", &head_ref], Some(&env)) {
+        let theirs = format!("{remote_name}'s {dst_ref}");
+        let remote = match git_with(
+            &repo,
+            &["ls-remote", "--", &remote_name, &dst_ref],
+            Some(&env),
+        ) {
             Ok(out) => out
-                .split_whitespace()
-                .next()
-                .map(str::to_owned)
+                .lines()
+                .find_map(|line| {
+                    let (sha, name) = line.split_once('\t')?;
+                    (name.trim() == dst_ref).then(|| sha.trim().to_owned())
+                })
                 .filter(|sha| !sha.is_empty()),
             Err(why) => {
                 return self.wait_on_failure(
                     run,
                     TodoEventKind::PushFailed,
-                    format!("reading origin's {branch}: {why}"),
+                    format!("reading {theirs}: {why}"),
                 )
             }
         };
-        if let Some(remote) = &remote {
-            if let Err(why) = git_with(
-                &repo,
-                &["fetch", "--quiet", "origin", &head_ref],
-                Some(&env),
-            ) {
-                return self.wait_on_failure(
-                    run,
-                    TodoEventKind::PushFailed,
-                    format!("fetching origin's {branch}: {why}"),
-                );
-            }
-            if git(
-                &repo,
-                &["merge-base", "--is-ancestor", &target_commit, remote],
-            )
-            .is_ok()
-            {
-                return self.pushed(run, target_commit, Some(remote.clone()), true);
-            }
-            if git(
-                &repo,
-                &["merge-base", "--is-ancestor", remote, &target_commit],
-            )
-            .is_err()
-            {
-                return self.wait_on_failure(
-                    run,
-                    TodoEventKind::PushFailed,
-                    format!(
-                        "origin's {branch} {remote} is not an ancestor of {branch} \
-                         {target_commit}: the push would not be a fast-forward, and it is never \
-                         forced; bring {branch} up to date with origin, then retry-push"
-                    ),
-                );
-            }
-        }
-        if let Err(why) = super::check_private_details(
+        let Some(remote) = remote else {
+            return self.wait_on_failure(
+                run,
+                TodoEventKind::PushFailed,
+                format!(
+                    "{remote_name} has no {dst_ref}: herdr never creates a branch on a remote \
+                     (that is how a fork's branch would leak upstream); the first push is yours \
+                     (`git push {remote_name} {branch}:{dst_ref}`), then retry-push"
+                ),
+            );
+        };
+        if let Err(why) = git_with(
             &repo,
-            remote.as_deref().unwrap_or(""),
-            &target_commit,
+            &["fetch", "--quiet", "--", &remote_name, &dst_ref],
             Some(&env),
         ) {
+            return self.wait_on_failure(
+                run,
+                TodoEventKind::PushFailed,
+                format!("fetching {theirs}: {why}"),
+            );
+        }
+        if git(
+            &repo,
+            &["merge-base", "--is-ancestor", &target_commit, &remote],
+        )
+        .is_ok()
+        {
+            return self.pushed(run, target_commit, Some(remote), true);
+        }
+        if git(
+            &repo,
+            &["merge-base", "--is-ancestor", &remote, &target_commit],
+        )
+        .is_err()
+        {
+            return self.wait_on_failure(
+                run,
+                TodoEventKind::PushFailed,
+                format!(
+                    "{theirs} {remote} is not an ancestor of {branch} {target_commit}: the push \
+                     would not be a fast-forward, and it is never forced; bring {branch} up to \
+                     date with {theirs}, then retry-push"
+                ),
+            );
+        }
+        if let Err(why) = super::check_private_details(&repo, &remote, &target_commit, Some(&env)) {
             return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
         }
         self.run_step(
@@ -683,18 +730,25 @@ impl WorkerSupervisor {
                 "type": "run_push_intent",
                 "target": target_commit,
                 "target_branch": branch,
+                "remote": remote_name,
+                "dst_ref": dst_ref,
                 "origin": remote,
             }),
         )?;
         // Push exactly the inspected commit, not a ref another process could
-        // advance between the privacy check and Git reading the push source.
-        let refspec = format!("{target_commit}:{head_ref}");
-        if let Err(why) = git_with(&repo, &["push", "--quiet", "origin", &refspec], Some(&env)) {
+        // advance between the privacy check and Git reading the push source;
+        // without a `+`, the remote refuses anything but a fast-forward.
+        let refspec = format!("{target_commit}:{dst_ref}");
+        if let Err(why) = git_with(
+            &repo,
+            &["push", "--quiet", "--", &remote_name, &refspec],
+            Some(&env),
+        ) {
             return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
         }
         #[cfg(test)]
         super::crashes_after(&run.info.repo, TodoStep::Push)?;
-        self.pushed(run, target_commit, remote, false)
+        self.pushed(run, target_commit, Some(remote), false)
     }
 
     fn pushed(

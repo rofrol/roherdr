@@ -2002,6 +2002,8 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             todo_commit: finish.todo_commit.clone(),
             pushed: finish.pushed.clone(),
             target_branch: finish.target_branch.clone(),
+            landing_worktree: finish.landing_worktree.clone(),
+            push: finish.push.clone(),
             kept_branches: finish.kept_branches.clone(),
             next_item: finish.next.as_ref().map(|next| next.item.clone()),
             next_run_id: finish.next_run_id.clone(),

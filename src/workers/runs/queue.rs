@@ -14,7 +14,7 @@
 //! repository ended (done, blocked or aborted), an escalation was answered,
 //! the server started, the mode was set, and, for a queue the usage gate
 //! stopped, the usage poller published a new reading. `TODO.md` is read
-//! from the repository's default branch at each of them (git's own state, not a watched file), and
+//! from the branch the repository's checkout has checked out at each of them (git's own state, not a watched file), and
 //! the items by their stable ids.
 //!
 //! Guarantees:
@@ -261,14 +261,11 @@ fn item_digest(text: &str) -> String {
         .collect()
 }
 
-/// The repository's default branch ([`super::super::target_branch`]),
-/// `env` for the question to `origin`, and its `TODO.md`: git's own state,
-/// not the checkout's file.
-fn todo_on_default(
-    repo: &str,
-    env: Option<&HashMap<String, String>>,
-) -> Result<(String, String), String> {
-    let branch = super::super::target_branch::resolve(Path::new(repo), env)?;
+/// The branch the repository's checkout has checked out
+/// ([`super::super::target_branch`]), which the queue's runs land on, and
+/// its `TODO.md`: git's own state, not the checkout's file.
+fn todo_on_default(repo: &str) -> Result<(String, String), String> {
+    let branch = super::super::target_branch::resolve(Path::new(repo))?;
     let todo = git(Path::new(repo), &["show", &format!("{branch}:{TODO_FILE}")])
         .map_err(|error| format!("cannot read {TODO_FILE} on {branch}: {error}"))?;
     Ok((branch, todo))
@@ -398,8 +395,7 @@ impl WorkerSupervisor {
         let queue = store.queue(&repo).map_err(store_error)?;
         let mode = mode_of(queue.as_ref());
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let env = lock(&QUEUE_ENV).get(&repo).cloned();
-        let blocked = todo_on_default(&repo, env.as_ref())
+        let blocked = todo_on_default(&repo)
             .map(|(_, todo)| blocked_items(&todo, &runs))
             .unwrap_or_default();
         let active = store.active_run(&repo).map_err(store_error)?;
@@ -468,8 +464,7 @@ impl WorkerSupervisor {
             .filter(|tenure| tenure.headless)
             .map(|tenure| tenure.id);
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let env = lock(&QUEUE_ENV).get(&repo).cloned();
-        let todo = todo_on_default(&repo, env.as_ref());
+        let todo = todo_on_default(&repo);
         let runnable_items: Vec<String> = match &todo {
             Ok((_, todo)) => todo_titles::next_items(todo)
                 .into_iter()
@@ -664,7 +659,7 @@ impl WorkerSupervisor {
         // Resolved once, before the read: the run it starts lands on the
         // branch whose TODO.md chose its item.
         let env = lock(&QUEUE_ENV).get(repo).cloned();
-        let (target_branch, todo) = match todo_on_default(repo, env.as_ref()) {
+        let (target_branch, todo) = match todo_on_default(repo) {
             Ok(read) => read,
             Err(why) => return self.queue_record(repo, TodoQueueStatus::Blocked, &why),
         };

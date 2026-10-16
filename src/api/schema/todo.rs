@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use super::workers::{WorkerDecision, WorkerQuestion, WorkerVerification};
 
-/// Drives one TODO item from preflight to a cherry-pick onto the
-/// repository's default branch and on through the registered install, the TODO
-/// update, a fast-forward push to `origin` and the cleanup of its merged
+/// Drives one TODO item from preflight to a cherry-pick onto the branch
+/// checked out in the worktree of `cwd` and on through the registered
+/// install, the TODO update, a fast-forward push to where git's push
+/// configuration sends that branch (`push`) and the cleanup of its merged
 /// branches: a persisted, resumable run that starts a headless worker in the
 /// repository's folder slot, turns what needs the coordinator (a question
 /// outside the worker policy, the turn's end, a failed verify, install, TODO
@@ -459,11 +460,22 @@ pub struct TodoRunInfo {
     /// attempt's branch starts from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// The branch the run lands on: the repository's default branch as the
-    /// preflight resolved it. Absent for a run recorded before runs stored
-    /// it, which targets `master`.
+    /// The branch the run lands on: the branch checked out in the worktree
+    /// `todo.run` was started from, as the preflight read it. Absent for a
+    /// run recorded before runs stored it, which targets `master`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_branch: Option<String>,
+    /// The worktree the run lands in (its real path): the one `todo.run`
+    /// was started from. Absent for a run recorded before runs stored it,
+    /// which lands in the repository's checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_worktree: Option<String>,
+    /// Where the run pushes the target branch, as git's configuration for
+    /// that branch named it at the preflight, or why it does not push.
+    /// Absent for a run recorded before runs stored it, which pushes to
+    /// `origin`'s branch of the same name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<TodoRunPush>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -956,6 +968,34 @@ pub struct TodoRevokeParams {
     /// handoff, and for a pane whose tenure was handed over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane_id: Option<String>,
+}
+
+/// Where a run pushes its target branch, resolved at its preflight from
+/// git's configuration for that branch: the remote from
+/// `branch.<B>.pushRemote`, else `remote.pushDefault`, else
+/// `branch.<B>.remote`; the destination ref from `push.default` (and
+/// `branch.<B>.merge` for `upstream`). Either `remote` and `dst_ref` are
+/// set, or `skipped` says why the run lands without pushing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRunPush {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The configuration the remote came from (`branch.<B>.pushRemote`,
+    /// `remote.pushDefault`, `branch.<B>.remote`, or git's default
+    /// `origin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_from: Option<String>,
+    /// The ref on the remote (`refs/heads/<name>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dst_ref: Option<String>,
+    /// The configuration the destination ref came from (`push.default` and
+    /// its value, with `branch.<B>.merge` for `upstream`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dst_from: Option<String>,
+    /// Why the run does not push: git names no single push destination for
+    /// the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
 }
 
 /// A grant a run runs with, as preflight read it from its base commit.

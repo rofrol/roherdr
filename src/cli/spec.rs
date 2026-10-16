@@ -457,7 +457,7 @@ fn coordinator_command() -> Command {
 
 fn todo_command() -> Command {
     Command::new("todo")
-        .about("Drive a TODO item from preflight to a cherry-pick onto the default branch")
+        .about("Drive a TODO item from preflight to a cherry-pick onto the checked-out branch")
         .subcommand(
             id_command(
                 "run",

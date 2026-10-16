@@ -1,91 +1,59 @@
-//! The branch a repository's TODO runs target: its default branch, read
-//! from git, never a literal name. With an `origin` remote it is the branch
-//! `git ls-remote --symref origin HEAD` names (asked live: the cached
-//! `origin/HEAD` can be stale, and an old branch often still exists after a
-//! rename), which must exist locally; without a remote it is the shared
-//! checkout's current branch. Anything else refuses with what was asked and
-//! what came back, never a guess. A run resolves it once at its preflight,
-//! stores the name and each later step reads it back with [`commit_of`],
-//! which stops when it no longer resolves instead of retargeting.
+//! Where a TODO run lands and where it pushes. The target is the branch
+//! checked out in the worktree `todo run` is started from (the
+//! coordinator's checkout), read at the preflight with that worktree's real
+//! path; a detached HEAD refuses, and no branch is ever guessed. The push
+//! goes where git's own configuration sends that branch ([`push_of`]), and
+//! nowhere when git names no single destination. A run stores all of it and
+//! each later step reads it back: [`commit_of`] stops when the branch no
+//! longer resolves, and [`check_landing`] when the worktree no longer has it
+//! checked out cleanly, instead of retargeting.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::runs::git_with;
+use crate::api::schema::TodoRunPush;
 
 /// The branch of a run recorded before runs stored theirs: the only branch
 /// such a run could have targeted.
 pub(super) const LEGACY_TARGET_BRANCH: &str = "master";
 
-/// The repository's default branch, `env` (the caller's environment) for
-/// the question to `origin` when given.
-pub(super) fn resolve(
-    repo: &Path,
-    env: Option<&HashMap<String, String>>,
-) -> Result<String, String> {
-    let remotes = git_with(repo, &["remote"], None)?;
-    let remotes: Vec<&str> = remotes
-        .lines()
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .collect();
-    if remotes.contains(&"origin") {
-        return from_origin(repo, env);
-    }
-    if !remotes.is_empty() {
-        return Err(format!(
-            "{} has the remotes {} but no origin: its default branch is the one origin's HEAD \
-             names, and herdr does not guess another",
-            repo.display(),
-            remotes.join(", ")
-        ));
-    }
-    match git_with(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"], None) {
-        Ok(branch) if !branch.trim().is_empty() => Ok(branch.trim().to_owned()),
+/// The worktree a run lands in and the branch it has checked out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Landing {
+    /// The worktree's real path.
+    pub(super) worktree: PathBuf,
+    pub(super) branch: String,
+}
+
+/// The worktree `dir` is in and the branch it has checked out; refused for
+/// a detached HEAD.
+pub(super) fn checked_out(dir: &Path) -> Result<Landing, String> {
+    let top = git_with(dir, &["rev-parse", "--show-toplevel"], None)
+        .map_err(|why| format!("{} is not in a git worktree: {why}", dir.display()))?;
+    let top = PathBuf::from(top.trim());
+    let worktree = top
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the worktree {}: {error}", top.display()))?;
+    match git_with(
+        &worktree,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        None,
+    ) {
+        Ok(branch) if !branch.trim().is_empty() => Ok(Landing {
+            worktree,
+            branch: branch.trim().to_owned(),
+        }),
         _ => Err(format!(
-            "{} has no remote and a detached HEAD: without a remote the target branch is the \
-             checkout's current branch, and it has none; check out the branch runs land on",
-            repo.display()
+            "{} has a detached HEAD: a run lands on the branch checked out where `todo run` \
+             starts, and there is none; check out the branch runs land on",
+            worktree.display()
         )),
     }
 }
 
-/// The branch `origin`'s `HEAD` points to, when the repository has it.
-fn from_origin(repo: &Path, env: Option<&HashMap<String, String>>) -> Result<String, String> {
-    const ASKED: &str = "git ls-remote --symref origin HEAD";
-    let out = git_with(repo, &["ls-remote", "--symref", "origin", "HEAD"], env).map_err(|why| {
-        format!(
-            "cannot read the default branch of {}'s origin ({ASKED}): {why}; the target branch \
-             is never guessed",
-            repo.display()
-        )
-    })?;
-    let named = out.lines().find_map(|line| {
-        let (target, name) = line.strip_prefix("ref: ")?.split_once('\t')?;
-        (name.trim() == "HEAD").then(|| target.trim().to_owned())
-    });
-    let Some(target) = named else {
-        return Err(format!(
-            "{ASKED} in {} named no branch (it printed {:?}); the target branch is never \
-             guessed",
-            repo.display(),
-            out.trim()
-        ));
-    };
-    let Some(branch) = target.strip_prefix("refs/heads/").filter(|b| !b.is_empty()) else {
-        return Err(format!(
-            "{ASKED} in {} named {target}, not a branch",
-            repo.display()
-        ));
-    };
-    if commit_of(repo, branch).is_err() {
-        return Err(format!(
-            "{ASKED} in {} named {branch}, which the repository has no local branch of; \
-             fetch it and create it (`git branch {branch} origin/{branch}`)",
-            repo.display()
-        ));
-    }
-    Ok(branch.to_owned())
+/// The branch checked out in the worktree of `dir` ([`checked_out`]).
+pub(super) fn resolve(dir: &Path) -> Result<String, String> {
+    checked_out(dir).map(|landing| landing.branch)
 }
 
 /// The commit of the stored target `branch`, or the error naming it when
@@ -113,10 +81,178 @@ pub(super) fn commit_of(repo: &Path, branch: &str) -> Result<String, String> {
     })
 }
 
+/// Right before the cherry-pick: `worktree` still has `branch` checked
+/// out, has no uncommitted change or cherry-pick in progress, and the
+/// branch still contains the run's `base`. Otherwise the error names what
+/// differs.
+pub(super) fn check_landing(worktree: &Path, branch: &str, base: &str) -> Result<(), String> {
+    let on = git_with(
+        worktree,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        None,
+    )
+    .map_err(|why| {
+        if worktree.is_dir() {
+            format!(
+                "the landing worktree {} is on a detached HEAD, not {branch} ({why})",
+                worktree.display()
+            )
+        } else {
+            format!(
+                "the landing worktree {} no longer exists; nothing was picked",
+                worktree.display()
+            )
+        }
+    })?;
+    let on = on.trim();
+    if on != branch {
+        return Err(format!(
+            "the landing worktree {} is on {on}, not {branch}",
+            worktree.display()
+        ));
+    }
+    if git_with(
+        worktree,
+        &["rev-parse", "--quiet", "--verify", "CHERRY_PICK_HEAD"],
+        None,
+    )
+    .is_ok()
+    {
+        return Err(format!(
+            "the landing worktree {} has a cherry-pick in progress",
+            worktree.display()
+        ));
+    }
+    let dirty = git_with(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=no"],
+        None,
+    )?;
+    if !dirty.trim().is_empty() {
+        return Err(format!(
+            "the landing worktree {} has uncommitted changes:\n{}",
+            worktree.display(),
+            dirty.trim_end()
+        ));
+    }
+    if git_with(
+        worktree,
+        &["merge-base", "--is-ancestor", base, "HEAD"],
+        None,
+    )
+    .is_err()
+    {
+        return Err(format!(
+            "{branch} in {} no longer contains the run's base {base} (rewritten?)",
+            worktree.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Where git pushes `branch` from `worktree`: the remote from
+/// `branch.<B>.pushRemote`, else `remote.pushDefault`, else
+/// `branch.<B>.remote` (else git's default `origin`); the destination ref
+/// from `push.default` (git's default `simple`) and, for `upstream`,
+/// `branch.<B>.merge`. Read from git's configuration key by key, and only
+/// when `git rev-parse B@{push}` names a single destination: otherwise (an
+/// upstream of another name under `simple`, no upstream, `nothing`) the
+/// run does not push, and [`TodoRunPush::skipped`] says why.
+pub(super) fn push_of(worktree: &Path, branch: &str) -> TodoRunPush {
+    let skipped = |why: String| TodoRunPush {
+        remote: None,
+        remote_from: None,
+        dst_ref: None,
+        dst_from: None,
+        skipped: Some(why),
+    };
+    let at_push = format!("{branch}@{{push}}");
+    let named = match git_with(
+        worktree,
+        &["rev-parse", "--symbolic-full-name", &at_push],
+        None,
+    ) {
+        Ok(named) if !named.trim().is_empty() => named.trim().to_owned(),
+        Ok(_) => {
+            return skipped(format!(
+                "git names no push destination for {branch} (`git rev-parse {at_push}` printed \
+                 nothing)"
+            ))
+        }
+        Err(why) => {
+            return skipped(format!(
+                "git names no single push destination for {branch} ({why}); with \
+                 `push.default simple` the branch's upstream must be the branch it pushes to"
+            ))
+        }
+    };
+    let get = |key: &str| {
+        git_with(worktree, &["config", "--get", key], None)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let push_remote = format!("branch.{branch}.pushRemote");
+    let branch_remote = format!("branch.{branch}.remote");
+    let (remote, remote_from) = [push_remote.as_str(), "remote.pushDefault", &branch_remote]
+        .into_iter()
+        .find_map(|key| get(key).map(|remote| (remote, key.to_owned())))
+        .unwrap_or_else(|| ("origin".to_owned(), "git's default remote".to_owned()));
+    if remote == "." {
+        return skipped(format!(
+            "{remote_from} sends {branch} to the local repository (`.`), not a remote"
+        ));
+    }
+    if get(&format!("remote.{remote}.push")).is_some() {
+        return skipped(format!(
+            "remote.{remote}.push maps what is pushed to {remote}; herdr does not apply push \
+             refspecs, so it does not push"
+        ));
+    }
+    let mode = get("push.default");
+    let mode_from = match &mode {
+        Some(mode) => format!("push.default {mode}"),
+        None => "push.default simple (git's default)".to_owned(),
+    };
+    let merge = format!("branch.{branch}.merge");
+    let (dst_ref, dst_from) = match mode.as_deref().unwrap_or("simple") {
+        "simple" | "current" | "matching" => (format!("refs/heads/{branch}"), mode_from),
+        "upstream" | "tracking" => match get(&merge) {
+            Some(dst) => (dst, format!("{mode_from} and {merge}")),
+            None => return skipped(format!("{mode_from} needs {merge}, which is not set")),
+        },
+        other => {
+            return skipped(format!(
+                "push.default {other} names no single destination for {branch}"
+            ))
+        }
+    };
+    // What git named must be the tracking ref of what the configuration
+    // names, so herdr pushes where git would.
+    let Some(short) = dst_ref.strip_prefix("refs/heads/") else {
+        return skipped(format!(
+            "{dst_from} names {dst_ref}, not a branch on {remote}"
+        ));
+    };
+    let tracking = format!("refs/remotes/{remote}/{short}");
+    if named != tracking {
+        return skipped(format!(
+            "git names {named} for {at_push}, but the configuration names {remote}'s {dst_ref} \
+             (tracked as {tracking}); herdr does not push where the two differ"
+        ));
+    }
+    TodoRunPush {
+        remote: Some(remote),
+        remote_from: Some(remote_from),
+        dst_ref: Some(dst_ref),
+        dst_from: Some(dst_from),
+        skipped: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::process::Command;
 
     fn git_in(dir: &Path, args: &[&str]) -> String {
@@ -156,102 +292,58 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();
         git_in(&repo, &["add", "."]);
         git_in(&repo, &["commit", "-q", "-m", "init"]);
-        (root, repo)
+        (root, repo.canonicalize().unwrap())
     }
 
-    /// A bare `origin` beside `repo` whose `HEAD` names `branch`, which is
-    /// pushed to it.
-    fn with_origin(root: &Path, repo: &Path, branch: &str) -> PathBuf {
-        let origin = root.join("origin.git");
-        git_in(root, &["init", "-q", "--bare", "-b", branch, "origin.git"]);
+    /// A bare remote `name` beside `repo`.
+    fn with_remote(root: &Path, repo: &Path, name: &str) -> PathBuf {
+        let remote = root.join(format!("{name}.git"));
+        git_in(root, &["init", "-q", "--bare", &format!("{name}.git")]);
         git_in(
             repo,
-            &["remote", "add", "origin", &origin.display().to_string()],
+            &["remote", "add", name, &remote.display().to_string()],
         );
-        git_in(repo, &["push", "-q", "origin", branch]);
-        git_in(repo, &["fetch", "-q", "origin"]);
-        origin
+        remote
     }
 
     #[test]
-    fn origin_head_names_the_target_branch() {
-        for branch in ["main", "master"] {
-            let (root, repo) = repo_on(&format!("origin-{branch}"), branch);
-            with_origin(&root, &repo, branch);
-            assert_eq!(resolve(&repo, None).unwrap(), branch);
-            let _ = std::fs::remove_dir_all(&root);
-        }
-    }
-
-    /// The cached `origin/HEAD` still names `master`, which still exists,
-    /// while origin's `HEAD` moved to `main`: the target is `main`.
-    #[test]
-    fn a_stale_cached_origin_head_is_not_read() {
-        let (root, repo) = repo_on("stale-origin-head", "master");
-        let origin = with_origin(&root, &repo, "master");
-        git_in(&repo, &["remote", "set-head", "origin", "master"]);
-        git_in(&repo, &["branch", "main"]);
-        git_in(&repo, &["push", "-q", "origin", "main"]);
-        git_in(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        assert_eq!(
-            git_in(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD"]).trim(),
-            "refs/remotes/origin/master"
-        );
-        assert_eq!(resolve(&repo, None).unwrap(), "main");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// With a remote, neither a detached HEAD nor a feature branch checked
-    /// out changes the target: it is origin's.
-    #[test]
-    fn with_a_remote_the_checkouts_branch_is_not_the_target() {
-        let (root, repo) = repo_on("checkout-not-target", "main");
-        with_origin(&root, &repo, "main");
-        git_in(&repo, &["checkout", "-q", "--detach"]);
-        assert_eq!(resolve(&repo, None).unwrap(), "main");
+    fn the_checked_out_branch_is_the_target_and_detached_refuses() {
+        let (root, repo) = repo_on("checked-out", "main");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        let landing = checked_out(&repo.join("sub")).unwrap();
+        assert_eq!(landing.worktree, repo);
+        assert_eq!(landing.branch, "main");
+        // With remotes, still the checkout's branch: nothing is asked of
+        // origin, and no remote has to be called origin.
+        with_remote(&root, &repo, "upstream");
         git_in(&repo, &["checkout", "-q", "-b", "feature"]);
-        assert_eq!(resolve(&repo, None).unwrap(), "main");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn without_a_remote_the_current_branch_is_the_target_and_detached_refuses() {
-        let (root, repo) = repo_on("no-remote", "main");
-        assert_eq!(resolve(&repo, None).unwrap(), "main");
+        assert_eq!(resolve(&repo).unwrap(), "feature");
         git_in(&repo, &["checkout", "-q", "--detach"]);
-        let refused = resolve(&repo, None).unwrap_err();
+        let refused = checked_out(&repo).unwrap_err();
         assert!(refused.contains("detached HEAD"), "{refused}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A linked worktree on another branch is its own landing.
     #[test]
-    fn an_unreachable_or_unhelpful_origin_refuses() {
-        let (root, repo) = repo_on("unreachable-origin", "main");
-        let missing = root.join("missing.git");
+    fn a_linked_worktree_lands_on_its_own_branch() {
+        let (root, repo) = repo_on("linked", "main");
+        let linked = root.join("linked");
         git_in(
             &repo,
-            &["remote", "add", "origin", &missing.display().to_string()],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "bootstrap",
+                &linked.display().to_string(),
+            ],
         );
-        let refused = resolve(&repo, None).unwrap_err();
-        assert!(
-            refused.contains("git ls-remote --symref origin HEAD")
-                && refused.contains("never guessed"),
-            "{refused}"
-        );
-        // origin's HEAD names a branch the repository has no local branch of.
-        git_in(&repo, &["remote", "remove", "origin"]);
-        let origin = with_origin(&root, &repo, "main");
-        git_in(&repo, &["push", "-q", "origin", "main:trunk"]);
-        git_in(&origin, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
-        let refused = resolve(&repo, None).unwrap_err();
-        assert!(
-            refused.contains("named trunk") && refused.contains("no local branch"),
-            "{refused}"
-        );
-        // A remote, but no origin.
-        git_in(&repo, &["remote", "rename", "origin", "upstream"]);
-        let refused = resolve(&repo, None).unwrap_err();
-        assert!(refused.contains("but no origin"), "{refused}");
+        let landing = checked_out(&linked).unwrap();
+        assert_eq!(landing.worktree, linked.canonicalize().unwrap());
+        assert_eq!(landing.branch, "bootstrap");
+        assert_eq!(resolve(&repo).unwrap(), "main");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -266,6 +358,123 @@ mod tests {
             gone.contains("target branch main no longer exists"),
             "{gone}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `master` tracking `origin/master` pushes to origin's `master`.
+    #[test]
+    fn a_branch_tracking_its_namesake_pushes_there() {
+        let (root, repo) = repo_on("push-namesake", "master");
+        with_remote(&root, &repo, "origin");
+        git_in(&repo, &["push", "-q", "-u", "origin", "master"]);
+        let push = push_of(&repo, "master");
+        assert_eq!(push.skipped, None, "{push:?}");
+        assert_eq!(push.remote.as_deref(), Some("origin"));
+        assert_eq!(push.remote_from.as_deref(), Some("branch.master.remote"));
+        assert_eq!(push.dst_ref.as_deref(), Some("refs/heads/master"));
+        assert!(
+            push.dst_from.as_deref().unwrap().contains("simple"),
+            "{push:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A fork branch whose upstream is another remote's `main`: with only
+    /// `pushRemote`, `simple` names no single destination; with its
+    /// upstream on the fork too, it pushes to the fork's branch.
+    #[test]
+    fn a_fork_branch_pushes_to_the_fork_only_once_git_names_it() {
+        let (root, repo) = repo_on("push-fork", "main");
+        with_remote(&root, &repo, "origin");
+        with_remote(&root, &repo, "fork");
+        git_in(&repo, &["push", "-q", "origin", "main"]);
+        git_in(&repo, &["checkout", "-q", "-b", "bootstrap"]);
+        git_in(&repo, &["push", "-q", "fork", "bootstrap"]);
+        git_in(&repo, &["fetch", "-q", "origin"]);
+        git_in(&repo, &["branch", "-q", "-u", "origin/main", "bootstrap"]);
+        // No pushRemote: simple wants the upstream's name, which differs.
+        let push = push_of(&repo, "bootstrap");
+        assert!(
+            push.skipped
+                .as_deref()
+                .unwrap()
+                .contains("no single push destination"),
+            "{push:?}"
+        );
+        assert_eq!(push.remote, None);
+        // pushRemote alone: still no single destination under simple.
+        git_in(&repo, &["config", "branch.bootstrap.pushRemote", "fork"]);
+        let push = push_of(&repo, "bootstrap");
+        assert!(push.skipped.is_some(), "{push:?}");
+        // The upstream on the fork too: git names fork/bootstrap.
+        git_in(
+            &repo,
+            &["branch", "-q", "-u", "fork/bootstrap", "bootstrap"],
+        );
+        let push = push_of(&repo, "bootstrap");
+        assert_eq!(push.skipped, None, "{push:?}");
+        assert_eq!(push.remote.as_deref(), Some("fork"));
+        assert_eq!(
+            push.remote_from.as_deref(),
+            Some("branch.bootstrap.pushRemote")
+        );
+        assert_eq!(push.dst_ref.as_deref(), Some("refs/heads/bootstrap"));
+        // push.default current: pushRemote alone names fork/bootstrap.
+        git_in(&repo, &["branch", "-q", "-u", "origin/main", "bootstrap"]);
+        git_in(&repo, &["config", "push.default", "current"]);
+        let push = push_of(&repo, "bootstrap");
+        assert_eq!(push.remote.as_deref(), Some("fork"), "{push:?}");
+        assert_eq!(push.dst_ref.as_deref(), Some("refs/heads/bootstrap"));
+        assert_eq!(push.dst_from.as_deref(), Some("push.default current"));
+        // remote.pushDefault applies when the branch names no pushRemote.
+        git_in(&repo, &["config", "--unset", "branch.bootstrap.pushRemote"]);
+        git_in(&repo, &["config", "remote.pushDefault", "fork"]);
+        let push = push_of(&repo, "bootstrap");
+        assert_eq!(push.remote_from.as_deref(), Some("remote.pushDefault"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `push.default upstream` pushes to the upstream's ref; without an
+    /// upstream nothing is pushed.
+    #[test]
+    fn upstream_mode_pushes_to_the_merge_ref_and_no_upstream_skips() {
+        let (root, repo) = repo_on("push-upstream", "work");
+        with_remote(&root, &repo, "origin");
+        git_in(&repo, &["push", "-q", "origin", "work:trunk"]);
+        git_in(&repo, &["fetch", "-q", "origin"]);
+        let push = push_of(&repo, "work");
+        assert!(push.skipped.is_some(), "{push:?}");
+        git_in(&repo, &["branch", "-q", "-u", "origin/trunk", "work"]);
+        git_in(&repo, &["config", "push.default", "upstream"]);
+        let push = push_of(&repo, "work");
+        assert_eq!(
+            push.dst_ref.as_deref(),
+            Some("refs/heads/trunk"),
+            "{push:?}"
+        );
+        assert_eq!(
+            push.dst_from.as_deref(),
+            Some("push.default upstream and branch.work.merge")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_landing_check_names_a_switch_a_change_and_a_rewrite() {
+        let (root, repo) = repo_on("landing-check", "main");
+        let base = git_in(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        check_landing(&repo, "main", &base).unwrap();
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        let dirty = check_landing(&repo, "main", &base).unwrap_err();
+        assert!(dirty.contains("uncommitted changes"), "{dirty}");
+        git_in(&repo, &["checkout", "-q", "--", "a.txt"]);
+        git_in(&repo, &["checkout", "-q", "-b", "other"]);
+        let switched = check_landing(&repo, "main", &base).unwrap_err();
+        assert!(switched.contains("is on other, not main"), "{switched}");
+        git_in(&repo, &["checkout", "-q", "main"]);
+        git_in(&repo, &["commit", "-q", "--amend", "-m", "rewritten"]);
+        let rewritten = check_landing(&repo, "main", &base).unwrap_err();
+        assert!(rewritten.contains("no longer contains"), "{rewritten}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

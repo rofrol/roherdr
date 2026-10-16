@@ -217,8 +217,8 @@ pub struct WorkerStartParams {
     /// not exist yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// With `folder_slot`: what the branch starts from; the
-    /// repository's default branch when absent.
+    /// With `folder_slot`: what the branch starts from; the branch
+    /// checked out in `cwd` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// With `folder_slot`: removes the slot's `target/` and Zig cache first.
