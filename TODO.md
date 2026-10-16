@@ -141,6 +141,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   before the cherry-pick; the push fetches first and fast-forwards with an
   explicit refspec, never forced. Attempt 1 (run r-t7uheqex) was briefed
   with checks.toml before this round; its retry carries the change.
+  Redecided with the models 2026-10-16 (round `20261016-215316-cfc7`, all
+  five; the user: "why does herdr guard this branch at all? is it so
+  upstream?", and upstream has no TODO driver): no target setting and no
+  origin-HEAD resolution; the target is the branch checked out where `todo
+  run` starts (detached refused), rechecked before the cherry-pick; the push
+  goes where git config sends that branch (`branch.B.pushRemote`,
+  `remote.pushDefault`, upstream), fast-forward only, never creating a
+  remote branch, and no push when git names no single destination.
+  bend-bootstrap then needs `git config branch.bootstrap.pushRemote
+  rofrol` (its upstream is `origin/main`, so `bootstrap@{push}` fails
+  today). Supersedes the round above and the 2026-10-16 morning rule.
 
 - [ ] The usage gate admits concurrent starts one at a time (follow-up of [t-6mjgooqu]
   t-kxejzkf7, round `20261016-130105-cc17`, DeepSeek): `usage_gate` reads
