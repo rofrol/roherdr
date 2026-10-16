@@ -3897,6 +3897,16 @@ Items agents add. Not approved until the user moves them up.
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
 
+- [ ] Supervision reopens one unaccounted assignment under new ids and [t-eysxdavm]
+  counts a relayed message as an assignment (reports r-92, r-94, r-95,
+  2026-10-16): guix-bend's prompt `prompt_1a1448fc3e6_26` to pane wD4:p1,
+  a relay of the user's words rather than a worker task, raised f-176 to
+  f-180 one after another, each waking the herdr coordinator with a
+  digest; its `agent wait-verdict` waits ended at once with reason
+  `question` whenever that pane asked its user something. Keep one
+  finding per assignment while its fact holds, and do not treat a relay
+  (or a question to the user) as an unaccounted assignment.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
