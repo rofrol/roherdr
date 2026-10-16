@@ -3907,6 +3907,14 @@ Items agents add. Not approved until the user moves them up.
   finding per assignment while its fact holds, and do not treat a relay
   (or a question to the user) as an unaccounted assignment.
 
+- [ ] The old server waits 500 ms for `owned` after a handoff's commit [t-kpayroca]
+  (follow-up of t-qgtdc57s, found by its worker, run r-cults2sq): if the
+  importer gets a stop signal just as `committed` arrives, the panes can be
+  lost, and the old server ends after a fixed 500 ms whether or not the
+  importer owns them. Replace the wait with the importer's `owned`
+  acknowledgement (or the stream's close) and decide what a stop at that
+  point does. Touches handoff, so it waits for approval.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
