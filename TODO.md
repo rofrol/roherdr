@@ -64,6 +64,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   mechanical file:line check with `in_diff`, findings tagged `checklist`
   or `free` with per-review counts. Next: slice 3, the golden set with a
   dated cut-off (round 20261012-183707-2629 in this item).
+  In flight 2026-10-16: slice 3 run r-7zvq2hh2 (golden set, cut-off,
+  `herdr todo review-eval` with a fake reviewer in tests; no real model run).
 
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
