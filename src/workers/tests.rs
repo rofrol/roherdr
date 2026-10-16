@@ -9295,8 +9295,9 @@ mod todo_runs {
     /// Gives the repository what the steps after the cherry-pick use: an
     /// `origin` (a bare repository with its `master`), the stub install
     /// `install.sh` (failing while `INSTALL_FAIL` is set, else writing
-    /// `HEAD` as the build `build_id` prints), `scripts/todo_edit.py`,
-    /// `DECISIONS.md` and a second item. Returns the bare repository.
+    /// `HEAD` as the build `build_id` prints), `DECISIONS.md` and a second
+    /// item, but no `scripts/todo_edit.py`: the TODO step runs herdr's own.
+    /// Returns the bare repository.
     fn with_finish(fixture: &Fixture) -> PathBuf {
         with_finish_on(fixture, "master")
     }
@@ -9313,12 +9314,9 @@ mod todo_runs {
              echo installed\n",
         )
         .unwrap();
-        std::fs::create_dir_all(repo.join("scripts")).unwrap();
-        std::fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/todo_edit.py"),
-            repo.join("scripts/todo_edit.py"),
-        )
-        .unwrap();
+        // No `scripts/todo_edit.py`: the TODO step runs herdr's own editor
+        // in any repository.
+        assert!(!repo.join("scripts/todo_edit.py").exists());
         std::fs::write(repo.join("DECISIONS.md"), "# Decisions\n\nIntro.\n").unwrap();
         std::fs::write(
             repo.join("TODO.md"),
@@ -12312,18 +12310,14 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             }
 
             /// The draft fixture with `items` in "Next, in order" on master,
-            /// `scripts/todo_edit.py` (a queue run's approval closes its
-            /// item) and no `origin` (the push is skipped). Returns it with
+            /// without `scripts/todo_edit.py` (a queue run's approval closes
+            /// its item with herdr's own) and no `origin` (the push is
+            /// skipped). Returns it with
             /// the repository as the store names it.
             fn queued(name: &str, items: &[&str], answers: &[&str]) -> (Fixture, String) {
                 let fixture = drafting(name, answers);
                 let repo = &fixture.repo;
-                std::fs::create_dir_all(repo.join("scripts")).unwrap();
-                std::fs::copy(
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/todo_edit.py"),
-                    repo.join("scripts/todo_edit.py"),
-                )
-                .unwrap();
+                assert!(!repo.join("scripts/todo_edit.py").exists());
                 let mut todo = String::from("# TODO\n\n## Next, in order\n\n");
                 for (number, item) in items.iter().enumerate() {
                     todo.push_str(&format!(

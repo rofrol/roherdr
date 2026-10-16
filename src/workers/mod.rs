@@ -57,6 +57,7 @@ mod supervisor;
 mod target_branch;
 #[cfg(test)]
 mod tests;
+pub(crate) mod todo_editor;
 mod todo_titles;
 pub(crate) mod transcript;
 mod types;

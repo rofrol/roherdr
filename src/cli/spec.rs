@@ -513,6 +513,17 @@ fn todo_command() -> Command {
                 .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
         )
+        .subcommand(
+            Command::new("edit")
+                .about("Edit TODO.md or DECISIONS.md with herdr's own todo_edit.py")
+                .arg(
+                    Arg::new("args")
+                        .value_name("ARGS")
+                        .num_args(0..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true),
+                ),
+        )
 }
 
 fn decision_command() -> Command {

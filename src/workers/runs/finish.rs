@@ -17,11 +17,12 @@ use serde_json::json;
 
 use super::{
     command_with, git, git_with, new_event, tail, todo_titles, Run, CHECKS_FILE, DECISIONS_FILE,
-    RUN_ENV, TODO_EDIT, TODO_FILE,
+    RUN_ENV, TODO_FILE,
 };
 use crate::api::schema::{
     HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunStatus, TodoStep,
 };
+use crate::workers::todo_editor::{self, SCRIPT_NAME};
 use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
 
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
@@ -318,7 +319,8 @@ impl WorkerSupervisor {
 
     /// Appends the coordinator's note to the item in `TODO.md`, or removes
     /// the item and adds the closing decision to `DECISIONS.md` as a
-    /// section, with `scripts/todo_edit.py`, and commits that by path. The
+    /// section, with herdr's own TODO editor ([`todo_editor`], the same in
+    /// every repository), and commits that by path. The
     /// edit is made on copies of `HEAD`'s files first; a file with changes
     /// another session left uncommitted is not touched (a `todo_failed`
     /// event). A commit the target branch already has with the step's message is not
@@ -496,8 +498,8 @@ impl WorkerSupervisor {
         (item_text, follow_ups)
     }
 
-    /// The step's files as `todo_edit.py` leaves them, edited on copies of
-    /// `HEAD`'s files in `scratch`.
+    /// The step's files as herdr's `todo_edit.py` leaves them, edited on
+    /// copies of `HEAD`'s files in `scratch`.
     fn todo_edit(
         &self,
         run: &Run,
@@ -505,13 +507,13 @@ impl WorkerSupervisor {
         scratch: &Path,
         files: &[&str],
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
-        let script = repo.join(TODO_EDIT);
-        if !script.is_file() {
-            return Err(format!("{} has no {TODO_EDIT}", repo.display()));
-        }
         let _ = std::fs::remove_dir_all(scratch);
-        std::fs::create_dir_all(scratch)
-            .map_err(|error| format!("cannot create {}: {error}", scratch.display()))?;
+        // The editor gets a directory of its own: Python puts it first on
+        // the import path.
+        let editor = scratch.join("editor");
+        std::fs::create_dir_all(&editor)
+            .map_err(|error| format!("cannot create {}: {error}", editor.display()))?;
+        let script = todo_editor::write_script(&editor)?;
         for file in files {
             let text = git(repo, &["show", &format!("HEAD:{file}")])
                 .map_err(|error| format!("{} has no {file}: {error}", run.target_branch()))?;
@@ -527,12 +529,12 @@ impl WorkerSupervisor {
                 .current_dir(repo)
                 .stdin(Stdio::null())
                 .output()
-                .map_err(|error| format!("cannot run {TODO_EDIT}: {error}"))?;
+                .map_err(|error| format!("cannot run {SCRIPT_NAME}: {error}"))?;
             if output.status.success() {
                 return Ok(());
             }
             Err(format!(
-                "{TODO_EDIT} --file {file} {}: {}{}",
+                "{SCRIPT_NAME} --file {file} {}: {}{}",
                 args.join(" "),
                 String::from_utf8_lossy(&output.stderr).trim(),
                 String::from_utf8_lossy(&output.stdout).trim()

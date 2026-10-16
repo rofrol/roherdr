@@ -151,7 +151,8 @@ pub struct TodoResumeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
     /// With `approve`: lines the run appends to the item in `TODO.md` after
-    /// the install (`scripts/todo_edit.py append-to`), committed by path.
+    /// the install (herdr's own TODO editor, `todo_edit.py append-to`),
+    /// committed by path.
     /// Takes `next` or `stop_reason` as `close` does, or neither: a noted
     /// item stays open.
     #[serde(default, skip_serializing_if = "Option::is_none")]

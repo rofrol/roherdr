@@ -6711,7 +6711,7 @@
               "description": "With `close` or `note`: the item whose run the driver starts as soon\nas this run is `done`, in the same repository, owned by this run's owner.\nRecorded as intent before the start and result after it (a server\nrestart in between starts it then); a refused start (its preflight,\nthe usage gate, a run in progress) is a `next_refused` event on this\nrun. Excludes `stop_reason`."
             },
             "note": {
-              "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (`scripts/todo_edit.py append-to`), committed by path.\nTakes `next` or `stop_reason` as `close` does, or neither: a noted\nitem stays open.",
+              "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (herdr's own TODO editor, `todo_edit.py append-to`),\ncommitted by path.\nTakes `next` or `stop_reason` as `close` does, or neither: a noted\nitem stays open.",
               "type": [
                 "string",
                 "null"

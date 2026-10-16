@@ -7,7 +7,7 @@
 //! cherry-picking it onto the repository's default branch (resolved once at
 //! preflight and stored with the run, [`target_branch`]), running the
 //! registered install, recording the coordinator's note or closing decision
-//! in `TODO.md` (with `scripts/todo_edit.py`, committed by path), pushing
+//! in `TODO.md` (with herdr's own `todo_edit.py`, committed by path), pushing
 //! that branch to `origin` only as a fast-forward and deleting the run's
 //! merged branches.
 //!
@@ -103,8 +103,6 @@ const DEFAULT_MIN_FREE_GIB: f64 = 15.0;
 /// A driver's wait on its worker has no deadline: the worker's events end
 /// it, and a handoff wakes it ([`WorkerSupervisor::let_go_of_runs`]).
 const NO_DEADLINE: Duration = Duration::MAX;
-/// The TODO editor the todo step runs, relative to the repository.
-const TODO_EDIT: &str = "scripts/todo_edit.py";
 const TODO_FILE: &str = "TODO.md";
 const DECISIONS_FILE: &str = "DECISIONS.md";
 

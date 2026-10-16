@@ -139,7 +139,8 @@ const USAGE: &str = "usage:
       [install] of .herdr/checks.toml,
       appends --note FILE's lines to the item in TODO.md (or, with --close
       FILE, removes the item and adds FILE as a section of DECISIONS.md)
-      with scripts/todo_edit.py and commits that by path, pushes that branch to
+      with herdr's own TODO editor (todo edit) and commits that by path,
+      pushes that branch to
       origin only as a fast-forward, and deletes the run's merged branches;
       retry starts the next attempt with FILE's text as the review of this
       one: its branch starts from this attempt's commit (cherry-picked onto
@@ -246,9 +247,21 @@ const USAGE: &str = "usage:
       operation without --hash), recorded in the worker store; a run that
       has not run its prepare yet refuses it.
   herdr todo grants [--repo DIR]
-      List the stored grants (of DIR's repository with --repo).";
+      List the stored grants (of DIR's repository with --repo).
+  herdr todo edit [--file FILE] <command> [ARGS...]
+      Herdr's own TODO editor, the scripts/todo_edit.py herdr was built
+      with, embedded in the binary: verified edits of TODO.md (or FILE, such
+      as DECISIONS.md) in the current directory (find, ids, add, append-to,
+      insert-after, remove, move, add-section; todo edit --help lists them).
+      It passes the arguments and stdin through and exits with the editor's
+      status. todo run's TODO step uses the same editor, so it works in any
+      repository, with or without a scripts/todo_edit.py of its own. Needs
+      python3, not the server.";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
+    if args.first().map(String::as_str) == Some("edit") {
+        return Ok(run_todo_edit(&args[1..]));
+    }
     let method = match parse(args) {
         Ok(Some(method)) => method,
         Ok(None) => {
@@ -295,6 +308,44 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         }
     }
     Ok(code)
+}
+
+/// `herdr todo edit`: runs herdr's own `todo_edit.py` (embedded in the
+/// binary) in the current directory with `args`, stdin and stdout passed
+/// through, and returns its exit status. Needs no server.
+fn run_todo_edit(args: &[String]) -> i32 {
+    let status = with_todo_editor(|script| {
+        std::process::Command::new("python3")
+            .arg(script)
+            .args(args)
+            .status()
+            .map_err(|error| format!("cannot run python3: {error}"))
+    });
+    match status {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
+
+/// Calls `run` with the path of herdr's `todo_edit.py`, written for it into
+/// a fresh directory of its own (Python puts a script's directory first on
+/// its import path), and removes that directory afterwards.
+fn with_todo_editor<T>(
+    run: impl FnOnce(&std::path::Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!("herdr-todo-edit-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    let result = crate::workers::todo_editor::write_script(&dir).and_then(|script| run(&script));
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// Prints the log `todo.status` names for the run's current step, and
@@ -964,6 +1015,61 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    /// `todo edit`'s editor run in `dir` with `words`.
+    fn todo_edit_in(dir: &std::path::Path, words: &[&str]) -> std::process::Output {
+        with_todo_editor(|script| {
+            std::process::Command::new("python3")
+                .arg(script)
+                .args(words)
+                .current_dir(dir)
+                .output()
+                .map_err(|error| error.to_string())
+        })
+        .unwrap()
+    }
+
+    /// `todo edit` finds and edits items in a repository that has no
+    /// `scripts/` of its own, and removes the editor's directory after.
+    #[test]
+    fn todo_edit_runs_herdrs_editor_without_the_repository_script() {
+        let dir = std::env::temp_dir().join(format!("herdr-cli-todo-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!dir.join("scripts").exists());
+        std::fs::write(
+            dir.join("TODO.md"),
+            "# TODO\n\n## Next, in order\n\n- [ ] The item [t-abcd2345]\n  Its text.\n",
+        )
+        .unwrap();
+
+        let found = todo_edit_in(&dir, &["find", "The item"]);
+        assert!(found.status.success(), "{found:?}");
+        assert!(
+            String::from_utf8_lossy(&found.stdout).contains("t-abcd2345"),
+            "{found:?}"
+        );
+
+        std::fs::write(dir.join("note.md"), "  A note.\n").unwrap();
+        let appended = todo_edit_in(&dir, &["append-to", "t-abcd2345", "--text-file", "note.md"]);
+        assert!(appended.status.success(), "{appended:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("TODO.md")).unwrap(),
+            "# TODO\n\n## Next, in order\n\n- [ ] The item [t-abcd2345]\n  Its text.\n  A note.\n"
+        );
+
+        let missing = todo_edit_in(&dir, &["find", "No such item"]);
+        assert!(!missing.status.success(), "{missing:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn todo_edit_passes_its_exit_status_through() {
+        assert_eq!(
+            run_todo_edit(&args(&["--file", "/nonexistent/TODO.md", "find", "x"])),
+            1
+        );
     }
 
     #[test]
