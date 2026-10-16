@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
+#[cfg(windows)]
+use interprocess::local_socket::traits::ListenerExt as _;
+use interprocess::local_socket::traits::Stream as _;
 use tracing::{debug, error, info, warn};
 
 #[cfg(all(test, unix))]
@@ -44,15 +46,30 @@ pub struct ServerHandle {
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
     open_waits: Arc<OpenWaits>,
+    /// Stops, pauses and resumes the accept loop.
+    #[cfg(unix)]
+    accept: Arc<AcceptGate>,
+    /// A duplicate of the listening socket, which a live handoff passes to
+    /// the new server; `None` once released.
+    #[cfg(unix)]
+    listener_fd: Option<std::os::fd::OwnedFd>,
+    /// Whether the socket file is this server's to remove on drop: not once
+    /// its listener passed to a live handoff's new server, which listens on
+    /// the same file.
+    owns_socket_file: bool,
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
+        #[cfg(unix)]
+        self.accept.set(AcceptState::Stopped);
 
-        if let Err(err) = self.remove_socket_file_if_owned() {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
+        if self.owns_socket_file {
+            if let Err(err) = self.remove_socket_file_if_owned() {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
+                }
             }
         }
         // After a live handoff, the process exits only once every open wait
@@ -73,6 +90,291 @@ impl ServerHandle {
     /// its client to send the same wait to the new server.
     pub(crate) fn mark_handed_off(&self) {
         self.open_waits.mark_handed_off();
+    }
+
+    /// Starts the API server on a socket that already listens at `path`
+    /// (a live handoff's source passed it), without binding or unlinking
+    /// anything. With `accepting` false, the accept loop waits for
+    /// [`Self::resume_accepting`]; connections meanwhile queue in the
+    /// listener's backlog.
+    #[cfg(unix)]
+    pub(crate) fn start_on_listener(
+        api_tx: ApiRequestSender,
+        event_hub: EventHub,
+        server_stop: ServerStop,
+        listener: crate::ipc::LocalListener,
+        path: PathBuf,
+        identity: SocketFileIdentity,
+        accepting: bool,
+    ) -> std::io::Result<Self> {
+        let _ = crate::workers::supervisor();
+        info!(path = %path.display(), "api server listening on a handed-over socket");
+        start_accepting(
+            listener,
+            path,
+            identity,
+            AcceptStart {
+                api_tx,
+                event_hub,
+                capabilities: default_capabilities(),
+                server_stop: Some(server_stop),
+                accepting,
+                owns_bound_file: false,
+            },
+        )
+    }
+
+    /// Stops accepting and returns once the accept loop is parked, so this
+    /// process accepts no connection until [`Self::resume_accepting`].
+    /// Connections that arrive meanwhile wait in the listener's backlog.
+    #[cfg(unix)]
+    pub(crate) fn pause_accepting(&self) {
+        self.accept.set(AcceptState::Paused);
+        self.accept.wait_parked();
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn resume_accepting(&self) {
+        self.accept.set(AcceptState::Accepting);
+    }
+
+    /// The listening socket, while this server still holds it.
+    #[cfg(unix)]
+    pub(crate) fn listener_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::AsFd as _;
+
+        self.listener_fd.as_ref().map(|fd| fd.as_fd())
+    }
+
+    /// Makes the socket file this server's to remove on drop, once a live
+    /// handoff that passed it the listener committed.
+    #[cfg(unix)]
+    pub(crate) fn assume_socket_file(&mut self) {
+        self.owns_socket_file = true;
+    }
+
+    /// Whether the file at this server's path is still the one it bound.
+    #[cfg(unix)]
+    pub(crate) fn socket_file_is_own(&self) -> bool {
+        socket_file_identity(&self.path).is_ok_and(|current| current == self.identity)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn socket_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Lets go of the listening socket after another server took it over (or
+    /// took its path): the accept loop ends and closes it, and neither this
+    /// handle nor its drop accepts on it or removes its file again. Waits for
+    /// the loop to end, so no accept of this process races the new owner.
+    #[cfg(unix)]
+    pub(crate) fn release_listener(&mut self) {
+        self.owns_socket_file = false;
+        self.accept.set(AcceptState::Stopped);
+        self.accept.wait_ended();
+        self.listener_fd = None;
+    }
+}
+
+/// What the accept loop should do; changed by the handle, read by the loop.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcceptState {
+    Accepting,
+    Paused,
+    Stopped,
+}
+
+/// The handle's control over the accept loop: a state the loop reads before
+/// each wait, and a wake socket that ends the loop's `poll` when the state
+/// changes. Event-driven only: the loop sleeps in `poll` (listener readable
+/// or a wake byte) or on the condition variable (paused), never on a timer.
+#[cfg(unix)]
+struct AcceptGate {
+    state: Mutex<AcceptGateState>,
+    changed: Condvar,
+    wake_tx: std::os::unix::net::UnixStream,
+    wake_rx: std::os::unix::net::UnixStream,
+}
+
+#[cfg(unix)]
+struct AcceptGateState {
+    wanted: AcceptState,
+    /// The loop does not accept: it is parked on `changed` or has ended.
+    parked: bool,
+    /// The loop's thread ended and closed its listener.
+    ended: bool,
+}
+
+#[cfg(unix)]
+impl AcceptGate {
+    fn new(accepting: bool) -> io::Result<Self> {
+        let (wake_tx, wake_rx) = std::os::unix::net::UnixStream::pair()?;
+        wake_tx.set_nonblocking(true)?;
+        wake_rx.set_nonblocking(true)?;
+        Ok(Self {
+            state: Mutex::new(AcceptGateState {
+                wanted: if accepting {
+                    AcceptState::Accepting
+                } else {
+                    AcceptState::Paused
+                },
+                parked: !accepting,
+                ended: false,
+            }),
+            changed: Condvar::new(),
+            wake_tx,
+            wake_rx,
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, AcceptGateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set(&self, wanted: AcceptState) {
+        {
+            let mut state = self.lock();
+            if state.wanted == AcceptState::Stopped {
+                return;
+            }
+            state.wanted = wanted;
+        }
+        self.changed.notify_all();
+        // A full wake socket already holds a pending wake.
+        let _ = (&self.wake_tx).write(&[1]);
+    }
+
+    fn wait_parked(&self) {
+        let mut state = self.lock();
+        while !state.parked {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn wait_ended(&self) {
+        let mut state = self.lock();
+        while !state.ended {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn mark_ended(&self) {
+        {
+            let mut state = self.lock();
+            state.parked = true;
+            state.ended = true;
+        }
+        self.changed.notify_all();
+    }
+
+    /// Blocks until the loop may accept; false once it is to end.
+    fn wait_until_accepting(&self) -> bool {
+        let mut state = self.lock();
+        loop {
+            match state.wanted {
+                AcceptState::Accepting => {
+                    state.parked = false;
+                    return true;
+                }
+                AcceptState::Stopped => {
+                    state.parked = true;
+                    self.changed.notify_all();
+                    return false;
+                }
+                AcceptState::Paused => {
+                    if !state.parked {
+                        state.parked = true;
+                        self.changed.notify_all();
+                    }
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+    }
+
+    fn drain_wakes(&self) {
+        let mut buf = [0u8; 64];
+        while matches!((&self.wake_rx).read(&mut buf), Ok(read) if read > 0) {}
+    }
+
+    /// The next connection on `listener`, or `None` once stopped. Waits in
+    /// `poll` for the listener or a state change.
+    fn next_connection(
+        &self,
+        listener: &crate::ipc::LocalListener,
+    ) -> Option<io::Result<LocalStream>> {
+        use interprocess::local_socket::traits::Listener as _;
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+
+        let crate::ipc::LocalListener::UdSocket(socket) = listener;
+        let listener_fd = socket.as_fd().as_raw_fd();
+        loop {
+            if !self.wait_until_accepting() {
+                return None;
+            }
+            let mut fds = [
+                libc::pollfd {
+                    fd: listener_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.wake_rx.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let polled = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+            if polled < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Some(Err(err));
+            }
+            if fds[1].revents != 0 {
+                self.drain_wakes();
+                continue;
+            }
+            if fds[0].revents == 0 {
+                continue;
+            }
+            match listener.accept() {
+                Ok(stream) => {
+                    // The listener is nonblocking, and BSD sockets inherit
+                    // that on accept; the handlers expect blocking streams.
+                    if let Err(err) = stream.set_nonblocking(false) {
+                        return Some(Err(err));
+                    }
+                    return Some(Ok(stream));
+                }
+                // Another process sharing the socket took it first.
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
+    }
+}
+
+/// Marks the accept loop ended when its thread exits, however it exits.
+#[cfg(unix)]
+struct AcceptLoopEnded(Arc<AcceptGate>);
+
+#[cfg(unix)]
+impl Drop for AcceptLoopEnded {
+    fn drop(&mut self) {
+        self.0.mark_ended();
     }
 }
 
@@ -205,7 +507,7 @@ fn default_capabilities() -> Option<ServerCapabilities> {
 fn start_server_inner(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
-    mut capabilities: Option<ServerCapabilities>,
+    capabilities: Option<ServerCapabilities>,
     server_stop: Option<ServerStop>,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path();
@@ -215,6 +517,57 @@ fn start_server_inner(
     restrict_socket_permissions(&path)?;
     let identity = socket_file_identity(&path)?;
     info!(path = %path.display(), "api server listening");
+    start_accepting(
+        listener,
+        path,
+        identity,
+        AcceptStart {
+            api_tx,
+            event_hub,
+            capabilities,
+            server_stop,
+            accepting: true,
+            owns_bound_file: true,
+        },
+    )
+}
+
+/// How [`start_accepting`] starts the server on its listener.
+struct AcceptStart {
+    api_tx: ApiRequestSender,
+    event_hub: EventHub,
+    capabilities: Option<ServerCapabilities>,
+    server_stop: Option<ServerStop>,
+    /// Whether the accept loop starts accepting or paused (Unix only).
+    accepting: bool,
+    /// Whether this server bound the socket file itself, so it removes it
+    /// when it cannot start; a handed-over listener's file stays.
+    owns_bound_file: bool,
+}
+
+fn start_accepting(
+    listener: crate::ipc::LocalListener,
+    path: PathBuf,
+    identity: SocketFileIdentity,
+    start: AcceptStart,
+) -> std::io::Result<ServerHandle> {
+    let AcceptStart {
+        api_tx,
+        event_hub,
+        mut capabilities,
+        server_stop,
+        accepting,
+        owns_bound_file,
+    } = start;
+    #[cfg(not(unix))]
+    let _ = accepting;
+    let fail = |err: io::Error| {
+        if owns_bound_file {
+            // No ServerHandle owns the socket yet, so its Drop cleanup won't run.
+            let _ = remove_socket_file_if_owned(&path, &identity);
+        }
+        err
+    };
 
     #[cfg(unix)]
     let ssh_agents = match crate::platform::ssh_agent::SshAgentRegistry::new(
@@ -241,13 +594,42 @@ fn start_server_inner(
         };
     }
 
+    #[cfg(unix)]
+    let (accept, listener_fd) = {
+        use interprocess::local_socket::traits::Listener as _;
+        use interprocess::local_socket::ListenerNonblockingMode;
+        use std::os::fd::AsFd as _;
+
+        let gate = AcceptGate::new(accepting).map_err(fail)?;
+        // The loop waits in `poll`, so its accept must not block: another
+        // process sharing the socket (a handoff's peer) may take the
+        // connection first.
+        listener
+            .set_nonblocking(ListenerNonblockingMode::Accept)
+            .map_err(fail)?;
+        let crate::ipc::LocalListener::UdSocket(socket) = &listener;
+        let listener_fd = socket.as_fd().try_clone_to_owned().map_err(fail)?;
+        (Arc::new(gate), listener_fd)
+    };
+
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
     let open_waits = Arc::new(OpenWaits::default());
     let listener_open_waits = Arc::clone(&open_waits);
+    #[cfg(unix)]
+    let loop_gate = Arc::clone(&accept);
     let spawned = crate::thread_spawn::spawn_named("herdr-api-accept", move || {
+        // Declared before the listener, so it is dropped after it: the
+        // loop counts as ended once the listener is closed.
+        #[cfg(unix)]
+        let _ended = AcceptLoopEnded(Arc::clone(&loop_gate));
+        let listener = listener;
+        #[cfg(unix)]
+        let incoming = std::iter::from_fn(|| loop_gate.next_connection(&listener));
+        #[cfg(not(unix))]
+        let incoming = listener.incoming();
         run_accept_loop(
-            listener.incoming(),
+            incoming,
             &listener_running,
             ACCEPT_ERROR_BACKOFF,
             |stream| {
@@ -278,14 +660,7 @@ fn start_server_inner(
         );
         debug!("api server thread exiting");
     });
-    let thread = match spawned {
-        Ok(thread) => thread,
-        Err(err) => {
-            // No ServerHandle owns the socket yet, so its Drop cleanup won't run.
-            let _ = remove_socket_file_if_owned(&path, &identity);
-            return Err(err);
-        }
-    };
+    let thread = spawned.map_err(fail)?;
 
     Ok(ServerHandle {
         _thread: thread,
@@ -293,6 +668,11 @@ fn start_server_inner(
         identity,
         running,
         open_waits,
+        #[cfg(unix)]
+        accept,
+        #[cfg(unix)]
+        listener_fd: Some(listener_fd),
+        owns_socket_file: owns_bound_file,
     })
 }
 
@@ -1784,6 +2164,138 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!path.exists(), "bound socket must be removed");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// An API server on a listener bound at `path`, started as a live
+    /// handoff's import server starts it (`owns_bound_file` false) or as a
+    /// normal server does.
+    fn server_on(path: &Path, accepting: bool, owns_bound_file: bool) -> ServerHandle {
+        let listener = crate::ipc::bind_local_listener(path).unwrap();
+        let identity = socket_file_identity(path).unwrap();
+        let (api_tx, _api_rx) = mpsc::unbounded_channel();
+        start_accepting(
+            listener,
+            path.to_path_buf(),
+            identity,
+            AcceptStart {
+                api_tx,
+                event_hub: EventHub::default(),
+                capabilities: None,
+                server_stop: None,
+                accepting,
+                owns_bound_file,
+            },
+        )
+        .unwrap()
+    }
+
+    /// A second holder of the server's listening socket, as a handoff's
+    /// peer process holds it.
+    fn peer_listener(server: &ServerHandle) -> crate::ipc::LocalListener {
+        let fd = server.listener_fd().unwrap().try_clone_to_owned().unwrap();
+        let listener = crate::ipc::LocalListener::from(
+            interprocess::os::unix::uds_local_socket::Listener::from(fd),
+        );
+        listener
+            .set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)
+            .unwrap();
+        listener
+    }
+
+    fn pending_connection(listener: &crate::ipc::LocalListener) -> bool {
+        match listener.accept() {
+            Ok(_) => true,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("accept failed: {err}"),
+        }
+    }
+
+    fn ping(path: &Path) -> String {
+        let mut client = crate::ipc::connect_local_stream(path).unwrap();
+        client
+            .write_all(b"{\"id\":\"p\",\"method\":\"ping\",\"params\":{}}\n")
+            .unwrap();
+        read_line(&mut client)
+    }
+
+    #[test]
+    fn a_paused_api_server_accepts_nothing_until_it_resumes_on_the_same_listener() {
+        let dir = unique_test_path("api-pause");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.sock");
+        let server = server_on(&path, true, true);
+        assert!(ping(&path).contains("pong"));
+        let peer = peer_listener(&server);
+
+        server.pause_accepting();
+        // Connected once the connection is queued; the paused loop leaves
+        // it for the other holder of the socket.
+        let _queued = crate::ipc::connect_local_stream(&path).unwrap();
+        assert!(pending_connection(&peer), "the paused server took it");
+
+        server.resume_accepting();
+        drop(peer);
+        assert!(ping(&path).contains("pong"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_released_api_listener_is_closed_and_its_socket_file_kept() {
+        let dir = unique_test_path("api-release");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.sock");
+        let mut server = server_on(&path, true, true);
+        let identity = socket_file_identity(&path).unwrap();
+        let peer = peer_listener(&server);
+        server.pause_accepting();
+
+        server.release_listener();
+        assert!(server.listener_fd().is_none());
+        drop(server);
+
+        // The file is the handoff peer's now, which accepts on it.
+        assert_eq!(socket_file_identity(&path).unwrap(), identity);
+        let _client = crate::ipc::connect_local_stream(&path).unwrap();
+        assert!(pending_connection(&peer));
+        drop(peer);
+        // No copy is left in this process: nothing listens any more.
+        let refused = crate::ipc::connect_local_stream(&path).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_api_server_started_on_a_passed_listener_waits_and_leaves_the_file() {
+        let dir = unique_test_path("api-passed");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.sock");
+        let mut server = server_on(&path, false, false);
+        let peer = peer_listener(&server);
+
+        let _queued = crate::ipc::connect_local_stream(&path).unwrap();
+        assert!(pending_connection(&peer), "a server started paused took it");
+        drop(peer);
+        server.resume_accepting();
+        assert!(ping(&path).contains("pong"));
+
+        // Until the handoff commits the file is the source's: dropping the
+        // server keeps it.
+        server.release_listener();
+        drop(server);
+        assert!(path.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_api_server_that_assumed_its_passed_socket_file_removes_it() {
+        let dir = unique_test_path("api-assumed");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.sock");
+        let mut server = server_on(&path, true, false);
+        server.assume_socket_file();
+        drop(server);
+        assert!(!path.exists());
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -118,9 +118,10 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         api_tx: None,
         api_server: None,
         #[cfg(unix)]
-        client_listener: listener,
+        client_listener: Some(listener),
         client_socket_path: socket_path,
         client_socket_identity,
+        owns_client_socket_file: true,
         clients: HashMap::new(),
         native_graphics: Default::default(),
         #[cfg(unix)]

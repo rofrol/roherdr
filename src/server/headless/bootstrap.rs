@@ -183,29 +183,58 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             &received.manifest.snapshot,
             &mut imports,
         )?;
+        // Both servers start on the source's listening sockets without
+        // accepting: connections wait in the backlog until this server owns
+        // the session (after the commit), and the source resumes accepting
+        // on the same listeners if the handoff fails before it.
+        let start_servers =
+            |api: crate::server::handoff::PublicListener,
+             client: crate::server::handoff::PublicListener| {
+                let api_server = api::ServerHandle::start_on_listener(
+                    api_tx.clone(),
+                    event_hub.clone(),
+                    server_stop.clone(),
+                    api.listener,
+                    api.path,
+                    api.identity,
+                    false,
+                )?;
+                HeadlessServer::new_with_client_socket(
+                    app,
+                    &loaded_config.diagnostics,
+                    Some(api_tx.clone()),
+                    Some(api_server),
+                    server_stop.clone(),
+                    client,
+                )
+            };
+        let mut server = match (
+            received.listeners.take(),
+            &received.manifest.public_listeners,
+        ) {
+            (Some(listeners), Some(offer)) => {
+                let (api, client) = crate::server::handoff::passed_listeners(listeners, offer)?;
+                start_servers(api, client)?
+            }
+            (None, None) => crate::server::handoff::take_over_public_paths(
+                &received.stream,
+                &api::socket_path(),
+                &client_socket_path(),
+                start_servers,
+            )?,
+            _ => return Err(io::Error::other("handoff listeners do not match the offer")),
+        };
         crate::server::handoff::report_restored(&mut received.stream)?;
         if std::env::var("HERDR_TEST_HANDOFF_IMPORT_FAIL").as_deref() == Ok("after_restored") {
             return Err(io::Error::other(
                 "test handoff import failure after restored",
             ));
         }
-        wait_for_old_public_sockets_to_close(Duration::from_secs(5))?;
 
         // Not earlier: a signal during the import still ends this process,
-        // and the old server keeps its panes.
+        // and the old server keeps its panes. From now on a signal ends the
+        // wait for the commit below instead.
         install_stop_signals(&rt, &server_stop);
-        let api_server = api::start_server_with_stop_control(
-            api_tx.clone(),
-            event_hub.clone(),
-            server_stop.clone(),
-        )?;
-        let mut server = HeadlessServer::new(
-            app,
-            &loaded_config.diagnostics,
-            Some(api_tx.clone()),
-            Some(api_server),
-            server_stop,
-        )?;
         // Carried across before any client attaches, so the first title sent is
         // the override rather than the configured one it replaced.
         server.api_window_title = received.manifest.api_window_title.take();
@@ -214,8 +243,13 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         server.pty_alerts =
             crate::pty::usage::PtyAlerts::from_handoff(received.manifest.pty_alerts.take());
         crate::server::handoff::report_ready(&mut received.stream)?;
-        crate::server::handoff::wait_committed(&mut received.stream)?;
+        wait_committed_or_stopped(&mut received.stream, &server_stop)?;
         server.app.assume_handoff_ownership();
+        server.assume_client_socket_file();
+        if let Some(api_server) = server.api_server.as_mut() {
+            api_server.assume_socket_file();
+            api_server.resume_accepting();
+        }
         server.app.unpause_handoff_readers();
         server.pending_handoff_repaint_nudge = true;
         if let Err(err) = crate::server::handoff::report_owned(&mut received.stream) {
@@ -230,6 +264,32 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::logging::shutdown("server");
     result
+}
+
+/// Waits for the source's commit; a stop signal (routed to `server_stop`)
+/// or the source closing the stream ends the wait with an error, so the
+/// import ends and the source keeps its panes.
+#[cfg(unix)]
+fn wait_committed_or_stopped(
+    stream: &mut std::os::unix::net::UnixStream,
+    server_stop: &ServerStop,
+) -> io::Result<()> {
+    use std::os::fd::AsFd as _;
+
+    let (wake_tx, wake_rx) = std::os::unix::net::UnixStream::pair()?;
+    let stop = server_stop.clone();
+    let waker = tokio::spawn(async move {
+        stop.requested().await;
+        let _ = io::Write::write_all(&mut &wake_tx, &[1]);
+    });
+    let committed = crate::server::handoff::wait_committed(stream, wake_rx.as_fd());
+    waker.abort();
+    if committed.is_ok() && server_stop.is_requested() {
+        // The waker may have taken the wake-up the event loop needs to see
+        // this stop; the first reason recorded stays.
+        server_stop.request(ShutdownReason::Unknown);
+    }
+    committed
 }
 
 #[cfg(not(unix))]

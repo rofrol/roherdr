@@ -92,8 +92,6 @@ const EXTERNAL_EVENT_DRAIN_LIMIT: usize = 64;
 
 pub use bootstrap::run_server;
 use lifecycle::wait_for_live_handoff_response_write;
-#[cfg(unix)]
-use lifecycle::wait_for_old_public_sockets_to_close;
 
 use crate::protocol::MAX_GRAPHICS_FRAME_SIZE;
 
@@ -193,10 +191,15 @@ pub struct HeadlessServer {
     // Kept on every platform so dropping HeadlessServer owns API server shutdown.
     #[cfg_attr(windows, allow(dead_code))]
     api_server: Option<api::ServerHandle>,
+    /// `None` once a live handoff passed it to the new server.
     #[cfg(unix)]
-    client_listener: LocalListener,
+    client_listener: Option<LocalListener>,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
+    /// Whether the client socket file is this server's to remove: not while
+    /// a live handoff's source still owns the listener it passed (on the
+    /// import server, until the commit) nor once it passed it (on the source).
+    owns_client_socket_file: bool,
     clients: HashMap<u64, ClientConnection>,
     native_graphics: native_graphics::NativeGraphics,
     #[cfg(unix)]
@@ -327,13 +330,68 @@ impl HeadlessServer {
         api_server: Option<api::ServerHandle>,
         server_stop: ServerStop,
     ) -> io::Result<Self> {
-        let should_quit = server_stop.flag().clone();
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
 
         let listener = bind_local_listener(&client_path)?;
         restrict_socket_permissions(&client_path)?;
         let client_socket_identity = socket_file_identity(&client_path)?;
+        Self::with_client_listener(
+            app,
+            config_diagnostics,
+            api_tx,
+            api_server,
+            server_stop,
+            listener,
+            client_path,
+            client_socket_identity,
+        )
+    }
+
+    /// Creates a live handoff's import server on the client socket its
+    /// source listened on (passed, or taken over by path). The socket file
+    /// becomes this server's to remove only with
+    /// [`Self::assume_client_socket_file`], once the source committed.
+    #[cfg(unix)]
+    pub(crate) fn new_with_client_socket(
+        app: app::App,
+        config_diagnostics: &[String],
+        api_tx: Option<api::ApiRequestSender>,
+        api_server: Option<api::ServerHandle>,
+        server_stop: ServerStop,
+        client: crate::server::handoff::PublicListener,
+    ) -> io::Result<Self> {
+        let mut server = Self::with_client_listener(
+            app,
+            config_diagnostics,
+            api_tx,
+            api_server,
+            server_stop,
+            client.listener,
+            client.path,
+            client.identity,
+        )?;
+        server.owns_client_socket_file = false;
+        Ok(server)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn assume_client_socket_file(&mut self) {
+        self.owns_client_socket_file = true;
+    }
+
+    #[allow(clippy::too_many_arguments)] // The constructor's parts, passed through once.
+    fn with_client_listener(
+        app: app::App,
+        config_diagnostics: &[String],
+        api_tx: Option<api::ApiRequestSender>,
+        api_server: Option<api::ServerHandle>,
+        server_stop: ServerStop,
+        listener: LocalListener,
+        client_path: PathBuf,
+        client_socket_identity: SocketFileIdentity,
+    ) -> io::Result<Self> {
+        let should_quit = server_stop.flag().clone();
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Set non-blocking on Unix so we can poll it from the event loop.
@@ -358,9 +416,10 @@ impl HeadlessServer {
             api_tx,
             api_server,
             #[cfg(unix)]
-            client_listener: listener,
+            client_listener: Some(listener),
             client_socket_path: client_path,
             client_socket_identity,
+            owns_client_socket_file: true,
             clients: HashMap::new(),
             native_graphics: Default::default(),
             #[cfg(unix)]
@@ -1082,11 +1141,15 @@ impl HeadlessServer {
     /// Accepts pending client connections from the non-blocking listener.
     #[cfg(unix)]
     fn accept_client_connections(&mut self) -> io::Result<()> {
+        // Passed to a live handoff's new server, which accepts on it.
+        let Some(client_listener) = &self.client_listener else {
+            return Ok(());
+        };
         if self.handoff_in_progress {
-            return reject_pending_client_connections(&self.client_listener);
+            return reject_pending_client_connections(client_listener);
         }
         accept_pending_client_connections(
-            &self.client_listener,
+            client_listener,
             &mut self.next_client_id,
             &self.should_quit,
             &self.server_event_tx,

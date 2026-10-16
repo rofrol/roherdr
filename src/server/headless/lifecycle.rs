@@ -56,7 +56,9 @@ impl HeadlessServer {
 
         self.handoff_in_progress = true;
         self.disconnect_all_clients_for_handoff();
-        let _ = reject_pending_client_connections(&self.client_listener);
+        if let Some(client_listener) = &self.client_listener {
+            let _ = reject_pending_client_connections(client_listener);
+        }
 
         let mut paused_terminal_ids = Vec::new();
         for terminal_id in pane_by_terminal.keys() {
@@ -140,6 +142,7 @@ impl HeadlessServer {
             crate::workers::envs_for_handoff(),
         );
         manifest.pty_alerts = Some(self.pty_alerts.handoff());
+        manifest.public_listeners = self.public_listeners_offer();
         let mut import_child = match crate::server::handoff::spawn_handoff_import(
             import_exe.as_deref(),
             &socket_path,
@@ -173,13 +176,13 @@ impl HeadlessServer {
             return Err(err);
         }
 
-        let mut stream = match crate::server::handoff::accept_and_validate_on(
+        let (mut stream, public_sockets) = match crate::server::handoff::accept_and_validate_on(
             listener,
             &socket_path,
             &token,
             &manifest,
         ) {
-            Ok(stream) => stream,
+            Ok(accepted) => accepted,
             Err(err) => {
                 for fd in fds {
                     let _ = unsafe { libc::close(fd) };
@@ -190,53 +193,22 @@ impl HeadlessServer {
             }
         };
 
-        let send_result = crate::server::handoff::send_fds_and_wait_restored(&mut stream, &fds);
-        for fd in fds {
-            let _ = unsafe { libc::close(fd) };
-        }
-        if let Err(err) = send_result {
-            crate::server::handoff::cleanup_failed_import_child(&mut import_child);
-            self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
-            return Err(err);
-        }
-
-        if let Some(api_server) = &self.api_server {
-            let _ = api_server.remove_socket_file_if_owned();
+        if public_sockets == crate::server::handoff::PublicSocketsHandoff::UnlinkOnRestored {
+            self.hand_off_public_sockets_by_path(
+                &mut stream,
+                &fds,
+                &mut import_child,
+                &socket_path,
+                &paused_terminal_ids,
+            )?;
         } else {
-            let _ = std::fs::remove_file(crate::api::socket_path());
-        }
-        let _ = remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity);
-        if let Err(err) = crate::server::handoff::wait_ready(&mut stream) {
-            crate::server::handoff::cleanup_failed_import_child(&mut import_child);
-            match self.wait_then_restore_public_sockets_after_failed_handoff() {
-                Ok(()) => {
-                    self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
-                }
-                Err(restore_err) => {
-                    self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
-                    return Err(io::Error::other(format!(
-                        "handoff replacement server did not become ready: {err}; old server could not restore public sockets: {restore_err}"
-                    )));
-                }
-            }
-            return Err(io::Error::other(format!(
-                "handoff replacement server did not become ready: {err}"
-            )));
-        }
-        if let Err(err) = crate::server::handoff::report_committed(&mut stream) {
-            crate::server::handoff::cleanup_failed_import_child(&mut import_child);
-            match self.wait_then_restore_public_sockets_after_failed_handoff() {
-                Ok(()) => {
-                    self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
-                }
-                Err(restore_err) => {
-                    self.rollback_handoff_before_commit(&socket_path, &paused_terminal_ids);
-                    return Err(io::Error::other(format!(
-                        "handoff replacement server was ready, but commit failed: {err}; old server could not restore public sockets: {restore_err}"
-                    )));
-                }
-            }
-            return Err(err);
+            self.pass_public_listeners(
+                &mut stream,
+                &fds,
+                &mut import_child,
+                &socket_path,
+                &paused_terminal_ids,
+            )?;
         }
 
         for (terminal_id, runtime) in self.app.terminal_runtimes.drain_for_handoff() {
@@ -252,9 +224,9 @@ impl HeadlessServer {
     }
 
     pub(super) fn finish_live_handoff_shutdown(&mut self) {
-        // The new server accepts on the API socket since before it reported
-        // ready: each open wait this server ends from now on tells its
-        // client to go on with it.
+        // The new server holds the API socket (and accepts on it once it
+        // took ownership): each open wait this server ends from now on tells
+        // its client to go on with it.
         if let Some(api_server) = &self.api_server {
             api_server.mark_handed_off();
         }
@@ -272,6 +244,137 @@ impl HeadlessServer {
         Err(io::Error::other("live handoff is only supported on Unix"))
     }
 
+    /// What this server offers to pass to an import server: its listening
+    /// API and client sockets, while both files at their paths are still its
+    /// own. Without the offer, the import server takes the paths over.
+    #[cfg(unix)]
+    fn public_listeners_offer(&self) -> Option<crate::server::handoff::PublicListenersOffer> {
+        use crate::server::handoff::{PassedSocketFile, PublicListenersOffer, SocketFileId};
+
+        let api_server = self.api_server.as_ref()?;
+        api_server.listener_fd()?;
+        self.client_listener.as_ref()?;
+        let api_path = api_server.socket_path().to_path_buf();
+        let api_file = SocketFileId::of(&api_path).ok()?;
+        let client_file = SocketFileId::of(&self.client_socket_path).ok()?;
+        let client_own = socket_file_identity(&self.client_socket_path)
+            .is_ok_and(|current| current == self.client_socket_identity);
+        if !api_server.socket_file_is_own() || !client_own {
+            return None;
+        }
+        Some(PublicListenersOffer {
+            api: PassedSocketFile {
+                path: api_path,
+                file: api_file,
+            },
+            client: PassedSocketFile {
+                path: self.client_socket_path.clone(),
+                file: client_file,
+            },
+        })
+    }
+
+    /// The handoff to an import server that takes the listening sockets
+    /// (`handoff::pass_public_listeners`): no path is unlinked, renamed or
+    /// bound, a failure resumes accepting on the same listeners, and after
+    /// the commit this server closes its copies and never accepts on them.
+    #[cfg(unix)]
+    fn pass_public_listeners(
+        &mut self,
+        stream: &mut std::os::unix::net::UnixStream,
+        fds: &[std::os::fd::RawFd],
+        import_child: &mut std::process::Child,
+        socket_path: &Path,
+        paused_terminal_ids: &[crate::terminal::TerminalId],
+    ) -> io::Result<()> {
+        let mut listeners = OwnListeners {
+            api_server: &mut self.api_server,
+            client_listener: &mut self.client_listener,
+        };
+        let handed_off = crate::server::handoff::pass_public_listeners(
+            stream,
+            fds,
+            &mut listeners,
+            || crate::server::handoff::cleanup_failed_import_child(import_child),
+            &mut |_| {},
+        );
+        for fd in fds {
+            let _ = unsafe { libc::close(*fd) };
+        }
+        if let Err(err) = handed_off {
+            self.rollback_handoff_before_commit(socket_path, paused_terminal_ids);
+            return Err(err);
+        }
+        // The import server's file now, as the listener is.
+        self.owns_client_socket_file = false;
+        Ok(())
+    }
+
+    /// The handoff to an import server from before the listener transfer, as
+    /// that build's source did it: unlink both paths (each only if still
+    /// this server's file) on `restored`, for the import server to bind; on
+    /// a failure, reap it and bind both paths again.
+    #[cfg(unix)]
+    fn hand_off_public_sockets_by_path(
+        &mut self,
+        stream: &mut std::os::unix::net::UnixStream,
+        fds: &[std::os::fd::RawFd],
+        import_child: &mut std::process::Child,
+        socket_path: &Path,
+        paused_terminal_ids: &[crate::terminal::TerminalId],
+    ) -> io::Result<()> {
+        let send_result = crate::server::handoff::send_fds_and_wait_restored(stream, fds);
+        for fd in fds {
+            let _ = unsafe { libc::close(*fd) };
+        }
+        if let Err(err) = send_result {
+            crate::server::handoff::cleanup_failed_import_child(import_child);
+            self.rollback_handoff_before_commit(socket_path, paused_terminal_ids);
+            return Err(err);
+        }
+
+        if let Some(api_server) = &self.api_server {
+            let _ = api_server.remove_socket_file_if_owned();
+        }
+        let _ = remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity);
+        let handed_off = crate::server::handoff::wait_ready(stream)
+            .map_err(|err| {
+                io::Error::other(format!(
+                    "handoff replacement server did not become ready: {err}"
+                ))
+            })
+            .and_then(|()| {
+                crate::server::handoff::report_committed(stream).map_err(|err| {
+                    io::Error::other(format!(
+                        "handoff replacement server was ready, but commit failed: {err}"
+                    ))
+                })
+            });
+        if let Err(err) = handed_off {
+            // Reaped first: its listeners are closed once it is gone, so
+            // only another process can still accept on the paths.
+            crate::server::handoff::cleanup_failed_import_child(import_child);
+            let restored = self.restore_public_sockets_after_failed_handoff();
+            self.rollback_handoff_before_commit(socket_path, paused_terminal_ids);
+            return Err(match restored {
+                Ok(()) => err,
+                Err(restore_err) => io::Error::other(format!(
+                    "{err}; old server could not restore public sockets: {restore_err}"
+                )),
+            });
+        }
+        // The paths are the import server's files now, which may reuse the
+        // inodes of the unlinked ones: neither listener may remove them.
+        if let Some(api_server) = self.api_server.as_mut() {
+            api_server.release_listener();
+        }
+        self.client_listener = None;
+        self.owns_client_socket_file = false;
+        Ok(())
+    }
+
+    /// Binds both public paths again after a by-path handoff failed. A path
+    /// another process accepts on is refused (`AddrInUse`).
     #[cfg(unix)]
     fn restore_public_sockets_after_failed_handoff(&mut self) -> io::Result<()> {
         let api_tx = self
@@ -283,6 +386,11 @@ impl HeadlessServer {
             self.app.event_hub.clone(),
             self.server_stop.clone(),
         )?;
+        // The old handle's file is gone; its drop must not remove the new
+        // one, which may reuse the inode.
+        if let Some(mut old) = self.api_server.replace(api_server) {
+            old.release_listener();
+        }
 
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
@@ -291,18 +399,10 @@ impl HeadlessServer {
         let client_socket_identity = socket_file_identity(&client_path)?;
         listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
-        self.api_server = Some(api_server);
-        self.client_listener = listener;
+        self.client_listener = Some(listener);
         self.client_socket_path = client_path;
         self.client_socket_identity = client_socket_identity;
         Ok(())
-    }
-
-    #[cfg(unix)]
-    fn wait_then_restore_public_sockets_after_failed_handoff(&mut self) -> io::Result<()> {
-        let timeout = crate::server::handoff::COMMIT_TIMEOUT + Duration::from_secs(2);
-        wait_for_old_public_sockets_to_close(timeout)?;
-        self.restore_public_sockets_after_failed_handoff()
     }
 
     #[cfg(unix)]
@@ -416,6 +516,11 @@ impl HeadlessServer {
 
     /// Removes socket files created by the server.
     pub(super) fn cleanup_sockets(&self) -> io::Result<()> {
+        // Its listener passed to a live handoff's new server, which listens
+        // on the same file.
+        if !self.owns_client_socket_file {
+            return Ok(());
+        }
         if let Err(err) =
             remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity)
         {
@@ -431,22 +536,45 @@ impl HeadlessServer {
     }
 }
 
+/// This server's public listeners, as a listener handoff passes them. The
+/// event loop, which accepts clients, waits for the handoff, so only the
+/// API's accept thread is paused.
 #[cfg(unix)]
-pub(super) fn wait_for_old_public_sockets_to_close(timeout: Duration) -> io::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let api_socket = api::socket_path();
-    let client_socket = client_socket_path();
-    while Instant::now() < deadline {
-        let api_open = api_socket.exists() && crate::ipc::connect_local_stream(&api_socket).is_ok();
-        let client_open =
-            client_socket.exists() && crate::ipc::connect_local_stream(&client_socket).is_ok();
-        if !api_open && !client_open {
-            return Ok(());
+struct OwnListeners<'a> {
+    api_server: &'a mut Option<api::ServerHandle>,
+    client_listener: &'a mut Option<LocalListener>,
+}
+
+#[cfg(unix)]
+impl crate::server::handoff::SourceListeners for OwnListeners<'_> {
+    fn pause_accepting(&mut self) {
+        if let Some(api_server) = self.api_server.as_ref() {
+            api_server.pause_accepting();
         }
-        std::thread::sleep(Duration::from_millis(50));
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "old server sockets did not close before handoff import bind",
-    ))
+
+    fn resume_accepting(&mut self) {
+        if let Some(api_server) = self.api_server.as_ref() {
+            api_server.resume_accepting();
+        }
+    }
+
+    fn listener_fds(&self) -> io::Result<[std::os::fd::BorrowedFd<'_>; 2]> {
+        let api = self
+            .api_server
+            .as_ref()
+            .and_then(|api_server| api_server.listener_fd())
+            .ok_or_else(|| io::Error::other("the api listener is not this server's"))?;
+        let Some(LocalListener::UdSocket(client)) = self.client_listener.as_ref() else {
+            return Err(io::Error::other("the client listener is not this server's"));
+        };
+        Ok([api, std::os::fd::AsFd::as_fd(client)])
+    }
+
+    fn release(&mut self) {
+        if let Some(api_server) = self.api_server.as_mut() {
+            api_server.release_listener();
+        }
+        *self.client_listener = None;
+    }
 }
