@@ -200,6 +200,13 @@ fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<(
 ///   socket overrides, etc.), except inherited socket overrides are cleared when
 ///   this CLI invocation explicitly selected a session.
 ///
+/// Waits for the spawned server's start report (`start_report`) where the
+/// platform passes one: it returns once the server listens, or fails with
+/// `ResourceBusy` naming the holder when another server holds the
+/// session's lock (`session_lock`), so that server is starting or handing
+/// off and a second one would restore and resume the same session again.
+/// Only the spawned server takes the lock; this process never looks at it.
+///
 /// Returns the PID of the spawned server process.
 pub fn spawn_server_daemon() -> io::Result<u32> {
     let exe = std::env::current_exe().map_err(|err| {
@@ -212,13 +219,21 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
     info!(exe = %exe.display(), "spawning server daemon");
 
     let mut command = build_server_daemon_command(exe);
+    let report = crate::platform::attach_server_start_report(&mut command)?;
 
-    let pid =
-        crate::platform::launch_server_daemon_command(&mut command).map_err(|err: io::Error| {
-            io::Error::new(err.kind(), format!("failed to spawn herdr server: {err}"))
-        })?;
+    let launched = crate::platform::launch_server_daemon_command(&mut command);
+    // This process's copy of the server's end closes here, so the report's
+    // end comes from the server alone.
+    let report = report.map(crate::platform::ServerStartReport::spawned);
+    let pid = launched.map_err(|err: io::Error| {
+        io::Error::new(err.kind(), format!("failed to spawn herdr server: {err}"))
+    })?;
     info!(pid, "server daemon spawned");
 
+    if let Some(report) = report {
+        crate::server::start_report::await_server_start(report, &client_socket_path())?;
+        info!(pid, "server daemon reported ready");
+    }
     Ok(pid)
 }
 
@@ -300,7 +315,10 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 ///
 /// Flow:
 /// 1. Check if a server is listening on the client socket
-/// 2. If no server → spawn server daemon → wait for socket readiness
+/// 2. If no server → spawn server daemon → wait for its start report and
+///    socket readiness; when the spawned server reports that another holds
+///    the session's lock (it is starting or handing off), this exits saying
+///    so, and no second server runs
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
@@ -463,6 +481,48 @@ mod tests {
         std::env::remove_var("HERDR_CLIENT_SOCKET_PATH");
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
+    }
+
+    // Review round 20261016-170554-f593: a client that looked at the lock
+    // (a shared lock for an instant) could make a server that was just
+    // taking it refuse, leaving none running. A client looks for a server
+    // only on its socket and learns a spawned server's outcome from its
+    // start report; here it looks while a server is between opening its
+    // lock file and taking the lock, and that server still starts.
+    #[test]
+    fn a_client_looking_for_a_server_does_not_make_a_starting_one_refuse() {
+        use crate::server::session_lock::{self, SessionLock};
+
+        let dir = session_lock::tests::test_dir("race");
+        let api_socket = dir.join("herdr.sock");
+        let client_socket =
+            crate::server::socket_paths::derive_client_socket_from_api_socket(&api_socket);
+        let lock_path = session_lock::lock_path_for(&api_socket);
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        session_lock::tests::pause_between_open_and_lock(&lock_path, move || {
+            let _ = opened_tx.send(());
+            let _ = go_rx.recv();
+        });
+        let starting = std::thread::spawn({
+            let lock_path = lock_path.clone();
+            move || SessionLock::acquire(&lock_path)
+        });
+        opened_rx
+            .recv()
+            .expect("the starting server opened its lock file");
+        assert!(lock_path.exists());
+
+        // Everything a client reads before it decides to spawn a server, and
+        // the record a refusal message names.
+        assert!(!is_server_listening_at(&client_socket).unwrap());
+        assert_eq!(session_lock::recorded_holder(&lock_path), None);
+
+        go_tx.send(()).expect("release the starting server");
+        let started = starting.join().expect("the starting server's thread");
+        let _ = std::fs::remove_dir_all(&dir);
+        let lock = started.expect("the starting server took the lock");
+        assert_eq!(lock.path(), lock_path.as_path());
     }
 
     #[test]

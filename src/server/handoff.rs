@@ -72,12 +72,41 @@ pub(crate) struct HandoffManifest {
     /// takes them over by path (`take_over_public_paths`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_listeners: Option<PublicListenersOffer>,
+    /// Present when the source passes the session lock it holds
+    /// (`session_lock`) over this stream to an import server that takes it
+    /// (`take-server-lock` in its `validated` line), so the lock is held
+    /// throughout the handoff and never released between the two servers.
+    /// Absent from manifests written before this field existed: such a
+    /// source holds no lock, and the import server takes it by path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_lock: Option<ServerLockOffer>,
 }
 
-/// The `validated` line of an import server that takes the offered
-/// listening sockets. An older import server only sends `validated`.
+/// The words an import server adds to its `validated` line for what it
+/// takes of the source's offer, each only when offered. An import server
+/// from before the listener transfer sends a bare `validated`.
 #[cfg(unix)]
-const VALIDATED_TAKE_LISTENERS: &str = "validated take-public-listeners";
+const TAKE_LISTENERS: &str = "take-public-listeners";
+#[cfg(unix)]
+const TAKE_SERVER_LOCK: &str = "take-server-lock";
+
+/// The session lock a source offers to pass, sent after the listeners.
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ServerLockOffer {
+    pub path: PathBuf,
+}
+
+/// What the import server on the other end takes of the source's offer.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ImportTakes {
+    pub public_sockets: PublicSocketsHandoff,
+    /// It takes the session lock's descriptor. An import server from before
+    /// the lock does not: the source holds the lock until it exits, and
+    /// nothing holds it for that import server's life.
+    pub server_lock: bool,
+}
 
 /// The two listening sockets a source offers to pass, in the order they are
 /// sent.
@@ -143,6 +172,8 @@ pub(crate) struct ReceivedHandoff {
     pub fds: Vec<RawFd>,
     /// The API and client listeners the source passed, when it offered them.
     pub listeners: Option<[std::os::fd::OwnedFd; 2]>,
+    /// The session lock's descriptor, when the source offered it.
+    pub server_lock: Option<std::os::fd::OwnedFd>,
     pub stream: UnixStream,
 }
 
@@ -239,7 +270,7 @@ pub(crate) fn accept_and_validate_on(
     socket_path: &Path,
     token: &str,
     manifest: &HandoffManifest,
-) -> io::Result<(UnixStream, PublicSocketsHandoff)> {
+) -> io::Result<(UnixStream, ImportTakes)> {
     let (mut stream, _) = accept_with_timeout(&listener, READY_TIMEOUT)?;
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(READY_TIMEOUT))?;
@@ -258,21 +289,77 @@ pub(crate) fn accept_and_validate_on(
 
     stream.set_read_timeout(Some(READY_TIMEOUT))?;
     let validated = read_line_unbuffered(&mut stream)?;
-    let public_sockets = match validated.trim_end() {
-        "validated" => PublicSocketsHandoff::UnlinkOnRestored,
-        VALIDATED_TAKE_LISTENERS if manifest.public_listeners.is_some() => {
-            PublicSocketsHandoff::PassListeners
-        }
-        _ => return Err(io::Error::other("handoff import did not validate manifest")),
-    };
+    let takes = parse_validated(validated.trim_end(), manifest)
+        .ok_or_else(|| io::Error::other("handoff import did not validate manifest"))?;
     let _ = std::fs::remove_file(socket_path);
-    Ok((stream, public_sockets))
+    Ok((stream, takes))
 }
 
+/// Reads an import server's `validated` line: `validated`, then a word for
+/// each part of the offer it takes. A word for something not offered, or
+/// one this build does not know, refuses the handoff.
 #[cfg(unix)]
-pub(crate) fn send_fds_and_wait_restored(stream: &mut UnixStream, fds: &[RawFd]) -> io::Result<()> {
+fn parse_validated(line: &str, manifest: &HandoffManifest) -> Option<ImportTakes> {
+    let mut words = line.split(' ');
+    if words.next() != Some("validated") {
+        return None;
+    }
+    let mut takes = ImportTakes {
+        public_sockets: PublicSocketsHandoff::UnlinkOnRestored,
+        server_lock: false,
+    };
+    for word in words {
+        match word {
+            TAKE_LISTENERS if manifest.public_listeners.is_some() => {
+                takes.public_sockets = PublicSocketsHandoff::PassListeners;
+            }
+            TAKE_SERVER_LOCK if manifest.server_lock.is_some() => takes.server_lock = true,
+            _ => return None,
+        }
+    }
+    Some(takes)
+}
+
+/// The import server's `validated` line for what `manifest` offers.
+#[cfg(unix)]
+fn validated_line(manifest: &HandoffManifest) -> String {
+    let mut line = String::from("validated");
+    if manifest.public_listeners.is_some() {
+        line.push(' ');
+        line.push_str(TAKE_LISTENERS);
+    }
+    if manifest.server_lock.is_some() {
+        line.push(' ');
+        line.push_str(TAKE_SERVER_LOCK);
+    }
+    line.push('\n');
+    line
+}
+
+/// Sends the pane descriptors, then the session lock when the import server
+/// takes it, and waits for `restored`.
+#[cfg(unix)]
+pub(crate) fn send_fds_and_wait_restored(
+    stream: &mut UnixStream,
+    fds: &[RawFd],
+    server_lock: Option<std::os::fd::BorrowedFd<'_>>,
+) -> io::Result<()> {
     send_fds(stream, fds)?;
+    send_server_lock(stream, server_lock)?;
     wait_restored(stream)
+}
+
+/// Passes the session lock's descriptor. The source keeps its own copy, so
+/// the lock stays held whatever the import server does with it.
+#[cfg(unix)]
+fn send_server_lock(
+    stream: &UnixStream,
+    server_lock: Option<std::os::fd::BorrowedFd<'_>>,
+) -> io::Result<()> {
+    match server_lock {
+        Some(fd) => send_fd_batch(stream, &[fd.as_raw_fd()]),
+        None => Ok(()),
+    }
 }
 
 /// A source's listening public sockets, as the listener handoff uses them.
@@ -294,7 +381,8 @@ pub(crate) trait SourceListeners {
 pub(crate) enum ListenerHandoffPoint {
     /// The source accepts no more; nothing is sent yet.
     Paused,
-    /// Both listeners are sent; the import server has not reported restored.
+    /// Both listeners (and the session lock, when taken) are sent; the
+    /// import server has not reported restored.
     Passed,
     /// The import server reported ready; the source has not committed.
     Ready,
@@ -307,11 +395,15 @@ pub(crate) enum ListenerHandoffPoint {
 /// socket and connections meanwhile wait in its backlog. On a failure it
 /// runs `reap_import` (so the import server's copies are closed) and then
 /// accepts on the same listeners again; after the commit it releases them.
+/// `server_lock`, when the import server takes it, is sent after the
+/// listeners; the caller keeps its copy until the commit, so the lock is
+/// held throughout and still the source's after a failure.
 #[cfg(unix)]
 pub(crate) fn pass_public_listeners(
     stream: &mut UnixStream,
     pane_fds: &[RawFd],
     listeners: &mut impl SourceListeners,
+    server_lock: Option<std::os::fd::BorrowedFd<'_>>,
     reap_import: impl FnOnce(),
     at: &mut dyn FnMut(ListenerHandoffPoint),
 ) -> io::Result<()> {
@@ -321,6 +413,7 @@ pub(crate) fn pass_public_listeners(
         send_fds(stream, pane_fds)?;
         let [api, client] = listeners.listener_fds()?;
         send_listener_fds(stream, api, client)?;
+        send_server_lock(stream, server_lock)?;
         at(ListenerHandoffPoint::Passed);
         wait_restored(stream)?;
         wait_ready(stream).map_err(|err| {
@@ -445,12 +538,7 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
         )));
     }
     let take_listeners = manifest.public_listeners.is_some();
-    if take_listeners {
-        stream.write_all(VALIDATED_TAKE_LISTENERS.as_bytes())?;
-        stream.write_all(b"\n")?;
-    } else {
-        stream.write_all(b"validated\n")?;
-    }
+    stream.write_all(validated_line(&manifest).as_bytes())?;
     stream.flush()?;
     let fds = recv_fds(&stream, manifest.panes.len())?;
     let listeners = if take_listeners {
@@ -478,12 +566,64 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
     } else {
         None
     };
+    let server_lock = if manifest.server_lock.is_some() {
+        match recv_fds(&stream, 1) {
+            Ok(lock) => {
+                use std::os::fd::FromRawFd as _;
+
+                // `recv_fds` returns exactly the one descriptor asked for,
+                // new in this process.
+                lock.first()
+                    .map(|fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(*fd) })
+            }
+            Err(err) => {
+                // The listeners close as they drop.
+                close_raw_fds(&fds);
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     Ok(ReceivedHandoff {
         manifest,
         fds,
         listeners,
+        server_lock,
         stream,
     })
+}
+
+/// The session lock this import server holds: the one the source passed,
+/// or, from a source from before the lock (which holds none), the lock
+/// taken from its path, refused while another server holds it. Must run
+/// before the import restores anything. A passed lock must be this
+/// server's own lock file by identity (device and inode), whatever path the
+/// source spelled it with (a symlinked state directory, `/tmp` against
+/// `/private/tmp` on macOS); its offer's path only names it in messages.
+pub(crate) fn import_session_lock(
+    passed: Option<std::os::fd::OwnedFd>,
+    offer: Option<&ServerLockOffer>,
+    own_path: &Path,
+) -> io::Result<crate::server::session_lock::SessionLock> {
+    match (passed, offer) {
+        (Some(fd), Some(offer)) => {
+            crate::server::session_lock::SessionLock::adopt_passed(fd, own_path).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "the handoff source's session lock ({}) is not this server's ({}): {err}",
+                        offer.path.display(),
+                        own_path.display()
+                    ),
+                )
+            })
+        }
+        (None, None) => crate::server::session_lock::SessionLock::acquire(own_path),
+        _ => Err(io::Error::other(
+            "the handoff's session lock does not match its offer",
+        )),
+    }
 }
 
 /// The listeners a source passed, checked against its offer: each socket
@@ -807,6 +947,7 @@ pub(crate) fn manifest_for(
         run_envs,
         pty_alerts: None,
         public_listeners: None,
+        server_lock: None,
     }
 }
 
@@ -1007,6 +1148,14 @@ fn recv_fd_batch(stream: &UnixStream, wanted: usize) -> io::Result<Vec<RawFd>> {
     if out.is_empty() {
         return Err(io::Error::other("handoff fd message missing SCM_RIGHTS"));
     }
+    // `SCM_RIGHTS` delivers them without `FD_CLOEXEC`: no process this
+    // server starts may inherit a pane, a listener or the session lock.
+    for fd in &out {
+        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
+        if flags >= 0 {
+            unsafe { libc::fcntl(*fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        }
+    }
     Ok(out)
 }
 
@@ -1068,6 +1217,7 @@ mod tests {
         assert!(older.run_envs.is_empty());
         assert!(older.pty_alerts.is_none());
         assert!(older.public_listeners.is_none());
+        assert!(older.server_lock.is_none());
     }
 
     #[test]
@@ -1293,10 +1443,10 @@ mod tests {
             std::thread::spawn(move || import_listeners(&handoff_path, passed_tx, go_rx))
         };
 
-        let (mut stream, public_sockets) =
+        let (mut stream, takes) =
             accept_and_validate_on(listener, &handoff_path, "token", &manifest)
                 .expect("the import server validates");
-        assert_eq!(public_sockets, PublicSocketsHandoff::PassListeners);
+        assert_eq!(takes.public_sockets, PublicSocketsHandoff::PassListeners);
         let mut probes = Vec::new();
         let mut probe = |point: ListenerHandoffPoint| {
             if point == ListenerHandoffPoint::Passed {
@@ -1319,6 +1469,7 @@ mod tests {
             &mut stream,
             &[],
             &mut source,
+            None,
             || panic!("a successful handoff reaps nothing"),
             &mut probe,
         )
@@ -1381,6 +1532,7 @@ mod tests {
             &mut stream,
             &[],
             &mut source,
+            None,
             || {
                 importer.join().expect("the importer thread");
                 reap_log.borrow_mut().push("reap");
@@ -1423,12 +1575,11 @@ mod tests {
             })
         };
 
-        let (_stream, public_sockets) =
-            accept_and_validate_on(listener, &handoff_path, "token", &manifest)
-                .expect("the older import server validates");
+        let (_stream, takes) = accept_and_validate_on(listener, &handoff_path, "token", &manifest)
+            .expect("the older import server validates");
         let _import = importer.join().expect("the importer thread");
 
-        assert_eq!(public_sockets, PublicSocketsHandoff::UnlinkOnRestored);
+        assert_eq!(takes.public_sockets, PublicSocketsHandoff::UnlinkOnRestored);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1444,15 +1595,15 @@ mod tests {
         };
 
         // That build accepts only a plain `validated`.
-        let (_stream, public_sockets) =
-            accept_and_validate_on(listener, &handoff_path, "token", &manifest)
-                .expect("the import server validates");
+        let (_stream, takes) = accept_and_validate_on(listener, &handoff_path, "token", &manifest)
+            .expect("the import server validates");
         let received = importer
             .join()
             .expect("the importer thread")
             .expect("receive");
 
-        assert_eq!(public_sockets, PublicSocketsHandoff::UnlinkOnRestored);
+        assert_eq!(takes.public_sockets, PublicSocketsHandoff::UnlinkOnRestored);
+        assert!(!takes.server_lock);
         assert!(received.listeners.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1572,5 +1723,320 @@ mod tests {
         );
         assert_eq!(described_pid("pid 42"), Some(42));
         assert_eq!(described_pid("an unknown process"), None);
+    }
+
+    /// Whether a holder has the lock at `path`, by trying to take it: only
+    /// in these tests, where no server start contends for the file.
+    fn lock_held(path: &Path) -> bool {
+        crate::platform::ExclusiveFileLock::try_acquire(path)
+            .expect("the session lock file")
+            .is_none()
+    }
+
+    /// A source's listeners and session lock, offered in its manifest.
+    fn lock_handoff_source(
+        dir: &Path,
+    ) -> (
+        TestSource,
+        crate::server::session_lock::SessionLock,
+        HandoffManifest,
+        std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    ) {
+        let api_path = dir.join("a.sock");
+        let client_path = dir.join("c.sock");
+        let lock_path = dir.join("herdr-server.lock");
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let source = TestSource {
+            api: Some(listen(&api_path)),
+            client: Some(listen(&client_path)),
+            log: log.clone(),
+        };
+        let lock = crate::server::session_lock::SessionLock::acquire(&lock_path)
+            .expect("the source holds the session lock");
+        let mut manifest = manifest_offering(Some(offer_for(&api_path, &client_path)));
+        manifest.server_lock = Some(ServerLockOffer {
+            path: lock_path.clone(),
+        });
+        (source, lock, manifest, log)
+    }
+
+    // Report of 2026-10-16: a client that found no socket during a failed
+    // handoff started a second server. The lock that refuses it is passed
+    // with the listeners, so it is held at every point, the transfer point
+    // included, and never free between the two servers.
+    #[test]
+    fn the_session_lock_is_held_throughout_a_live_handoff() {
+        use std::os::fd::AsFd as _;
+
+        let dir = socket_test_dir("lock");
+        let lock_path = dir.join("herdr-server.lock");
+        let handoff_path = dir.join("h.sock");
+        let (mut source, source_lock, manifest, log) = lock_handoff_source(&dir);
+        let listener = bind_listener(&handoff_path).expect("bind the handoff socket");
+        let (adopted_tx, adopted_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let importer = {
+            let handoff_path = handoff_path.clone();
+            let lock_path = lock_path.clone();
+            std::thread::spawn(move || -> io::Result<_> {
+                let mut received = receive(&handoff_path, "token")?;
+                let lock = import_session_lock(
+                    received.server_lock.take(),
+                    received.manifest.server_lock.as_ref(),
+                    &lock_path,
+                )?;
+                let _ = adopted_tx.send(());
+                go_rx.recv().map_err(io::Error::other)?;
+                report_restored(&mut received.stream)?;
+                report_ready(&mut received.stream)?;
+                let (_wake_tx, wake_rx) = UnixStream::pair()?;
+                wait_committed(&mut received.stream, wake_rx.as_fd())?;
+                report_owned(&mut received.stream)?;
+                Ok((lock, received.listeners.take()))
+            })
+        };
+        let (mut stream, takes) =
+            accept_and_validate_on(listener, &handoff_path, "token", &manifest)
+                .expect("the import server validates");
+        assert!(takes.server_lock);
+        let mut checked = Vec::new();
+        let mut probe = |point: ListenerHandoffPoint| {
+            if point == ListenerHandoffPoint::Passed {
+                // The import server holds its copy and waits.
+                adopted_rx.recv().expect("the import server took the lock");
+            }
+            assert!(
+                lock_held(&lock_path),
+                "{point:?}: the session lock was free"
+            );
+            checked.push(point);
+            if point == ListenerHandoffPoint::Passed {
+                go_tx.send(()).expect("release the import server");
+            }
+        };
+        pass_public_listeners(
+            &mut stream,
+            &[],
+            &mut source,
+            Some(source_lock.as_fd()),
+            || panic!("a successful handoff reaps nothing"),
+            &mut probe,
+        )
+        .expect("the handoff commits");
+        wait_owned_ack(&mut stream);
+        assert_eq!(
+            checked,
+            vec![
+                ListenerHandoffPoint::Paused,
+                ListenerHandoffPoint::Passed,
+                ListenerHandoffPoint::Ready
+            ]
+        );
+        // The source lets go of its copy once committed, as the server does.
+        drop(source_lock);
+        let (import_lock, _listeners) = importer
+            .join()
+            .expect("the importer thread")
+            .expect("the import server takes the lock");
+        assert!(lock_held(&lock_path), "the import server holds the lock");
+        assert_eq!(*log.borrow(), vec!["pause", "release"]);
+        drop(import_lock);
+        assert!(!lock_held(&lock_path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_import_leaves_the_session_lock_with_the_source() {
+        let dir = socket_test_dir("lockfail");
+        let lock_path = dir.join("herdr-server.lock");
+        let handoff_path = dir.join("h.sock");
+        let (mut source, source_lock, manifest, log) = lock_handoff_source(&dir);
+        let listener = bind_listener(&handoff_path).expect("bind the handoff socket");
+        let importer = {
+            let handoff_path = handoff_path.clone();
+            let lock_path = lock_path.clone();
+            std::thread::spawn(move || {
+                // Takes the lock, then fails before `restored`: its copy
+                // closes as a failed import server's does when it exits.
+                let mut received = receive(&handoff_path, "token").expect("receive");
+                let lock = import_session_lock(
+                    received.server_lock.take(),
+                    received.manifest.server_lock.as_ref(),
+                    &lock_path,
+                )
+                .expect("the passed lock");
+                drop(lock);
+            })
+        };
+
+        let (mut stream, takes) =
+            accept_and_validate_on(listener, &handoff_path, "token", &manifest)
+                .expect("the import server validates");
+        assert!(takes.server_lock);
+        let reap_log = log.clone();
+        let reap_lock_path = lock_path.clone();
+        pass_public_listeners(
+            &mut stream,
+            &[],
+            &mut source,
+            Some(source_lock.as_fd()),
+            || {
+                importer.join().expect("the importer thread");
+                // The import server is gone; its copy is closed.
+                assert!(lock_held(&reap_lock_path), "the source's lock was let go");
+                reap_log.borrow_mut().push("reap");
+            },
+            &mut |_| {},
+        )
+        .expect_err("the import failed");
+
+        assert_eq!(*log.borrow(), vec!["pause", "reap", "resume"]);
+        assert!(lock_held(&lock_path), "the source still holds the lock");
+        // Nobody else can take it while the source runs on.
+        assert!(crate::server::session_lock::SessionLock::acquire(&lock_path).is_err());
+        drop(source_lock);
+        assert!(!lock_held(&lock_path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_import_server_takes_the_lock_by_path_from_a_source_from_before_the_lock() {
+        let dir = socket_test_dir("lockold");
+        let lock_path = dir.join("herdr-server.lock");
+
+        // Such a source holds no lock and offers none.
+        let lock = import_session_lock(None, None, &lock_path).expect("free: taken by path");
+        assert!(lock_held(&lock_path));
+        // While another server holds it, the import is refused before it
+        // restores anything.
+        let err = import_session_lock(None, None, &lock_path)
+            .err()
+            .expect("held");
+        assert_eq!(err.kind(), io::ErrorKind::ResourceBusy);
+        drop(lock);
+        // A passed lock without an offer, or an offer without one, is refused.
+        assert!(import_session_lock(
+            None,
+            Some(&ServerLockOffer {
+                path: lock_path.clone()
+            }),
+            &lock_path
+        )
+        .is_err());
+        // An offer for another session's lock is refused.
+        let other = crate::server::session_lock::SessionLock::acquire(&dir.join("o-server.lock"))
+            .expect("other lock");
+        let fd = std::os::fd::BorrowedFd::try_clone_to_owned(&other.as_fd()).expect("dup");
+        assert!(import_session_lock(
+            Some(fd),
+            Some(&ServerLockOffer {
+                path: dir.join("o-server.lock")
+            }),
+            &lock_path
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Review round 20261016-170554-f593: the import compared the offered
+    // path with its own as strings, so a source that spelled the state
+    // directory another way (`/tmp` against `/private/tmp` on macOS, a
+    // symlink) failed a legitimate handoff. The file's identity decides.
+    #[test]
+    fn a_passed_lock_is_adopted_under_another_spelling_of_its_path() {
+        let dir = socket_test_dir("lockalias");
+        let real = dir.join("state");
+        std::fs::create_dir_all(&real).expect("state dir");
+        let alias = dir.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        let own_path = real.join("herdr-server.lock");
+        let source_path = alias.join("herdr-server.lock");
+        assert_ne!(own_path, source_path);
+
+        let source_lock = crate::server::session_lock::SessionLock::acquire(&source_path)
+            .expect("the source holds the session lock");
+        let fd = std::os::fd::BorrowedFd::try_clone_to_owned(&source_lock.as_fd()).expect("dup");
+        let import_lock = import_session_lock(
+            Some(fd),
+            Some(&ServerLockOffer {
+                path: source_path.clone(),
+            }),
+            &own_path,
+        )
+        .expect("the same file under another spelling");
+        drop(source_lock);
+        assert!(lock_held(&own_path), "the import server holds the lock");
+        drop(import_lock);
+        assert!(!lock_held(&own_path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A source that hands its socket paths over by name (the import server
+    // took no listeners) still passes the lock, after the pane descriptors.
+    #[test]
+    fn the_session_lock_passes_with_the_pane_descriptors_in_a_by_path_handoff() {
+        let dir = socket_test_dir("lockpath");
+        let lock_path = dir.join("herdr-server.lock");
+        let source_lock = crate::server::session_lock::SessionLock::acquire(&lock_path)
+            .expect("the source holds the session lock");
+        let (mut source, mut import) = UnixStream::pair().expect("handoff stream");
+        let offer = ServerLockOffer {
+            path: lock_path.clone(),
+        };
+        let (adopted_tx, adopted_rx) = std::sync::mpsc::channel();
+        let importer = {
+            let lock_path = lock_path.clone();
+            std::thread::spawn(move || -> io::Result<_> {
+                use std::os::fd::FromRawFd as _;
+
+                let fd = recv_fds(&import, 1)?
+                    .first()
+                    .map(|fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(*fd) });
+                let lock = import_session_lock(fd, Some(&offer), &lock_path)?;
+                let _ = adopted_tx.send(());
+                report_restored(&mut import)?;
+                Ok(lock)
+            })
+        };
+
+        send_fds_and_wait_restored(&mut source, &[], Some(source_lock.as_fd())).expect("restored");
+        adopted_rx.recv().expect("the import server took the lock");
+        drop(source_lock);
+        let import_lock = importer
+            .join()
+            .expect("the importer thread")
+            .expect("the passed lock");
+        assert!(lock_held(&lock_path), "the import server holds the lock");
+        assert!(crate::server::session_lock::SessionLock::acquire(&lock_path).is_err());
+        drop(import_lock);
+        assert!(!lock_held(&lock_path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_validated_line_names_only_what_was_offered() {
+        let mut manifest = manifest_offering(None);
+        assert_eq!(validated_line(&manifest), "validated\n");
+        let bare = parse_validated("validated", &manifest).expect("bare");
+        assert_eq!(bare.public_sockets, PublicSocketsHandoff::UnlinkOnRestored);
+        assert!(!bare.server_lock);
+        // Not offered: refused.
+        assert!(parse_validated("validated take-server-lock", &manifest).is_none());
+        assert!(parse_validated("validated take-public-listeners", &manifest).is_none());
+
+        manifest.server_lock = Some(ServerLockOffer {
+            path: PathBuf::from("/s/herdr-server.lock"),
+        });
+        assert_eq!(validated_line(&manifest), "validated take-server-lock\n");
+        let takes = parse_validated("validated take-server-lock", &manifest).expect("lock");
+        assert!(takes.server_lock);
+        // An import server from before the lock ignores the offer.
+        assert!(
+            !parse_validated("validated", &manifest)
+                .expect("older")
+                .server_lock
+        );
+        assert!(parse_validated("validated take-something-else", &manifest).is_none());
+        assert!(parse_validated("refused", &manifest).is_none());
     }
 }

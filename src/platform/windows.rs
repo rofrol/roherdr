@@ -27,6 +27,31 @@ pub(crate) fn allow_unelevated_clients() {
     let _ = ALLOW_UNELEVATED_CLIENTS.set(true);
 }
 
+/// Opens the lock file at `path` (created if missing, never truncated) for
+/// [`try_lock_exclusive`]. Rust opens the handle non-inheritable, so no
+/// child process holds it; Windows releases a lock when the handle closes,
+/// also when the process ends, though "the time it takes ... depends upon
+/// available system resources" (LockFileEx docs). No live handoff exists on
+/// Windows, so the lock is never passed on.
+pub(crate) fn open_lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Takes an exclusive `LockFileEx` lock on all of `file` without waiting:
+/// `Ok(false)` while another handle holds one.
+pub(crate) fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(err)) => Err(err),
+    }
+}
+
 pub(crate) fn probe_local_server(path: &std::path::Path) -> std::io::Result<()> {
     use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, DuplexPipeStream};
     use interprocess::ConnectWaitMode;

@@ -143,6 +143,12 @@ impl HeadlessServer {
         );
         manifest.pty_alerts = Some(self.pty_alerts.handoff());
         manifest.public_listeners = self.public_listeners_offer();
+        manifest.server_lock =
+            self.server_lock
+                .as_ref()
+                .map(|lock| crate::server::handoff::ServerLockOffer {
+                    path: lock.path().to_path_buf(),
+                });
         let mut import_child = match crate::server::handoff::spawn_handoff_import(
             import_exe.as_deref(),
             &socket_path,
@@ -176,7 +182,7 @@ impl HeadlessServer {
             return Err(err);
         }
 
-        let (mut stream, public_sockets) = match crate::server::handoff::accept_and_validate_on(
+        let (mut stream, takes) = match crate::server::handoff::accept_and_validate_on(
             listener,
             &socket_path,
             &token,
@@ -193,13 +199,14 @@ impl HeadlessServer {
             }
         };
 
-        if public_sockets == crate::server::handoff::PublicSocketsHandoff::UnlinkOnRestored {
+        if takes.public_sockets == crate::server::handoff::PublicSocketsHandoff::UnlinkOnRestored {
             self.hand_off_public_sockets_by_path(
                 &mut stream,
                 &fds,
                 &mut import_child,
                 &socket_path,
                 &paused_terminal_ids,
+                takes.server_lock,
             )?;
         } else {
             self.pass_public_listeners(
@@ -208,7 +215,15 @@ impl HeadlessServer {
                 &mut import_child,
                 &socket_path,
                 &paused_terminal_ids,
+                takes.server_lock,
             )?;
+        }
+        if takes.server_lock {
+            // Committed: the new server holds the lock now, through the
+            // descriptor it was passed. An import server from before the
+            // lock took none; this server keeps it until it exits, and
+            // nothing holds it for that server's life.
+            self.server_lock = None;
         }
 
         for (terminal_id, runtime) in self.app.terminal_runtimes.drain_for_handoff() {
@@ -286,15 +301,20 @@ impl HeadlessServer {
         import_child: &mut std::process::Child,
         socket_path: &Path,
         paused_terminal_ids: &[crate::terminal::TerminalId],
+        pass_server_lock: bool,
     ) -> io::Result<()> {
         let mut listeners = OwnListeners {
             api_server: &mut self.api_server,
             client_listener: &mut self.client_listener,
         };
+        let server_lock = pass_server_lock
+            .then(|| self.server_lock.as_ref().map(|lock| lock.as_fd()))
+            .flatten();
         let handed_off = crate::server::handoff::pass_public_listeners(
             stream,
             fds,
             &mut listeners,
+            server_lock,
             || crate::server::handoff::cleanup_failed_import_child(import_child),
             &mut |_| {},
         );
@@ -322,8 +342,13 @@ impl HeadlessServer {
         import_child: &mut std::process::Child,
         socket_path: &Path,
         paused_terminal_ids: &[crate::terminal::TerminalId],
+        pass_server_lock: bool,
     ) -> io::Result<()> {
-        let send_result = crate::server::handoff::send_fds_and_wait_restored(stream, fds);
+        let server_lock = pass_server_lock
+            .then(|| self.server_lock.as_ref().map(|lock| lock.as_fd()))
+            .flatten();
+        let send_result =
+            crate::server::handoff::send_fds_and_wait_restored(stream, fds, server_lock);
         for fd in fds {
             let _ = unsafe { libc::close(*fd) };
         }

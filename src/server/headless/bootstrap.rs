@@ -3,6 +3,8 @@ use super::*;
 /// Run the headless server. This is the entry point called from main.rs.
 pub fn run_server() -> io::Result<()> {
     crate::platform::ignore_server_hangup();
+    // Before anything this process starts could inherit the pipe.
+    let mut start_reporter = crate::server::start_report::StartReporter::from_starter();
     let args: Vec<String> = std::env::args().collect();
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
     let process_context = crate::platform::prepare_server_process(handoff_import);
@@ -26,6 +28,20 @@ pub fn run_server() -> io::Result<()> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing handoff token"))?;
         return run_handoff_import_server(&socket_path, token);
     }
+
+    // Before any startup effect (a socket bound, the session restored, an
+    // agent started): a second server for this session refuses here.
+    let lock_path = crate::server::session_lock::active_lock_path();
+    let session_lock = match crate::server::session_lock::SessionLock::acquire(&lock_path) {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == io::ErrorKind::ResourceBusy => {
+            warn!(err = %err, "refusing to start a second server for this session");
+            start_reporter.refused(crate::server::session_lock::recorded_holder(&lock_path));
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+        Err(err) => return Err(err),
+    };
 
     let loaded_config = config::Config::load();
     #[cfg(windows)]
@@ -84,6 +100,9 @@ pub fn run_server() -> io::Result<()> {
             }
             Err(err) => return Err(err),
         };
+        server.hold_session_lock(session_lock);
+        // Both sockets listen: the client that spawned this server attaches.
+        start_reporter.ready();
 
         info!(
             api_socket = %api::socket_path().display(),
@@ -148,6 +167,13 @@ fn take_startup_cwd() -> Option<PathBuf> {
 fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> {
     let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
+    // Before anything is restored. Held from here on, also if the import
+    // fails: dropping this copy leaves the source's.
+    let session_lock = crate::server::handoff::import_session_lock(
+        received.server_lock.take(),
+        received.manifest.server_lock.as_ref(),
+        &crate::server::session_lock::active_lock_path(),
+    )?;
     crate::server::handoff::log_import_result(received.manifest.panes.len());
     // Before the server resumes its `todo run`s: their install and push
     // need the caller's environment, which only memory held.
@@ -224,6 +250,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             )?,
             _ => return Err(io::Error::other("handoff listeners do not match the offer")),
         };
+        server.hold_session_lock(session_lock);
         crate::server::handoff::report_restored(&mut received.stream)?;
         if std::env::var("HERDR_TEST_HANDOFF_IMPORT_FAIL").as_deref() == Ok("after_restored") {
             return Err(io::Error::other(
@@ -245,6 +272,9 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         crate::server::handoff::report_ready(&mut received.stream)?;
         wait_committed_or_stopped(&mut received.stream, &server_stop)?;
         server.app.assume_handoff_ownership();
+        if let Some(lock) = &server.server_lock {
+            lock.write_record();
+        }
         server.assume_client_socket_file();
         if let Some(api_server) = server.api_server.as_mut() {
             api_server.assume_socket_file();

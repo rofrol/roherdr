@@ -581,6 +581,128 @@ pub(crate) use unix_common::{
 #[cfg(unix)]
 pub(crate) use unix_common::{close_inherited_descriptors, fork_death_guard, start_new_session};
 
+/// An exclusive lock on one file, held while this value (or, on Unix, a
+/// descriptor of it passed to another process) is open and released by the
+/// kernel when the last one closes, however its process ends. No child this
+/// process starts inherits it. Unix uses `flock` on an `O_CLOEXEC`
+/// descriptor; Windows `LockFileEx` on a non-inheritable handle.
+pub(crate) struct ExclusiveFileLock {
+    // Held for its drop, which releases the lock; read only to pass it on.
+    #[cfg_attr(windows, allow(dead_code))]
+    file: std::fs::File,
+}
+
+impl ExclusiveFileLock {
+    /// Takes the lock without waiting; `None` while another holds it. The
+    /// file is created if missing and never truncated, unlinked or replaced.
+    #[cfg(all(test, unix))]
+    pub(crate) fn try_acquire(path: &std::path::Path) -> std::io::Result<Option<Self>> {
+        Self::open(path)?.try_lock()
+    }
+
+    /// Opens (creates) the lock file at `path` without locking it.
+    pub(crate) fn open(path: &std::path::Path) -> std::io::Result<LockFile> {
+        #[cfg(unix)]
+        let file = unix_common::open_lock_file(path)?;
+        #[cfg(windows)]
+        let file = windows::open_lock_file(path)?;
+        Ok(LockFile { file })
+    }
+
+    /// Adopts the descriptor of a lock another process holds and passed to
+    /// this one; both then hold the same lock until each closes its copy.
+    #[cfg(unix)]
+    pub(crate) fn from_passed(fd: std::os::fd::OwnedFd) -> std::io::Result<Self> {
+        Ok(Self {
+            file: unix_common::adopt_passed_lock_file(fd)?,
+        })
+    }
+
+    /// The locked file, to pass to another process or to check its identity.
+    #[cfg(unix)]
+    pub(crate) fn file(&self) -> &std::fs::File {
+        &self.file
+    }
+}
+
+/// A lock file opened by [`ExclusiveFileLock::open`], not locked yet.
+pub(crate) struct LockFile {
+    file: std::fs::File,
+}
+
+impl LockFile {
+    /// Takes the exclusive lock without waiting; `None` while another
+    /// holds it. Nothing else ever takes a lock on the file, not even for
+    /// an instant to see whether it is held: such a probe could make a
+    /// starting server's `try_lock` fail with no server left running.
+    pub(crate) fn try_lock(self) -> std::io::Result<Option<ExclusiveFileLock>> {
+        #[cfg(unix)]
+        let locked = unix_common::try_lock_exclusive(&self.file)?;
+        #[cfg(windows)]
+        let locked = windows::try_lock_exclusive(&self.file)?;
+        Ok(locked.then_some(ExclusiveFileLock { file: self.file }))
+    }
+}
+
+/// The environment variable naming the descriptor a server daemon reports
+/// its start on ([`attach_server_start_report`]).
+pub(crate) const SERVER_START_REPORT_FD_ENV: &str = "HERDR_SERVER_START_REPORT_FD";
+
+/// The pipe a starter reads its server daemon's start report from: the
+/// daemon writes whether it started or refused, then closes its end, and
+/// its exit closes it too, so the reader always sees the end.
+pub(crate) struct ServerStartReport {
+    reader: std::fs::File,
+    // The daemon's end; this process closes its copy once it spawned the
+    // daemon, so the reader's end of file comes from the daemon alone.
+    writer: Option<std::fs::File>,
+}
+
+impl ServerStartReport {
+    /// Call once the daemon `command` was spawned (or failed to): closes
+    /// this process's copy of the daemon's end and returns the reader.
+    pub(crate) fn spawned(mut self) -> std::fs::File {
+        self.writer = None;
+        self.reader
+    }
+}
+
+/// Gives the daemon `command` will start a pipe to report its start on, in
+/// [`SERVER_START_REPORT_FD_ENV`]. Only that child gets the descriptor; it
+/// stays close-on-exec in this process. `None` where the platform passes
+/// none (Windows: its starter waits for the socket as before).
+pub(crate) fn attach_server_start_report(
+    command: &mut std::process::Command,
+) -> std::io::Result<Option<ServerStartReport>> {
+    #[cfg(unix)]
+    return unix_common::attach_server_start_report(command).map(|(reader, writer)| {
+        Some(ServerStartReport {
+            reader,
+            writer: Some(writer),
+        })
+    });
+    #[cfg(windows)]
+    {
+        let _ = command;
+        Ok(None)
+    }
+}
+
+/// The start report descriptor this server daemon's starter passed, taken
+/// out of the environment and made close-on-exec before anything this
+/// process starts could inherit it. Call before starting any child.
+pub(crate) fn take_server_start_report() -> Option<std::fs::File> {
+    let value = std::env::var_os(SERVER_START_REPORT_FD_ENV)?;
+    std::env::remove_var(SERVER_START_REPORT_FD_ENV);
+    #[cfg(unix)]
+    return unix_common::adopt_server_start_report(&value);
+    #[cfg(windows)]
+    {
+        let _ = value;
+        None
+    }
+}
+
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 

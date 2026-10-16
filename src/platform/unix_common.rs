@@ -773,6 +773,120 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
     }
 }
 
+/// Opens the lock file at `path` (created `0600` if missing, never
+/// truncated) for [`try_lock_exclusive`]. The descriptor is opened
+/// `O_CLOEXEC`, as Rust opens every file, so no `exec`ed child holds it; a
+/// `flock` belongs to the open file description, so it lasts while any
+/// descriptor of it is open (one passed over `SCM_RIGHTS` included) and
+/// ends with the last one, however its process ends.
+pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(path)
+}
+
+/// Takes an exclusive `flock` on `file` without waiting: `Ok(false)` while
+/// another open file description holds one.
+pub(crate) fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    flock_nonblocking(file.as_raw_fd(), libc::LOCK_EX)
+}
+
+/// Adopts a locked descriptor another process passed over `SCM_RIGHTS`,
+/// which arrives without `FD_CLOEXEC`: it gets it before anything this
+/// process starts could inherit it.
+pub(crate) fn adopt_passed_lock_file(fd: std::os::fd::OwnedFd) -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+
+    let raw = fd.as_raw_fd();
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(std::fs::File::from(fd))
+}
+
+/// `flock(fd, operation | LOCK_NB)`: `Ok(false)` when another description
+/// holds a conflicting lock.
+fn flock_nonblocking(fd: std::os::fd::RawFd, operation: libc::c_int) -> std::io::Result<bool> {
+    loop {
+        if unsafe { libc::flock(fd, operation | libc::LOCK_NB) } == 0 {
+            return Ok(true);
+        }
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EWOULDBLOCK) => return Ok(false),
+            Some(libc::EINTR) => continue,
+            _ => return Err(err),
+        }
+    }
+}
+
+/// A pipe for a server daemon's start report: the reader, and the writer
+/// `command`'s child inherits as the descriptor named in
+/// [`super::SERVER_START_REPORT_FD_ENV`]. Both ends are close-on-exec here
+/// (`std::io::pipe` creates them so); only that child clears the flag on
+/// its copy of the writer, between `fork` and `exec`. The caller keeps the
+/// writer until the child is spawned.
+pub(crate) fn attach_server_start_report(
+    command: &mut std::process::Command,
+) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::{AsRawFd as _, OwnedFd};
+    use std::os::unix::process::CommandExt as _;
+
+    let (reader, writer) = std::io::pipe()?;
+    let reader = std::fs::File::from(OwnedFd::from(reader));
+    let writer = std::fs::File::from(OwnedFd::from(writer));
+    let raw = writer.as_raw_fd();
+    command.env(super::SERVER_START_REPORT_FD_ENV, raw.to_string());
+    unsafe {
+        command.pre_exec(move || {
+            // Async-signal-safe: only `fcntl` runs in the forked child.
+            let flags = libc::fcntl(raw, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok((reader, writer))
+}
+
+/// Adopts the start report descriptor named by `value` (the server
+/// daemon's [`super::SERVER_START_REPORT_FD_ENV`]) when it is an open pipe,
+/// and makes it close-on-exec, so nothing this server starts inherits it.
+pub(crate) fn adopt_server_start_report(value: &std::ffi::OsStr) -> Option<std::fs::File> {
+    use std::os::fd::FromRawFd as _;
+
+    let raw: libc::c_int = value.to_str()?.parse().ok()?;
+    if raw <= 2 {
+        return None;
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(raw, stat.as_mut_ptr()) } < 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
+        return None;
+    }
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return None;
+    }
+    // The starter passed this descriptor to this process alone, and nothing
+    // here opened or owns it yet.
+    Some(unsafe { std::fs::File::from_raw_fd(raw) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +972,228 @@ mod tests {
         drop(file);
         let _ = std::fs::remove_dir_all(&dir);
         held
+    }
+
+    const HOLD_ENV: &str = "HERDR_TEST_HOLD_EXCLUSIVE_LOCK";
+
+    /// Takes the [`super::super::ExclusiveFileLock`] on the file in
+    /// [`HOLD_ENV`], reports `held`, and waits for the end of its stdin,
+    /// which never comes: the starting test kills it.
+    #[test]
+    fn hold_lock_process_entry() {
+        use std::io::{Read, Write};
+
+        let Some(path) = std::env::var_os(HOLD_ENV) else {
+            return;
+        };
+        let lock = super::super::ExclusiveFileLock::try_acquire(std::path::Path::new(&path))
+            .unwrap()
+            .expect("the lock is free");
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "held").unwrap();
+        stdout.flush().unwrap();
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+        drop(lock);
+        std::process::exit(0);
+    }
+
+    // A server that crashes (here SIGKILL, so nothing of it runs) leaves no
+    // lock behind: the kernel releases it with the process.
+    #[test]
+    fn a_killed_holder_frees_the_exclusive_lock_for_the_next_start() {
+        use std::io::BufRead;
+
+        let dir = std::env::temp_dir().join(format!("herdr-killed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr-server.lock");
+        let mut holder = this_test("hold_lock_process_entry")
+            .env(HOLD_ENV, &path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = holder.stdout.take().unwrap();
+        let held = std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .any(|line| line == "held");
+        assert!(held, "the holder did not take the lock");
+        assert!(super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .is_none());
+
+        holder.kill().unwrap();
+        assert!(!holder.wait().unwrap().success());
+        let next = super::super::ExclusiveFileLock::try_acquire(&path).unwrap();
+        assert!(next.is_some(), "the killed holder's lock was not freed");
+        drop(next);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Whether the lock on a file in a fresh directory named `name` is free
+    /// once both its holder's descriptor and a copy as a live handoff passes
+    /// it are closed, while the child `start` started under them still runs.
+    /// `start` returns whether its child is still alive, after which it
+    /// ends and reaps it.
+    fn lock_free_while_child_runs(
+        name: &str,
+        start: impl FnOnce(&Path) -> Box<dyn FnOnce() -> bool>,
+    ) -> bool {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let dir = std::env::temp_dir().join(format!("herdr-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr-server.lock");
+        let lock = super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .expect("free");
+        // `SCM_RIGHTS` delivers a passed copy without `FD_CLOEXEC`, as `dup`
+        // makes it.
+        let raw = unsafe { libc::dup(lock.file().as_raw_fd()) };
+        assert!(raw >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(raw, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let passed = super::super::ExclusiveFileLock::from_passed(unsafe {
+            std::os::fd::OwnedFd::from_raw_fd(raw)
+        })
+        .unwrap();
+
+        let finish = start(&dir);
+        drop(lock);
+        drop(passed);
+        // Taking it is the check: nothing else contends for this file.
+        let free = super::super::ExclusiveFileLock::try_acquire(&path)
+            .unwrap()
+            .is_some();
+        let alive = finish();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(alive, "the child ended before the check");
+        free
+    }
+
+    /// A `cat` that runs until its stdin closes, and a closure that reports
+    /// whether it was still running, then ends and reaps it.
+    fn running_cat() -> Box<dyn FnOnce() -> bool> {
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        Box::new(move || {
+            let alive = child.try_wait().unwrap().is_none();
+            drop(child.stdin.take());
+            child.wait().unwrap();
+            alive
+        })
+    }
+
+    // The starter's other children never get the report pipe's writer, so
+    // the report ends when the daemon closes it, not when they exit.
+    #[test]
+    fn a_server_start_report_reaches_only_the_daemon() {
+        use std::io::Read as _;
+
+        let mut daemon = std::process::Command::new("sh");
+        daemon.args([
+            "-c",
+            &format!(
+                "printf 'ready\\n' >&${}",
+                super::super::SERVER_START_REPORT_FD_ENV
+            ),
+        ]);
+        let (mut reader, writer) = attach_server_start_report(&mut daemon).unwrap();
+        let other = running_cat();
+        let status = daemon.status();
+        drop(writer);
+        assert!(status.unwrap().success(), "the daemon could not write");
+
+        let mut report = String::new();
+        reader.read_to_string(&mut report).unwrap();
+        assert_eq!(report, "ready\n");
+        assert!(other(), "the other child ended before the report's end");
+    }
+
+    // A server adopts its report pipe close-on-exec, so an agent or job it
+    // starts before reporting cannot keep its starter waiting.
+    #[test]
+    fn a_child_of_the_server_does_not_inherit_its_start_report() {
+        use std::io::Read as _;
+        use std::os::fd::{AsRawFd as _, IntoRawFd as _, OwnedFd};
+
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        // As the starter's `exec` leaves it: without `FD_CLOEXEC`.
+        let raw = OwnedFd::from(writer).into_raw_fd();
+        let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        assert!(unsafe { libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } >= 0);
+        assert!(adopt_server_start_report(std::ffi::OsStr::new("1")).is_none());
+        let adopted = adopt_server_start_report(std::ffi::OsStr::new(&raw.to_string()))
+            .expect("an open pipe");
+        assert_eq!(adopted.as_raw_fd(), raw);
+        assert_ne!(
+            unsafe { libc::fcntl(raw, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+
+        let child = running_cat();
+        drop(adopted);
+        let mut report = Vec::new();
+        reader.read_to_end(&mut report).unwrap();
+        assert!(report.is_empty());
+        assert!(child(), "the child ended before the report's end");
+    }
+
+    // An agent, worker or job started while the server holds the lock must
+    // not hold it: one outliving a crashed server would refuse every new
+    // one. A `std::process::Command` starts workers, brokers, jobs and the
+    // handoff import.
+    #[test]
+    fn a_command_started_while_the_lock_is_held_does_not_hold_it() {
+        let free = lock_free_while_child_runs("noinherit-cmd", |_| {
+            let mut child = std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            Box::new(move || {
+                let alive = child.try_wait().unwrap().is_none();
+                drop(child.stdin.take());
+                child.wait().unwrap();
+                alive
+            })
+        });
+        assert!(free, "a child process holds the lock it was started under");
+    }
+
+    // A PTY starts agents and shells in panes.
+    #[test]
+    fn a_pty_child_started_while_the_lock_is_held_does_not_hold_it() {
+        use portable_pty::{CommandBuilder, PtySize};
+
+        let free = lock_free_while_child_runs("noinherit-pty", |dir| {
+            let pty = portable_pty::native_pty_system()
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            let mut command = CommandBuilder::new("cat");
+            command.cwd(dir);
+            let mut child = pty.slave.spawn_command(command).unwrap();
+            Box::new(move || {
+                let alive = child.try_wait().unwrap().is_none();
+                child.kill().unwrap();
+                child.wait().unwrap();
+                drop(pty);
+                alive
+            })
+        });
+        assert!(free, "a pane's process holds the lock it was started under");
     }
 
     #[test]

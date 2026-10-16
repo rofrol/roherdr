@@ -26,6 +26,8 @@ herdr
 
 This is the strongest persistence path because the original processes never stop.
 
+One server runs per session. While it runs, it holds an exclusive lock on `herdr-server.lock` beside the session's API socket (`herdr.sock`; a named session and a `HERDR_SOCKET_PATH` override each have their own), and `herdr-server.pid` beside it names that server's process. A second `herdr server` for the same session exits with an error naming the holder before it binds a socket or restores anything. When `herdr` finds no server answering, it starts one and waits for that server to report that it is ready; if another server holds the lock, it is still starting or handing off, so the new one exits at once and `herdr` says so, names the holder's process, and exits too; run it again once the server is ready. `herdr` itself never touches the lock. On Windows, `herdr` waits for the server's socket as before, so a refused start ends with its "did not become ready" message instead. The lock is released when the server process ends, also when it crashes, so the next start takes it.
+
 ## Snapshot restore
 
 If the Herdr server stops and starts again, the original pane processes are gone. Herdr restores the saved session shape: workspaces, tabs, panes, cwd, layout, and focus.
@@ -123,6 +125,8 @@ If native agent session restore applies to a pane, Herdr resumes the agent sessi
 Live handoff is for update and remote attach flows that need to replace a running Herdr server. It asks the old server to transfer live panes to the new server, so pane processes can keep running across the server replacement.
 
 Unlike snapshot restore, pane history replay, and native agent session restore, handoff tries to keep the current processes alive rather than reconstructing state after the old server stops.
+
+The old server passes the session lock to the new one with the panes, so the lock is held throughout the handoff and a failed handoff leaves it with the old server. A server from a build before the lock holds none: a handoff from it has the new server take the lock by path, and a handoff to it leaves the session unlocked while that older server runs.
 
 A successful handoff preserves long-lived server-owned session state: pane PTYs and processes, agent identity and durable metadata, and plugin/session state needed by the replacement server. It does not preserve transient coordination across the replacement boundary. In-flight CLI or API requests, waits, subscription streams, client sockets, and pane-to-pane messages may be interrupted; clients should reconnect and retry them.
 

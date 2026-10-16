@@ -200,6 +200,11 @@ pub struct HeadlessServer {
     /// a live handoff's source still owns the listener it passed (on the
     /// import server, until the commit) nor once it passed it (on the source).
     owns_client_socket_file: bool,
+    /// The session lock (`session_lock`), held for this server's life; a
+    /// live handoff passes it to the new server and drops this copy once
+    /// committed. `None` only in tests and after such a commit.
+    #[cfg_attr(windows, allow(dead_code))] // Held for its drop; only Unix hands it off.
+    server_lock: Option<crate::server::session_lock::SessionLock>,
     clients: HashMap<u64, ClientConnection>,
     native_graphics: native_graphics::NativeGraphics,
     #[cfg(unix)]
@@ -375,6 +380,12 @@ impl HeadlessServer {
         Ok(server)
     }
 
+    /// Holds `lock` for as long as this server runs, or until a live
+    /// handoff passes it on.
+    pub(crate) fn hold_session_lock(&mut self, lock: crate::server::session_lock::SessionLock) {
+        self.server_lock = Some(lock);
+    }
+
     #[cfg(unix)]
     pub(crate) fn assume_client_socket_file(&mut self) {
         self.owns_client_socket_file = true;
@@ -420,6 +431,7 @@ impl HeadlessServer {
             client_socket_path: client_path,
             client_socket_identity,
             owns_client_socket_file: true,
+            server_lock: None,
             clients: HashMap::new(),
             native_graphics: Default::default(),
             #[cfg(unix)]
