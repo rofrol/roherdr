@@ -11,6 +11,8 @@ import tempfile
 import time
 
 CONSULT_DIR = Path(__file__).resolve().parent.parent / "consult-stats"
+# Runs the claude CLI; a seam so tests can stand in for it (the log call keeps subprocess.run).
+run_claude = subprocess.run
 
 
 def main():
@@ -42,7 +44,7 @@ def main():
     try:
         # No repository context, tools, MCP servers, or persisted child session.
         with tempfile.TemporaryDirectory(prefix="consult-claude-") as cwd:
-            result = subprocess.run([
+            result = run_claude([
                 "claude", "-p", "--model", args.model, "--tools", "",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                 "--no-session-persistence", "--output-format", "json",
