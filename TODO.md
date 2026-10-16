@@ -67,6 +67,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   In flight 2026-10-16: run r-cults2sq (listener transfer; r-i2bmn5y7 aborted:
   attempt 1 de6fdc82d rename design rejected in review round
   20261016-150857-ff68, attempt 2 blocked on src/api/server.rs).
+  Landed 2026-10-16 (run r-cults2sq; r-i2bmn5y7 aborted): a live handoff
+  between two builds that know it passes the bound, listening API and
+  client sockets over SCM_RIGHTS (manifest field `public_listeners`); no
+  path is unlinked, renamed or re-bound, connections queue in the backlog,
+  the importer accepts after `committed`, a failed import resumes the old
+  server on its own listeners; `src/api/server.rs` gained a start on a
+  given listener and a poll-and-wake pause/resume. The 50 ms poll and its
+  deadline are gone. Remaining for the one transitional install (accepted
+  by the user, d-wwhkh2ix): with a previous-build importer the paths are
+  unlinked by owner before its bind; with a previous-build source the
+  importer renames its own listeners in after a liveness check (two narrow
+  windows, named in the run's final message). Open, proposed separately:
+  a stop signal arriving with `committed`, and the old server's 500 ms
+  wait for `owned` after the commit.
 
 - [ ] The consult plugin's `test_error_malformed_and_timeout_logged` races [t-nz3ptrnq]
   its own 1 s deadline (found by the coordinator 2026-10-16: it failed
