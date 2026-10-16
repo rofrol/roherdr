@@ -1556,3 +1556,17 @@ fix; consult round `20261016-020936-68be` split it into two runs.
 - Left open, as Proposed items: the resolver's cost and environment on
   status paths, and the remaining references to the repository's own
   `scripts/todo_edit.py` (allowlist, item-coordinator prompt, docs).
+
+## A queue start never adopts another start's run (t-djdhewk3, 2026-10-16)
+
+Found by the coordinator when `just check` in an install failed on
+`concurrent_events_start_one_run`: two queue steps reported `Started` for
+one run. Cause (run r-em54zyu6): `create_run_with_wait`'s path for a
+caller's own retry of a start waiting on the usage gate
+(`existing_wait_start`) also matched a queue start that lost the race, so
+it reported the winner's run as its own; no second run or worker was
+created. Fix: a start of the queue never adopts an existing run (`adopts`
+requires no queue token), the loser gets `RunActive` and reports `Idle`.
+A latch between the token read and the start
+(`runs::queue::hold_next_start`) forces the interleaving in the regression
+test, which failed on the unfixed code.
