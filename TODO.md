@@ -11,6 +11,60 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
+  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
+  repository; use herdr's own copy (a `herdr todo edit` command) so any
+  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
+  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
+  in one repository and whose worker works in another, and a configurable
+  main branch per repository (`.herdr/`); items spanning both (a tools
+  commit, a release tag, a rormpc commit) need ordered steps across
+  repositories.
+  Revised 2026-10-12 (the user rejected the override stopgap: "what a
+  crappy workaround", asked for a proper fix; round 20261012-010700, sol,
+  MiMo, DeepSeek agreeing): moved to the front. Slice 1 now: the driver
+  reads the target repository's default branch from git everywhere it
+  says `master` (base, cherry-pick target, `git cherry`, ls-remote, fetch,
+  push), tested with `main`, a detached HEAD, no remote and a stale
+  origin/HEAD. Then, by the user's own rule (one space and one coordinator
+  per git repository), rormpc-tools gets its own space, coordinator and
+  TODO.md (the rormpc coordinator and the user decide; rormpc's AGENTS.md
+  says todo-rormpc owns both today); `--repo` is deferred (all three: it
+  makes one coordinator drive another repository, the boundary the user
+  rejected). Cross-repository work becomes items in two backlogs with a
+  dependency: a handover that names the landed commit or version and
+  wakes the dependent coordinator (its own item); release recipes come
+  before the release item.
+  Revised again 2026-10-12: no herdr handover between coordinators (the
+  user rejected it); cross-repository work is plain messages between the
+  repositories' own coordinators, see the item on waiting on another
+  coordinator.
+  Moved to the top 2026-10-16 by the user ("have an agent do this
+  default-branch fix, to unblock" agentic-workflow-bend-claude, whose only
+  branch is `main`; its `herdr todo run` refused with "the repository has
+  no master commit", report r-81). Consult round `20261016-020936-68be`
+  (sol, mimo, deepseek, argon, wonder, all agreeing on the points kept):
+  slice 1a is the branch alone, slice 1b `herdr todo edit`, separate runs.
+  Slice 1a: one resolver used by every site (preflight, worker base,
+  cherry-pick, `git cherry`, log, push, queue's TODO read, capabilities'
+  operations read, draft/review fallbacks, `herdr worker start`'s default
+  REF). With an `origin`, the target is what `git ls-remote --symref origin
+  HEAD` names (the cached `origin/HEAD` can be stale, and the old branch
+  often still exists after a rename); an unreachable origin refuses with
+  that diagnostic, never guesses. Without a remote, the shared checkout's
+  current branch (no push happens); a detached HEAD without a remote
+  refuses. Never the checkout's current branch when a remote exists. A run
+  stores the resolved name and its base commit; each later step uses the
+  stored name and stops if it no longer resolves (no silent retargeting).
+  Tests: `main` only (whole run through push and queue read), `master`
+  regression, stale origin/HEAD naming a still-existing old branch,
+  detached HEAD with a remote, no remote on `main`, no remote detached
+  (refuse), feature-branch checkout with a remote (targets the default),
+  unreachable origin (refuse), branch renamed mid-run (the step stops),
+  and a source test that `src/workers` has no bare `"master"` literal
+  outside tests. Herdr's own run of this slice uses `master`, so only the
+  tests prove the `main` path (wonder).
+
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
   "why is this not in a correction loop?", "why did the supervisor not
@@ -639,35 +693,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   decided work remains (the README line of the naming item, the TODO
   tracker plan). Edit only with scripts/todo_edit.py; one commit per
   section; every other item and heading unchanged in meaning.
-
-- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
-  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
-  repository; use herdr's own copy (a `herdr todo edit` command) so any
-  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
-  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
-  in one repository and whose worker works in another, and a configurable
-  main branch per repository (`.herdr/`); items spanning both (a tools
-  commit, a release tag, a rormpc commit) need ordered steps across
-  repositories.
-  Revised 2026-10-12 (the user rejected the override stopgap: "what a
-  crappy workaround", asked for a proper fix; round 20261012-010700, sol,
-  MiMo, DeepSeek agreeing): moved to the front. Slice 1 now: the driver
-  reads the target repository's default branch from git everywhere it
-  says `master` (base, cherry-pick target, `git cherry`, ls-remote, fetch,
-  push), tested with `main`, a detached HEAD, no remote and a stale
-  origin/HEAD. Then, by the user's own rule (one space and one coordinator
-  per git repository), rormpc-tools gets its own space, coordinator and
-  TODO.md (the rormpc coordinator and the user decide; rormpc's AGENTS.md
-  says todo-rormpc owns both today); `--repo` is deferred (all three: it
-  makes one coordinator drive another repository, the boundary the user
-  rejected). Cross-repository work becomes items in two backlogs with a
-  dependency: a handover that names the landed commit or version and
-  wakes the dependent coordinator (its own item); release recipes come
-  before the release item.
-  Revised again 2026-10-12: no herdr handover between coordinators (the
-  user rejected it); cross-repository work is plain messages between the
-  repositories' own coordinators, see the item on waiting on another
-  coordinator.
 
 - [ ] Releases run through herdr's driver, portable and without allow rules [t-5bunzos6]
   (the user, 2026-10-12, on rormpc-tools' release script: "it must work
