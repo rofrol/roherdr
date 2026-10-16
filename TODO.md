@@ -3808,6 +3808,19 @@ Items agents add. Not approved until the user moves them up.
 
 - [ ] The stop-check hook treats a coordinator tab's repository as its pane's cwd, not its coordination tenure's: while this pane held herdr's tenure and ran r-wz74mc3f there, the hook said "nothing runs" and asked to start an item of the cwd's repository, which could not run yet. From agentic-workflow-bend-claude's coordinator, 2026-10-16. [t-kibk2vjv]
 
+- [ ] Two concurrent queue steps both report starting the same run (found [t-djdhewk3]
+  by the coordinator 2026-10-16: `just check` in r-6ahe2rtv's install
+  retry failed on `workers::tests::todo_runs::auto_review::queue::
+  concurrent_events_start_one_run`, src/workers/tests.rs:12770, with
+  `[Idle, Idle, Idle, Idle, Idle, Started("r-ycdoisx3"), Idle,
+  Started("r-ycdoisx3"), Idle, ...]`; the run's own verify had passed the
+  same test, so it is intermittent; the change under install,
+  204a4512a, does not touch the queue). Two `queue_step` callers return
+  `Started` for one run id: find whether a second worker start can
+  follow (duplicate state) or only the report is doubled, fix it at the
+  claim, and make the test force the interleaving with a latch instead
+  of a 12-thread barrier. Blocks every install while it fails.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
