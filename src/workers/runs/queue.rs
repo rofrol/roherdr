@@ -14,8 +14,11 @@
 //! repository ended (done, blocked or aborted), an escalation was answered,
 //! the server started, the mode was set, and, for a queue the usage gate
 //! stopped, the usage poller published a new reading. `TODO.md` is read
-//! from the branch the repository's checkout has checked out at each of them (git's own state, not a watched file), and
-//! the items by their stable ids.
+//! from the branch the worktree `queue on` was sent from has checked out at
+//! each of them (git's own state, not a watched file), and the items by
+//! their stable ids; its runs start in that worktree, as `todo run` from it
+//! would. A queue turned on before queues stored the worktree uses the
+//! repository's checkout.
 //!
 //! Guarantees:
 //!
@@ -271,6 +274,15 @@ fn todo_on_default(repo: &str) -> Result<(String, String), String> {
     Ok((branch, todo))
 }
 
+/// Where `repo`'s queue reads TODO.md and starts its runs: the worktree it
+/// was turned on from, or the repository's checkout for a queue turned on
+/// before queues stored it (and for a repository without a queue).
+fn queue_dir<'a>(repo: &'a str, queue: Option<&'a StoredQueue>) -> &'a str {
+    queue
+        .and_then(|queue| queue.worktree.as_deref())
+        .unwrap_or(repo)
+}
+
 fn mode_of(queue: Option<&StoredQueue>) -> TodoQueueMode {
     match queue.map(|queue| queue.mode.as_str()) {
         Some("on") => TodoQueueMode::On,
@@ -338,6 +350,11 @@ impl WorkerSupervisor {
         let at = now_ms();
         match params.mode {
             TodoQueueMode::On => {
+                // The queue's runs start here, as `todo run` from it would.
+                let worktree = super::super::target_branch::worktree_of(Path::new(&params.cwd))
+                    .map_err(WorkerError::Preflight)?
+                    .display()
+                    .to_string();
                 let owner = RunOwner {
                     pane_id: params.owner_pane_id.as_deref(),
                     session_id: params.owner_session_id.as_deref(),
@@ -345,7 +362,7 @@ impl WorkerSupervisor {
                     coordinator_id: None,
                 };
                 store
-                    .transaction(|tx| tx.queue_on(&repo, &owner, at))
+                    .transaction(|tx| tx.queue_on(&repo, &worktree, &owner, at))
                     .map_err(store_error)?;
                 match params.env {
                     Some(env) => lock(&QUEUE_ENV).insert(repo.clone(), env),
@@ -395,7 +412,7 @@ impl WorkerSupervisor {
         let queue = store.queue(&repo).map_err(store_error)?;
         let mode = mode_of(queue.as_ref());
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let blocked = todo_on_default(&repo)
+        let blocked = todo_on_default(queue_dir(&repo, queue.as_ref()))
             .map(|(_, todo)| blocked_items(&todo, &runs))
             .unwrap_or_default();
         let active = store.active_run(&repo).map_err(store_error)?;
@@ -464,7 +481,7 @@ impl WorkerSupervisor {
             .filter(|tenure| tenure.headless)
             .map(|tenure| tenure.id);
         let runs = store.queue_runs(&repo).map_err(store_error)?;
-        let todo = todo_on_default(&repo);
+        let todo = todo_on_default(queue_dir(&repo, queue.as_ref()));
         let runnable_items: Vec<String> = match &todo {
             Ok((_, todo)) => todo_titles::next_items(todo)
                 .into_iter()
@@ -659,7 +676,8 @@ impl WorkerSupervisor {
         // Resolved once, before the read: the run it starts lands on the
         // branch whose TODO.md chose its item.
         let env = lock(&QUEUE_ENV).get(repo).cloned();
-        let (target_branch, todo) = match todo_on_default(repo) {
+        let dir = queue_dir(repo, Some(&queue)).to_owned();
+        let (target_branch, todo) = match todo_on_default(&dir) {
             Ok(read) => read,
             Err(why) => return self.queue_record(repo, TodoQueueStatus::Blocked, &why),
         };
@@ -704,7 +722,7 @@ impl WorkerSupervisor {
             target_branch,
         };
         let params = TodoRunParams {
-            cwd: repo.to_owned(),
+            cwd: dir,
             item: item.clone(),
             task: String::new(),
             message: String::new(),

@@ -804,6 +804,14 @@ INSERT INTO usage_gates (repo, closed, body, updated_ms)
     LIMIT 1;
 DELETE FROM usage_gates WHERE substr(repo, 1, 9) != 'provider:';
 "#,
+    r#"
+-- The real path of the worktree a queue was turned on from, and a chain of
+-- item coordinators started from: its starts read TODO.md, the checks and
+-- the branch there, as a `todo run` from it would. NULL for one recorded
+-- before, which keeps using the repository's checkout.
+ALTER TABLE todo_queues ADD COLUMN worktree TEXT;
+ALTER TABLE todo_chains ADD COLUMN worktree TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1635,11 +1643,12 @@ impl Tx<'_> {
         chain_of(self.tx, repo)
     }
 
-    /// Starts `repo`'s chain owned by `owner`, or keeps the active one with
-    /// its owner; returns it.
+    /// Starts `repo`'s chain from `worktree`, owned by `owner`, or keeps the
+    /// active one with its owner and worktree; returns it.
     pub(super) fn chain_started(
         &self,
         repo: &str,
+        worktree: &str,
         owner: &RunOwner<'_>,
         at_ms: u64,
     ) -> StoreResult<StoredChain> {
@@ -1648,18 +1657,20 @@ impl Tx<'_> {
         }
         self.tx.execute(
             "INSERT INTO todo_chains (repo, owner_pane, owner_session, workspace, started_ms,
-                 advancing, last_item, last_outcome, stopped_ms, stop_reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, NULL, NULL)
+                 advancing, last_item, last_outcome, stopped_ms, stop_reason, worktree)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, NULL, NULL, ?6)
              ON CONFLICT (repo) DO UPDATE SET owner_pane = excluded.owner_pane,
                  owner_session = excluded.owner_session, workspace = excluded.workspace,
                  started_ms = excluded.started_ms, advancing = 0, last_item = NULL,
-                 last_outcome = NULL, stopped_ms = NULL, stop_reason = NULL",
+                 last_outcome = NULL, stopped_ms = NULL, stop_reason = NULL,
+                 worktree = excluded.worktree",
             params![
                 repo,
                 owner.pane_id,
                 owner.session_id,
                 owner.workspace,
-                at_ms as i64
+                at_ms as i64,
+                worktree
             ],
         )?;
         chain_of(self.tx, repo)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
@@ -1831,12 +1842,16 @@ pub(super) struct StoredChain {
     pub(super) last_outcome: Option<String>,
     pub(super) stopped_ms: Option<u64>,
     pub(super) stop_reason: Option<String>,
+    /// The real path of the worktree the chain was started from, where its
+    /// coordinators read TODO.md and start their runs; none for a chain
+    /// started before chains stored it (the repository's checkout).
+    pub(super) worktree: Option<String>,
 }
 
 fn chain_of(conn: &Connection, repo: &str) -> StoreResult<Option<StoredChain>> {
     conn.query_row(
         "SELECT repo, owner_pane, owner_session, workspace, started_ms, advancing, last_item,
-             last_outcome, stopped_ms, stop_reason
+             last_outcome, stopped_ms, stop_reason, worktree
          FROM todo_chains WHERE repo = ?1",
         [repo],
         |row| {
@@ -1851,6 +1866,7 @@ fn chain_of(conn: &Connection, repo: &str) -> StoreResult<Option<StoredChain>> {
                 last_outcome: row.get(7)?,
                 stopped_ms: row.get::<_, Option<i64>>(8)?.map(|ms| ms as u64),
                 stop_reason: row.get(9)?,
+                worktree: row.get(10)?,
             })
         },
     )
@@ -3147,6 +3163,10 @@ pub(super) struct StoredQueue {
     pub(super) owner_session: Option<String>,
     pub(super) workspace: Option<String>,
     pub(super) updated_ms: u64,
+    /// The real path of the worktree the queue was last turned on from,
+    /// whose TODO.md, checks and branch its starts use; none for a queue
+    /// turned on before queues stored it (the repository's checkout).
+    pub(super) worktree: Option<String>,
 }
 
 /// A run the queue started (`todo_queue_runs`).
@@ -3163,7 +3183,7 @@ pub(super) struct QueueRun {
 }
 
 const QUEUE_COLUMNS: &str = "repo, mode, pause_reason, token, failures, status, reason, \
-owner_pane, owner_session, workspace, updated_ms";
+owner_pane, owner_session, workspace, updated_ms, worktree";
 
 fn queue_from_row(row: &rusqlite::Row<'_>) -> StoreResult<StoredQueue> {
     Ok(StoredQueue {
@@ -3178,6 +3198,7 @@ fn queue_from_row(row: &rusqlite::Row<'_>) -> StoreResult<StoredQueue> {
         owner_session: row.get(8)?,
         workspace: row.get(9)?,
         updated_ms: row.get::<_, i64>(10)? as u64,
+        worktree: row.get(11)?,
     })
 }
 
@@ -3209,22 +3230,30 @@ impl Tx<'_> {
         queue_of(self.tx, repo)
     }
 
-    /// Turns `repo`'s queue on, owned by `owner`: its pause and its
-    /// circuit breaker's count are cleared.
-    pub(super) fn queue_on(&self, repo: &str, owner: &RunOwner<'_>, at_ms: u64) -> StoreResult<()> {
+    /// Turns `repo`'s queue on from `worktree`, owned by `owner`: its pause
+    /// and its circuit breaker's count are cleared.
+    pub(super) fn queue_on(
+        &self,
+        repo: &str,
+        worktree: &str,
+        owner: &RunOwner<'_>,
+        at_ms: u64,
+    ) -> StoreResult<()> {
         self.tx.execute(
             "INSERT INTO todo_queues (repo, mode, pause_reason, token, failures, status, reason,
-                 owner_pane, owner_session, workspace, updated_ms)
-             VALUES (?1, 'on', NULL, 0, 0, NULL, NULL, ?2, ?3, ?4, ?5)
+                 owner_pane, owner_session, workspace, updated_ms, worktree)
+             VALUES (?1, 'on', NULL, 0, 0, NULL, NULL, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (repo) DO UPDATE SET mode = 'on', pause_reason = NULL, failures = 0,
                  owner_pane = excluded.owner_pane, owner_session = excluded.owner_session,
-                 workspace = excluded.workspace, updated_ms = excluded.updated_ms",
+                 workspace = excluded.workspace, updated_ms = excluded.updated_ms,
+                 worktree = excluded.worktree",
             params![
                 repo,
                 owner.pane_id,
                 owner.session_id,
                 owner.workspace,
-                at_ms as i64
+                at_ms as i64,
+                worktree
             ],
         )?;
         Ok(())
@@ -3673,8 +3702,10 @@ mod tests {
                      ('/d', 1, '{{\"decision\": \"refuse\"}}', 5),
                      ('openai:/a', 1, '{{\"state\": \"unknown\"}}', 20),
                      ('openai:/b', 0, '{{\"state\": \"open\"}}', 50);
+                 ALTER TABLE todo_queues DROP COLUMN worktree;
+                 ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 1
+                MIGRATIONS.len() - 2
             ))
             .unwrap();
         drop(store);
@@ -3747,7 +3778,7 @@ mod tests {
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 32
+                MIGRATIONS.len() - 33
             ))
             .unwrap();
         drop(store);
@@ -3818,7 +3849,7 @@ mod tests {
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 21
+                MIGRATIONS.len() - 22
             ))
             .unwrap();
         drop(store);

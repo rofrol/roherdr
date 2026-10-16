@@ -910,8 +910,11 @@ impl WorkerSupervisor {
         if super::crashes_before(&run.info.repo, TodoStep::Done) {
             return Ok(());
         }
+        // The worktree this run landed in, as a `todo run` from there: its
+        // TODO.md, checks, branch and push (the repository's checkout for a
+        // run recorded before runs stored it).
         let params = TodoRunParams {
-            cwd: run.info.repo.clone(),
+            cwd: run.landing_dir().display().to_string(),
             item: next.item.clone(),
             task: next.task.clone(),
             message: next.message.clone(),
@@ -939,7 +942,7 @@ impl WorkerSupervisor {
         // them, then preflight looks once more.
         let mut swept = String::new();
         if matches!(started, Err(WorkerError::Preflight(_)))
-            && super::short_of_disk(Path::new(&run.info.repo))
+            && super::short_of_disk(&run.landing_dir())
         {
             swept = match super::sweep_slot(Path::new(&run.info.repo)) {
                 Ok(()) => " (after the folder slot's sweep)".to_owned(),

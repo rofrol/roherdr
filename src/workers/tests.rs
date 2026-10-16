@@ -10133,6 +10133,84 @@ mod todo_runs {
             .is_empty());
     }
 
+    /// [`fork_worktree`] with the fork's push set up, and the main
+    /// checkout's TODO.md gone: only the linked worktree has the TODO, as a
+    /// fork's bootstrap worktree beside an upstream checkout does. Returns
+    /// the worktree's real path.
+    fn worktree_without_main_todo(fixture: &Fixture) -> PathBuf {
+        let (worktree, _fork) = fork_worktree(fixture, true);
+        std::fs::remove_file(fixture.repo.join("TODO.md")).unwrap();
+        worktree.canonicalize().unwrap()
+    }
+
+    /// A run landed in a linked worktree whose main checkout has no
+    /// TODO.md: the `--next` run its close names starts in that worktree,
+    /// on its branch, as a `todo run` from there would (report r-101).
+    #[test]
+    fn a_next_run_starts_in_the_previous_runs_landing_worktree() {
+        let fixture = todo_repo_on("todo-next-worktree", "main");
+        with_finish_on(&fixture, "main");
+        let worktree = worktree_without_main_todo(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                cwd: worktree.display().to_string(),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        close_with_next(&fixture, &run.run_id, review.event_id);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.next_refusal, None, "{finished:#?}");
+        let next_id = finished.next_run_id.expect("the next run started");
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(next.info.item, ITEM2);
+        assert_eq!(
+            next.info.landing_worktree.as_deref(),
+            Some(worktree.display().to_string().as_str())
+        );
+        assert_eq!(next.info.target_branch.as_deref(), Some("bootstrap"));
+        // Based on the closed run's landing, on the worktree's branch.
+        assert_eq!(
+            next.info.base.as_deref(),
+            Some(rev(&worktree, "bootstrap").as_str())
+        );
+        let (review, _) = wait(&fixture, &next_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        abort(&fixture, &next_id, review.event_id);
+    }
+
+    /// A start the usage gate held, asked for in a linked worktree whose
+    /// main checkout has no TODO.md: woken, it starts in that worktree.
+    #[test]
+    fn a_woken_pending_start_starts_in_its_worktree() {
+        let fixture = todo_repo_on("todo-pending-worktree", "main");
+        with_finish_on(&fixture, "main");
+        let worktree = worktree_without_main_todo(&fixture);
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("DNS lookup failed".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(TodoRunParams {
+                cwd: worktree.display().to_string(),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        assert_eq!(pending.status, TodoRunStatus::Waiting);
+        fixture.supervisor.set_usage_for_test(fresh_usage(10, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (review, started) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        assert_eq!(
+            started.landing_worktree.as_deref(),
+            Some(worktree.display().to_string().as_str())
+        );
+        assert_eq!(started.target_branch.as_deref(), Some("bootstrap"));
+        abort(&fixture, &pending.run_id, review.event_id);
+    }
+
     /// The same worktree without `pushRemote`: git names no single push
     /// destination (`simple` with an upstream of another name), so the run
     /// lands and does not push, and says so in its events and status.
@@ -12869,6 +12947,65 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 assert!(state.reason.contains("no item"), "{state:#?}");
             }
 
+            /// A queue turned on from a linked worktree whose main
+            /// checkout's branch has no TODO.md reads the worktree's branch
+            /// and starts its runs there: they land on that branch.
+            #[test]
+            fn a_queue_turned_on_from_a_worktree_runs_there() {
+                let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-worktree", &[ITEM], &answers);
+                let worktree = fixture.root.join("bootstrap");
+                git_in(
+                    &fixture.repo,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        "bootstrap",
+                        &worktree.display().to_string(),
+                        "master",
+                    ],
+                );
+                let worktree = worktree.canonicalize().unwrap();
+                git_in(&fixture.repo, &["rm", "-q", "TODO.md"]);
+                git_in(&fixture.repo, &["commit", "-q", "-m", "docs: no todo"]);
+                let master_before = git_in(&fixture.repo, &["rev-parse", "master"]);
+                let on = fixture
+                    .supervisor
+                    .todo_queue_set(TodoQueueSetParams {
+                        cwd: worktree.display().to_string(),
+                        mode: TodoQueueMode::On,
+                        reason: None,
+                        owner_pane_id: Some("p-coordinator".into()),
+                        owner_session_id: None,
+                        workspace_id: Some("ws-coordinator".into()),
+                        env: Some(caller_env()),
+                    })
+                    .unwrap();
+                assert_eq!(on.mode, TodoQueueMode::On, "{on:#?}");
+                let ended = wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert!(ended.reason.contains("on bootstrap"), "{ended:#?}");
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(items_and_states(&runs), [(ITEM, TodoRunStatus::Done)]);
+                assert_eq!(runs[0].target_branch.as_deref(), Some("bootstrap"));
+                assert_eq!(
+                    runs[0].landing_worktree.as_deref(),
+                    Some(worktree.display().to_string().as_str())
+                );
+                assert_eq!(
+                    git_in(&worktree, &["log", "-2", "--format=%s", "bootstrap"]),
+                    format!("docs(todo): close {ITEM}\nfeat: add a\n")
+                );
+                assert_eq!(
+                    git_in(&fixture.repo, &["rev-parse", "master"]),
+                    master_before
+                );
+            }
+
             #[test]
             fn the_queue_waits_on_an_escalation_and_goes_on_after_the_answer() {
                 let (fixture, repo) = queued("todo-queue-escalation", &[ITEM, ITEM2], &[ESCALATE]);
@@ -13042,6 +13179,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     .transaction(|tx| {
                         tx.queue_on(
                             &repo,
+                            &repo,
                             &store::RunOwner {
                                 pane_id: Some("p-coordinator"),
                                 session_id: None,
@@ -13110,6 +13248,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     .transaction(|tx| {
                         tx.queue_on(
                             &repo,
+                            &repo,
                             &store::RunOwner {
                                 pane_id: Some("p-coordinator"),
                                 session_id: None,
@@ -13170,6 +13309,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 store_of(&fixture.supervisor)
                     .transaction(|tx| {
                         tx.queue_on(
+                            &repo,
                             &repo,
                             &store::RunOwner {
                                 pane_id: Some("p-coordinator"),
@@ -13356,6 +13496,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 store_of(&fixture.supervisor)
                     .transaction(|tx| {
                         tx.queue_on(
+                            &repo,
                             &repo,
                             &store::RunOwner {
                                 pane_id: Some("p-coordinator"),
@@ -13627,6 +13768,66 @@ while True:
         assert_eq!(fixture.supervisor.list().len(), 1);
         assert_eq!(fixture.supervisor.obligations(Some(CHAT)).len(), 1);
         assert!(fixture.supervisor.chain_for_test(&repo(&fixture)).is_none());
+    }
+
+    /// A chain started from a linked worktree whose main checkout has no
+    /// TODO.md: each of its coordinators reads the worktree's TODO.md and
+    /// works there, the next one too.
+    #[test]
+    fn a_chain_started_from_a_worktree_keeps_its_coordinators_there() {
+        let fixture = next_repo("next-worktree", &[(A, "done first"), (B, "done second")]);
+        let main = &fixture.repo;
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@example.com"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            git_in(main, &["config", key, value]);
+        }
+        git_in(main, &["add", "."]);
+        git_in(main, &["commit", "-q", "-m", "init"]);
+        let worktree = fixture.root.join("bootstrap");
+        git_in(
+            main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "bootstrap",
+                &worktree.display().to_string(),
+            ],
+        );
+        let worktree = worktree.canonicalize().unwrap();
+        std::fs::remove_file(main.join("TODO.md")).unwrap();
+        let started = fixture
+            .supervisor
+            .todo_next(&TodoNextParams {
+                cwd: worktree.display().to_string(),
+                chain: true,
+                owner_pane_id: Some(CHAT.into()),
+                owner_session_id: Some("s-chat".into()),
+                workspace_id: Some("ws-chat".into()),
+                env: None,
+            })
+            .unwrap();
+        assert_eq!(started.item, A);
+        let chain = wait_chain_stopped(&fixture);
+        assert_eq!(chain.last_item.as_deref(), Some(B));
+        assert_eq!(chain.last_outcome.as_deref(), Some("done"));
+        let reason = chain.stop_reason.unwrap();
+        assert!(reason.contains("has no open item"), "{reason}");
+        let workers = fixture.supervisor.list();
+        assert_eq!(workers.len(), 2, "{workers:#?}");
+        for worker in &workers {
+            assert_eq!(
+                Path::new(&worker.cwd).canonicalize().unwrap(),
+                worktree,
+                "{worker:#?}"
+            );
+        }
+        assert!(!main.join("TODO.md").exists());
     }
 
     #[test]

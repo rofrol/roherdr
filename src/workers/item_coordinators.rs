@@ -111,7 +111,7 @@ AskUserQuestion: herdr shows it in the user's list and you wait for the answer; 
 }
 
 /// The prompt an item coordinator starts with.
-fn prompt(repo: &str, item: &str, item_text: &str) -> String {
+fn prompt(repo: &str, worktree: &str, item: &str, item_text: &str) -> String {
     let title = todo_titles::title_of_text(item_text).unwrap_or_else(|| item.to_owned());
     format!(
         "Item coordinator for {item}: {title}
@@ -135,7 +135,7 @@ commit TODO.md by path (`git commit -m <message> -- TODO.md`) and end with the E
 2. Write the worker's task to a file in your scratch directory: a title line, what to change, \
 the files it may touch, how to test it. Herdr appends the commit subject, the paths, \"no body, \
 no trailers\" and the WORKER-DONE line.
-3. Start the run from {repo}: `herdr todo run {item} --task <file> --message \"<subject>\" \
+3. Start the run from {worktree}: `herdr todo run {item} --task <file> --message \"<subject>\" \
 --paths <globs> --check <names>`; pass windows-lint too for changes under src/.
 4. Loop on `herdr todo wait <run-id> --after <event-id>` (no --after the first time). Review \
 each event with `herdr todo review <run-id>` (--diff for the whole diff) and answer it with \
@@ -359,12 +359,18 @@ impl WorkerSupervisor {
         let repo = repository_of(cwd).ok_or_else(|| {
             WorkerError::Preflight(format!("{} is not in a git repository", params.cwd))
         })?;
+        // The coordinator works, and starts its run, in the caller's
+        // worktree, as `todo run` from it would.
+        let worktree = super::target_branch::worktree_of(cwd)
+            .map_err(WorkerError::Preflight)?
+            .display()
+            .to_string();
         let owner = ChainOwner {
             pane: params.owner_pane_id.clone(),
             session: params.owner_session_id.clone(),
             workspace: params.workspace_id.clone(),
         };
-        self.start_item_coordinator(&repo, &owner, params.chain, params.env.as_ref())
+        self.start_item_coordinator(&repo, &worktree, &owner, params.chain, params.env.as_ref())
     }
 
     /// `todo.stop`: stops the repository's chain; the coordinator that runs
@@ -385,8 +391,8 @@ impl WorkerSupervisor {
         Ok(chain_info(stopped))
     }
 
-    /// Claims a headless tenure for the top item of "Next, in order" and
-    /// starts its coordinator; `chain` starts (or keeps) the repository's
+    /// Claims a headless tenure for the top item of "Next, in order" in
+    /// `worktree` (of `repo`) and starts its coordinator there; `chain` starts (or keeps) the repository's
     /// chain in the claim's transaction, so a coordinator that ends at once
     /// finds it. Refused while a run or a coordinator of the repository is
     /// active, when "Next, in order" has no item and when the usage gate
@@ -394,12 +400,13 @@ impl WorkerSupervisor {
     fn start_item_coordinator(
         &self,
         repo: &str,
+        worktree: &str,
         owner: &ChainOwner,
         chain: bool,
         env: Option<&HashMap<String, String>>,
     ) -> Result<NextStarted, WorkerError> {
         let store = self.run_store()?;
-        let todo_path = Path::new(repo).join(TODO_FILE);
+        let todo_path = Path::new(worktree).join(TODO_FILE);
         let todo = std::fs::read_to_string(&todo_path).map_err(|error| {
             WorkerError::Preflight(format!("cannot read {}: {error}", todo_path.display()))
         })?;
@@ -455,7 +462,7 @@ impl WorkerSupervisor {
                 at,
             )?;
             let chain = if chain {
-                tx.chain_started(repo, &owner.as_run_owner(), at)?;
+                tx.chain_started(repo, worktree, &owner.as_run_owner(), at)?;
                 tx.chain_advanced(repo)?;
                 tx.chain(repo)?
             } else {
@@ -487,8 +494,8 @@ impl WorkerSupervisor {
                 allowlist,
             };
             let params = WorkerStartParams {
-                cwd: repo.to_owned(),
-                prompt: prompt(repo, &item, &item_text),
+                cwd: worktree.to_owned(),
+                prompt: prompt(repo, worktree, &item, &item_text),
                 model: None,
                 agent: None,
                 name: Some(format!("coordinator {item}")),
@@ -693,8 +700,10 @@ impl WorkerSupervisor {
                     ),
                 ),
                 _ => {
-                    let todo = std::fs::read_to_string(Path::new(repo).join(TODO_FILE))
-                        .unwrap_or_default();
+                    // The worktree the coordinator worked in.
+                    let dir = worker.map_or(repo, |worker| worker.cwd.as_str());
+                    let todo =
+                        std::fs::read_to_string(Path::new(dir).join(TODO_FILE)).unwrap_or_default();
                     if todo_titles::next_item(&todo).as_deref() == Some(item) {
                         (
                             Outcome::Blocked,
@@ -786,7 +795,12 @@ impl WorkerSupervisor {
                 return;
             }
         };
-        if let Err(error) = self.start_item_coordinator(repo, &ChainOwner::of(&chain), true, None) {
+        // The worktree the chain was started from; the repository's
+        // checkout for a chain started before chains stored it.
+        let worktree = chain.worktree.clone().unwrap_or_else(|| repo.to_owned());
+        if let Err(error) =
+            self.start_item_coordinator(repo, &worktree, &ChainOwner::of(&chain), true, None)
+        {
             let reason = format!("the next item coordinator did not start: {error}");
             if let Err(error) = store.transaction(|tx| tx.chain_stopped(repo, &reason, now_ms())) {
                 warn!(%error, repo, "cannot stop the chain of item coordinators");

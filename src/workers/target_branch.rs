@@ -28,12 +28,7 @@ pub(super) struct Landing {
 /// The worktree `dir` is in and the branch it has checked out; refused for
 /// a detached HEAD.
 pub(super) fn checked_out(dir: &Path) -> Result<Landing, String> {
-    let top = git_with(dir, &["rev-parse", "--show-toplevel"], None)
-        .map_err(|why| format!("{} is not in a git worktree: {why}", dir.display()))?;
-    let top = PathBuf::from(top.trim());
-    let worktree = top
-        .canonicalize()
-        .map_err(|error| format!("cannot resolve the worktree {}: {error}", top.display()))?;
+    let worktree = worktree_of(dir)?;
     match git_with(
         &worktree,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -49,6 +44,18 @@ pub(super) fn checked_out(dir: &Path) -> Result<Landing, String> {
             worktree.display()
         )),
     }
+}
+
+/// The real path of the worktree `dir` is in, whatever it has checked out:
+/// where a start without a caller's directory (a chained run, the queue, an
+/// item coordinator) later reads TODO.md, the checks and the branch, as
+/// `todo run` started there would.
+pub(super) fn worktree_of(dir: &Path) -> Result<PathBuf, String> {
+    let top = git_with(dir, &["rev-parse", "--show-toplevel"], None)
+        .map_err(|why| format!("{} is not in a git worktree: {why}", dir.display()))?;
+    let top = PathBuf::from(top.trim());
+    top.canonicalize()
+        .map_err(|error| format!("cannot resolve the worktree {}: {error}", top.display()))
 }
 
 /// The branch checked out in the worktree of `dir` ([`checked_out`]).
