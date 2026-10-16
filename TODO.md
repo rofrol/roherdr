@@ -3980,6 +3980,22 @@ Items agents add. Not approved until the user moves them up.
   slot while the process lives). Touches the gate, so it waits for
   approval.
 
+- [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
+  (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
+  t-tokfdrun, which the user approved there): its supervisor passes the
+  token as `HERDR_TENURE_TOKEN`, so an agent it runs directly (`claude -p`)
+  sees it in its environment and can start workers under the lease. Add
+  `--tenure-token-fd N` (read once to end of file, then closed) or a
+  one-time token file herdr deletes after reading, and say which the
+  caller should use. Touches the tenure trust boundary, so it waits for
+  approval here.
+
+- [ ] `herdr todo edit` leaves empty `TODO.md.lock` / `DECISIONS.md.lock` [t-olsxvleo]
+  files in the repository (seen by agentic-workflow-bend-claude's and
+  try-roguix's coordinators 2026-10-16, once after an add that failed
+  validation): the lock file must be removed on every exit path, or live
+  outside the worktree.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
