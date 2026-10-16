@@ -11,6 +11,21 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A herdr-job plugin test catches another test's sleeps (follow-up of [t-t62majdo]
+  [t-73ysybkj], found by the coordinator 2026-10-12: run r-fgkhfqpt's
+  install failed in `just maintenance-test` at
+  `plugins/job/test_herdr_job.py` `WaitAgentTests.test_an_error_that_waiting_cannot_fix_ends_the_wait`
+  with `self.sleeps == [0.001, 0.002]` instead of `[]`; 30/30 alone pass;
+  the same run warned "subprocess ... is still running"). Likely cause: the
+  test patches `time.sleep` process-wide and records calls from a thread
+  or helper another test left running. Find the source of the 0.001/0.002
+  sleeps, make the recorder count only the code under test (or end the
+  leftover thread), and prove it with the documented stress loop.
+  Again 2026-10-16: r-d3idmzdq's install (t-5gkzkrre) failed on
+  `test_a_gone_agent_ends_the_wait_without_a_retry` with `self.sleeps ==
+  [0.001]`; moved to the top, it blocks every install. Run aborted at its
+  install; its commit is on master, installed and pushed by the next run.
+
 - [ ] The lock test `a_command_started_while_the_lock_is_held_does_not_hold_it` [t-5gkzkrre]
   fails intermittently (follow-up of t-h6dxi6wv, found by the coordinator
   2026-10-16: the verify of r-y3lfeofq, t-xhaho72w, failed on it at
@@ -448,17 +463,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   auto-approved. Later, by measurement: mutation testing of changed lines
   only. Deterministic, no model.
   Decided by the user 2026-10-12 (d-64mjmvju): yes, queue it.
-
-- [ ] A herdr-job plugin test catches another test's sleeps (follow-up of [t-t62majdo]
-  [t-73ysybkj], found by the coordinator 2026-10-12: run r-fgkhfqpt's
-  install failed in `just maintenance-test` at
-  `plugins/job/test_herdr_job.py` `WaitAgentTests.test_an_error_that_waiting_cannot_fix_ends_the_wait`
-  with `self.sleeps == [0.001, 0.002]` instead of `[]`; 30/30 alone pass;
-  the same run warned "subprocess ... is still running"). Likely cause: the
-  test patches `time.sleep` process-wide and records calls from a thread
-  or helper another test left running. Find the source of the 0.001/0.002
-  sleeps, make the recorder count only the code under test (or end the
-  leftover thread), and prove it with the documented stress loop.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
