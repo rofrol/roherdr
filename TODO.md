@@ -67,6 +67,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   boundary, so it waits for approval.
   Decided by the user 2026-10-16: approved ("I approve, but ask the
   models"); the design comes from a consult round, recorded below.
+  Design decided with the models 2026-10-16 (round `20261016-133303-742a`,
+  all five for option b): a cap on concurrently admitted workers per
+  provider, counted across all repositories (the subscription is per
+  account), inside `usage_gate` and nowhere else. Under the provider lock:
+  read usage, apply the latch, count admitted workers, persist the new
+  admission against the run/attempt or `worker.run` id before the spawn
+  (admitted-but-not-yet-spawned counts too). The count is derived from
+  durable worker rows (admitted, not exited), never an incremented counter;
+  a slot is released by the worker's persisted exit event or a definitive
+  spawn failure, and reconciled at server startup against live processes
+  (a worker that survives a restart keeps its slot); no expiry. A
+  `worker.run` retried with the same id does not admit twice. A refusal
+  for the cap names the holding runs. Rejected: documenting the 90% margin
+  as the budget, headroom reservation by median cost (no cost-to-percent
+  conversion exists), one admission per measurement (a lagging poll).
+  Found too (Argon, Wonder; verified: `GateProvider::store_key` keys the
+  latch by repository): the high latch is per repository while the
+  subscription is per account. Open, for the user: the cap's default and
+  the latch's scope (d-... below).
 
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
