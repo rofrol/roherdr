@@ -32,6 +32,54 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Write-up: ~/.local/state/roagent/herdr-card-report-20261017.md (local).
   Decided by the user 2026-10-17 (d-fuchvyu3): approved, next.
 
+- [ ] Usage gate cap follow-ups (from t-6mjgooqu, its worker, run [t-3v3cgqcf]
+  r-woxzlg7o): `worker.run` has no caller identity, so a retried call
+  admits again (deduplication needs a new method or capability, per the
+  endpoint contract); an admission made by a server before a live handoff
+  and not yet bound to a worker keeps its slot until a later server start
+  (reconcile at handoff too); a worker marked `lost` whose process still
+  runs frees its slot, so the cap can be exceeded after a crash (keep the
+  slot while the process lives). Touches the gate, so it waits for
+  approval.
+  Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
+  verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
+  pilot uses only `worker run`, one worker, no push).
+
+- [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
+  (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
+  t-tokfdrun, which the user approved there): its supervisor passes the
+  token as `HERDR_TENURE_TOKEN`, so an agent it runs directly (`claude -p`)
+  sees it in its environment and can start workers under the lease. Add
+  `--tenure-token-fd N` (read once to end of file, then closed) or a
+  one-time token file herdr deletes after reading, and say which the
+  caller should use. Touches the tenure trust boundary, so it waits for
+  approval here.
+  Decided by the user 2026-10-17 (d-2wmcwww3): approved, after the queued items.
+  Checked 2026-10-17 (src/workers/supervisor/lifecycle.rs:293-296): a
+  worker gets the server's environment with every `HERDR_*` removed, never
+  the client's, so `worker run --tenure-token` never reaches the worker;
+  the exposure is only agents the supervisor runs directly. Per
+  agentic-workflow-bend-claude's coordinator (2026-10-17), the rormpc pilot
+  uses only `worker run`, so this item is pilot-adjacent, not a blocker.
+
+- [ ] Tenure checks hold through the step they guard, and a failed exit [t-bbwge2bc]
+  watch does not strand a tenure (follow-up of t-xhaho72w, review round
+  `20261016-201054-ee83`, sol and DeepSeek): the landing fence and
+  `worker.run`'s token check read the tenure and then act, so a holder
+  that ends in between still lands or starts work under its successor;
+  serialize tenure changes with the guarded step or record the admitted
+  work against the tenure atomically. The process holder's exit callback
+  drops its watch before it ends the tenure, and a store error there (or
+  a Linux `poll` error) leaves the dead holder's tenure active until the
+  next server start; persist the pending end and acknowledge it only
+  once ended. A caller can name another holder's pid and rotate its
+  token (same-user trust, accepted only by the user). The Linux code was
+  never compiled: add a Linux compile check. Touches the trust boundary,
+  so it waits for approval.
+  Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
+  verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
+  pilot uses only `worker run`, one worker, no push).
+
 - [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
   2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
   use of this workflow by roherdr now, narrowly"; consult round
@@ -3608,23 +3656,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   DECISIONS.md at resume time, and show a failed TODO step's error.
   Decided by the user 2026-10-16 (d-2j7wvp4v): approved.
 
-- [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
-  (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
-  t-tokfdrun, which the user approved there): its supervisor passes the
-  token as `HERDR_TENURE_TOKEN`, so an agent it runs directly (`claude -p`)
-  sees it in its environment and can start workers under the lease. Add
-  `--tenure-token-fd N` (read once to end of file, then closed) or a
-  one-time token file herdr deletes after reading, and say which the
-  caller should use. Touches the tenure trust boundary, so it waits for
-  approval here.
-  Decided by the user 2026-10-17 (d-2wmcwww3): approved, after the queued items.
-  Checked 2026-10-17 (src/workers/supervisor/lifecycle.rs:293-296): a
-  worker gets the server's environment with every `HERDR_*` removed, never
-  the client's, so `worker run --tenure-token` never reaches the worker;
-  the exposure is only agents the supervisor runs directly. Per
-  agentic-workflow-bend-claude's coordinator (2026-10-17), the rormpc pilot
-  uses only `worker run`, so this item is pilot-adjacent, not a blocker.
-
 - [ ] `herdr todo edit` leaves empty `TODO.md.lock` / `DECISIONS.md.lock` [t-olsxvleo]
   files in the repository (seen by agentic-workflow-bend-claude's and
   try-roguix's coordinators 2026-10-16, once after an add that failed
@@ -3947,21 +3978,6 @@ Items agents add. Not approved until the user moves them up.
   wait also on the client socket accepting (a second positive event), and
   bring Windows to the same report instead of its socket wait.
 
-- [ ] Tenure checks hold through the step they guard, and a failed exit [t-bbwge2bc]
-  watch does not strand a tenure (follow-up of t-xhaho72w, review round
-  `20261016-201054-ee83`, sol and DeepSeek): the landing fence and
-  `worker.run`'s token check read the tenure and then act, so a holder
-  that ends in between still lands or starts work under its successor;
-  serialize tenure changes with the guarded step or record the admitted
-  work against the tenure atomically. The process holder's exit callback
-  drops its watch before it ends the tenure, and a store error there (or
-  a Linux `poll` error) leaves the dead holder's tenure active until the
-  next server start; persist the pending end and acknowledge it only
-  once ended. A caller can name another holder's pid and rotate its
-  token (same-user trust, accepted only by the user). The Linux code was
-  never compiled: add a Linux compile check. Touches the trust boundary,
-  so it waits for approval.
-
 - [ ] A retry after an interrupted attempt is blocked by the slot's leftover [t-ga3lubqp]
   changes (found by the coordinator 2026-10-16, run r-t7uheqex): an
   attempt interrupted before it committed leaves uncommitted changes in the
@@ -3970,16 +3986,6 @@ Items agents add. Not approved until the user moves them up.
   saved the diff, reset the slot by hand and started a new run. Let
   `retry` (or a resume action) record the leftover diff with the attempt
   and reset the slot, so a known-bad attempt can be replaced in one step.
-
-- [ ] Usage gate cap follow-ups (from t-6mjgooqu, its worker, run [t-3v3cgqcf]
-  r-woxzlg7o): `worker.run` has no caller identity, so a retried call
-  admits again (deduplication needs a new method or capability, per the
-  endpoint contract); an admission made by a server before a live handoff
-  and not yet bound to a worker keeps its slot until a later server start
-  (reconcile at handoff too); a worker marked `lost` whose process still
-  runs frees its slot, so the cap can be exceeded after a crash (keep the
-  slot while the process lives). Touches the gate, so it waits for
-  approval.
 
 ## Needs a decision
 
