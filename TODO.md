@@ -3705,6 +3705,46 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   every fixed case has a test that leaves the stale file behind (as a crash
   would) and shows the next run still works.
 
+- [ ] The usage widget shows a provider's prepaid balance stale until it is [t-qamdzaf5]
+  clicked (the user, 2026-10-17: "in the usage widget, stale data for
+  DeepSeek until I click on it"). The footer renders the server's stored
+  usage report, which its poller refreshes every `[usage]
+  refresh_interval_secs` (300 s by default); a click sends `usage.read
+  {refresh: true}`, which fetches at once and bypasses the shared
+  `UsageCache`'s `Plan::Fresh`, so the number snaps current. A prepaid
+  balance (DeepSeek, OpenRouter, Kimi) is not a rate-limit window: the
+  window-based staleness stamping does not apply to it, and the
+  balance can change when a worker spends or the owner tops up. The todo
+  driver's gate reads the balance live at every dispatch and throws that
+  reading away, so the widget and the gate disagree about the same account.
+  From the round of 2026-10-17 (20261018-015308-36ee, MiMo and Gemini
+  Argon; Sol failed on its usage limit): no shorter timer, retry, debounce
+  or catch-up sweep (Rule 10); the producing events are the ones herdr
+  itself sees. Fix in three parts: (1) a live read, the gate's own included,
+  is written through to `UsageCache` and the published report, so the gate
+  cannot spend from a balance the widget still shows higher; (2) a refresh
+  of that provider on the internal events that spend from it (a worker on
+  that provider ends a turn or exits; a run lands), one fetch per provider
+  and idempotent, plus the existing poll cycle for top-ups and out-of-band
+  spend (external producer: the provider's balance endpoint); (3) the
+  footer shows a balance with the age of its observation and dims it with
+  "last known" past one interval (it never hides it), while a rate-limit
+  window keeps today's stale/failed rules. A manual refresh that arrives
+  inside `MIN_MANUAL_REFRESH_GAP` (30 s) must be coalesced with the running
+  cycle or queued for the next one, never silently dropped. Open when the
+  item starts: whether balance providers also bypass `Plan::Fresh` on every
+  poll cycle (one cheap GET; MiMo) or only the write-through and spend
+  events make them current (Argon); decide with the models then.
+  Check: tests with an injected clock, no sleeps: a young cached balance
+  observation is (or is not) skipped for the chosen part; a gate read
+  publishes the same balance to the report and the cache; a worker's turn
+  end triggers exactly one fetch of its provider and a new report; a fetch
+  failure keeps the last number but marks it failed and aged, never fresh;
+  a manual refresh inside the gap is coalesced (the click still results in
+  one fetch); two pollers sharing one cache never clobber a newer
+  observation. Shown live: top up or spend, and the footer's DeepSeek
+  number follows without a click.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
