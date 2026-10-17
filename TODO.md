@@ -44,6 +44,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
   verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
   pilot uses only `worker run`, one worker, no push).
+  From agentic-workflow-bend-claude's pilot round `20261017-115913-e529`
+  (2026-10-17): before the rormpc pilot, the lost-but-alive slot part plus a
+  test that a dropped `worker run` client gives a herdr-recorded worker
+  termination (4 of 5); full idempotency before more workers or
+  repositories. Also asked: an authoritative list of a repository's
+  admitted, not yet spawned workers (`worker list` has repo, item, state,
+  pid, exit_code, but not the `usage_admissions` rows); add it to the
+  admissions API here.
 
 - [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
   (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
