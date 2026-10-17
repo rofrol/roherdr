@@ -3618,6 +3618,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   caller should use. Touches the tenure trust boundary, so it waits for
   approval here.
   Decided by the user 2026-10-17 (d-2wmcwww3): approved, after the queued items.
+  Checked 2026-10-17 (src/workers/supervisor/lifecycle.rs:293-296): a
+  worker gets the server's environment with every `HERDR_*` removed, never
+  the client's, so `worker run --tenure-token` never reaches the worker;
+  the exposure is only agents the supervisor runs directly. Per
+  agentic-workflow-bend-claude's coordinator (2026-10-17), the rormpc pilot
+  uses only `worker run`, so this item is pilot-adjacent, not a blocker.
 
 - [ ] `herdr todo edit` leaves empty `TODO.md.lock` / `DECISIONS.md.lock` [t-olsxvleo]
   files in the repository (seen by agentic-workflow-bend-claude's and
