@@ -3671,6 +3671,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   outside the worktree.
   Decided by the user 2026-10-17 (d-2wmcwww3): approved, after the queued items.
 
+- [ ] The driver's TODO commit fails on another git process's `index.lock` [t-rmyabw75]
+  (the user, via lang-for-ai's coordinator, 2026-10-17: run r-bj3wl4qj,
+  event 202171 `todo_failed`: "Unable to create .../.git/index.lock: File
+  exists" while the coordinator ran `git status`/`git log` in the same
+  checkout; `retry-todo` then succeeded). Not a wait or blind retry on the
+  lock (Rule 10): commit the TODO step without the shared index (a
+  temporary `GIT_INDEX_FILE` built from HEAD plus the two files, then
+  `commit-tree` and an `update-ref` with the old value as the expected
+  one, and the checkout's index refreshed for those paths), so a reader's
+  short-lived lock cannot fail it; or document that coordinators must not
+  run git in the landing checkout during the todo and push steps.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -3994,18 +4006,6 @@ Items agents add. Not approved until the user moves them up.
   saved the diff, reset the slot by hand and started a new run. Let
   `retry` (or a resume action) record the leftover diff with the attempt
   and reset the slot, so a known-bad attempt can be replaced in one step.
-
-- [ ] The driver's TODO commit fails on another git process's `index.lock` [t-rmyabw75]
-  (the user, via lang-for-ai's coordinator, 2026-10-17: run r-bj3wl4qj,
-  event 202171 `todo_failed`: "Unable to create .../.git/index.lock: File
-  exists" while the coordinator ran `git status`/`git log` in the same
-  checkout; `retry-todo` then succeeded). Not a wait or blind retry on the
-  lock (Rule 10): commit the TODO step without the shared index (a
-  temporary `GIT_INDEX_FILE` built from HEAD plus the two files, then
-  `commit-tree` and an `update-ref` with the old value as the expected
-  one, and the checkout's index refreshed for those paths), so a reader's
-  short-lived lock cannot fail it; or document that coordinators must not
-  run git in the landing checkout during the todo and push steps.
 
 ## Needs a decision
 
