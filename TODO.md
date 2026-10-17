@@ -3683,6 +3683,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   short-lived lock cannot fail it; or document that coordinators must not
   run git in the landing checkout during the todo and push steps.
 
+- [ ] Audit herdr for fixed-name temporary and lock files that a crash leaves [t-pkloat43]
+  behind and that then block later runs. Asked by the user 2026-10-17, via
+  lang-for-ai's coordinator, after lang-for-ai fixed exactly this in
+  `kor fix --safe` (t-wuxtkm4m, dfdc56b): it wrote `FILE.fix-tmp` and refused
+  to run while that file existed, so a crash between write and rename
+  blocked every later run; it now creates a unique file exclusively
+  (`mkstemp` on `FILE.fix-XXXXXX`) next to the target and renames it over.
+  List every place in herdr (Rust and scripts) that creates a temporary,
+  lock, marker or status file under a fixed name and decides by its mere
+  existence (create-if-absent, "exists, refusing", stale `*.tmp` before a
+  rename); for each, show whether a crash can leave it and what then
+  happens, and replace existence checks with an exclusively created unique
+  name, an `flock`/`fcntl` lock the kernel releases on exit, or an owner
+  check, without timers (Rule 10). Already fine: `todo_edit.py`'s
+  `TODO.md.lock` is an `flock`, released on exit; it does stay behind as an
+  untracked file in every repository it edits (lang-for-ai shows
+  `?? TODO.md.lock`), which the audit may also settle (ignore it or keep it
+  outside the checkout).
+  Check: the list with each verdict is in the item or a decision record;
+  every fixed case has a test that leaves the stale file behind (as a crash
+  would) and shows the next run still works.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
