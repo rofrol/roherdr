@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; Gemini 4 Argon with `-m argon` and Meta Muse Wonder with `-m wonder`, both also in the default set on trial; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo, Argon and Muse Wonder only; other OpenRouter models never by default).'
+description: 'Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; Gemini 4 Argon with `-m argon`, also in the default set on trial; Meta Muse Wonder with `-m wonder`, on request only; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo and Argon only; other OpenRouter models never by default).'
 ---
 
 # Consulting an OpenRouter model (Xiaomi MiMo by default)
@@ -64,8 +64,8 @@ payload summary is printed there.
   joins every default round.
   Gemini 4 Argon (`-m argon`) joined the default set on 2026-10-15 (the user); agy does not serve it yet, so it goes
   through OpenRouter at $2/$10 per M tokens, pinned to Google AI Studio (Google's paid-API terms say prompts are not used for training; unverified for calls routed through OpenRouter).
-  Meta Muse Wonder (`-m wonder`) joined the default set on 2026-10-15 (the user) at $4/$20 per M tokens, pinned to
-  Meta, its only OpenRouter provider (Meta's retention and training terms for this API are unverified; send it what
+  Meta Muse Wonder (`-m wonder`) joined the default set on 2026-10-15 (the user) and left it on 2026-10-17 (the
+  user, after its trial, below); it is asked only on request, at $4/$20 per M tokens, pinned to Meta, its only OpenRouter provider (Meta's retention and training terms for this API are unverified; send it what
   you would send DeepSeek).
   Other OpenRouter models only on an explicit request to try or evaluate them.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
@@ -132,6 +132,12 @@ same way as Argon's:
   MiMo's and Argon's, and accepted unique findings per dollar.
 
 No automatic pass rule: after the 20th round, report both to the user, who decides whether Muse Wonder stays.
+
+Decided by the user on 2026-10-17: Muse Wonder leaves the default set ("drop wonder from the default set"). Over 230
+shared rounds it had fewer accepted unique findings per call than MiMo (-0.09, 95% CI -0.18..-0.00) and as many as
+sol@medium (+0.04, CI -0.04..+0.12), with the lowest rejected share of the OpenRouter models (14%), at about $0.07 a
+call: $18.53 of the $27.34 spent on OpenRouter consults from 2026-10-15 to 2026-10-17, about $0.12 per accepted
+unique finding against about $0.02 for Argon.
 
 ## Privacy and secrets — read before sending any code
 

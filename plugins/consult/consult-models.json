@@ -1,5 +1,5 @@
 {
-  "default": ["sol", "mimo", "deepseek", "argon", "wonder"],
+  "default": ["sol", "mimo", "deepseek", "argon"],
   "models": {
     "sol": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "sol"]},
     "astra": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "astra"]},
