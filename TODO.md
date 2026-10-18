@@ -24,6 +24,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   auto-approved. Later, by measurement: mutation testing of changed lines
   only. Deterministic, no model.
   Decided by the user 2026-10-12 (d-64mjmvju): yes, queue it.
+  First half landed 2026-10-18 (run r-atcxbo5o, attempt 2, commit 5183ec50b's
+  fix 3b4d7dbbf... see the landing): the verify reports a commit's guarded
+  paths (herdr's `.herdr/checks.toml`, `.herdr/review-checklist.md` and
+  `.herdr/review-golden/**`, plus the repository's own `[review]
+  guarded_paths` read at the base, a union) as an optional field and a
+  `guarded` check without changing the verdict; a discovery that cannot be
+  read is an `unavailable` check and refuses the approval; `herdr todo resume
+  --action approve` refuses such a commit unless it passes the new
+  `--accept-guarded-paths`, which the run records, and the automatic review
+  and queue mode escalate to a `review` event with the paths instead of
+  approving. Review round `20261018-214420-af1f` (sol) found the configured
+  list replacing the built-in guards and a fail-open discovery; both fixed.
+  Still open: part (1) of the item, counterfactual tests — a test the commit
+  adds or changes must fail on the run's base and pass on the commit, recorded
+  per test (and, later, mutation testing of changed lines).
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
