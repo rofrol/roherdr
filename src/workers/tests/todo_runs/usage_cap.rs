@@ -1,5 +1,5 @@
 //! The usage gate's cap on the workers of one provider in one repository
-//! (the coordinator's scope), and its high latch kept per provider account.
+//! keyed by git identity, and its high latch kept per provider account.
 
 use super::*;
 use crate::workers::runs::usage_gate::Holder;
@@ -16,8 +16,9 @@ fn cap(fixture: &Fixture, max_workers: u32) {
 
 /// The holders of Claude's slots in `repo`, sorted.
 fn held(supervisor: &WorkerSupervisor, repo: &str) -> Vec<String> {
+    let identity = crate::workers::runs::repo_identity(Path::new(repo)).unwrap();
     let mut held = store_of(supervisor)
-        .held_admissions("claude", repo)
+        .held_admissions("claude", &identity)
         .unwrap()
         .into_iter()
         .map(|admission| admission.holder)
@@ -92,7 +93,7 @@ fn concurrent_starts_in_one_repository_admit_exactly_the_cap() {
         let message = refused.to_string();
         assert!(
             message.contains(&format!(
-                "at most {max_workers} per coordinator and provider ([usage] gate_max_workers)"
+                "at most {max_workers} per repository and provider ([usage] gate_max_workers)"
             )),
             "{message}"
         );
@@ -132,39 +133,63 @@ fn concurrent_starts_in_one_repository_admit_exactly_the_cap() {
 #[test]
 fn worktrees_and_subdirectories_of_one_clone_share_a_bucket() {
     let fixture = todo_repo("usage-cap-git-identity");
-    cap(&fixture, 1);
-    let main = repository_of(&fixture.repo).unwrap();
-    let worktree = fixture.root.join("linked-worktree");
-    git_in(
-        &fixture.repo,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            &worktree.display().to_string(),
-            "HEAD",
-        ],
-    );
+    cap(&fixture, 2);
+    let identity = crate::workers::slot::common_dir(&fixture.repo).unwrap();
+    let worktrees = [
+        fixture.root.join("linked-one"),
+        fixture.root.join("linked-two"),
+    ];
+    for worktree in &worktrees {
+        git_in(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &worktree.display().to_string(),
+                "HEAD",
+            ],
+        );
+    }
     let subdirectory = fixture.repo.join("sub");
     std::fs::create_dir_all(&subdirectory).unwrap();
-    assert_eq!(repository_of(&worktree).unwrap(), main);
-    assert_eq!(repository_of(&subdirectory).unwrap(), main);
+    // Pass the actual cwd, as both admission entry points do. Resolving it
+    // in the test would mask a gate that still keys on the recorded path.
     let gate = |dir: &Path, holder: &str| {
         fixture.supervisor.usage_gate(
-            &repository_of(dir).unwrap(),
+            &dir.display().to_string(),
             WorkerAgent::Claude,
             None,
             false,
             Some(&gate_holder(holder)),
         )
     };
-    gate(&fixture.repo, "main").unwrap();
-    for (dir, holder) in [(&worktree, "worktree"), (&subdirectory, "subdirectory")] {
-        let refused = gate(dir, holder).unwrap_err();
-        assert_eq!(refused.code(), "usage_gate", "{refused}");
-        assert!(refused.to_string().contains(&main), "{refused}");
+    gate(&worktrees[0], "one").unwrap();
+    gate(&worktrees[1], "two").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let alias = fixture.root.join("repo-alias");
+        symlink(&fixture.repo, &alias).unwrap();
+        assert_eq!(gate(&alias, "alias").unwrap_err().code(), "usage_gate");
     }
-    assert_eq!(held(&fixture.supervisor, &main), ["worker.run:main"]);
+    let refused = gate(&subdirectory, "third").unwrap_err();
+    assert_eq!(refused.code(), "usage_gate", "{refused}");
+    let message = refused.to_string();
+    assert!(
+        message.contains(&identity.display().to_string()),
+        "{message}"
+    );
+    assert!(
+        message.contains(&subdirectory.display().to_string()),
+        "{message}"
+    );
+    assert_eq!(
+        held(&fixture.supervisor, &fixture.repo.display().to_string()),
+        ["worker.run:one", "worker.run:two"]
+    );
 }
 
 /// The cap is the coordinator's repository: another repository's workers
@@ -173,6 +198,14 @@ fn worktrees_and_subdirectories_of_one_clone_share_a_bucket() {
 fn another_repository_has_slots_of_its_own() {
     let fixture = Fixture::new("usage-cap-per-repository");
     cap(&fixture, 1);
+    let repo_a = fixture.root.join("repo-a");
+    let repo_b = fixture.root.join("repo-b");
+    for repo in [&repo_a, &repo_b] {
+        std::fs::create_dir_all(repo).unwrap();
+        git_in(repo, &["init", "-q"]);
+    }
+    let repo_a = repo_a.display().to_string();
+    let repo_b = repo_b.display().to_string();
     let gate = |repo: &str, holder: &str| {
         fixture.supervisor.usage_gate(
             repo,
@@ -182,19 +215,236 @@ fn another_repository_has_slots_of_its_own() {
             Some(&gate_holder(holder)),
         )
     };
-    gate("/repo-a", "a1").unwrap();
+    gate(&repo_a, "a1").unwrap();
     // Repo A is full, and the refusal names only its own starts.
-    let refused = gate("/repo-a", "a2").unwrap_err();
+    let refused = gate(&repo_a, "a2").unwrap_err();
     assert_eq!(refused.code(), "usage_gate", "{refused}");
-    assert!(refused.to_string().contains("/repo-a"), "{refused}");
-    assert!(!refused.to_string().contains("/repo-b"), "{refused}");
-    // Repo B's coordinator has its own slot, and neither sees the other's.
-    gate("/repo-b", "b1").unwrap();
-    assert_eq!(held(&fixture.supervisor, "/repo-a"), ["worker.run:a1"]);
-    assert_eq!(held(&fixture.supervisor, "/repo-b"), ["worker.run:b1"]);
-    // The same repository counts a `worker.run` and a `todo run` against one
-    // cap.
-    gate("/repo-b", "b2").unwrap_err();
+    assert!(refused.to_string().contains(&repo_a), "{refused}");
+    assert!(!refused.to_string().contains(&repo_b), "{refused}");
+    gate(&repo_b, "b1").unwrap();
+    assert_eq!(held(&fixture.supervisor, &repo_a), ["worker.run:a1"]);
+    assert_eq!(held(&fixture.supervisor, &repo_b), ["worker.run:b1"]);
+    gate(&repo_b, "b2").unwrap_err();
+}
+
+#[test]
+fn non_git_directories_use_real_paths_then_absolute_paths() {
+    let fixture = Fixture::new("usage-cap-non-git");
+    cap(&fixture, 1);
+    let directory = fixture.root.join("plain");
+    std::fs::create_dir_all(&directory).unwrap();
+    assert!(crate::workers::slot::common_dir(&directory).is_err());
+    let gate = |dir: &Path, holder: &str| {
+        fixture.supervisor.usage_gate(
+            &dir.display().to_string(),
+            WorkerAgent::Claude,
+            None,
+            false,
+            Some(&gate_holder(holder)),
+        )
+    };
+    gate(&directory, "real").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let alias = fixture.root.join("alias");
+        symlink(&directory, &alias).unwrap();
+        assert_eq!(gate(&alias, "alias").unwrap_err().code(), "usage_gate");
+    }
+    let missing = fixture.root.join("missing");
+    gate(&missing, "missing").unwrap();
+    // Check the stored keys directly, without the test helper resolving them.
+    let store = store_of(&fixture.supervisor);
+    assert_eq!(
+        store
+            .held_admissions(
+                "claude",
+                &format!("path:{}", directory.canonicalize().unwrap().display())
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .held_admissions(
+                "claude",
+                &format!("path:{}", std::path::absolute(&missing).unwrap().display())
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A bare repository at exactly the fallback path must get a distinct key.
+    let fallback_key = format!("path:{}", directory.canonicalize().unwrap().display());
+    git_in(&directory, &["init", "--bare", "-q"]);
+    let git_key = crate::workers::runs::repo_identity(&directory).unwrap();
+    assert_eq!(
+        git_key,
+        directory.canonicalize().unwrap().display().to_string()
+    );
+    assert_ne!(fallback_key, git_key);
+}
+
+#[test]
+fn bare_and_separate_git_directories_store_the_common_directory_identity() {
+    let fixture = Fixture::new("usage-cap-git-layouts");
+    let bare = fixture.root.join("bare.git");
+    let checkout = fixture.root.join("checkout");
+    let separate = fixture.root.join("separate.git");
+    git_in(
+        &fixture.root,
+        &["init", "--bare", "-q", bare.to_str().unwrap()],
+    );
+    git_in(
+        &fixture.root,
+        &[
+            "init",
+            "-q",
+            &format!("--separate-git-dir={}", separate.display()),
+            checkout.to_str().unwrap(),
+        ],
+    );
+    for (dir, expected, holder) in [(&bare, &bare, "bare"), (&checkout, &separate, "separate")] {
+        fixture
+            .supervisor
+            .usage_gate(
+                dir.to_str().unwrap(),
+                WorkerAgent::Claude,
+                None,
+                false,
+                Some(&gate_holder(holder)),
+            )
+            .unwrap();
+        // Inspect the persisted identity independently of repo_identity.
+        let admissions = store_of(&fixture.supervisor)
+            .held_admissions("claude", expected.canonicalize().unwrap().to_str().unwrap())
+            .unwrap();
+        assert_eq!(admissions.len(), 1);
+        assert_eq!(admissions[0].holder, format!("worker.run:{holder}"));
+    }
+}
+
+#[test]
+fn invalid_worktree_git_file_falls_back_to_real_path() {
+    let fixture = todo_repo("usage-cap-invalid-git");
+    let worktree = fixture.root.join("invalid-worktree");
+    git_in(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let git_file = worktree.join(".git");
+    std::fs::write(
+        &git_file,
+        format!(
+            "gitdir: {}\n",
+            fixture.root.join("nonexistent-git-dir").display()
+        ),
+    )
+    .unwrap();
+    assert!(crate::workers::slot::common_dir(&worktree).is_err());
+    fixture
+        .supervisor
+        .usage_gate(
+            worktree.to_str().unwrap(),
+            WorkerAgent::Claude,
+            None,
+            false,
+            Some(&gate_holder("invalid")),
+        )
+        .unwrap();
+    let admissions = store_of(&fixture.supervisor)
+        .held_admissions(
+            "claude",
+            &format!("path:{}", worktree.canonicalize().unwrap().display()),
+        )
+        .unwrap();
+    assert_eq!(admissions.len(), 1);
+    assert_eq!(admissions[0].holder, "worker.run:invalid");
+}
+
+#[test]
+fn todo_and_worker_run_race_for_the_same_git_identity() {
+    let fixture = todo_repo("usage-cap-mixed-race");
+    cap(&fixture, 1);
+    // Persist a real waiting run so its admission holds a slot even before
+    // it spawns. No usage event is emitted: the test drives the gate itself.
+    fixture.supervisor.set_usage_for_test(fresh_usage(95, 95));
+    let pending = fixture
+        .supervisor
+        .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+        .unwrap();
+    assert_eq!(pending.status, TodoRunStatus::Waiting);
+    fixture.supervisor.set_usage_for_test(fresh_usage(10, 10));
+    let worktree = fixture.root.join("race-worktree");
+    git_in(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+            "HEAD",
+        ],
+    );
+    let barrier = std::sync::Barrier::new(2);
+    let holders = [
+        Holder::Run {
+            run_id: pending.run_id,
+            attempt: 1,
+        },
+        gate_holder("racing-worker"),
+    ];
+    let results = std::thread::scope(|scope| {
+        let handles = holders
+            .iter()
+            .zip([&fixture.repo, &worktree])
+            .map(|(holder, dir)| {
+                let (barrier, supervisor) = (&barrier, &fixture.supervisor);
+                scope.spawn(move || {
+                    barrier.wait();
+                    supervisor.usage_gate(
+                        &dir.display().to_string(),
+                        WorkerAgent::Claude,
+                        None,
+                        false,
+                        Some(holder),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "{results:#?}"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .unwrap()
+            .code(),
+        "usage_gate"
+    );
+    assert_eq!(
+        held(&fixture.supervisor, &fixture.repo.display().to_string()).len(),
+        1
+    );
 }
 
 #[test]
@@ -219,7 +469,7 @@ fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_
     assert!(
         refused
             .to_string()
-            .contains("worker.run (not started yet, /repo-a)"),
+            .contains("worker.run (not started yet, path:/repo-a)"),
         "{refused}"
     );
     // --ignore-usage admits past the cap, says so, and counts.

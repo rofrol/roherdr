@@ -21,9 +21,13 @@ stored closed gates without a state are conservatively treated as high.
 ## Concurrent workers
 
 The gate also admits at most `[usage] gate_max_workers` workers of one provider
-at a time for one coordinator (default 2, at least 1). A repository has one
-coordinator, so the count is the repository's: another repository's workers
-never block this one's approved item. `todo run` attempts and `worker run` runs
+at a time for one repository (default 2, at least 1). The key is the repository's
+absolute, real git common directory: linked worktrees, subdirectories and
+symlink aliases of one clone share the cap. Non-git directories use their real
+path, falling back to the absolute path when it cannot be resolved. Another
+repository's workers never block this one's approved item. Refusals name the
+key, the supplied display path and that repository's holders.
+`todo run` attempts and `worker run` runs
 alike are counted. A headless item coordinator passes the
 usage check only and takes no slot, since its own runs need them. Under the provider's
 lock it counts the starts it admitted whose worker has not exited, and records

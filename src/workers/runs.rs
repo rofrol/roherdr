@@ -861,6 +861,25 @@ fn crashes_before(repo: &str, step: TodoStep) -> bool {
     }
 }
 
+/// The cap's repository key, also used by the admission tests' holder helper.
+/// Reuse the slot's common-directory resolver so bare and separate-git-dir
+/// repositories have identities too; fallback keys use `path:` plus the real
+/// path, or the absolute path when canonicalization fails, to distinguish them
+/// from git identities. The key is computed and stored when admission is created:
+/// becoming (or ceasing to be) a repository changes the next admission's key.
+/// Release uses the holder, never a recomputed key, so existing rows still release.
+pub(super) fn repo_identity(dir: &Path) -> Result<String, WorkerError> {
+    match super::slot::common_dir(dir) {
+        Ok(identity) => Ok(identity.display().to_string()),
+        Err(error) => {
+            tracing::warn!(directory = %dir.display(), reason = %error,
+                "cannot resolve usage admission git identity; falling back to directory path");
+            let path = dir.canonicalize().or_else(|_| std::path::absolute(dir))?;
+            Ok(format!("path:{}", path.display()))
+        }
+    }
+}
+
 /// One admission the gate's cap decides ([`WorkerSupervisor::usage_gate`]).
 struct Admitting<'a> {
     repo: &'a str,
@@ -872,8 +891,7 @@ struct Admitting<'a> {
 
 impl Admitting<'_> {
     /// Under the provider's lock: counts the provider's admissions in this
-    /// repository that hold a slot (the cap is per coordinator, and a
-    /// repository has one coordinator) and records the holder's in the same
+    /// repository that hold a slot and records the holder's in the same
     /// transaction, or returns the refusal naming them while the cap is
     /// reached and `--ignore-usage` is not given. The cap's part goes into
     /// `recorded`.
@@ -882,13 +900,14 @@ impl Admitting<'_> {
         store: &super::store::Store,
         recorded: &mut Value,
     ) -> Result<Option<String>, WorkerError> {
+        let repo = repo_identity(Path::new(self.repo))?;
         let key = self.holder.key();
         let pid = std::process::id();
         let server = (pid, crate::platform::process_start_token(pid));
         let at = now_ms();
         let (others, full) = store
             .transaction(|tx| {
-                let held = tx.held_admissions(self.provider.id(), self.repo)?;
+                let held = tx.held_admissions(self.provider.id(), &repo)?;
                 let holds = held.iter().any(|admission| admission.holder == key);
                 let others = held
                     .into_iter()
@@ -899,7 +918,7 @@ impl Admitting<'_> {
                     tx.admit(&super::store::NewAdmission {
                         holder: &key,
                         provider: self.provider.id(),
-                        repo: self.repo,
+                        repo: &repo,
                         run: self.holder.run(),
                         server,
                         ignored: self.ignore_usage,
@@ -916,7 +935,13 @@ impl Admitting<'_> {
             self.ignore_usage && full,
         );
         Ok((full && !self.ignore_usage).then(|| {
-            usage_gate::cap_refusal_message(self.provider, self.max_workers, &others, self.repo)
+            usage_gate::cap_refusal_message(
+                self.provider,
+                self.max_workers,
+                &others,
+                &repo,
+                self.repo,
+            )
         }))
     }
 }

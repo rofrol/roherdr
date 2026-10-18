@@ -231,11 +231,12 @@ pub(super) fn cap_refusal_message(
     max_workers: u32,
     held: &[crate::workers::store::Admission],
     repo: &str,
+    display_path: &str,
 ) -> String {
     let holders = held.iter().map(holder_label).collect::<Vec<_>>().join("; ");
     format!(
         "usage gate: no new worker while {count} {name} workers are admitted and not exited in \
-         {repo}, at most {max_workers} per coordinator and provider ([usage] gate_max_workers): \
+         repository {repo} (path {display_path}), at most {max_workers} per repository and provider ([usage] gate_max_workers): \
          {holders}. A slot frees when one of them exits; --ignore-usage, on the user's word, \
          overrides",
         count = held.len(),
