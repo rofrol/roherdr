@@ -2129,3 +2129,50 @@ the `todo` and `handoff` skills can drop roagent. Landed as run r-jif4wm63
   move a live guard another process had just taken, and unlinking could not be
   made race-free), and a `--json`/endpoint-method surface (no caller needs one
   yet; adding it must follow the endpoint contract when it does).
+
+## `herdr coordinator open` starts a space's TODO coordinator (t-4h2cmwvj, 2026-10-18)
+
+The second half of the roagent removal (`d-ytigfuq7`, split from t-kl75fxva by
+round `20261018-132857-e9bd`): `roagent todo start SPACE [pi]` is now
+`herdr coordinator open SPACE`, so the `todo` skill and herdr's T button need
+no roagent. Landed as run r-jdhngvoz (attempt 2, commit 19dc5eae9), after
+rounds `20261018-155145-677a` (design; sol, MiMo, Argon) and
+`20261018-161937-60b1` (diff review; the same three).
+
+- The verb lives under `coordinator`, not `todo`: `herdr todo run` is being
+  retired, `herdr todo next` already starts a headless per-item coordinator,
+  and `coordinator start` already means "claim the tenure for this pane". The
+  capability is not subsumed by either: this opens an interactive tab the user
+  watches, with folder-trust handling and its own prompt.
+- It is a composition of advertised methods (`workspace.list`, `tab.create`,
+  `tab.set_role`, `agent.start`, `agent.wait_start`, `agent.get`,
+  `agent.wait_change`, `agent.prompt`, `agent.focus`, `tab.close`,
+  `coordinator.status`, `coordinator.end`), so it adds no endpoint method and
+  the supervisor's arrival is a change of prompt, not a rewrite.
+- The claim is `tab role <tab> coordinator` (which claims the tenure and
+  refuses `coordinator_active`); a `coordinator.status` read only avoids
+  creating a tab the claim would refuse, and the claim decides two concurrent
+  opens. The loser closes the tab it created and prints the holder as
+  `coordinator status` prints it.
+- A startup dialog is the user's: the command focuses the tab, says where and
+  what waits, and waits on the agent's state change with a bound of the user's
+  answer (10 minutes, commented as such). After it, the agent is read again
+  and receives the prompt only in a state that takes input; a second dialog,
+  an exited agent, or a lost prompt answer is reported without undoing the tab
+  and tenure, and a prompt is never sent twice.
+- Cleanup after a failed launch ends the tenure by the new tab's pane (so a
+  tenure a successor took over is never ended) and closes only the tab it
+  created; a cleanup that did not happen is reported instead of swallowed.
+- Defaults sit in one table: claude with `--remote-control "TODO <space>"`, pi
+  with `--model openai-codex/gpt-6.1-sol`, the prompt `Rób TODO po kolei.`,
+  the name `todo-<space>` (the prefix the user's `todo` skill looks for), all
+  overridable. The script's 15-second wait for `working` with one resend is
+  not ported: `agent prompt` returns only after the agent accepted the prompt.
+- A space whose repository is the home (dotfiles) repository is refused by
+  this command, because only `herdr coordinator start --repo ~` claims that
+  repository; giving it a path is `t-6udxxqqr`.
+- Rejected with the rounds: a new endpoint method for the whole launch (the
+  composition keeps the protocol surface as it is), name-based reuse of an
+  existing `todo-*` agent (the tenure is the identity), and returning at once
+  from a blocked start without delivering the prompt (the wait reports where
+  the user answers and then sends it once).

@@ -11,24 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] `herdr todo start` starts a repository's TODO coordinator on the [t-4h2cmwvj]
-  coordinator tenure (the second half of [t-kl75fxva], split by round
-  `20261018-132857-e9bd`; the user's decision d-ytigfuq7). `roagent todo
-  start SPACE [pi]` becomes a herdr command that resolves the space's
-  repository, acquires the tenure in one step (never check-then-act: two
-  starts must not race a second coordinator), reuses a live coordinator of
-  that repository, opens the tab with the coordinator role, starts claude or
-  pi there, leaves the folder-trust prompt to the user and reports a blocked
-  start as a structured result instead of stalling, and sends
-  `/todo --handoff <note>` when a handoff is pending, else the start prompt.
-  The engine argv, model and prompt are parameters with today's defaults; the
-  15 s "working" resend loop goes (`herdr agent prompt` acknowledges
-  delivery, and a resend is blind). Its name and its prompt are reviewed
-  against the driver retirement ([t-54d2offk]) before it starts: `herdr todo
-  run` goes away, `herdr todo next` already starts a headless item
-  coordinator, and `herdr coordinator start` already means "claim here".
-  Needs the notes of the item above (`take` looks for pending handoff notes).
-
 - [ ] Plan the retirement of herdr's TODO driver (the user, 2026-10-16, [t-54d2offk]
   d-ytigfuq7: "also retire herdr's TODO driver: its queues move to this
   supervisor"): `todo run`, queue mode and `todo next --continue` give way
