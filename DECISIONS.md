@@ -2009,3 +2009,34 @@ which needs a new method or capability) stayed out of this slice.
   fix. The worker for this item ran on `deepseek/deepseek-flash`: by the user's
   decision of 2026-10-18 (recorded in the ledger), worker runs keep out of the
   ChatGPT plan's window, which the coordinator's consultations spend.
+
+## The tenure token travels through a descriptor only its caller can read (t-bdbf4ocr, 2026-10-18)
+
+A supervisor that keeps its own coordination tenure passed the token to
+`herdr worker run` in its environment (`HERDR_TENURE_TOKEN`). Herdr strips every
+`HERDR_*` variable from a worker it starts, so that path was safe, but an agent
+the supervisor runs *directly* (`claude -p`) inherits the supervisor's
+environment and with it the token, and could start workers under that lease.
+Approved by the user on 2026-10-17 (d-2wmcwww3), asked by
+agentic-workflow-bend-claude's coordinator for its t-tokfdrun.
+
+- `herdr worker run --tenure-token-fd N` reads the token once from that
+  descriptor to end of file, trims a trailing newline, closes the descriptor
+  before the content is checked, and bounds the read at 4 KiB so a descriptor
+  that never ends is refused instead of buffered.
+- A descriptor that is not open, is empty, or does not carry a 64-hex token is a
+  clean usage error (exit 2, nothing is sent). `--tenure-token` and
+  `--tenure-token-fd` together are refused; `HERDR_TENURE_TOKEN` stays the
+  fallback only when neither is given, and the help says why a supervisor should
+  prefer the descriptor (the environment is inherited by everything the caller
+  starts, and `--tenure-token` shows in the process list).
+- Windows has no descriptor numbers to hand over, so it refuses that channel with
+  a clean error and keeps the environment fallback; that limitation is documented
+  with the flag.
+- The rule, now written in `docs/next/website/src/content/docs/cli-reference.mdx`:
+  the token is a capability, so it travels through a channel the caller's own
+  children cannot read.
+- Tests: the token is read once and the descriptor closed (a second read finds it
+  empty), a missing/empty/malformed descriptor starts nothing, and a `worker.run`
+  under a real tenure keeps the token out of the spawned worker's argv and its
+  `HERDR_*` environment.

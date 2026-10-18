@@ -11,23 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
-  (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
-  t-tokfdrun, which the user approved there): its supervisor passes the
-  token as `HERDR_TENURE_TOKEN`, so an agent it runs directly (`claude -p`)
-  sees it in its environment and can start workers under the lease. Add
-  `--tenure-token-fd N` (read once to end of file, then closed) or a
-  one-time token file herdr deletes after reading, and say which the
-  caller should use. Touches the tenure trust boundary, so it waits for
-  approval here.
-  Decided by the user 2026-10-17 (d-2wmcwww3): approved, after the queued items.
-  Checked 2026-10-17 (src/workers/supervisor/lifecycle.rs:293-296): a
-  worker gets the server's environment with every `HERDR_*` removed, never
-  the client's, so `worker run --tenure-token` never reaches the worker;
-  the exposure is only agents the supervisor runs directly. Per
-  agentic-workflow-bend-claude's coordinator (2026-10-17), the rormpc pilot
-  uses only `worker run`, so this item is pilot-adjacent, not a blocker.
-
 - [ ] Tenure checks hold through the step they guard, and a failed exit [t-bbwge2bc]
   watch does not strand a tenure (follow-up of t-xhaho72w, review round
   `20261016-201054-ee83`, sol and DeepSeek): the landing fence and
