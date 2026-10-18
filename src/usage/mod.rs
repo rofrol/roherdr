@@ -481,6 +481,14 @@ pub(crate) fn read_chatgpt_plan_now() -> Result<ProviderUsage, String> {
     read_now(Provider::Codex)
 }
 
+/// DeepSeek's prepaid balance read now, as [`read_claude_now`] reads
+/// Claude's: the usage gate of a run whose pi worker runs a `deepseek/`
+/// model. Its answer has a balance and `spendable`, no rate-limit window.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn read_deepseek_now() -> Result<ProviderUsage, String> {
+    read_now(Provider::DeepSeek)
+}
+
 #[cfg_attr(test, allow(dead_code))]
 fn read_now(provider: Provider) -> Result<ProviderUsage, String> {
     let fetched = provider.fetch(&UsageConfig::default());

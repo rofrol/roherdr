@@ -44,6 +44,7 @@ fn parse(body: &str) -> Result<ProviderUsage, String> {
     let response: BalanceResponse = serde_json::from_str(body)
         .map_err(|error| format!("unexpected DeepSeek balance response: {error}"))?;
     let mut usage = ProviderUsage::pending("deepseek", "DeepSeek");
+    usage.spendable = Some(response.is_available);
     usage.balances = response
         .balance_infos
         .into_iter()
@@ -81,12 +82,14 @@ mod tests {
                 topped_up: Some("13.41".into()),
             }]
         );
+        assert_eq!(usage.spendable, Some(true));
         assert!(usage.notes.is_empty());
     }
 
     #[test]
-    fn unavailable_balance_adds_a_note() {
+    fn unavailable_balance_adds_a_note_and_is_not_spendable() {
         let usage = parse(r#"{"is_available":false,"balance_infos":[]}"#).unwrap();
         assert_eq!(usage.notes.len(), 1);
+        assert_eq!(usage.spendable, Some(false));
     }
 }

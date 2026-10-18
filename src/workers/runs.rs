@@ -253,6 +253,13 @@ pub(super) struct RunFinish {
     /// The agent CLI the run's workers run; Claude when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent: Option<WorkerAgent>,
+    /// The model the run's worker runs, as the caller chose it (`--model`):
+    /// a pi `provider/model` id the usage gate reads the provider of, pinned
+    /// for all attempts of the run so a resume never re-resolves it against a
+    /// later config. None: the agent's own default (pi's
+    /// [`super::pi::DEFAULT_MODEL`], Claude Code's model for Claude).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) model: Option<String>,
     #[serde(default)]
     pub(super) anthropic_credits: bool,
     /// Why a `pi-anthropic` run fell back to `pi` (the credit refusal).
@@ -462,7 +469,10 @@ impl RunFinish {
                     .unwrap_or("herdr-anthropic/claude-sonnet-4-5-20250929"),
             )
         } else {
-            (self.agent.unwrap_or_default() == WorkerAgent::Pi).then_some(super::pi::DEFAULT_MODEL)
+            self.model.as_deref().or_else(|| {
+                (self.agent.unwrap_or_default() == WorkerAgent::Pi)
+                    .then_some(super::pi::DEFAULT_MODEL)
+            })
         }
     }
 
@@ -1592,6 +1602,24 @@ pub(super) fn low_usage_for_test() -> crate::api::schema::ProviderUsage {
     claude
 }
 
+/// DeepSeek's prepaid balance with money left: what a test's usage gate
+/// reads from the "provider" for a run on a `deepseek/` model unless the
+/// test sets another answer.
+#[cfg(test)]
+pub(super) fn deepseek_usage_for_test() -> crate::api::schema::ProviderUsage {
+    use crate::api::schema::{ProviderUsage, ProviderUsageStatus, UsageBalance};
+    let mut deepseek = ProviderUsage::pending("deepseek", "DeepSeek");
+    deepseek.status = ProviderUsageStatus::Ok;
+    deepseek.spendable = Some(true);
+    deepseek.balances = vec![UsageBalance {
+        currency: "USD".into(),
+        total: "13.41".into(),
+        granted: None,
+        topped_up: Some("13.41".into()),
+    }];
+    deepseek
+}
+
 /// What preflight found.
 struct Preflighted {
     /// The branch the run lands on ([`super::target_branch`]).
@@ -1616,26 +1644,28 @@ impl WorkerSupervisor {
             .map_err(|error| WorkerError::Io(std::io::Error::other(error.clone())))
     }
 
-    /// The usage of `agent`'s provider read from the provider now, in this
-    /// call (a test's injected answer instead); never the usage poller's
-    /// cached report: Claude's for Claude, the ChatGPT plan's (Codex's
-    /// reading) for pi.
-    fn read_claude_usage(
+    /// The usage of `provider` read from the provider now, in this call (a
+    /// test's injected answer instead); never the usage poller's cached
+    /// report: Claude's, the ChatGPT plan's (Codex's reading) or DeepSeek's
+    /// balance.
+    fn read_provider_usage(
         &self,
-        agent: WorkerAgent,
+        provider: usage_gate::GateProvider,
     ) -> Result<crate::api::schema::ProviderUsage, String> {
         #[cfg(test)]
         {
-            match agent {
-                WorkerAgent::Claude => lock(&self.shared.claude_usage).clone(),
-                WorkerAgent::Pi => lock(&self.shared.openai_usage).clone(),
+            match provider {
+                usage_gate::GateProvider::Claude => lock(&self.shared.claude_usage).clone(),
+                usage_gate::GateProvider::OpenAi => lock(&self.shared.openai_usage).clone(),
+                usage_gate::GateProvider::DeepSeek => lock(&self.shared.deepseek_usage).clone(),
             }
         }
         #[cfg(not(test))]
         {
-            match agent {
-                WorkerAgent::Claude => crate::usage::read_claude_now(),
-                WorkerAgent::Pi => crate::usage::read_chatgpt_plan_now(),
+            match provider {
+                usage_gate::GateProvider::Claude => crate::usage::read_claude_now(),
+                usage_gate::GateProvider::OpenAi => crate::usage::read_chatgpt_plan_now(),
+                usage_gate::GateProvider::DeepSeek => crate::usage::read_deepseek_now(),
             }
         }
     }
@@ -1680,29 +1710,43 @@ impl WorkerSupervisor {
         *lock(&self.shared.openai_usage) = answer;
     }
 
+    /// The answer a test sets for DeepSeek's balance (a run whose pi worker
+    /// runs a `deepseek/` model).
+    #[cfg(all(test, unix))]
+    pub(super) fn set_deepseek_usage_for_test(
+        &self,
+        answer: Result<crate::api::schema::ProviderUsage, String>,
+    ) {
+        *lock(&self.shared.deepseek_usage) = answer;
+    }
+
     /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`
-    /// whose worker runs `agent`, admitted as `holder` (none for a start
-    /// the cap does not count): refused as
-    /// `usage_gate` unless `ignore_usage`; otherwise the decision the run's
-    /// events record. A refusal for usage closes the gate of that agent's
-    /// provider (one for all repositories) and an admission of a closed one
-    /// reopens it, in the store; an override changes nothing there. An
-    /// admission past usage is then refused, also as `usage_gate`, while
-    /// the provider has `[usage] gate_max_workers` workers admitted and not
-    /// exited; otherwise it is recorded for `holder` before the worker is
-    /// spawned. `holder` admitted again while it holds its slot takes no
-    /// second one.
+    /// whose worker runs `agent` with `model` (a pi `provider/model` id, or
+    /// none for the agent's default): the gate reads the provider that model
+    /// belongs to, refused as `invalid_request` when herdr has no live usage
+    /// read for it, and otherwise admitted as `holder` (none for a start the
+    /// cap does not count): refused as `usage_gate` unless `ignore_usage`;
+    /// otherwise the decision the run's events record. A refusal for usage
+    /// closes the gate of that provider (one for all repositories) and an
+    /// admission of a closed one reopens it, in the store; an override
+    /// changes nothing there. An admission past usage is then refused, also
+    /// as `usage_gate`, while the provider has `[usage] gate_max_workers`
+    /// workers admitted and not exited; otherwise it is recorded for `holder`
+    /// before the worker is spawned. `holder` admitted again while it holds
+    /// its slot takes no second one.
     pub(super) fn usage_gate(
         &self,
         repo: &str,
         agent: WorkerAgent,
+        model: Option<&str>,
         ignore_usage: bool,
         holder: Option<&usage_gate::Holder>,
     ) -> Result<Value, WorkerError> {
+        let provider =
+            usage_gate::GateProvider::for_worker(agent, model).map_err(WorkerError::Invalid)?;
         // Serialize each provider's reads and state writes independently:
         // a failed concurrent read must not overwrite a high latch with unknown,
         // and two admissions must not both count the same free slot.
-        let provider = usage_gate::GateProvider::of(agent);
         let _gate_check = usage_gate::measurement_lock(provider.id());
         let store = self.run_store()?;
         let key = provider.store_key();
@@ -1710,7 +1754,7 @@ impl WorkerSupervisor {
         let previous = store.usage_gate_body(&key).map_err(store_error)?;
         let state = usage_gate::State::from_record(closed, &previous);
         let thresholds = self.usage_gate_thresholds();
-        let answer = self.read_claude_usage(agent);
+        let answer = self.read_provider_usage(provider);
         let decision = usage_gate::decide(
             provider,
             thresholds,
@@ -1724,7 +1768,7 @@ impl WorkerSupervisor {
             recorded["reopened"] = json!(state != usage_gate::State::Open);
         }
         recorded["last_good"] = match &answer {
-            Ok(usage) if !usage.windows.is_empty() => json!(usage),
+            Ok(usage) if !usage.windows.is_empty() || !usage.balances.is_empty() => json!(usage),
             _ => previous["last_good"].clone(),
         };
         let mut refusal = None;
@@ -1735,30 +1779,32 @@ impl WorkerSupervisor {
                     .set_usage_gate(&key, true, &recorded, now_ms())
                     .map_err(store_error)?;
                 let mut why = usage_gate::refusal_message(provider, thresholds, &blockers);
-                let threshold = if state.after(&usage_gate::Decision::Refuse {
-                    blockers: blockers.clone(),
-                }) == usage_gate::State::High
-                {
-                    thresholds.reopen_below
-                } else {
-                    thresholds.close_at
-                };
-                why.push_str(&format!(
-                    " Waiting for a successful measurement below {threshold}%."
-                ));
-                if let Some(windows) = recorded["last_good"]["windows"].as_array() {
-                    let history = windows
-                        .iter()
-                        .filter_map(|window| {
-                            Some(format!(
-                                "{} {}%",
-                                window["label"].as_str()?,
-                                window["used_percent"].as_u64()?
-                            ))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    why.push_str(&format!(" Last good reading (history only): {history}."));
+                if provider.kind() == usage_gate::Kind::Windows {
+                    let threshold = if state.after(&usage_gate::Decision::Refuse {
+                        blockers: blockers.clone(),
+                    }) == usage_gate::State::High
+                    {
+                        thresholds.reopen_below
+                    } else {
+                        thresholds.close_at
+                    };
+                    why.push_str(&format!(
+                        " Waiting for a successful measurement below {threshold}%."
+                    ));
+                    if let Some(windows) = recorded["last_good"]["windows"].as_array() {
+                        let history = windows
+                            .iter()
+                            .filter_map(|window| {
+                                Some(format!(
+                                    "{} {}%",
+                                    window["label"].as_str()?,
+                                    window["used_percent"].as_u64()?
+                                ))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        why.push_str(&format!(" Last good reading (history only): {history}."));
+                    }
                 }
                 refusal = Some(why);
             }
@@ -1869,10 +1915,22 @@ impl WorkerSupervisor {
             self.usage_gate(
                 &run.info.repo,
                 run.finish.agent.unwrap_or_default(),
+                run.finish.worker_model(),
                 ignore,
                 Some(&holder),
             )
         }
+    }
+
+    /// The gate provider of a stored run: the provider the run's pinned
+    /// model belongs to. A run whose model this build does not know (a
+    /// downgrade) uses its agent's provider for this choice; it only decides
+    /// which latch a wake looks at, and the driver's own gate call resolves
+    /// the model strictly and refuses it there.
+    pub(super) fn run_gate_provider(run: &Run) -> usage_gate::GateProvider {
+        let agent = run.finish.agent.unwrap_or_default();
+        usage_gate::GateProvider::for_worker(agent, run.finish.worker_model())
+            .unwrap_or_else(|_| usage_gate::GateProvider::of(agent))
     }
 
     /// Wait-capable start; the published `todo.run` contract remains unchanged.
@@ -1924,6 +1982,7 @@ impl WorkerSupervisor {
         params: TodoDraftRunParams,
     ) -> Result<TodoRunInfo, WorkerError> {
         let agent = params.agent;
+        let model = params.model.clone();
         let params = TodoRunParams {
             cwd: params.cwd,
             item: params.item,
@@ -1937,6 +1996,7 @@ impl WorkerSupervisor {
             env: params.env,
             ignore_usage: params.ignore_usage,
             agent: None,
+            model,
             auto_review: true,
             auto_answer: true,
         };
@@ -1967,6 +2027,7 @@ impl WorkerSupervisor {
             || active.info.paths != params.paths
             || active.info.checks != params.checks
             || active.finish.agent != params.agent
+            || active.finish.model != params.model
             || active.finish.auto_review != params.auto_review
             || active.finish.auto_answer != params.auto_answer
             || active.finish.ignore_usage != params.ignore_usage
@@ -2033,6 +2094,28 @@ impl WorkerSupervisor {
         )?;
         let mut params = params;
         let mut anthropic_credits = anthropic_credits;
+        // The model a gated pi run pins, and the provider its gate reads. A
+        // provider herdr cannot read refuses the run rather than start it
+        // under a gate that reads nothing; --ignore-usage does not override
+        // this, since the model itself is the wrong input. A credit run
+        // names no model here, before any credit refusal can make it a pi
+        // run.
+        if anthropic_credits {
+            if let Some(model) = params.model.as_deref() {
+                return Err(WorkerError::Invalid(format!(
+                    "--model is not for a pi-anthropic run: the credit path pins [workers] \
+                     anthropic_api_model ({model} was given)"
+                )));
+            }
+        } else if let Some(model) = params.model.as_deref() {
+            if params.agent.unwrap_or_default() != WorkerAgent::Pi {
+                return Err(WorkerError::Invalid(format!(
+                    "--model {model} names a pi model; a Claude run keeps Claude Code's own model"
+                )));
+            }
+            usage_gate::GateProvider::for_worker(WorkerAgent::Pi, Some(model))
+                .map_err(WorkerError::Invalid)?;
+        }
         // A credit proxy or cap refusal falls back to pi once, recorded in
         // the run's created event.
         let mut agent_fallback = None;
@@ -2052,7 +2135,13 @@ impl WorkerSupervisor {
                 run_id: run_id.clone(),
                 attempt: 1,
             };
-            self.usage_gate(&repo, agent, params.ignore_usage, Some(&holder))
+            self.usage_gate(
+                &repo,
+                agent,
+                params.model.as_deref(),
+                params.ignore_usage,
+                Some(&holder),
+            )
         };
         let (usage, pending_reason) = match gate {
             Ok(usage) => (usage, None),
@@ -2173,6 +2262,7 @@ impl WorkerSupervisor {
                 queued: queue.is_some(),
                 prepare: preflighted.prepare.clone(),
                 agent: params.agent,
+                model: params.model.clone(),
                 anthropic_credits,
                 credit_model: credit_model.clone(),
                 credit_ledger,
@@ -3627,6 +3717,7 @@ impl WorkerSupervisor {
             match self.usage_gate(
                 &run.info.repo,
                 run.finish.agent.unwrap_or_default(),
+                run.finish.worker_model(),
                 run.finish.ignore_usage,
                 Some(&usage_gate::Holder::Run {
                     run_id: run.info.run_id.clone(),
@@ -3663,11 +3754,7 @@ impl WorkerSupervisor {
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
             prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
-            model: if run.finish.anthropic_credits {
-                run.finish.worker_model().map(str::to_owned)
-            } else {
-                None
-            },
+            model: run.finish.worker_model().map(str::to_owned),
             agent: run.finish.agent,
             name: None,
             workspace_id: run.workspace.clone(),
@@ -4780,6 +4867,39 @@ mod tests {
             old.worker_model(),
             Some("herdr-anthropic/claude-sonnet-4-5-20250929")
         );
+    }
+
+    /// A run pinned to a pi model keeps it through the store, and a run a
+    /// build before `--model` stored reads back with no model (pi's default).
+    #[test]
+    fn a_pi_models_run_keeps_its_model_and_an_older_run_keeps_none() {
+        let finish = RunFinish {
+            agent: Some(WorkerAgent::Pi),
+            model: Some("deepseek/deepseek-chat".into()),
+            ..Default::default()
+        };
+        let stored = serde_json::to_value(&finish).unwrap();
+        assert_eq!(stored["model"], "deepseek/deepseek-chat");
+        let restored: RunFinish = serde_json::from_value(stored).unwrap();
+        assert_eq!(restored.model, finish.model);
+        assert_eq!(restored.worker_model(), Some("deepseek/deepseek-chat"));
+        // A run stored before the field existed, and one with no model.
+        for old in [
+            json!({"agent": "pi"}),
+            json!({"agent": "pi", "model": null}),
+        ] {
+            let restored: RunFinish = serde_json::from_value(old).unwrap();
+            assert!(restored.model.is_none());
+            assert_eq!(
+                restored.worker_model(),
+                Some(super::super::pi::DEFAULT_MODEL)
+            );
+        }
+        let claude = RunFinish {
+            agent: Some(WorkerAgent::Claude),
+            ..Default::default()
+        };
+        assert_eq!(claude.worker_model(), None);
     }
 
     /// A run recorded before runs stored their target branch could only

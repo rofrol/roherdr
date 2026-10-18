@@ -691,6 +691,7 @@ mod limit_tests {
                     })
                     .collect(),
                 balances: Vec::new(),
+                spendable: None,
                 notes: Vec::new(),
                 reset_credits: Vec::new(),
                 spend: Vec::new(),

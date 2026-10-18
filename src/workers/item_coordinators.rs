@@ -427,7 +427,7 @@ impl WorkerSupervisor {
         }
         // Usage only: the coordinator's worker takes no slot of the cap,
         // which its own runs' workers need.
-        self.usage_gate(repo, WorkerAgent::Claude, false, None)?;
+        self.usage_gate(repo, WorkerAgent::Claude, None, false, None)?;
         let id = new_tenure_id(repo, &item);
         let at = now_ms();
         let claimed = store.transaction(|tx| {

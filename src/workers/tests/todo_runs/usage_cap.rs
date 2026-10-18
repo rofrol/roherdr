@@ -35,6 +35,7 @@ fn admitted_worker(fixture: &Fixture, dir: &Path, holder: &str) -> String {
         .usage_gate(
             &dir.display().to_string(),
             WorkerAgent::Claude,
+            None,
             false,
             Some(&holder),
         )
@@ -75,6 +76,7 @@ fn concurrent_starts_across_two_repositories_admit_exactly_the_cap() {
                         fixture.supervisor.usage_gate(
                             &repos[start % 2],
                             WorkerAgent::Claude,
+                            None,
                             false,
                             Some(&gate_holder(&format!("start-{start}"))),
                         )
@@ -113,7 +115,13 @@ fn concurrent_starts_across_two_repositories_admit_exactly_the_cap() {
         assert_eq!(admission["cap"]["max_workers"], max_workers);
         fixture
             .supervisor
-            .usage_gate("/repo-a", WorkerAgent::Pi, false, Some(&gate_holder("pi")))
+            .usage_gate(
+                "/repo-a",
+                WorkerAgent::Pi,
+                None,
+                false,
+                Some(&gate_holder("pi")),
+            )
             .unwrap();
     }
 }
@@ -126,6 +134,7 @@ fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_
         fixture.supervisor.usage_gate(
             "/repo-a",
             WorkerAgent::Claude,
+            None,
             ignore,
             Some(&gate_holder(holder)),
         )
@@ -209,6 +218,7 @@ fn a_duplicate_exit_frees_the_slot_once() {
         fixture.supervisor.usage_gate(
             &fixture.repo.display().to_string(),
             WorkerAgent::Claude,
+            None,
             false,
             Some(&gate_holder(holder)),
         )
@@ -223,6 +233,83 @@ fn a_duplicate_exit_frees_the_slot_once() {
 }
 
 #[test]
+fn the_cap_counts_the_models_provider_not_its_agent() {
+    let fixture = Fixture::new("usage-cap-provider-per-model");
+    cap(&fixture, 1);
+    let repo = "/repo-a";
+    fixture
+        .supervisor
+        .set_openai_usage_for_test(fresh_usage(10, 10));
+    fixture
+        .supervisor
+        .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+    // One pi worker on the ChatGPT plan holds OpenAI's only slot.
+    fixture
+        .supervisor
+        .usage_gate(
+            repo,
+            WorkerAgent::Pi,
+            None,
+            false,
+            Some(&gate_holder("openai")),
+        )
+        .unwrap();
+    // The same agent on a DeepSeek model has DeepSeek's slot.
+    fixture
+        .supervisor
+        .usage_gate(
+            repo,
+            WorkerAgent::Pi,
+            Some("deepseek/deepseek-chat"),
+            false,
+            Some(&gate_holder("deepseek")),
+        )
+        .unwrap();
+    // A second ChatGPT-plan worker is still past its cap.
+    let refused = fixture
+        .supervisor
+        .usage_gate(
+            repo,
+            WorkerAgent::Pi,
+            None,
+            false,
+            Some(&gate_holder("third")),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code(), "usage_gate", "{refused}");
+    assert!(
+        refused.to_string().contains("OpenAI (ChatGPT plan)"),
+        "{refused}"
+    );
+    // A closed ChatGPT (and Claude) latch leaves DeepSeek's gate open: the
+    // rows are one per provider, not one per agent.
+    fixture.supervisor.set_usage_for_test(fresh_usage(95, 95));
+    assert_eq!(
+        fixture
+            .supervisor
+            .usage_gate(
+                repo,
+                WorkerAgent::Claude,
+                None,
+                false,
+                Some(&gate_holder("claude"))
+            )
+            .unwrap_err()
+            .code(),
+        "usage_gate"
+    );
+    assert!(store_of(&fixture.supervisor)
+        .usage_gate_closed("provider:claude")
+        .unwrap());
+    assert!(!store_of(&fixture.supervisor)
+        .usage_gate_closed("provider:deepseek")
+        .unwrap());
+    assert!(!store_of(&fixture.supervisor)
+        .usage_gate_closed("provider:openai")
+        .unwrap());
+}
+
+#[test]
 fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     let fixture = Fixture::new("usage-cap-restart");
     cap(&fixture, 10);
@@ -230,7 +317,7 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     let gate = |holder: &Holder| {
         fixture
             .supervisor
-            .usage_gate(&repo, WorkerAgent::Claude, false, Some(holder))
+            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(holder))
             .unwrap();
     };
     // Running, and still running after the restart (its server still holds
@@ -299,9 +386,13 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
 fn the_high_latch_closed_from_one_repository_refuses_another() {
     let fixture = Fixture::new("usage-cap-latch-per-account");
     let gate = |repo: &str| {
-        fixture
-            .supervisor
-            .usage_gate(repo, WorkerAgent::Claude, false, Some(&gate_holder(repo)))
+        fixture.supervisor.usage_gate(
+            repo,
+            WorkerAgent::Claude,
+            None,
+            false,
+            Some(&gate_holder(repo)),
+        )
     };
     fixture.supervisor.set_usage_for_test(fresh_usage(40, 95));
     assert_eq!(gate("/repo-a").unwrap_err().code(), "usage_gate");

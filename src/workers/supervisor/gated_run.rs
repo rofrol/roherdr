@@ -46,7 +46,13 @@ impl WorkerSupervisor {
         // The gate as `todo.run` passes it: the same state, the same
         // recording; a refusal starts nothing.
         let holder = runs::usage_gate::Holder::new_worker_run();
-        let mut usage_gate = self.usage_gate(&repo, agent, params.ignore_usage, Some(&holder))?;
+        let mut usage_gate = self.usage_gate(
+            &repo,
+            agent,
+            params.model.as_deref(),
+            params.ignore_usage,
+            Some(&holder),
+        )?;
         usage_gate["ignore_usage"] = json!(params.ignore_usage);
         let start = WorkerStartParams {
             cwd: params.cwd.clone(),

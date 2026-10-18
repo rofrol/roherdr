@@ -6336,6 +6336,7 @@ mod todo_runs {
             env: Some(caller_env()),
             ignore_usage: false,
             agent: None,
+            model: None,
             auto_review: false,
             auto_answer: false,
         }
@@ -6563,6 +6564,7 @@ mod todo_runs {
                 .usage_gate(
                     &repo,
                     WorkerAgent::Claude,
+                    None,
                     false,
                     Some(&gate_holder("test"))
                 )
@@ -6575,6 +6577,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test")),
             )
@@ -6588,6 +6591,7 @@ mod todo_runs {
                 .usage_gate(
                     &repo,
                     WorkerAgent::Claude,
+                    None,
                     false,
                     Some(&gate_holder("test"))
                 )
@@ -6599,6 +6603,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test"))
             )
@@ -6608,6 +6613,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test"))
             )
@@ -6629,6 +6635,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test")),
             )
@@ -6640,6 +6647,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test"))
             )
@@ -6649,6 +6657,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test")),
             )
@@ -6669,6 +6678,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test"))
             )
@@ -6678,6 +6688,7 @@ mod todo_runs {
             .usage_gate(
                 &repo,
                 WorkerAgent::Claude,
+                None,
                 false,
                 Some(&gate_holder("test"))
             )
@@ -6933,9 +6944,13 @@ mod todo_runs {
         let fixture = todo_repo("todo-usage-gate-config");
         let repo = repository_of(&fixture.repo).unwrap();
         let gate = |agent: WorkerAgent| {
-            fixture
-                .supervisor
-                .usage_gate(&repo, agent, false, Some(&gate_holder(agent.as_str())))
+            fixture.supervisor.usage_gate(
+                &repo,
+                agent,
+                None,
+                false,
+                Some(&gate_holder(agent.as_str())),
+            )
         };
         let set = |close, reopen| {
             fixture
@@ -9505,12 +9520,106 @@ mod todo_runs {
     fn next_of_item2() -> crate::api::schema::TodoNextRun {
         crate::api::schema::TodoNextRun {
             agent: None,
+            model: None,
             item: ITEM2.into(),
             task: "commit b.txt feat: add b".into(),
             message: "feat: add b".into(),
             paths: vec!["*.txt".into()],
             checks: Vec::new(),
         }
+    }
+
+    /// A pi chain keeps the closed run's model (and so its provider's gate)
+    /// unless `--next-model` names another; the closed run's model is pinned
+    /// in the new run rather than re-resolved.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pi_chain_keeps_the_closed_runs_model() {
+        const MODEL: &str = "deepseek/deepseek-chat";
+        let fixture = todo_repo("todo-pi-chain-model");
+        super::pi_workers::use_pi_stub(&fixture, "pi");
+        with_finish(&fixture);
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(fresh_usage(95, 95));
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                agent: Some(WorkerAgent::Pi),
+                model: Some(MODEL.into()),
+                ..params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                close: Some("## Closed\n".into()),
+                next: Some(crate::api::schema::TodoNextRun {
+                    agent: Some(crate::api::schema::WorkerAgentChoice::Pi),
+                    ..next_of_item2()
+                }),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let next_id = finished.next_run_id.expect("the next run started");
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(next.finish.agent, Some(WorkerAgent::Pi));
+        assert_eq!(next.finish.model.as_deref(), Some(MODEL));
+        assert_eq!(
+            run_events(&fixture, &next_id, "run_created")[0]["usage_gate"]["provider"],
+            "deepseek"
+        );
+        let (review, _) = wait(&fixture, &next_id, None);
+        // The next run started its own pi worker on the inherited model.
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(next.info.model.as_deref(), Some(MODEL));
+        abort(&fixture, &next_id, review.event_id);
+    }
+
+    /// A start parked on an unspendable DeepSeek balance dispatches once a
+    /// measurement shows one it can spend, and keeps its model.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_parked_deepseek_run_wakes_on_a_spendable_balance() {
+        use crate::api::schema::TodoRunStatus;
+        const MODEL: &str = "deepseek/deepseek-chat";
+        let fixture = todo_repo("todo-pi-model-pending");
+        super::pi_workers::use_pi_stub(&fixture, "pi");
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(fresh_usage(10, 10));
+        let mut unspendable = runs::deepseek_usage_for_test();
+        unspendable.spendable = Some(false);
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(unspendable));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(TodoRunParams {
+                agent: Some(WorkerAgent::Pi),
+                model: Some(MODEL.into()),
+                ..params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap();
+        assert_eq!(pending.status, TodoRunStatus::Waiting);
+
+        let spendable = runs::deepseek_usage_for_test();
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(spendable.clone()));
+        fixture
+            .supervisor
+            .pending_after_usage_measurement("deepseek", Ok(&spendable));
+        let (review, started) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        assert_eq!(started.model.as_deref(), Some(MODEL));
+        abort(&fixture, &pending.run_id, review.event_id);
     }
 
     fn close_with_next(fixture: &Fixture, run_id: &str, event: i64) {
@@ -12449,6 +12558,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     workspace_id: Some("ws-coordinator".into()),
                     env: Some(caller_env()),
                     ignore_usage: false,
+                    model: None,
                 })
                 .unwrap();
             assert!(run.drafted && run.auto_review && run.auto_answer, "{run:?}");
@@ -14644,7 +14754,7 @@ while True:
 
     /// Writes the stub as `name` (`pi` or `nogate`) and makes it the
     /// supervisor's pi.
-    fn use_pi_stub(fixture: &Fixture, name: &str) {
+    pub(super) fn use_pi_stub(fixture: &Fixture, name: &str) {
         let stub = fixture.root.join(name);
         std::fs::write(&stub, PI_STUB).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -14906,12 +15016,171 @@ while True:
         );
     }
 
+    /// A run on a chosen pi model: `--model deepseek/deepseek-chat` starts pi
+    /// with that model, pins it in the run, and its usage gate reads the
+    /// model's provider, so the ChatGPT plan's closed window does not refuse
+    /// it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_todo_run_with_a_pi_model_reads_that_models_provider_and_records_it() {
+        use crate::api::schema::{TodoEventKind, TodoRunParams};
+        const MODEL: &str = "deepseek/deepseek-chat";
+        let fixture = todo_runs::todo_repo("todo-pi-model");
+        use_pi_stub(&fixture, "pi");
+        // The ChatGPT plan is closed; DeepSeek's balance is spendable.
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(95, 95));
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                agent: Some(WorkerAgent::Pi),
+                model: Some(MODEL.into()),
+                ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap();
+        let created = todo_runs::run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["agent"], "pi");
+        assert_eq!(created[0]["model"], MODEL);
+        assert_eq!(created[0]["usage_gate"]["provider"], "deepseek");
+        assert_eq!(created[0]["usage_gate"]["decision"], "admit");
+        // The model is pinned in the stored run, so a resume keeps it.
+        let stored = store_of(&fixture.supervisor)
+            .run(&run.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.finish.model.as_deref(), Some(MODEL));
+        let (done, finished) = todo_runs::approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.model.as_deref(), Some(MODEL));
+        let started = todo_runs::run_events(&fixture, &run.run_id, "run_started");
+        assert_eq!(started[0]["model"], MODEL);
+        // pi itself ran with the model on its command line.
+        let worker_id = finished.worker_id.unwrap();
+        let journal = fixture.journal(&worker_id);
+        let args = journal
+            .iter()
+            .find_map(|record| record["event"]["args"].as_array())
+            .unwrap_or_else(|| panic!("no start record: {journal:#?}"));
+        let args = args.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        assert!(
+            args.windows(2).any(|pair| pair == ["--model", MODEL]),
+            "{args:?}"
+        );
+    }
+
+    /// A balance the provider refuses to spend refuses the run, and a model
+    /// whose provider herdr has no live read for is refused outright:
+    /// --ignore-usage overrides usage, not a gate that would read nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_unspendable_balance_or_an_unreadable_provider_refuses_a_pi_model_run() {
+        use crate::api::schema::TodoRunParams;
+        let fixture = todo_runs::todo_repo("todo-pi-model-refused");
+        use_pi_stub(&fixture, "pi");
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(10, 10));
+        let mut unspendable = runs::deepseek_usage_for_test();
+        unspendable.spendable = Some(false);
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(unspendable));
+        let refused = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                agent: Some(WorkerAgent::Pi),
+                model: Some("deepseek/deepseek-chat".into()),
+                ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap_err();
+        assert_eq!(refused.code(), "usage_gate", "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("DeepSeek's balance cannot be spent"),
+            "{refused}"
+        );
+        assert!(fixture.supervisor.list().is_empty());
+
+        let refused = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                agent: Some(WorkerAgent::Pi),
+                model: Some("openrouter/some-model".into()),
+                ignore_usage: true,
+                ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        assert!(
+            refused.to_string().contains("no live usage read"),
+            "{refused}"
+        );
+        // A Claude run keeps Claude Code's own model.
+        let refused = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                agent: Some(WorkerAgent::Claude),
+                model: Some("deepseek/deepseek-chat".into()),
+                ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        assert!(
+            refused.to_string().contains("Claude Code's own model"),
+            "{refused}"
+        );
+    }
+
     /// Points the config at `[workers] default_agent = <agent>` (nextest runs
     /// each test in its own process).
     fn set_default_agent(fixture: &Fixture, agent: &str) {
         let path = fixture.root.join("default-agent.toml");
         std::fs::write(&path, format!("[workers]\ndefault_agent = \"{agent}\"\n")).unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+    }
+
+    /// `--model` without `--agent` takes the configured default agent: with
+    /// `[workers] default_agent = pi` the run is a pi run on that model, its
+    /// gate reads the model's provider, and the stored run names both.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_model_without_an_agent_resolves_the_default_agent_and_its_provider() {
+        use crate::api::schema::{TodoEventKind, TodoRunParams};
+        const MODEL: &str = "deepseek/deepseek-chat";
+        let fixture = todo_runs::todo_repo("todo-default-agent-model");
+        use_pi_stub(&fixture, "pi");
+        set_default_agent(&fixture, "pi");
+        fixture
+            .supervisor
+            .set_openai_usage_for_test(todo_runs::fresh_usage(95, 95));
+        fixture
+            .supervisor
+            .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+        let run = fixture
+            .supervisor
+            .todo_run_wait(TodoRunParams {
+                model: Some(MODEL.into()),
+                ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
+            })
+            .unwrap();
+        let created = todo_runs::run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["agent"], "pi");
+        assert_eq!(created[0]["model"], MODEL);
+        assert_eq!(created[0]["usage_gate"]["provider"], "deepseek");
+        let stored = store_of(&fixture.supervisor)
+            .run(&run.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.finish.agent, Some(WorkerAgent::Pi));
+        assert_eq!(stored.finish.model.as_deref(), Some(MODEL));
+        let (done, finished) = todo_runs::approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.model.as_deref(), Some(MODEL));
     }
 
     /// S1 and S3: a run without `--agent` takes `[workers] default_agent`, an

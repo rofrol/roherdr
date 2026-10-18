@@ -21,7 +21,7 @@ use super::{
 };
 use crate::api::schema::{
     HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunPush, TodoRunStatus,
-    TodoStep,
+    TodoStep, WorkerAgentChoice,
 };
 use crate::workers::todo_editor::{self, SCRIPT_NAME};
 use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
@@ -931,11 +931,22 @@ impl WorkerSupervisor {
             ignore_usage: false,
             // Set below from `next.agent` or `[workers] default_agent`.
             agent: None,
+            // The next run's own model, or none for its agent's default.
+            model: None,
             // The next run is reviewed and answered as the closed one was.
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
         };
+        // The next run's model: its own `--next-model`, else the closed
+        // run's, so a chain on another provider keeps that provider (and its
+        // gate) instead of falling back to pi's default. A credit or Claude
+        // run never inherits a pi model.
         let choice = Self::choice_of(None, next.agent);
+        let model = match choice {
+            WorkerAgentChoice::Pi => next.model.clone().or_else(|| run.finish.model.clone()),
+            WorkerAgentChoice::Claude | WorkerAgentChoice::PiAnthropic => next.model.clone(),
+        };
+        let params = TodoRunParams { model, ..params };
         let wait_usage = run.finish.usage_dispatch;
         let mut started = self.start_run_as(params.clone(), false, None, wait_usage, choice);
         // A disk the slot's own build artifacts filled: its sweep frees

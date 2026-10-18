@@ -110,6 +110,7 @@ impl WorkerSupervisor {
         match self.usage_gate(
             &run.info.repo,
             run.finish.agent.unwrap_or_default(),
+            run.finish.worker_model(),
             run.finish.ignore_usage,
             Some(&usage_gate::Holder::Run {
                 run_id: run.info.run_id.clone(),
@@ -132,6 +133,7 @@ impl WorkerSupervisor {
                     env: lock(&RUN_ENV).get(&run.info.run_id).cloned(),
                     ignore_usage: run.finish.ignore_usage,
                     agent: run.finish.agent,
+                    model: run.finish.model.clone(),
                     auto_review: run.finish.auto_review,
                     auto_answer: run.finish.auto_answer,
                 };
@@ -364,7 +366,9 @@ impl WorkerSupervisor {
             recorded["provider"] = json!(provider_id);
             recorded["state"] = json!(next.id());
             recorded["last_good"] = match answer {
-                Ok(usage) if !usage.windows.is_empty() => json!(usage),
+                Ok(usage) if !usage.windows.is_empty() || !usage.balances.is_empty() => {
+                    json!(usage)
+                }
                 _ => previous["last_good"].clone(),
             };
             store
@@ -428,9 +432,7 @@ impl WorkerSupervisor {
             if run.finish.queued && !self.queue_is_on(&run.info.repo) {
                 continue;
             }
-            if open(usage_gate::GateProvider::of(
-                run.finish.agent.unwrap_or_default(),
-            )) {
+            if open(Self::run_gate_provider(&run)) {
                 self.spawn_driver(&run.info.run_id);
             }
         }
@@ -515,7 +517,7 @@ impl WorkerSupervisor {
             if run.finish.queued && !self.queue_is_on(&run.info.repo) {
                 continue;
             }
-            let provider = usage_gate::GateProvider::of(run.finish.agent.unwrap_or_default());
+            let provider = Self::run_gate_provider(&run);
             if provider.id() != provider_id {
                 continue;
             }

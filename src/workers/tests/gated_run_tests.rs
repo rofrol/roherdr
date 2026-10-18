@@ -428,3 +428,49 @@ fn an_active_tenure_admits_only_a_run_with_its_current_token() {
     let refused = gated_run(&fixture, &with_token(Some(&current))).unwrap_err();
     assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
 }
+
+/// `worker.run` reads the gate of its model's provider too, as `todo.run`
+/// does: a `deepseek/` model is admitted while the ChatGPT plan is closed,
+/// and a provider herdr has no live usage read for starts nothing.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_gated_run_with_a_pi_model_reads_that_models_provider() {
+    let fixture = git_fixture("gated-run-pi-model");
+    super::pi_workers::use_pi_stub(&fixture, "pi");
+    fixture
+        .supervisor
+        .set_openai_usage_for_test(fresh_usage(95, 95));
+    fixture
+        .supervisor
+        .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+    let run = gated_run(
+        &fixture,
+        &WorkerGatedRunParams {
+            agent: Some(WorkerAgent::Pi),
+            model: Some("deepseek/deepseek-chat".into()),
+            ..run_params(&fixture.repo, "finish")
+        },
+    )
+    .unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+    assert_eq!(run.usage_gate["provider"], "deepseek");
+    assert_eq!(run.usage_gate["decision"], "admit");
+    let started = &fixture.herdr_events(&run.worker_id, "started")[0];
+    assert_eq!(started["agent"], "pi");
+    assert_eq!(started["model"], "deepseek/deepseek-chat");
+
+    let refused = gated_run(
+        &fixture,
+        &WorkerGatedRunParams {
+            agent: Some(WorkerAgent::Pi),
+            model: Some("openrouter/some-model".into()),
+            ..run_params(&fixture.repo, "finish")
+        },
+    )
+    .unwrap_err();
+    assert_eq!(refused.code(), "invalid_request", "{refused}");
+    assert!(
+        refused.to_string().contains("no live usage read"),
+        "{refused}"
+    );
+}

@@ -76,6 +76,11 @@ pub struct ProviderUsage {
     /// Prepaid balances, one per currency.
     #[serde(default)]
     pub balances: Vec<UsageBalance>,
+    /// Whether the provider says it will spend right now, for a provider
+    /// whose usage is a prepaid balance (DeepSeek's `is_available`). Absent
+    /// when the provider has no such answer, as every rate-limit provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spendable: Option<bool>,
     /// Extra provider-specific facts for detail views.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -250,6 +255,7 @@ impl ProviderUsage {
             error_kind: None,
             windows: Vec::new(),
             balances: Vec::new(),
+            spendable: None,
             notes: Vec::new(),
             reset_credits: Vec::new(),
             spend: Vec::new(),

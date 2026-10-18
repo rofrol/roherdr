@@ -734,6 +734,9 @@ impl WorkerSupervisor {
             env: Some(env),
             ignore_usage: false,
             agent: None,
+            // A queued run keeps the pi worker's default model: the queue
+            // starts items with `[workers] default_agent`'s own defaults.
+            model: None,
             auto_review: true,
             auto_answer: true,
         };

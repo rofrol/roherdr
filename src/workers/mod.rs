@@ -495,6 +495,10 @@ struct Shared {
     /// The same for a pi run's gate, in place of OpenAI's ChatGPT plan.
     #[cfg(test)]
     openai_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
+    /// The same for a pi run on a `deepseek/` model, in place of DeepSeek's
+    /// prepaid balance.
+    #[cfg(test)]
+    deepseek_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
     /// The `[usage]` section a test sets for the usage gate's thresholds,
     /// in place of the config file, which the server reads.
     #[cfg(test)]

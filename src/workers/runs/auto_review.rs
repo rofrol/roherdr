@@ -1055,6 +1055,7 @@ impl WorkerSupervisor {
         let usage = match self.usage_gate(
             &run.info.repo,
             run.finish.agent.unwrap_or_default(),
+            run.finish.worker_model(),
             false,
             Some(&next),
         ) {

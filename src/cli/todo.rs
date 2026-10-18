@@ -15,11 +15,21 @@ use super::worker::take_string_option;
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
                  [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi|pi-anthropic]
+                 [--model MODEL]
       --agent names the agent of the run's workers: claude (Claude Code on
       the subscription), pi (headless pi on the ChatGPT plan) or
       pi-anthropic (headless pi on the Anthropic API credits). Without it
       the run uses [workers] default_agent (default claude); an explicit
-      --agent wins. A pi-anthropic run the credit proxy or the credit cap
+      --agent wins. --model MODEL runs a pi worker on MODEL, a
+      provider/model id as pi names it (e.g. deepseek/deepseek-chat)
+      instead of openai-codex/gpt-6.1-sol; the run pins it for all its
+      attempts and its events record it. The usage gate reads the provider
+      MODEL belongs to (the ChatGPT plan for openai-codex/*, DeepSeek's
+      prepaid balance for deepseek/*), so a run on another provider is
+      admitted while the ChatGPT plan is at its limit; a provider herdr has
+      no live usage read for is refused and --ignore-usage does not
+      override that, and a Claude run keeps Claude Code's own model. A
+      pi-anthropic run the credit proxy or the credit cap
       refuses falls back to pi once; its events record the refusal, and
       todo status shows the agent and model that ran.
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
@@ -85,6 +95,7 @@ const USAGE: &str = "usage:
       blocked with that error, and the server writes it again once the store
       takes a write.
   herdr todo run <item-id> --draft [--ignore-usage] [--agent claude|pi|pi-anthropic]
+                 [--model MODEL]
       The server drafts the task, SUBJECT, the GLOBs and the check NAMEs
       itself (todo.draft_run): one claude -p call (structured JSON output, no
       tools, no session) with the item's text, the DECISIONS.md sections it
@@ -116,6 +127,7 @@ const USAGE: &str = "usage:
                      [--next ITEM --next-task FILE
                        --next-message SUBJECT --next-paths GLOB...
                        [--next-check NAME...] [--next-agent claude|pi|pi-anthropic]
+                       [--next-model MODEL]
                        | --stop-reason TEXT]]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
@@ -667,6 +679,7 @@ fn next_run(
     paths: Option<Vec<String>>,
     checks: Option<Vec<String>>,
     agent: Option<crate::api::schema::WorkerAgentChoice>,
+    model: Option<String>,
     stop_reason: Option<&str>,
 ) -> Result<Option<TodoNextRun>, String> {
     let any_next = item.is_some()
@@ -674,7 +687,8 @@ fn next_run(
         || message.is_some()
         || paths.is_some()
         || checks.is_some()
-        || agent.is_some();
+        || agent.is_some()
+        || model.is_some();
     if !close_or_note && (any_next || stop_reason.is_some()) {
         return Err("only --close or --note takes --next and --stop-reason".into());
     }
@@ -687,10 +701,26 @@ fn next_run(
     let (Some(item), Some(task), Some(message), Some(paths)) = (item, task, message, paths) else {
         return Err(
             "--next takes the item id with --next-task FILE, --next-message SUBJECT \
-                    and --next-paths GLOB... (--next-check NAME... and --next-agent are optional)"
+                    and --next-paths GLOB... (--next-check NAME..., --next-agent and \
+                    --next-model are optional)"
                 .into(),
         );
     };
+    if model.is_some()
+        && matches!(
+            agent,
+            Some(
+                crate::api::schema::WorkerAgentChoice::Claude
+                    | crate::api::schema::WorkerAgentChoice::PiAnthropic
+            )
+        )
+    {
+        return Err(
+            "--next-model is for a pi chain; a Claude or pi-anthropic next run takes its own \
+             model"
+                .into(),
+        );
+    }
     Ok(Some(TodoNextRun {
         item,
         task: read_text("--next-task", &task)?,
@@ -698,6 +728,7 @@ fn next_run(
         paths,
         checks: checks.unwrap_or_default(),
         agent,
+        model,
     }))
 }
 
@@ -707,10 +738,24 @@ fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String
     let (_, rest) = take_switch(rest, "--auto-review")?;
     let (_, rest) = take_switch(&rest, "--auto-answer")?;
     let (agent, rest) = take_string_option(&rest, "--agent")?;
+    let (model, rest) = take_string_option(&rest, "--model")?;
     let agent = agent
         .as_deref()
         .map(|value| parse_agent_choice("--agent", value))
         .transpose()?;
+    if model.is_some() && agent == Some(crate::api::schema::WorkerAgentChoice::PiAnthropic) {
+        return Err(
+            "--model is for a gated pi run; --agent pi-anthropic takes its model from \
+             [workers] anthropic_api_model"
+                .into(),
+        );
+    }
+    if model.is_some() && agent == Some(crate::api::schema::WorkerAgentChoice::Claude) {
+        return Err(
+            "--model names the pi worker's model; a Claude run keeps Claude Code's own model"
+                .into(),
+        );
+    }
     let item = match rest.as_slice() {
         [item] if !item.starts_with("--") => item.clone(),
         _ => {
@@ -735,6 +780,7 @@ fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String
         env: super::worker::caller_env(),
         ignore_usage,
         agent,
+        model,
     }))
 }
 
@@ -754,12 +800,27 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
             let (agent, rest) = take_string_option(&rest, "--agent")?;
+            let (model, rest) = take_string_option(&rest, "--model")?;
             let credits = agent.as_deref() == Some("pi-anthropic");
             let agent = if credits {
                 Some(WorkerAgent::Pi)
             } else {
                 agent.as_deref().map(parse_agent).transpose()?
             };
+            if credits && model.is_some() {
+                return Err(
+                    "--model is for a gated pi run; --agent pi-anthropic takes its model from \
+                     [workers] anthropic_api_model"
+                        .into(),
+                );
+            }
+            if model.is_some() && agent == Some(WorkerAgent::Claude) {
+                return Err(
+                    "--model names the pi worker's model; a Claude run keeps Claude Code's own \
+                     model"
+                        .into(),
+                );
+            }
             let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -795,6 +856,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 env: super::worker::caller_env(),
                 ignore_usage,
                 agent,
+                model,
                 auto_review,
                 auto_answer,
             };
@@ -845,6 +907,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 .as_deref()
                 .map(|value| parse_agent_choice("--next-agent", value))
                 .transpose()?;
+            let (next_model, rest) = take_string_option(&rest, "--next-model")?;
             let (stop_reason, rest) = take_string_option(&rest, "--stop-reason")?;
             let event = event
                 .ok_or("resume takes --event EVENT_ID, the event it answers")?
@@ -902,6 +965,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 next_paths,
                 next_checks,
                 next_agent,
+                next_model,
                 stop_reason.as_deref(),
             )?;
             let note = note.map(|path| read_text("--note", &path)).transpose()?;
@@ -1600,6 +1664,8 @@ mod tests {
             "--draft",
             "--agent claude|pi|pi-anthropic",
             "--next-agent claude|pi|pi-anthropic",
+            "--model MODEL",
+            "--next-model MODEL",
             "default_agent",
         ] {
             assert!(USAGE.contains(option), "{option} missing from the help");
@@ -1658,11 +1724,123 @@ mod tests {
             panic!("--next-agent did not parse");
         };
         assert_eq!(params.next.unwrap().agent, Some(WorkerAgentChoice::Pi));
+        let Ok(Some(Method::TodoResume(params))) = resume(&[
+            "--next-agent",
+            "pi",
+            "--next-model",
+            "deepseek/deepseek-chat",
+        ]) else {
+            panic!("--next-model did not parse");
+        };
+        let next = params.next.unwrap();
+        assert_eq!(next.agent, Some(WorkerAgentChoice::Pi));
+        assert_eq!(next.model.as_deref(), Some("deepseek/deepseek-chat"));
         let Ok(Some(Method::TodoResume(params))) = resume(&[]) else {
             panic!("--next did not parse");
         };
         assert_eq!(params.next.unwrap().agent, None);
         assert!(resume(&["--next-agent", "gpt"]).is_err());
+        // A chain's model is a pi model: a Claude or credit next run keeps
+        // its own.
+        for agent in ["claude", "pi-anthropic"] {
+            let Err(error) = resume(&[
+                "--next-agent",
+                agent,
+                "--next-model",
+                "deepseek/deepseek-chat",
+            ]) else {
+                panic!("a {agent} next run took a pi model");
+            };
+            assert!(error.contains("--next-model is for a pi chain"), "{error}");
+        }
+    }
+
+    /// `--model` chooses a gated pi worker's model; a Claude or credit run
+    /// refuses it, and the value travels in the run's parameters.
+    #[test]
+    fn run_takes_a_pi_model_and_refuses_it_for_a_claude_or_credit_run() {
+        let dir = std::env::temp_dir().join(format!("herdr-cli-todo-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = dir.join("task.md");
+        std::fs::write(&task, "Do the thing\n").unwrap();
+        let task = task.display().to_string();
+        let with = |agent: Option<&str>| {
+            let mut words = vec!["run", "t-abcd2345"];
+            if let Some(agent) = agent {
+                words.extend_from_slice(&["--agent", agent]);
+            }
+            words.extend_from_slice(&[
+                "--model",
+                "deepseek/deepseek-chat",
+                "--task",
+                &task,
+                "--message",
+                "feat: x",
+                "--paths",
+                "src/**",
+                "--check",
+                "workers",
+            ]);
+            parse(&args(&words))
+        };
+        let Ok(Some(Method::TodoRunWait(params))) = with(Some("pi")) else {
+            panic!("run --agent pi --model did not parse");
+        };
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        let wire = serde_json::to_value(Method::TodoRunWait(params)).unwrap();
+        assert_eq!(wire["params"]["model"], "deepseek/deepseek-chat");
+        // Without --agent the server resolves [workers] default_agent.
+        let Ok(Some(Method::TodoRunWait(params))) = with(None) else {
+            panic!("run --model without --agent did not parse");
+        };
+        assert_eq!(params.agent, None);
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        let Err(error) = with(Some("claude")) else {
+            panic!("a Claude run took a pi model");
+        };
+        assert!(error.contains("Claude Code's own model"), "{error}");
+        let Err(error) = with(Some("pi-anthropic")) else {
+            panic!("a credit run took a pi model");
+        };
+        assert!(error.contains("anthropic_api_model"), "{error}");
+        assert!(parse(&args(&["run", "t-abcd2345", "--model"])).is_err());
+
+        let Ok(Some(Method::TodoDraftRun(params))) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--draft",
+            "--agent",
+            "pi",
+            "--model",
+            "deepseek/deepseek-chat",
+        ])) else {
+            panic!("draft --model did not parse");
+        };
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        let Err(error) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--draft",
+            "--agent",
+            "pi-anthropic",
+            "--model",
+            "deepseek/deepseek-chat",
+        ])) else {
+            panic!("a credit draft took a pi model");
+        };
+        assert!(error.contains("anthropic_api_model"), "{error}");
+        let Err(error) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--draft",
+            "--agent",
+            "claude",
+            "--model",
+            "deepseek/deepseek-chat",
+        ])) else {
+            panic!("a Claude draft took a pi model");
+        };
+        assert!(error.contains("Claude Code's own model"), "{error}");
     }
 
     #[test]
@@ -1706,6 +1884,7 @@ mod tests {
             params.next,
             Some(TodoNextRun {
                 agent: None,
+                model: None,
                 item: "t-bcde3456".into(),
                 task: "Do the next thing\n".into(),
                 message: "feat: y".into(),

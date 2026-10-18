@@ -36,12 +36,13 @@ use serde_json::{json, Value};
 
 pub(in crate::workers) static CHECK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static OPENAI_CHECK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static DEEPSEEK_CHECK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(super) fn measurement_lock(provider_id: &str) -> std::sync::MutexGuard<'static, ()> {
-    crate::workers::lock(if provider_id == "openai" {
-        &OPENAI_CHECK
-    } else {
-        &CHECK
+    crate::workers::lock(match provider_id {
+        "openai" => &OPENAI_CHECK,
+        "deepseek" => &DEEPSEEK_CHECK,
+        _ => &CHECK,
     })
 }
 
@@ -54,9 +55,21 @@ pub(in crate::workers) enum GateProvider {
     Claude,
     /// OpenAI's ChatGPT plan, which `openai-codex` models run on.
     OpenAi,
+    /// DeepSeek's prepaid API balance, which `deepseek` models spend.
+    DeepSeek,
+}
+
+/// What kind of answer a provider's live usage read gives: rate-limit
+/// windows to compare with a threshold, or a prepaid balance to spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Windows,
+    Balance,
 }
 
 impl GateProvider {
+    /// The provider of the agent's default model: Claude's windows for a
+    /// Claude worker, the ChatGPT plan's for pi's default model.
     pub(in crate::workers) fn of(agent: WorkerAgent) -> Self {
         match agent {
             WorkerAgent::Claude => Self::Claude,
@@ -64,10 +77,61 @@ impl GateProvider {
         }
     }
 
+    /// The gate of the provider `model` belongs to, for a worker running
+    /// `agent`: pi model ids are `provider/model`, and the gate must read
+    /// the provider that spends, not the agent's default one. Without a
+    /// model it is the agent's default ([`super::super::pi::DEFAULT_MODEL`]
+    /// for pi, so the table has one source). A model whose provider herdr has
+    /// no live usage read for is refused here, so no run starts under a gate
+    /// that would read nothing (fail closed; a new provider is one arm of
+    /// this match and one `Provider` in [`crate::usage`]). A Claude worker's
+    /// model is Claude Code's own (`--model opus` and the like), so its gate
+    /// is Claude's whatever the model names.
+    pub(in crate::workers) fn for_worker(
+        agent: WorkerAgent,
+        model: Option<&str>,
+    ) -> Result<Self, String> {
+        if agent == WorkerAgent::Claude {
+            return Ok(Self::Claude);
+        }
+        let model = model.unwrap_or(super::super::pi::DEFAULT_MODEL);
+        let Some((provider, name)) = model.split_once('/') else {
+            return Err(format!(
+                "a pi model is provider/model (for example deepseek/deepseek-chat), not {model:?}"
+            ));
+        };
+        if name.is_empty() {
+            return Err(format!(
+                "a pi model is provider/model (for example deepseek/deepseek-chat), not {model:?}"
+            ));
+        }
+        match provider {
+            "openai-codex" => Ok(Self::OpenAi),
+            "deepseek" => Ok(Self::DeepSeek),
+            "herdr-anthropic" => Err(format!(
+                "{model} runs through herdr's credit proxy; start the run with --agent \
+                 pi-anthropic, which pins [workers] anthropic_api_model and reads the credit cap"
+            )),
+            other => Err(format!(
+                "the usage gate has no live usage read for provider {other:?} of model {model}; \
+                 gated pi workers run openai-codex/* (the ChatGPT plan) or deepseek/* models, and \
+                 a provider without a read is not admitted"
+            )),
+        }
+    }
+
+    pub(super) fn kind(self) -> Kind {
+        match self {
+            Self::Claude | Self::OpenAi => Kind::Windows,
+            Self::DeepSeek => Kind::Balance,
+        }
+    }
+
     pub(super) fn id(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::OpenAi => "openai",
+            Self::DeepSeek => "deepseek",
         }
     }
 
@@ -75,18 +139,20 @@ impl GateProvider {
         match self {
             Self::Claude => "Claude",
             Self::OpenAi => "OpenAI (ChatGPT plan)",
+            Self::DeepSeek => "DeepSeek",
         }
     }
 
     /// The gate's row in the store: one per provider account
-    /// (`provider:claude`, `provider:openai`), whatever the repository.
+    /// (`provider:claude`, `provider:openai`, `provider:deepseek`), whatever
+    /// the repository.
     pub(super) fn store_key(self) -> String {
         format!("provider:{}", self.id())
     }
 
     /// The provider whose gate row `key` is.
     pub(super) fn of_store_key(key: &str) -> Option<Self> {
-        [Self::Claude, Self::OpenAi]
+        [Self::Claude, Self::OpenAi, Self::DeepSeek]
             .into_iter()
             .find(|provider| provider.store_key() == key)
     }
@@ -265,7 +331,11 @@ fn unknown(why: String) -> Decision {
 
 /// The gate's decision on `answer`, `provider`'s usage as it gave it just
 /// now (or the read's failure), for a gate that is `closed` or open, with
-/// `thresholds` as the config gives them at this check.
+/// `thresholds` as the config gives them at this check. A rate-limit
+/// provider is judged by its windows against the threshold, and an answer
+/// without a window is unknown usage. A provider whose usage is a prepaid
+/// balance is judged by that balance alone (there is no percentage to
+/// compare): the provider says it will spend, refuses, or does not say.
 pub(super) fn decide(
     provider: GateProvider,
     thresholds: Thresholds,
@@ -281,6 +351,24 @@ pub(super) fn decide(
             ))
         }
     };
+    if provider.kind() == Kind::Balance {
+        if usage.balances.is_empty() {
+            return unknown(format!("{name}'s usage answer has no balance"));
+        }
+        return match usage.spendable {
+            Some(true) => Decision::Admit { reopened: closed },
+            Some(false) => Decision::Refuse {
+                blockers: vec![Blocker {
+                    window: None,
+                    used_percent: None,
+                    why: "the provider says the balance is insufficient for API calls".into(),
+                }],
+            },
+            None => unknown(format!(
+                "{name}'s usage answer does not say whether it will spend"
+            )),
+        };
+    }
     if usage.windows.is_empty() {
         return unknown(format!("{name}'s usage answer has no window"));
     }
@@ -311,7 +399,9 @@ pub(super) fn decide(
 }
 
 /// The refusal as the `usage_gate` error's message: each window with its
-/// value, or the read's failure, and the thresholds that apply.
+/// value, or the read's failure, and the thresholds that apply. A balance
+/// provider has no thresholds: it is refused only while its balance cannot
+/// be spent, and every dispatch reads it again.
 pub(super) fn refusal_message(
     provider: GateProvider,
     thresholds: Thresholds,
@@ -333,15 +423,21 @@ pub(super) fn refusal_message(
         })
         .collect::<Vec<_>>()
         .join("; ");
-    format!(
-        "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It closes \
-         at {close}% ([usage] gate_close_percent). A high latch reopens below {reopen}% ([usage] \
-         gate_reopen_percent); unknown reopens on the first successful measurement below \
-         {close}% unless high was already latched. Dispatch always reads usage again; \
-         --ignore-usage, on the user's word, overrides",
-        close = thresholds.close_at,
-        reopen = thresholds.reopen_below,
-    )
+    match provider.kind() {
+        Kind::Windows => format!(
+            "usage gate: no new run while {name}'s usage is high or unknown: {windows}. It closes \
+             at {close}% ([usage] gate_close_percent). A high latch reopens below {reopen}% ([usage] \
+             gate_reopen_percent); unknown reopens on the first successful measurement below \
+             {close}% unless high was already latched. Dispatch always reads usage again; \
+             --ignore-usage, on the user's word, overrides",
+            close = thresholds.close_at,
+            reopen = thresholds.reopen_below,
+        ),
+        Kind::Balance => format!(
+            "usage gate: no new run while {name}'s balance cannot be spent: {windows}. Dispatch \
+             always reads the balance again; --ignore-usage, on the user's word, overrides"
+        ),
+    }
 }
 
 /// The decision as the gate's stored body and the run's events record it.
@@ -557,11 +653,12 @@ mod tests {
         let module = include_str!("usage_gate.rs");
         let module = &module[..module.find("#[cfg(test)]").unwrap()];
         let runs = include_str!("../runs.rs");
-        let start = runs.find("fn read_claude_usage(").unwrap();
+        let start = runs.find("fn read_provider_usage(").unwrap();
         let end = runs[start..].find("fn load_run(").unwrap() + start;
         let gate = format!("{module}{}", &runs[start..end]);
         assert!(gate.contains("crate::usage::read_claude_now()"));
         assert!(gate.contains("crate::usage::read_chatgpt_plan_now()"));
+        assert!(gate.contains("crate::usage::read_deepseek_now()"));
         for cached in [
             "UsageReport",
             "published",
@@ -617,6 +714,132 @@ mod tests {
             refusal_message(GateProvider::OpenAi, Thresholds::default(), &blockers)
                 .contains("OpenAI")
         );
+    }
+
+    #[test]
+    fn a_pi_model_picks_the_gate_of_its_own_provider() {
+        use GateProvider as P;
+        assert_eq!(P::for_worker(WorkerAgent::Claude, None), Ok(P::Claude));
+        assert_eq!(
+            P::for_worker(WorkerAgent::Claude, Some("opus")),
+            Ok(P::Claude)
+        );
+        assert_eq!(P::for_worker(WorkerAgent::Pi, None), Ok(P::OpenAi));
+        for model in ["openai-codex/gpt-6.1-sol", "openai-codex/gpt-6"] {
+            assert_eq!(P::for_worker(WorkerAgent::Pi, Some(model)), Ok(P::OpenAi));
+        }
+        assert_eq!(
+            P::for_worker(WorkerAgent::Pi, Some("deepseek/deepseek-chat")),
+            Ok(P::DeepSeek)
+        );
+        // A provider herdr cannot read is refused, never gated on nothing,
+        // and a malformed id says what a pi model looks like.
+        for model in [
+            "openrouter/some-model",
+            "google/gemini-3",
+            "moonshot/kimi-k2",
+        ] {
+            let refused = P::for_worker(WorkerAgent::Pi, Some(model)).unwrap_err();
+            assert!(refused.contains("no live usage read"), "{refused}");
+        }
+        for malformed in ["gpt-6.1-sol", "deepseek", "deepseek/", "openai-codex/", "/"] {
+            let refused = P::for_worker(WorkerAgent::Pi, Some(malformed)).unwrap_err();
+            assert!(
+                refused.contains("a pi model is provider/model"),
+                "{refused}"
+            );
+        }
+        let credit =
+            P::for_worker(WorkerAgent::Pi, Some("herdr-anthropic/claude-sonnet-5-5")).unwrap_err();
+        assert!(credit.contains("--agent pi-anthropic"), "{credit}");
+        assert_eq!(P::DeepSeek.store_key(), "provider:deepseek");
+        assert_eq!(P::of_store_key("provider:deepseek"), Some(P::DeepSeek));
+    }
+
+    /// A prepaid balance is not a percentage: the gate admits while the
+    /// provider says it will spend, refuses a balance it refuses to spend
+    /// and treats an answer that says neither as unknown. A windowless
+    /// rate-limit answer keeps refusing (it is still broken).
+    #[test]
+    fn a_deepseek_run_reads_its_balance_not_a_chatgpt_window() {
+        let mut balance = ProviderUsage::pending("deepseek", "DeepSeek");
+        balance.balances = vec![crate::api::schema::UsageBalance {
+            currency: "USD".into(),
+            total: "13.41".into(),
+            granted: None,
+            topped_up: None,
+        }];
+        let spendable = |spendable: Option<bool>| {
+            let mut usage = balance.clone();
+            usage.spendable = spendable;
+            usage
+        };
+        assert_eq!(
+            decide(
+                GateProvider::DeepSeek,
+                Thresholds::default(),
+                Ok(&spendable(Some(true))),
+                false
+            ),
+            Decision::Admit { reopened: false }
+        );
+        // A closed balance gate (a failed read) reopens on a good balance,
+        // whatever the percentage thresholds say.
+        assert_eq!(
+            decide(
+                GateProvider::DeepSeek,
+                Thresholds::default(),
+                Ok(&spendable(Some(true))),
+                true
+            ),
+            Decision::Admit { reopened: true }
+        );
+        let Decision::Refuse { blockers } = decide(
+            GateProvider::DeepSeek,
+            Thresholds::default(),
+            Ok(&spendable(Some(false))),
+            false,
+        ) else {
+            panic!("an unspendable balance was admitted");
+        };
+        assert!(blockers[0].why.contains("insufficient"), "{blockers:?}");
+        let message = refusal_message(GateProvider::DeepSeek, Thresholds::default(), &blockers);
+        assert!(
+            message.contains("DeepSeek's balance cannot be spent"),
+            "{message}"
+        );
+        assert!(message.contains("--ignore-usage"), "{message}");
+        for unknown_answer in [spendable(None), {
+            let mut empty = balance.clone();
+            empty.balances.clear();
+            empty.spendable = Some(true);
+            empty
+        }] {
+            assert!(
+                matches!(
+                    decide(
+                        GateProvider::DeepSeek,
+                        Thresholds::default(),
+                        Ok(&unknown_answer),
+                        false
+                    ),
+                    Decision::Refuse { .. }
+                ),
+                "{unknown_answer:?}"
+            );
+        }
+        // The ChatGPT plan's empty window is still unknown usage.
+        let mut windowless = answer(10, 10);
+        windowless.windows.clear();
+        assert!(matches!(
+            decide(
+                GateProvider::OpenAi,
+                Thresholds::default(),
+                Ok(&windowless),
+                false
+            ),
+            Decision::Refuse { .. }
+        ));
     }
 
     #[test]

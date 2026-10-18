@@ -6416,6 +6416,13 @@
               "description": "The TODO item's id (`t-abcd2345`); it must be in the repository's\n`TODO.md`.",
               "type": "string"
             },
+            "model": {
+              "description": "The model the drafted run's pi worker runs (`provider/model`), as\n`todo.run`'s `model`; the usage gate reads its provider.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "owner_pane_id": {
               "description": "The coordinator's pane, which owns the run (as `todo.run`'s).",
               "type": [
@@ -6559,6 +6566,13 @@
             "message": {
               "description": "Its exact commit subject.",
               "type": "string"
+            },
+            "model": {
+              "description": "Its pi worker's model (`provider/model`), as `todo.run`'s `model`;\nwhen absent, a pi chain keeps the closed run's model and a Claude run\nkeeps its own. The usage gate reads the model's provider.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "paths": {
               "description": "Its git glob pathspecs.",
@@ -6896,6 +6910,13 @@
             "message": {
               "description": "The exact commit subject the worker must use: a lowercase\nconventional subject (`feat: ...`), one line.",
               "type": "string"
+            },
+            "model": {
+              "description": "The model the run's workers run, as pi names it (`provider/model`,\ne.g. `deepseek/deepseek-chat`), pinned for all attempts of the run.\nThe usage gate reads the provider the model belongs to (the ChatGPT\nplan for `openai-codex/*`, DeepSeek's balance for `deepseek/*`), so a\nrun on another provider is admitted while the ChatGPT plan is at its\nlimit. Only a pi run takes it; pi's default model when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "owner_pane_id": {
               "description": "The coordinator's pane, which owns the run's workers (their\nquestions, obligations and coordination tenure) and resumes the run.",
@@ -16347,6 +16368,13 @@
                 "$ref": "#/schemas/success_response/$defs/UsageSpend"
               },
               "type": "array"
+            },
+            "spendable": {
+              "description": "Whether the provider says it will spend right now, for a provider\nwhose usage is a prepaid balance (DeepSeek's `is_available`). Absent\nwhen the provider has no such answer, as every rate-limit provider.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "status": {
               "$ref": "#/schemas/success_response/$defs/ProviderUsageStatus"

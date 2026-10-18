@@ -38,7 +38,10 @@ const USAGE: &str =
     A gated, blocking headless run for an orchestrator outside herdr's TODO
     driver (todo run). The server admits it through the same usage gate as
     todo run, for the repository of DIR (default: the current directory) and
-    the agent's provider; --ignore-usage starts anyway, with the same meaning
+    the provider --model's pi model belongs to (the ChatGPT plan for
+    openai-codex/*, DeepSeek's balance for deepseek/*; a model whose provider
+    herdr cannot read is refused, also with --ignore-usage); --ignore-usage
+    starts anyway, with the same meaning
     as todo run's (on the user's word; a refusal it overrides leaves the gate's
     state as it was, and the decision is recorded in the worker's journal).
     Then it starts the worker as worker start does (the same sandbox: writes
