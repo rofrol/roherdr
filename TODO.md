@@ -3635,6 +3635,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   handoff, expected to follow it since 8eaec1f2).
   Decided by the user 2026-10-18 (d-nifpeu7g): do it.
 
+- [ ] An agent-started job is visible while it runs, and its record outlives [t-ci4hsxzq]
+  its tab (the user, 2026-10-18, relayed by todo-rormpc: "uruchamiaj tak żebym
+  widział coś, np. herdr job" and then "nie widzę zakładki herdr-job", after
+  finding the jobs only by clicking Items). Cause, verified: `herdr-job run`
+  opens a tab that closes when the job ends unless `--keep`, and its `--notify`
+  default is `never` for a job an agent started ("an agent reports its own jobs
+  when `herdr-job wait` wakes it"), so an agent's job opens a tab that vanishes
+  before the owner looks and nothing tells him.
+  Consult round `20261018-115249-c413` (sol, mimo, argon, all three agree):
+  - Reject "keep a tab by default": dozens of agent sub-jobs would fill a space's
+    tab list, the fold rules key off those counts, and a kept tab whose command
+    exited would have to carry its outcome or it lies about "running".
+  - Fix the surface instead: one durable job record per job (name, space, start,
+    end, outcome, log path), shown where the owner already looks — a Jobs/Recent
+    jobs list in the Items dropdown, running jobs first and a bounded list of
+    recent completions, each row opening its log — plus the per-space job counter
+    carrying the last outcome, and a running job visible even when its parent
+    tab is folded (auto-expand while it has a running job). Store the record
+    durably and reconcile it at named events (job start, job end, startup,
+    handoff, reconnect), never by scanning tabs.
+  - Reject a duration-threshold notification as the fix; if one is wanted later,
+    measure the job's own start and end when it ends and take N from measured
+    durations with the user's agreement — no timer per job.
+  - The `herdr-job wait` tab is wake plumbing, not a running job: waiting must
+    not inflate a space's running-job counter, and a coordinator blocked in it
+    says it waits, not that it builds.
+  Until this lands, the coordinator convention is: `--keep` for owner-requested
+  visible work, `--notify always|failure` when an alert is wanted, and a report
+  of the job id and tab title before blocking on `herdr-job wait`.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
