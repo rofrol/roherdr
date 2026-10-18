@@ -11,29 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
-  herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
-  roagent's proxy): `roagent todo start` (open a herdr tab with a
-  coordinator) and `roagent handoff path|claim|done|show|take` (notes
-  outside repositories) become herdr commands, so the `todo` and `handoff`
-  skills can drop roagent; `roagent context` goes to a skill script, not
-  herdr. The rules and skills change with roagent's removal in the
-  dotfiles' own TODO.
-  Kept after round `20261016-122723-d650` (Argon proposed dropping it):
-  per-session handoff notes serve every agent session, not only the TODO
-  driver; `todo start` is reviewed against the supervisor's needs when
-  this item starts, since the driver it opens a coordinator for is being
-  retired. Order 1 -> 2 -> 3 stands (four of five).
-  Split by round `20261018-132857-e9bd` (sol, MiMo, Argon agreeing): the
-  handoff notes land first as their own commit, `todo start` follows as
-  `[t-54d2offk]`'s neighbour. Notes move to
-  `state_dir()/handoffs/sessions/<agent>/<session>.md`, keep roagent's note
-  header, output and exit codes (3 none, 4 several) as a frozen contract
-  while the dotfiles skills switch in their own repository, and are published
-  atomically; claims stay files (`create_new`), with a mutation guard that is
-  recovered by naming a provably gone process, never by a timer. Notes are
-  per host; cross-host claims are out of scope.
-
 - [ ] `herdr todo start` starts a repository's TODO coordinator on the [t-4h2cmwvj]
   coordinator tenure (the second half of [t-kl75fxva], split by round
   `20261018-132857-e9bd`; the user's decision d-ytigfuq7). `roagent todo

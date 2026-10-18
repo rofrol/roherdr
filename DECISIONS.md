@@ -2080,3 +2080,52 @@ items and as pilot-adjacent.
   depend on that toolchain, so the recipe belongs in its own `just` target. The
   Linux `poll`/macOS `kevent` error path still calls no `on_exit`; the reader-side
   re-check of a holder's process covers its effect until then.
+
+## `herdr handoff` keeps per-session handoff notes and their claims (t-kl75fxva, 2026-10-18)
+
+The user's decision d-ytigfuq7 moved roagent's per-session notes into herdr so
+the `todo` and `handoff` skills can drop roagent. Landed as run r-jif4wm63
+(attempt 3, commit 29aaffbda), after rounds `20261018-132857-e9bd` (design) and
+`20261018-140535-f3b7` (diff review; sol, MiMo, Argon).
+
+- The item was split: the notes land here, `herdr todo start` on the
+  coordinator tenure is its own item (`t-4h2cmwvj`), because the notes depend on
+  nothing else and the start command must first be reviewed against the driver
+  retirement (`t-54d2offk`).
+- The note is unchanged in format (`Status:`/`Owner:`/`Repositories:` in the
+  first ten lines) and the command keeps roagent's output lines and exit codes
+  (0, 1 refused, 3 none, 4 several), because the skills that call them change
+  in the dotfiles repository at their own pace. Notes live at
+  `<state dir>/handoffs/sessions/<agent>/<session id>.md`, apart from the
+  coordinator handoff manifests, since a session may work in several
+  repositories and session ids are unique only per agent.
+- The session is the environment (`$PI_SESSION_ID` or
+  `$CLAUDE_CODE_SESSION_ID`, one plain file name); inside a pane herdr's
+  reported session for that pane must agree, and a disagreement is refused
+  rather than silently resolved. A closed pane or a stopped server leaves the
+  environment as the identity. No migration of old roagent notes: they are
+  finished with roagent, and herdr never reads two roots.
+- A claim is a file created whole and exclusively (temporary file, `sync_all`,
+  `hard_link` into place), so a reader never sees a half-written claim and a
+  crash leaves either nothing or a complete record. Every mutation holds an
+  operating-system advisory lock on `<note>.claim.guard` (`File::try_lock`):
+  the kernel drops it when the holder dies, so there is no stale guard to
+  recover, nothing ever unlinks or renames a guard, and the guard file stays.
+  A mutation that cannot lock refuses at once and names the guard.
+- `done` and `forget` remove the note first and the claim last, and stop when
+  the note cannot be removed, so the note keeps the claim that guards it from
+  another session. `--break` replaces only a claimant that is provably gone
+  (pid plus start token, or this same process's earlier session); a claim from
+  another host counts as held.
+- `take` skips a note that a pending coordinator handoff waits for. Herdr
+  records a *copy* of the handed-over note, so matching the path alone can
+  never match a session note: the candidate is matched by the recorded copy
+  path or by the sha256 the handoff froze. A server-side claim would have been
+  stricter architecture, but claims must work with the server stopped, so the
+  only server state read here is the persisted handoff record.
+- Rejected with the rounds: a namespaced note directory per repository
+  (breaks multi-repository notes), migrating roagent's notes, keeping the
+  `create_new` guard with stale-recovery (a rename-based recovery could still
+  move a live guard another process had just taken, and unlinking could not be
+  made race-free), and a `--json`/endpoint-method surface (no caller needs one
+  yet; adding it must follow the endpoint contract when it does).
