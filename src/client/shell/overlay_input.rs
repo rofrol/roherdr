@@ -643,6 +643,23 @@ impl ClientShellState {
             return;
         }
 
+        if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    details.scroll = details.scroll.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    details.scroll = details.scroll.saturating_add(1)
+                }
+                KeyCode::PageUp => details.scroll = details.scroll.saturating_sub(10),
+                KeyCode::PageDown => details.scroll = details.scroll.saturating_add(10),
+                _ => {}
+            }
+            outcome.repaint = true;
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::WorkerItems(_))) {
             match key.code {
                 // Esc goes back from an item's runs, then closes.

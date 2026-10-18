@@ -745,14 +745,21 @@ impl ClientShellState {
             .collect();
         if view == NotificationLogView::Asking {
             rows.extend(Self::open_question_rows(snapshot));
-            rows.extend(snapshot.worker_questions.iter().map(|question| {
-                // One from an older server names no request to open.
-                let key = (!question.request_id.is_empty()).then(|| RowKey::WorkerQuestion {
-                    worker_id: question.worker_id.clone(),
-                    request_id: question.request_id.clone(),
-                });
-                (Self::worker_question_row(question), key)
-            }));
+            rows.extend(
+                snapshot
+                    .worker_questions
+                    .iter()
+                    .filter(|question| !question.quiet)
+                    .map(|question| {
+                        // One from an older server names no request to open.
+                        let key =
+                            (!question.request_id.is_empty()).then(|| RowKey::WorkerQuestion {
+                                worker_id: question.worker_id.clone(),
+                                request_id: question.request_id.clone(),
+                            });
+                        (Self::worker_question_row(question), key)
+                    }),
+            );
             // Stable, so agents without a known start keep their order.
             rows.sort_by_key(|(row, _)| {
                 if row.unix_ms == 0 {
@@ -1369,9 +1376,15 @@ mod tests {
         snapshot.worker_questions = vec![worker_question(true)];
         state.set_snapshot(Box::new(snapshot.clone()));
         assert_eq!(state.agent_indicator_counts().1, 0);
-        snapshot.worker_questions = vec![worker_question(false)];
+        assert!(state.agent_rows(NotificationLogView::Asking).is_empty());
+        // Escalation changes the addressee, not the tool's name. A gate
+        // request genuinely addressed to the user is asking too.
+        let mut escalated = worker_question(false);
+        escalated.tool_name = "usage gate".into();
+        snapshot.worker_questions = vec![escalated];
         state.set_snapshot(Box::new(snapshot));
         assert_eq!(state.agent_indicator_counts().1, 1);
+        assert_eq!(state.agent_rows(NotificationLogView::Asking).len(), 1);
 
         let loud = ClientShellState::worker_question_row_at(&worker_question(false), 1_300);
         assert_eq!(loud.kind, "asking");

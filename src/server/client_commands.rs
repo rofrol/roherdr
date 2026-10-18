@@ -60,6 +60,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.set_job_metadata",
     "todo.open_log",
     "todo.review",
+    "todo.status",
     "usage.read",
     "usage.set_enabled",
     "usage.set_provider",
@@ -421,6 +422,10 @@ mod tests {
         assert_eq!(
             actual.remove("todo.review").as_deref(),
             Some("c18c9a530aebc908eddcb6fa500389bb10e15fffeb01d245bbcd058cf980fdae")
+        );
+        assert_eq!(
+            actual.remove("todo.status").as_deref(),
+            Some("46bd71a1db093db1280b894c8bae4b7afc58b15418fc6f91b678e73ebf52c003")
         );
         assert_eq!(
             actual.remove("worker.take_over").as_deref(),

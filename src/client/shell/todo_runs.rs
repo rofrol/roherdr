@@ -1,6 +1,6 @@
 //! Todo runs in progress as lines under their coordinator's space (`run
-//! r-x · install · just clean-install · 4m`; a click opens the step's log,
-//! read-only), and what a waiting agent waits on: its tab shows `waiting:
+//! r-x · install · just clean-install · 4m`; a click opens queued run
+//! details or the running step's log, read-only), and what a waiting agent waits on: its tab shows `waiting:
 //! <job or run>` with the running job's turning half circle instead of the
 //! finished dot, and for a job a row `↳ job <name> · running · since 17:30 ·
 //! last output 17:33`.
@@ -17,6 +17,16 @@ pub(super) struct RunLine {
     pub(super) run_id: String,
     /// What its glyph and label say on hover.
     pub(super) tooltip: String,
+}
+
+/// Read-only, user-opened details. Only the click fetches status; snapshots
+/// continue to drive the run line independently.
+#[derive(Debug)]
+pub(super) struct RunDetails {
+    pub(super) run_id: String,
+    pub(super) generation: u64,
+    pub(super) text: String,
+    pub(super) scroll: u16,
 }
 
 const RUN_LINE_PREFIX: &str = "todo-run:";
@@ -98,10 +108,21 @@ pub(super) fn run_lines_at(
 ) -> Vec<space_tabs::SpaceTabLine> {
     use crate::api::schema::AgentStatus;
     // Index once outside the run-scaled loop; a run reads one presentation fact.
+    let is_usage_request = |question: &crate::protocol::ClientShellWorkerQuestion| {
+        question.request_id.strip_prefix("herdr-usage-") == Some(question.worker_id.as_str())
+    };
     let usage_reasons = snapshot
         .worker_questions
         .iter()
-        .filter(|question| question.tool_name == "usage gate")
+        .filter(|question| is_usage_request(question))
+        .map(|question| (question.worker_id.as_str(), question.text.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let user_requests = snapshot
+        .worker_questions
+        .iter()
+        // Run-addressed gate requests remain cancelable in the asking list,
+        // but describe queued work rather than attention on a run's line.
+        .filter(|question| !question.quiet && !is_usage_request(question))
         .map(|question| (question.worker_id.as_str(), question.text.as_str()))
         .collect::<std::collections::BTreeMap<_, _>>();
     snapshot
@@ -113,9 +134,14 @@ pub(super) fn run_lines_at(
             let step = step_text(&run.step);
             let usage_reason = usage_reasons.get(run.run_id.as_str()).copied();
             let mut label = format!("run {} · {step}", run.run_id);
-            if let Some(reason) = usage_reason {
-                label.push_str(" · ");
-                label.push_str(reason);
+            let queued = run.status == "waiting"
+                && (usage_reason.is_some()
+                    || matches!(run.step.as_str(), "preflight" | "start" | "" | "unknown"));
+            if queued {
+                label.push_str(" · queued · ");
+                label.push_str(usage_reason.unwrap_or("reason unknown"));
+            } else if run.status == "waiting" {
+                label.push_str(" · waits for its coordinator");
             }
             if let Some(command) = run.step_command.as_deref().filter(|_| running) {
                 label.push_str(" · ");
@@ -124,13 +150,19 @@ pub(super) fn run_lines_at(
             let age = run
                 .step_started_ms
                 .map(|since| super::workers::age_text(now_ms.saturating_sub(since)));
-            let (status, said) = match run.status.as_str() {
-                "running" => (AgentStatus::Working, "running"),
-                "waiting" if usage_reason.is_some() => {
-                    (AgentStatus::Blocked, "waits for usage measurement")
+            // The frozen snapshot has no run -> current worker identity. Ordinary
+            // worker questions therefore remain in the asking badge/list, not an
+            // ambiguous run's `ask`. Only run-addressed requests can match here.
+            let request = user_requests.get(run.run_id.as_str()).copied();
+            let (status, said) = if request.is_some() {
+                (AgentStatus::Blocked, "waits for your answer")
+            } else {
+                match run.status.as_str() {
+                    "running" => (AgentStatus::Working, "running"),
+                    "waiting" if queued => (AgentStatus::Idle, "queued"),
+                    "waiting" => (AgentStatus::Idle, "waits for its coordinator"),
+                    _ => (AgentStatus::Idle, "unknown status"),
                 }
-                "waiting" => (AgentStatus::Done, "waits for its coordinator"),
-                _ => (AgentStatus::Idle, "unknown status"),
             };
             let mut tooltip = format!(
                 "run {} · item {} · attempt {} · {step}: {said}",
@@ -145,7 +177,9 @@ pub(super) fn run_lines_at(
             if let Some(age) = &age {
                 tooltip.push_str(&format!(" · at this step for {age}"));
             }
-            if run.has_log {
+            if run.status == "waiting" {
+                tooltip.push_str(" · click: run details");
+            } else if run.has_log {
                 tooltip.push_str(" · click: the step's log");
             }
             space_tabs::SpaceTabLine {
@@ -168,7 +202,7 @@ pub(super) fn run_lines_at(
                 quiet: Vec::new(),
                 role: None,
                 exited_parent: None,
-                ask: None,
+                ask: request.map(str::to_owned),
                 worker: None,
                 items: None,
                 background: None,
@@ -285,6 +319,93 @@ pub(super) fn tab_wait_row(
 }
 
 impl ClientShellState {
+    fn open_run_details(&mut self, run_id: String, outcome: &mut ClientShellInput) {
+        if matches!(&self.overlay, Some(ClientShellOverlay::RunDetails(details)) if details.run_id == run_id)
+        {
+            return;
+        }
+        let generation = self.next_request_id;
+        let method = Method::TodoStatus(TodoRunTarget {
+            run_id: run_id.clone(),
+        });
+        let supported = self.supports_endpoint_method(&method);
+        self.overlay = Some(ClientShellOverlay::RunDetails(RunDetails {
+            run_id: run_id.clone(),
+            generation,
+            text: if supported {
+                "Loading run details…"
+            } else {
+                "This server does not advertise todo.status."
+            }
+            .into(),
+            scroll: 0,
+        }));
+        let busy = self
+            .pending_requests
+            .values()
+            .any(|pending| matches!(pending.kind, PendingEndpointKind::TodoStatus { .. }));
+        if supported
+            && (busy
+                || !self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::TodoStatus { run_id, generation },
+                    outcome,
+                ))
+        {
+            if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
+                details.text = "Run details could not be requested.".into();
+            }
+        }
+    }
+
+    pub(super) fn complete_todo_status(
+        &mut self,
+        run_id: String,
+        generation: u64,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> (bool, Vec<ClientShellAction>) {
+        let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() else {
+            return (false, Vec::new());
+        };
+        if details.run_id != run_id || details.generation != generation {
+            return (false, Vec::new());
+        }
+        if matches!(&result, Ok(crate::api::schema::ResponseResult::TodoRun { run }) if run.run_id != run_id)
+        {
+            return (false, Vec::new());
+        }
+        details.text = match result {
+            Ok(crate::api::schema::ResponseResult::TodoRun { run }) => {
+                // Enum serialization is the API/sidebar vocabulary, never Rust Debug.
+                let step = serde_json::to_value(run.step).ok();
+                let status = serde_json::to_value(run.status).ok();
+                let step = step.as_ref().and_then(|v| v.as_str()).unwrap_or("unknown");
+                let status = status
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let reason = if status == "waiting" && matches!(step, "preflight" | "start") {
+                    run.error.as_deref().unwrap_or("reason unknown")
+                } else if status == "waiting" {
+                    "waits for its coordinator"
+                } else {
+                    status
+                };
+                let mut text = format!(
+                    "Point-in-time run details\nStep: {}\nStatus: {status}\n\n{reason}",
+                    step_text(step),
+                );
+                if let Some(error) = run.error.as_deref().filter(|text| !text.is_empty()) {
+                    text.push_str(&format!("\n\nRecorded error: {error}"));
+                }
+                text
+            }
+            Ok(_) => "The server returned unexpected run details.".into(),
+            Err(error) => error.message,
+        };
+        (true, Vec::new())
+    }
+
     /// The run whose line is at `point`.
     pub(super) fn run_line_at(&self, point: (u16, u16)) -> Option<String> {
         if self.sidebar_collapsed {
@@ -299,10 +420,20 @@ impl ClientShellState {
     }
 
     /// Asks the server for a popup that shows the run's step log and
-    /// follows it; a run without a log, or a server without
-    /// `todo.open_log`, opens nothing.
+    /// follows it. Waiting runs instead fetch read-only details with
+    /// `todo.status`, even when they have no log. Running runs without a
+    /// log or without `todo.open_log` support open nothing.
     pub(super) fn open_run_log(&mut self, run_id: String, outcome: &mut ClientShellInput) {
         outcome.repaint = true;
+        if self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .todo_runs
+                .iter()
+                .any(|run| run.run_id == run_id && run.status == "waiting")
+        }) {
+            self.open_run_details(run_id, outcome);
+            return;
+        }
         let has_log = self.snapshot.as_deref().is_some_and(|snapshot| {
             snapshot
                 .todo_runs
@@ -372,7 +503,10 @@ mod tests {
         // On its coordinator: the command no longer runs.
         snapshot.todo_runs = vec![run("r-abcd2345", "waiting")];
         let lines = run_lines_at(&snapshot, &snapshot.workspaces[0], 1_000);
-        assert_eq!(lines[0].label, "run r-abcd2345 · install");
+        assert_eq!(
+            lines[0].label,
+            "run r-abcd2345 · install · waits for its coordinator"
+        );
         // delay: not a wait, the line's displayed text.
         assert_eq!(lines[0].plan.as_deref(), Some("waits <1m"));
         // The step time moves at the next whole minute, not on a timer.
@@ -391,6 +525,7 @@ mod tests {
         snapshot.todo_runs = vec![pending];
         for reason in [
             "usage read failed (DNS: lookup failed), waiting for a successful measurement",
+            "worker cap 2 of 2; resumes when a slot is released by r-aaaaaaaa or r-bbbbbbbb",
             "Claude usage 91%, resumes below 80%; last good reading (history only): 91%",
         ] {
             snapshot.worker_questions = vec![crate::protocol::ClientShellWorkerQuestion {
@@ -401,6 +536,7 @@ mod tests {
                 text: reason.into(),
                 choice: true,
                 since_ms: 1000,
+                // Match the producer: gate questions are visible and cancelable.
                 quiet: false,
                 owner_seen_ms: None,
             }];
@@ -408,15 +544,10 @@ mod tests {
             assert_eq!(lines.len(), 1);
             assert!(lines[0].label.contains(reason));
             assert!(lines[0].run.as_ref().unwrap().tooltip.contains(reason));
-            assert!(lines[0]
-                .run
-                .as_ref()
-                .unwrap()
-                .tooltip
-                .contains("waits for usage measurement"));
+            assert!(lines[0].run.as_ref().unwrap().tooltip.contains("queued"));
             assert_eq!(
                 lines[0].state,
-                Some((crate::api::schema::AgentStatus::Blocked, AgentMark::None))
+                Some((crate::api::schema::AgentStatus::Idle, AgentMark::None))
             );
         }
     }

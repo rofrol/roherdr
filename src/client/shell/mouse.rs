@@ -2138,6 +2138,20 @@ impl ClientShellState {
             }
             return;
         }
+        if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => details.scroll = details.scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => details.scroll = details.scroll.saturating_add(3),
+                MouseEventKind::Down(MouseButton::Left)
+                    if !super::contains(self.hits.overlay_area, point) =>
+                {
+                    self.overlay = None
+                }
+                _ => {}
+            }
+            outcome.repaint = true;
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::WorkerItems(_))) {
             let row_hit = self
                 .hits

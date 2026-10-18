@@ -202,7 +202,7 @@ impl ClientShellState {
         let mut questions: Vec<_> = snapshot
             .worker_questions
             .iter()
-            .filter(|question| !question.request_id.is_empty())
+            .filter(|question| !question.request_id.is_empty() && !question.quiet)
             .collect();
         questions.sort_by_key(|question| question.since_ms);
         questions

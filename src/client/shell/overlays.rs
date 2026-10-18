@@ -86,6 +86,7 @@ pub(crate) fn render_client_overlay(
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
         ClientShellOverlay::Usage(v) => render_usage_overlay(b, v, p),
+        ClientShellOverlay::RunDetails(v) => render_run_details(b, v, p),
         ClientShellOverlay::ImagePicker(v) => {
             super::super::image_picker::render_image_picker(b, v, std::time::SystemTime::now(), p)
         }
@@ -95,6 +96,51 @@ pub(crate) fn render_client_overlay(
         | ClientShellOverlay::WorkerItems(_)
         | ClientShellOverlay::WorkerQuestion(_) => None,
     }
+}
+
+fn render_run_details(
+    b: &mut Buffer,
+    details: &super::todo_runs::RunDetails,
+    p: &Palette,
+) -> Option<OverlayRender> {
+    use ratatui::widgets::{Paragraph, Widget, Wrap};
+    let outer = popup(b.area, 88, b.area.height.saturating_sub(4))?;
+    let inner = panel(b, outer, p.accent, p.panel_bg)?;
+    let base = Style::default()
+        .bg(p.panel_bg)
+        .fg(p.text)
+        .remove_modifier(Modifier::DIM);
+    put_text(
+        b,
+        inner.x,
+        inner.y,
+        inner.width,
+        &format!("run {} · details", details.run_id),
+        base,
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y.saturating_add(2),
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    Paragraph::new(details.text.as_str())
+        .style(base)
+        .wrap(Wrap { trim: false })
+        .scroll((details.scroll, 0))
+        .render(body, b);
+    put_text(
+        b,
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        inner.width,
+        "esc close · ↑/↓ scroll",
+        base.fg(p.overlay0),
+    );
+    Some(OverlayRender {
+        area: outer,
+        ..OverlayRender::default()
+    })
 }
 
 const USAGE_MODAL_WIDTH: u16 = 76;

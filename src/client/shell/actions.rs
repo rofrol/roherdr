@@ -678,6 +678,9 @@ impl ClientShellState {
         if let PendingEndpointKind::HistoryItem { endpoint_id, item } = pending.kind {
             return self.complete_history_item(endpoint_id, item, result);
         }
+        if let PendingEndpointKind::TodoStatus { run_id, generation } = pending.kind {
+            return self.complete_todo_status(run_id, generation, result);
+        }
         if let PendingEndpointKind::TodoReview {
             endpoint_id,
             run_id,

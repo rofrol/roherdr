@@ -601,6 +601,7 @@ pub(super) enum ClientShellMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientShellOverlayKind {
+    RunDetails,
     Onboarding,
     ProductAnnouncement,
     ReleaseNotes,
@@ -1049,6 +1050,7 @@ pub(super) enum ClientShellOverlay {
     WorkerItems(super::worker_items::WorkerItemsOverlay),
     /// A headless worker's question.
     WorkerQuestion(Box<super::worker_question::WorkerQuestionDialog>),
+    RunDetails(super::todo_runs::RunDetails),
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
     ImagePicker(super::image_picker::ImagePickerOverlay),
@@ -1072,6 +1074,7 @@ impl ClientShellOverlay {
             Self::NotificationLog(_) => ClientShellOverlayKind::NotificationLog,
             Self::WorkerItems(_) => ClientShellOverlayKind::WorkerItems,
             Self::WorkerQuestion(_) => ClientShellOverlayKind::WorkerQuestion,
+            Self::RunDetails(_) => ClientShellOverlayKind::RunDetails,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
             Self::ImagePicker(_) => ClientShellOverlayKind::ImagePicker,
@@ -1101,6 +1104,10 @@ pub(super) enum PendingEndpointKind {
     },
     ReleaseNotesDismiss,
     PopupCommand,
+    TodoStatus {
+        run_id: String,
+        generation: u64,
+    },
     ReloadConfig,
     UsageRead {
         endpoint_id: ClientEndpointId,
