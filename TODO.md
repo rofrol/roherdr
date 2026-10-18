@@ -3966,6 +3966,24 @@ Items agents add. Not approved until the user moves them up.
   real size (`pane_agent_status`'s signature, the snapshot/API projection and
   every consumer of a space's state, which are already covered by tests).
 
+- [ ] The letta, qodercli and qwen hooks silently drop a session report that takes over a second (found by the coordinator 2026-10-18 while landing [t-claehqkg]
+  t-nwxujise, whose install's `just check` failed on
+  `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`
+  with the capture file missing). Cause, reproduced: the hook runs
+  `subprocess.run(..., timeout=1)` inside a blanket `except Exception: pass`
+  (`src/integration/assets/letta/herdr-agent-session.sh:51`; the same in
+  `qodercli/herdr-agent-state.sh:34` and `qwen/herdr-agent-session.sh:43`), so
+  a `herdr` call slower than a second is killed and the report is lost with
+  exit 0 — the hook's intended silence is indistinguishable from a dropped
+  report. A fake herdr that sleeps 2 s and writes its args leaves no file,
+  while the same script with an instant fake writes it. The test flakes the
+  same way under load (`--stress-count 40` with 12 `yes` processes: 4 failed,
+  0 when alone). The fix is not a longer timeout: decide what the one second
+  protects (Letta's hook latency), make a dropped report observable, and make
+  the test deterministic (its fake herdr writes immediately; the test must not
+  measure the host's spawn latency). Touches the three integration assets and
+  their tests; no dependency, no protocol change.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
