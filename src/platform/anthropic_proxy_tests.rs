@@ -15,7 +15,7 @@ impl OfflineFixture {
             id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
             model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
             cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
-            owner_pid INTEGER, owner_start INTEGER);",
+            owner_pid INTEGER, owner_start INTEGER, reserved REAL);",
             )
             .unwrap();
         Self {
@@ -1462,7 +1462,31 @@ fn ledger_row(path: &Path) -> (i64, Option<i64>, Option<i64>) {
     .unwrap()
 }
 
-fn insert_pending(f: &Fixture, owner: (Option<i64>, Option<i64>)) {
+/// The reservation one row holds, or `None` once it is cleared.
+fn ledger_reserved(path: &Path, entry: i64) -> Option<f64> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    db.query_row(
+        "SELECT reserved FROM anthropic_requests WHERE id=?1",
+        params![entry],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn insert_pending(f: &Fixture, owner: (Option<i64>, Option<i64>), reserved: f64) {
+    f.proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start,reserved) \
+             VALUES ('other','item',?1,?2,?3,?4,?5)",
+            params![MODEL, IN_FLIGHT, owner.0, owner.1, reserved],
+        )
+        .unwrap();
+}
+
+/// A pending row that records no reservation at all, as one written before the
+/// reservation column reads: NULL is unknown, never zero.
+fn insert_pending_unreserved(f: &Fixture, owner: (Option<i64>, Option<i64>)) {
     f.proxy
         .ledger
         .execute(
@@ -1471,6 +1495,13 @@ fn insert_pending(f: &Fixture, owner: (Option<i64>, Option<i64>)) {
             params![MODEL, IN_FLIGHT, owner.0, owner.1],
         )
         .unwrap();
+}
+
+/// This process as a row's owner, so the row is in flight for its readers.
+fn this_owner() -> (Option<i64>, Option<i64>) {
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    (Some(i64::from(pid)), Some(start as i64))
 }
 
 /// The refusal a failed step answers with: its HTTP status and its check.
@@ -1492,10 +1523,12 @@ fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
         .serve(
             Fixture::request(&token, true).as_slice(),
             &mut Vec::new(),
-            |_, _, out| {
+            |_, request, out| {
                 // Admission wrote the row before any upstream byte: it names
-                // this process, and the reader sees a request in flight.
+                // this process, holds its worst-case reservation, and the
+                // readers see a request in flight.
                 streaming = Some((
+                    request.reserve,
                     ledger_row(&ledger),
                     AnthropicProxy::accounting(&ledger, None).unwrap(),
                     credit_status(&ledger).unwrap(),
@@ -1504,14 +1537,17 @@ fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
             },
         )
         .unwrap();
-    let (row, accounting, status) = streaming.expect("the row exists while the request streams");
+    let (reserve, row, accounting, status) =
+        streaming.expect("the row exists while the request streams");
     let pid = std::process::id();
     let start = crate::platform::process_start_token(pid).unwrap();
+    assert!(reserve > 0.0);
     assert_eq!(row, (IN_FLIGHT, Some(i64::from(pid)), Some(start as i64)));
     assert_eq!(
         accounting,
         CreditAccounting {
             spent_usd: 0.0,
+            reserved_usd: reserve,
             in_flight: 1,
             abandoned: 0,
         }
@@ -1521,6 +1557,7 @@ fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
     assert_eq!(status["in_flight"], 1);
     assert_eq!(status["abandoned"], 0);
     assert_eq!(status["spent_usd"], 0.0);
+    assert_eq!(status["reserved_usd"].as_f64(), Some(reserve));
     // The settled row keeps the owner but no longer counts as pending.
     assert_eq!(
         ledger_row(&ledger),
@@ -1528,30 +1565,411 @@ fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
     );
     let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
     assert!(accounting.spent_usd > 0.0 && accounting.pending() == 0);
+    assert_eq!(accounting.reserved_usd, 0.0);
 }
 
 #[test]
-fn a_live_pending_row_still_admits_nothing() {
-    let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
+fn admission_counts_settled_spend_and_holds_in_flight_reservations() {
+    let mut f = Fixture::new(10.0);
+    // Settled spend only: the reservation comparison uses settled spend plus
+    // this request's worst case.
+    f.proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,cost,pending) \
+             VALUES ('prior','item',?1,4.0,?2)",
+            params![MODEL, SETTLED],
+        )
+        .unwrap();
+    // The cap may be reached exactly: 4.0 settled + a 6.0 reservation. A
+    // request whose worst case would exceed it is refused.
+    f.proxy.available(6.0).unwrap();
+    let error = f.proxy.available(6.01).expect_err("over the cap");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "credit cap or reservation limit"))
+    );
+    // One request in flight holds its reservation, and a request that still
+    // fits beside it is admitted instead of refused.
     let pid = std::process::id();
     let start = crate::platform::process_start_token(pid).unwrap();
-    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
-    // Fail-closed admission is the point and does not depend on the reader's
-    // picture: a live row admits no request either.
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 3.0);
+    f.proxy.available(3.0).unwrap();
+    let error = f.proxy.available(3.01).expect_err("over the cap");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "credit cap or reservation limit"))
+    );
+    // A settled spend at the cap refuses even a request that reserves nothing:
+    // this comparison is the settled spend alone, at `>= cap`, because nothing
+    // admitted afterwards could stay within the cap.
+    f.proxy
+        .ledger
+        .execute(
+            "UPDATE anthropic_requests SET cost=10.0 WHERE pending=0",
+            [],
+        )
+        .unwrap();
+    let error = f.proxy.available(0.0).expect_err("the cap is reached");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "credit cap or reservation limit"))
+    );
+    // The kill switch closes admission whatever the ledger holds.
+    f.proxy.kill();
+    let error = f.proxy.available(0.0).expect_err("the kill switch is on");
+    assert_eq!(refusal(&error), Some((403, "kill switch")));
+}
+
+#[test]
+fn an_abandoned_row_admits_nothing_until_its_owner_releases_it() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    // An owner that is gone: the row's spend is unknown, so its reservation
+    // cannot make a new request safe.
+    insert_pending(&f, (Some(0), Some(0)), 1.0);
     let error = f
         .proxy
         .available(0.0)
-        .expect_err("a pending row admits nothing");
-    assert_eq!(refusal(&error), Some((402, "pending unaccounted request")));
+        .expect_err("an abandoned row admits nothing");
+    assert_eq!(refusal(&error), Some((402, "abandoned pending request")));
+    // It keeps its reservation recorded but reserves nothing: the abandoned
+    // state itself is what closes admission.
+    assert_eq!(ledger_reserved(&ledger, 1), Some(1.0));
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 0.0,
+            reserved_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    assert_eq!(credit_status(&ledger).unwrap()["reserved_usd"], 0.0);
+    // Only the owner's release clears it.
+    credit_release(&ledger, 1).unwrap();
+    assert_eq!(ledger_reserved(&ledger, 1), None);
+    f.proxy.available(0.0).unwrap();
+}
+
+#[test]
+fn a_pending_row_without_a_recorded_reservation_admits_nothing() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    // A live request whose row records no reservation: its worst case is
+    // unknown, so the ledger cannot hold it back and nothing may be admitted
+    // beside it, whatever a new request reserves.
+    insert_pending_unreserved(&f, this_owner());
+    for reserve in [0.0, 1.0] {
+        let error = f
+            .proxy
+            .available(reserve)
+            .expect_err("an unknown reservation admits nothing");
+        assert_eq!(
+            refusal(&error),
+            Some((402, "pending request without a reservation"))
+        );
+    }
+    // It is still a request in flight, not an abandoned one, and the totals
+    // cannot know what it holds back.
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 0.0,
+            reserved_usd: 0.0,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["state"], "in flight");
+    assert_eq!(status["entries"][0]["reserved_usd"], Value::Null);
+    assert_eq!(status["unreserved"], 1);
+    // Its settle clears the unknown reservation beside the cost.
+    f.proxy
+        .ledger
+        .execute(
+            "UPDATE anthropic_requests SET cost=0.25,pending=?1,reserved=NULL WHERE id=1",
+            params![SETTLED],
+        )
+        .unwrap();
+    f.proxy.available(0.0).unwrap();
+    // So does the owner's release of such a row.
+    insert_pending_unreserved(&f, this_owner());
+    let error = f
+        .proxy
+        .available(0.0)
+        .expect_err("the unknown reservation is back");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "pending request without a reservation"))
+    );
+    credit_release(&ledger, 2).unwrap();
+    f.proxy.available(0.0).unwrap();
+    assert_eq!(credit_status(&ledger).unwrap()["unreserved"], 0);
+}
+
+#[test]
+fn a_crashed_row_keeps_reserving_until_its_owner_is_gone_then_closes_admission() {
+    // While the owner of an in-flight row runs, the row holds its reservation:
+    // a request that would cross the cap with it is refused.
+    let f = Fixture::new(10.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 6.0);
+    let error = f.proxy.available(4.5).expect_err("the reservation is held");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "credit cap or reservation limit"))
+    );
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 0.0,
+            reserved_usd: 6.0,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    // Once its owner is provably gone the row is abandoned: it holds nothing
+    // any more, and the abandoned state closes admission instead.
+    let gone = AnthropicProxy::accounting_with(&ledger, None, |_, _| false).unwrap();
+    assert_eq!(
+        gone,
+        CreditAccounting {
+            spent_usd: 0.0,
+            reserved_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    drop(f);
+    let f = Fixture::new(10.0);
+    insert_pending(&f, (Some(0), Some(0)), 6.0);
+    let error = f
+        .proxy
+        .available(0.0)
+        .expect_err("an abandoned row admits nothing");
+    assert_eq!(refusal(&error), Some((402, "abandoned pending request")));
+}
+
+#[test]
+fn settling_or_releasing_a_row_frees_its_reservation() {
+    let mut f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let token = f.proxy.register("run", "item").unwrap();
+    let mut during = None;
+    f.proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, request, out| {
+                during = Some((request.reserve, ledger_reserved(&ledger, 1)));
+                out.write_all(&Fixture::response())
+            },
+        )
+        .unwrap();
+    let (reserve, held) = during.expect("the row exists while the request runs");
+    assert!(reserve > 0.0);
+    // Admission wrote the request's own worst case with its row...
+    assert_eq!(held, Some(reserve));
+    // ...and the settle cleared it beside the cost, so it reserves nothing.
+    assert_eq!(ledger_reserved(&ledger, 1), None);
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert!(accounting.spent_usd > 0.0);
+    assert_eq!((accounting.reserved_usd, accounting.in_flight), (0.0, 0));
+    // A released row frees its reservation too.
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 1.5);
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None)
+            .unwrap()
+            .reserved_usd,
+        1.5
+    );
+    credit_release(&ledger, 2).unwrap();
+    assert_eq!(ledger_reserved(&ledger, 2), None);
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert_eq!((accounting.reserved_usd, accounting.in_flight), (0.0, 0));
+    f.proxy.available(100.0).unwrap();
+}
+
+#[test]
+fn two_admissions_racing_for_the_last_reservation_gap_admit_exactly_one() {
+    // 4.0 settled leaves a 6.0 gap under a 10.0 cap: exactly one of two 6.0
+    // reservations fits. Both threads wait on the barrier and then reserve, so
+    // the two attempts start together instead of one finishing before the
+    // other begins, and the round repeats so the serialization is exercised
+    // however the threads are scheduled. A check-then-insert that read one
+    // snapshot twice would admit both in some round; the ledger's own
+    // `BEGIN IMMEDIATE` admits only one.
+    for round in 0..25 {
+        let f = Fixture::new(10.0);
+        let ledger = f.dir.join("ledger.sqlite");
+        f.proxy
+            .ledger
+            .execute(
+                "INSERT INTO anthropic_requests(run,item,model,cost,pending) \
+                 VALUES ('prior','item',?1,4.0,?2)",
+                params![MODEL, SETTLED],
+            )
+            .unwrap();
+        let config = crate::config::WorkersConfig {
+            anthropic_api_key_file: f.dir.join("key").display().to_string(),
+            anthropic_api_cap_usd: 10.0,
+            ..Default::default()
+        };
+        let proxies = [
+            AnthropicProxy::open(&config, &ledger).unwrap(),
+            AnthropicProxy::open(&config, &ledger).unwrap(),
+        ];
+        let barrier = std::sync::Barrier::new(proxies.len());
+        let results = std::thread::scope(|scope| {
+            let handles = proxies.map(|proxy| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    proxy.reserve("run", "item", 6.0)
+                })
+            });
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut admitted = 0;
+        let mut refused = 0;
+        for result in results {
+            match result {
+                Ok(_) => admitted += 1,
+                Err(error) => {
+                    assert_eq!(
+                        refusal(&error),
+                        Some((402, "credit cap or reservation limit")),
+                        "round {round}"
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!((admitted, refused), (1, 1), "round {round}");
+        // Exactly one reservation is recorded beside the settled spend, so the
+        // cap cannot be overshot.
+        assert_eq!(
+            AnthropicProxy::accounting(&ledger, None).unwrap(),
+            CreditAccounting {
+                spent_usd: 4.0,
+                reserved_usd: 6.0,
+                in_flight: 1,
+                abandoned: 0,
+            },
+            "round {round}"
+        );
+        let rows: i64 = Connection::open(&ledger)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM anthropic_requests", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 2, "round {round}");
+    }
+}
+
+#[test]
+fn an_admission_refusal_body_names_the_reason() {
+    // The cap: a request whose worst-case reservation crosses it.
+    let mut f = Fixture::new(0.001);
+    let token = f.proxy.register("run", "item").unwrap();
+    let mut output = Vec::new();
     assert!(f
         .proxy
         .serve(
             Fixture::request(&token, false).as_slice(),
-            &mut Vec::new(),
-            |_, _, _| panic!("a pending row must deny before upstream")
+            &mut output,
+            |_, _, _| panic!("a cap refusal must deny before upstream")
         )
         .is_err());
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.starts_with("HTTP/1.1 402"), "{text}");
+    assert!(
+        text.contains("\"message\":\"credit cap or reservation limit\""),
+        "{text}"
+    );
+
+    // An abandoned row.
+    let mut f = Fixture::new(200.0);
+    let token = f.proxy.register("run", "item").unwrap();
+    insert_pending(&f, (Some(0), Some(0)), 1.0);
+    let mut output = Vec::new();
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut output,
+            |_, _, _| panic!("an abandoned row must deny before upstream")
+        )
+        .is_err());
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.starts_with("HTTP/1.1 402"), "{text}");
+    assert!(
+        text.contains("\"message\":\"abandoned pending request\""),
+        "{text}"
+    );
+
+    // A request in flight whose worst case the ledger does not record.
+    let mut f = Fixture::new(200.0);
+    let token = f.proxy.register("run", "item").unwrap();
+    insert_pending_unreserved(&f, this_owner());
+    let mut output = Vec::new();
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut output,
+            |_, _, _| panic!("an unknown reservation must deny before upstream")
+        )
+        .is_err());
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.starts_with("HTTP/1.1 402"), "{text}");
+    assert!(
+        text.contains("\"message\":\"pending request without a reservation\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn credit_status_and_accounting_report_the_reserved_amount() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    f.proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,cost,pending) \
+             VALUES ('prior','item',?1,2.0,?2)",
+            params![MODEL, SETTLED],
+        )
+        .unwrap();
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 1.5);
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 2.0,
+            reserved_usd: 1.5,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["spent_usd"], 2.0);
+    assert_eq!(status["reserved_usd"], 1.5);
+    assert_eq!(status["unreserved"], 0);
+    assert_eq!(status["in_flight"], 1);
+    assert_eq!(status["entries"][0]["reserved_usd"], Value::Null);
+    assert_eq!(status["entries"][1]["reserved_usd"], 1.5);
 }
 
 #[test]
@@ -1571,12 +1989,13 @@ fn an_owner_that_is_gone_or_was_reused_is_never_proven_in_flight() {
 
     // A reader that cannot prove the owner live counts the row as abandoned,
     // and one that can counts it as in flight: the split is the reader's.
-    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 0.0);
     let gone = AnthropicProxy::accounting_with(&ledger, None, |_, _| false).unwrap();
     assert_eq!(
         gone,
         CreditAccounting {
             spent_usd: 0.0,
+            reserved_usd: 0.0,
             in_flight: 0,
             abandoned: 1,
         }
@@ -1589,12 +2008,13 @@ fn an_owner_that_is_gone_or_was_reused_is_never_proven_in_flight() {
 fn a_row_without_a_recorded_owner_is_abandoned() {
     let f = Fixture::new(200.0);
     let ledger = f.dir.join("ledger.sqlite");
-    insert_pending(&f, (None, None));
+    insert_pending(&f, (None, None), 2.0);
     let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
     assert_eq!(
         accounting,
         CreditAccounting {
             spent_usd: 0.0,
+            reserved_usd: 0.0,
             in_flight: 0,
             abandoned: 1,
         }
@@ -1634,6 +2054,7 @@ fn a_ledger_from_before_the_owner_columns_reads_as_abandoned_and_migrates_once()
         accounting,
         CreditAccounting {
             spent_usd: 0.0,
+            reserved_usd: 0.0,
             in_flight: 0,
             abandoned: 1,
         }
@@ -1691,6 +2112,146 @@ fn a_ledger_from_before_the_owner_columns_reads_as_abandoned_and_migrates_once()
 }
 
 #[test]
+fn a_row_whose_reservation_the_ledger_does_not_record_admits_nothing_until_it_settles() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("pre-reservation.sqlite");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    let db = Connection::open(&ledger).unwrap();
+    // The previous schema: the owner columns, but no reservation column.
+    db.execute_batch(
+        "CREATE TABLE anthropic_requests (
+          id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
+          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
+          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
+          owner_pid INTEGER, owner_start INTEGER);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO anthropic_requests(run,item,model,cost,pending) \
+         VALUES ('prior','item',?1,1.0,?2)",
+        params![MODEL, SETTLED],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start) \
+         VALUES ('now','item',?1,?2,?3,?4)",
+        params![MODEL, IN_FLIGHT, pid, start as i64],
+    )
+    .unwrap();
+    drop(db);
+    // A row written before the column holds no reservation, and it still reads
+    // as a request in flight whose reservation the reader cannot know.
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 1.0,
+            reserved_usd: 0.0,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    let stale = credit_status(&ledger).unwrap();
+    assert_eq!(stale["reserved_usd"], 0.0);
+    assert_eq!(stale["unreserved"], 1);
+    let config = crate::config::WorkersConfig {
+        anthropic_api_key_file: f.dir.join("key").display().to_string(),
+        anthropic_api_cap_usd: 200.0,
+        ..Default::default()
+    };
+    let mut proxy = AnthropicProxy::open(&config, &ledger).unwrap();
+    let version: i64 = proxy
+        .ledger
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    // The migration adds the column and never invents a reservation for the
+    // older in-flight row: unknown stays unknown, so it admits nothing.
+    let older: (i64, Option<f64>) = proxy
+        .ledger
+        .query_row(
+            "SELECT pending,reserved FROM anthropic_requests WHERE id=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(older, (IN_FLIGHT, None));
+    assert_eq!(ledger_reserved(&ledger, 2), None);
+    let error = proxy
+        .available(0.0)
+        .expect_err("an unknown reservation admits nothing");
+    assert_eq!(
+        refusal(&error),
+        Some((402, "pending request without a reservation"))
+    );
+    // Its settle clears the unknown reservation beside its cost, and admission
+    // opens again.
+    proxy
+        .ledger
+        .execute(
+            "UPDATE anthropic_requests SET cost=0.5,pending=?1,reserved=NULL WHERE id=2",
+            params![SETTLED],
+        )
+        .unwrap();
+    proxy.available(0.0).unwrap();
+    assert_eq!(credit_status(&ledger).unwrap()["unreserved"], 0);
+    // A request written after the migration still records its own reservation
+    // and clears it on settlement.
+    let token = proxy.register("run", "item").unwrap();
+    let mut during = None;
+    proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, request, out| {
+                during = Some((request.reserve, ledger_reserved(&ledger, 3)));
+                out.write_all(&Fixture::response())
+            },
+        )
+        .unwrap();
+    let (reserve, held) = during.expect("the new request ran");
+    assert!(reserve > 0.0);
+    assert_eq!(held, Some(reserve));
+    assert_eq!(ledger_reserved(&ledger, 3), None);
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert!(accounting.spent_usd > 1.5);
+    assert_eq!((accounting.reserved_usd, accounting.in_flight), (0.0, 0));
+}
+
+#[test]
+fn a_release_on_a_ledger_from_before_the_reservation_column_migrates_and_clears_it() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("pre-reservation-release.sqlite");
+    let db = Connection::open(&ledger).unwrap();
+    db.execute_batch(
+        "CREATE TABLE anthropic_requests (
+          id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
+          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
+          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
+          owner_pid INTEGER, owner_start INTEGER);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO anthropic_requests(run,item,model,pending) VALUES ('prior','item',?1,?2)",
+        params![MODEL, IN_FLIGHT],
+    )
+    .unwrap();
+    drop(db);
+    // The owner's release opens and migrates the ledger, so a row written
+    // before the reservation column can still be cleared.
+    credit_release(&ledger, 1).unwrap();
+    assert_eq!(credit_status(&ledger).unwrap()["pending"], 0);
+    assert_eq!(ledger_reserved(&ledger, 1), None);
+    let version: i64 = Connection::open(&ledger)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+}
+
+#[test]
 fn an_abandonment_the_ledger_cannot_record_is_kept_closed_in_memory() {
     let mut f = Fixture::new(200.0);
     let ledger = f.dir.join("ledger.sqlite");
@@ -1723,6 +2284,7 @@ fn an_abandonment_the_ledger_cannot_record_is_kept_closed_in_memory() {
         AnthropicProxy::accounting(&ledger, None).unwrap(),
         CreditAccounting {
             spent_usd: 0.0,
+            reserved_usd: 0.0,
             in_flight: 0,
             abandoned: 1,
         }
@@ -1735,8 +2297,8 @@ fn an_abandonment_the_ledger_cannot_record_is_kept_closed_in_memory() {
     let error = f
         .proxy
         .available(0.0)
-        .expect_err("a pending row admits nothing");
-    assert_eq!(refusal(&error), Some((402, "pending unaccounted request")));
+        .expect_err("an abandoned row admits nothing");
+    assert_eq!(refusal(&error), Some((402, "abandoned pending request")));
 }
 
 #[test]
@@ -1754,7 +2316,7 @@ fn one_snapshot_counts_a_request_that_settles_between_the_reads() {
             params![MODEL, SETTLED],
         )
         .unwrap();
-    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)), 5.0);
     // A write-ahead log lets the second connection commit inside the reader's
     // snapshot; in rollback-journal mode a writer waits for that read instead,
     // so the interleaving cannot happen there in the first place.
@@ -1770,33 +2332,39 @@ fn one_snapshot_counts_a_request_that_settles_between_the_reads() {
         None,
         |entry, owner| owner.is_live(&ledger, entry),
         move || {
-            // Between the two reads, the streaming request settles.
+            // Between the two reads, the streaming request settles: its cost
+            // lands and its reservation is cleared in one UPDATE.
             writer
                 .execute(
-                    "UPDATE anthropic_requests SET cost=5.0,pending=?1 WHERE id=2",
+                    "UPDATE anthropic_requests SET cost=5.0,pending=?1,reserved=NULL WHERE id=2",
                     params![SETTLED],
                 )
                 .unwrap();
         },
     )
     .unwrap();
-    // Its charge is not in the settled total the snapshot read, so the request
-    // is still one of its pending rows: no figure lost it, and the cycle's
-    // spend is never understated while the accounting reads complete.
+    // Neither its charge nor its reservation is in what the snapshot's first
+    // read saw, so the request is still one of its pending rows with the
+    // reservation it held: no figure lost it, and the cycle's spend is never
+    // understated while the accounting reads complete.
     assert_eq!(
         accounting,
         CreditAccounting {
             spent_usd: 11.0,
+            reserved_usd: 5.0,
             in_flight: 1,
             abandoned: 0,
         }
     );
     assert_eq!(accounting.pending(), 1);
-    // The settle landed: a later read is a coherent later snapshot.
+    assert_eq!(accounting.spent_usd + accounting.reserved_usd, 16.0);
+    // The settle landed: a later read is a coherent later snapshot that moves
+    // the reservation into the settled spend.
     assert_eq!(
         AnthropicProxy::accounting(&ledger, None).unwrap(),
         CreditAccounting {
             spent_usd: 16.0,
+            reserved_usd: 0.0,
             in_flight: 0,
             abandoned: 0,
         }

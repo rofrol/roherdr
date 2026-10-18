@@ -68,7 +68,8 @@ the object unchanged; it does not inject disabled thinking. The top-level
 `max_tokens` bounds thinking and visible output together, and the full ceiling
 is reserved at the output tariff before forwarding. API-reported
 `output_tokens`, including billed thinking, determine the settled cost. A
-request whose reservation exceeds remaining credit is refused with 402 before
+request whose reservation does not fit under the cap beside the settled spend
+and the reservations of the requests still in flight is refused with 402 before
 any upstream call. The input reservation uses submitted bytes and framing;
 API-expanded content is not guaranteed to fit that estimate. Keep the Console
 workspace spending limit enabled as the authoritative spending boundary.
@@ -102,8 +103,26 @@ remains the authority. New models or pricing tiers require an explicit pricing
 and allowlist change, not a guessed default.
 
 Admission serializes through the ledger and reserves a conservative input/output
-upper bound before any upstream request. A durable pending row precedes network
-access, recording the writing process's pid and start token. Missing or
+upper bound before any upstream request: the reservation is the request's
+worst case, not an estimate of its actual charge. A durable pending row
+precedes network access, recording the writing process's pid and start token
+and the reservation it holds. The reservation stays in the ledger for as long
+as the request is in flight and is never lowered while it streams, so another
+request is admitted beside it only when the settled spend, the reservations of
+the requests still in flight and its own reservation fit under the cap. The
+cap may be reached exactly: a reservation is an upper bound, so spending
+exactly the cap is admitted. In particular, a pending request no longer refuses
+other requests by itself. A reservation is replaced by the actual charge when
+its request settles and is freed when its row is released. The admission
+decision and the row holding the new request's reservation are one serialized
+`BEGIN IMMEDIATE` transaction on the ledger, so two requests admitted at the
+same moment cannot both pass on the same snapshot and overshoot the cap; a
+ledger lock that outlasts the busy timeout refuses the request before any
+upstream byte is sent, and that wait blocks only the listener thread of the
+request attempting the write. A request refused by admission is denied before
+any upstream call, with 402 for the cap, an abandoned row or a request in
+flight whose reservation the ledger does not record, and 403 for the kill
+switch, and its body names the reason. Missing or
 malformed usage, transport failure, interruption, a client that disconnects, or
 an unavailable counter fails closed, and the request's row is marked abandoned:
 it never reads as a request still in flight, even while the server keeps
@@ -131,9 +150,11 @@ The following checks remain intentional:
   cap, private owned key/socket paths, a nonempty valid key, random grants,
   readable/writable ledger, valid rows, transactions and locks. Failures mean
   credentials or the spending boundary cannot be trusted, not a long session.
-- Admission: active run token, no kill switch, no uncertain pending charge,
-  enough credit for the reservation. Large byte-based reservations can still
-  legitimately exceed remaining credit; the Console limit remains authoritative.
+- Admission: active run token, no kill switch, no abandoned row, no request in
+  flight whose reservation the ledger does not record, enough credit for the
+  reservation beside the reservations already in flight. Large byte-based
+  reservations can still legitimately exceed remaining credit; the Console
+  limit remains authoritative.
 - Routing: POST HTTP/1.1 to Messages or count_tokens, optionally `?beta=true`;
   fixed destination and model. This is not a general network proxy.
 - Request framing: 8-KiB aggregate headers/lines, valid header encoding/syntax,
@@ -169,27 +190,35 @@ The following checks remain intentional:
 
 Run `herdr credits status` on the server host as its owner. It reads the local
 configured cycle's ledger without reading the API key and prints USD, the
-pending count split into `in_flight` and `abandoned`, and entries (id, run, item,
-model, cost and state). Its USD is settled spend only, the same figure the usage
-widget and the run journal call spend: a pending row has no cost until its owner
-settles or releases it, so a cost left on a pending row is not added to it and
-reads as no cost at all. States are `in flight`, `abandoned`, `accounted`, or
-`released`; released entries remain in the ledger. A pending row
-records the pid and start token of the process that wrote it, so it reads as
-`in flight` only while that very process still runs; a row whose process is
-gone, whose pid a later process reused, that ended without settling, or that was
-written before the ledger recorded owners reads as `abandoned`. Admission stays
-closed for either state: only release or a settled charge opens spending again.
-This is a local owner command, not an advertised remote client method.
+reserved USD held by requests in flight, the `unreserved` count of requests in
+flight whose reservation the ledger does not record, the pending count split
+into `in_flight` and `abandoned`, and entries (id, run, item, model, cost, state
+and, for a request in flight, the reservation it holds or `null` when the ledger
+records none). Its USD is settled spend
+only, the same figure the usage widget and the run journal call spend: a
+pending row has no cost until its owner settles or releases it, so a cost left
+on a pending row is not added to it and reads as no cost at all. States are
+`in flight`, `abandoned`, `accounted`, or `released`; released entries remain in
+the ledger. A pending row records the pid and start token of the process that
+wrote it, so it reads as `in flight` only while that very process still runs; a
+row whose process is gone, whose pid a later process reused, that ended without
+settling, or that was written before the ledger recorded owners reads as
+`abandoned`. A request in flight holds its worst-case reservation against the
+cap until it settles; only an abandoned row, the cap, a request in flight whose
+reservation the ledger does not record (shown as `unreserved`) or the kill
+switch refuses new requests. That last state is fail-closed: a row written
+before the reservation column may still be streaming, so nothing is admitted
+beside it until it settles or the owner releases it. This is a local owner
+command, not an advertised remote client method.
 
 Before running `herdr credits release <entry>`, stop the affected worker and
 verify through the upstream error or Console that its request consumed no
 tokens. Issuing release is the owner's explicit attestation of no usage: it
-clears that pending entry at zero cost, reopening admission only if no other
-pending entry or cap remains. Never release an active request or an uncertain
-request that may have consumed tokens. Release rejects missing and already
-settled entries and cannot erase accounted costs. It does not reset the cap or
-change the billing cycle.
+clears that pending entry at zero cost and frees the reservation it held,
+reopening admission only if no abandoned entry or cap remains. Never release an
+active request or an uncertain request that may have consumed tokens. Release
+rejects missing and already settled entries and cannot erase accounted costs.
+It does not reset the cap or change the billing cycle.
 
 Offline tests replay Anthropic's documented 400 JSON error shape with pi's
 `?beta=true` and allowlisted `anthropic-beta` header intact. The proxy forwards

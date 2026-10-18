@@ -578,6 +578,9 @@ fn credit_report(
         spent_usd,
         in_flight,
         abandoned,
+        // Reservations are held back from the cap, not spend: the widget keeps
+        // its in-flight note and `herdr credits status` shows what they hold.
+        reserved_usd: _,
     } = match accounting {
         Ok(accounting) => accounting,
         Err(_) => {
@@ -629,6 +632,7 @@ mod credit_widget_tests {
             &config(),
             Ok(CreditAccounting {
                 spent_usd,
+                reserved_usd: 0.0,
                 in_flight,
                 abandoned,
             }),
