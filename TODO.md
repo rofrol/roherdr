@@ -3974,6 +3974,21 @@ Items agents add. Not approved until the user moves them up.
   measure the host's spawn latency). Touches the three integration assets and
   their tests; no dependency, no protocol change.
 
+- [ ] The remote-bridge test makes its own timing, and flakes under load (found by the coordinator [t-seqbqedo]
+  2026-10-18, twice in one day: the `install`'s `just check` of t-t2nwbl6y failed on
+  `platform::remote_bridge_tests::bridge_preserves_one_way_progress_and_drains_after_stdin_eof`
+  with `BrokenPipe` at `src/platform/remote_bridge_tests.rs:101`, the write of the final
+  output after the bridge had already exited). The test sleeps 60 ms per iteration against
+  the bridge's idle deadline while `Bridge::start` / `wait` also bound themselves by a
+  three-second deadline; under load the bridge ends first. It passes alone and 30 of 30
+  times under 12 `yes` processes, so the failure needs the whole suite's parallel load.
+  The fix is the test's, not a longer sleep: drive the bridge by its own events (wait for
+  the echoed bytes it already reads back, or a readiness the bridge reports) instead of a
+  fixed sleep, and bound per-step deadlines that the test itself can observe, so the test
+  fails only on a real bridge defect. Second known flake in the same suite family (see the
+  letta hook item above); if they share a cause, say so. No dependency, no product change
+  expected.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
