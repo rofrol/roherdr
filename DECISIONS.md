@@ -2382,3 +2382,40 @@ measured. Landed as run r-r5zbpbdx (commit 691268eab), after review round
   the run journal's `run_credit_call_fallback` event but not in the by-stage
   spend; the stage should travel with that event too if the A/B must count
   fallbacks.
+
+## Supervision corrects itself deterministically: the repair loop is complete (t-nwxujise, 2026-10-18)
+
+Slices 1-3 landed 2026-10-12 (the versioned rule table and the hold states, the
+per-pane job binding and hold visibility, `predicate_review_due` and the
+fixtures export). The rest landed 2026-10-18 as runs r-pmeow7gu and r-n2pwdktw,
+after rounds `20261018-172917-f040`, `20261018-200429-e576` and
+`20261018-204716-...` (sol, MiMo, Argon):
+
+- `herdr supervise annotate FINDING_ID --missing fact|rule --evidence TEXT`
+  records, in an append-only table, a case the predicate cannot express with the
+  rule version the finding was raised at (a findings column written at insert);
+  `supervise.fixtures` lists it under `annotated`, `predicate_review_due` still
+  counts retractions only, and the digest line names the annotation count. It
+  changes no finding, its delivery or its acknowledgement: it is a case for the
+  fixtures, not a dispute.
+- `herdr supervise replay --candidate FILE --hold-out FILE` gates a fix: the
+  candidate is data from the same typed vocabulary, and it is accepted only when
+  every recorded retracted case stays retracted (the false positive does not
+  come back), every recorded known-true case still fires (a true finding is not
+  lost), the set can discriminate (at least one case of each kind, in the
+  hold-out too), the candidate names the same predicate and a newer rule
+  version, and the hold-out — which the fixer never saw — passes. Without a
+  hold-out the replay says it is not an acceptance and exits 3.
+- The replay model was corrected in its second attempt: a recorded case *is* a
+  hold, so holding it again loses nothing; what decides is whether the
+  candidate's expected event still matches the event the case awaited. Holds now
+  record that event (a migration; a hold from before it is unrepresentable, and
+  the replay reports it as such rather than guessing), and the stored
+  counter-evidence text has a stable vocabulary name from now on while the
+  earlier `Debug` text is still read.
+- What remains is process, not code, and is settled here: the default fix is
+  data (a rule-table entry, accepted by `replay`); a code change to a predicate
+  is the exception and needs the owner's approval of its diff; a predicate that
+  keeps needing code changes is retired or redesigned by the owner; and the
+  coordinator turns a `predicate_review_due` finding into an item with its
+  fixtures, never into an LLM judgment on a finding.
