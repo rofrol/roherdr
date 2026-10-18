@@ -3732,6 +3732,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   as decided by pi on that model, with the subscription at whatever its
   window shows.
 
+- [ ] [t-hr7yjmct] Should a gated run's automatic review, answer and draft calls use the run's own agent and model by default?
+  Options: inherit the run's backend by default, with `[review] agent` as an override (Recommended by both models of round 20261018-025119-98db) | keep Claude as the default and add `[review] agent = inherit|claude|pi|credits` as an opt-in | always use the Anthropic API credits for decision calls
+  Checked: today's default is `claude -p` with `[review] model` unset (src/workers/runs/decision.rs:519, `call_cli`), one retry then escalation; a credit run's calls already go through the proxy; the user's Claude weekly window is at 100% while a DeepSeek pi worker runs.
+  Decided by the user 2026-10-18: inherit the run's backend — the agent and
+  model the run's worker uses — as the default for the automatic review, answer
+  and draft calls, with `[review] agent` as the override that names another one.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4143,18 +4150,6 @@ user needs to decide or do.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
   Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
-
-- [ ] [t-hr7yjmct] Should a gated run's automatic review, answer and draft calls use the run's own agent and model by default?
-  Options: inherit the run's backend by default, with `[review] agent` as an override (Recommended by both models of round 20261018-025119-98db) | keep Claude as the default and add `[review] agent = inherit|claude|pi|credits` as an opt-in | always use the Anthropic API credits for decision calls
-  Checked: today's default is `claude -p` with `[review] model` unset (src/workers/runs/decision.rs:519, `call_cli`), one retry then escalation; a credit run's calls already go through the proxy; the user's Claude weekly window is at 100% while a DeepSeek pi worker runs.
-
-- [ ] [t-t27j6eyk] Should the per-coordinator worker cap count across providers (any 2 workers) or per provider (2 of each)?
-  Options: keep per provider, so a busy Claude worker never blocks a DeepSeek worker (today, and the historical d-t4luph5r) | one cap across providers, since two workers is the coordinator's orchestration capacity (Sol and Gemini Argon, round 20261018-033630-80a9) | one cap across providers only when they share an account
-  Checked: rounds 20261018-033630-80a9 and 20261018-040748-7953; the cap now counts within one repository (the coordinator's scope); the account-level latch stays per provider either way.
-
-- [ ] [t-wbuang2d] Should `--ignore-usage` keep bypassing the worker concurrency cap, or bypass only a usage reading?
-  Options: keep it bypassing both, recorded as `ignored` (today; one escape hatch, Gemini Argon) | split them: a usage bypass and a separate recorded concurrency override (MiMo and GPT Sol, rounds 20261018-033630-80a9 and 20261018-040748-7953) | drop the concurrency bypass, leaving only a config value
-  Checked: `--ignore-usage` today passes the cap and the refusal is recorded with `cap.ignored`; the cap counts per repository since 2026-10-18.
 
 ### Decide
 

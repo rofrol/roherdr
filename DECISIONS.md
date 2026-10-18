@@ -1852,3 +1852,31 @@ repository; the key is the rest of it.
   `gitdir:`; bare, separate-git-dir and fallback layouts each have their own
   test, and one shows a bare repository at a fallback path gets a distinct key.
 - Open, kept separate: a check-then-use race on the folder slot.
+
+## The worker cap stays per provider (t-t27j6eyk, 2026-10-18)
+
+Decided by the user on 2026-10-18: keep the worker cap per provider, so a busy
+Claude worker never blocks a DeepSeek worker; the account-level latch stays per
+provider either way. Today's behaviour, so nothing had to change.
+
+- The cap counts within one repository, which is the coordinator's scope
+  (47e827f50), keyed on the repository's git identity (t-i2qzgc22).
+- Not taken: one cap across providers, which Sol and Gemini Argon recommended
+  (rounds `20261018-033630-80a9` and `20261018-040748-7953`) because two workers
+  are the coordinator's orchestration capacity; and one cap across providers
+  only when they share an account.
+- `--ignore-usage` still overrides the cap (t-wbuang2d).
+
+## `--ignore-usage` keeps bypassing the cap as well (t-wbuang2d, 2026-10-18)
+
+Decided by the user on 2026-10-18: keep `--ignore-usage` as one escape hatch
+that bypasses a usage reading and the worker concurrency cap alike, and keep
+recording that it did (`cap.ignored` in the gate's recorded decision). Today's
+behaviour, so nothing had to change.
+
+- Not taken: splitting it into a usage bypass and a separate recorded
+  concurrency override (MiMo and GPT Sol, rounds `20261018-033630-80a9` and
+  `20261018-040748-7953`), and dropping the concurrency bypass in favour of a
+  configuration value alone.
+- The cap it bypasses is the repository's, per provider (t-t27j6eyk), keyed on
+  the repository's git identity (t-i2qzgc22).
