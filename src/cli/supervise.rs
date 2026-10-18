@@ -3,14 +3,17 @@
 //! `--json`, as the server's reply; `herdr supervise --ack`
 //! (`supervise.acknowledge`) for the herdr repository's coordinator; `herdr
 //! supervise ack` (`supervise.ack`) for a coordinator a finding's notice was
-//! addressed to.
+//! addressed to; `herdr supervise replay` for a candidate rule replayed
+//! against a predicate's recorded cases (`supervise.fixtures`).
 
 use crate::api::schema::{
     AgentStatus, Method, Request, SuperviseAckParams, SuperviseAcknowledgeParams,
     SuperviseAnnotateParams, SuperviseFixturesParams, SuperviseReportParams, SupervisionAnnotation,
-    SupervisionDelivery, SupervisionFinding, SupervisionMissing, SupervisionMissingRequest,
-    SupervisionPredicate, SupervisionReport, SupervisionSeverity, SupervisionStatus,
+    SupervisionDelivery, SupervisionFinding, SupervisionFixtures, SupervisionMissing,
+    SupervisionMissingRequest, SupervisionPredicate, SupervisionReport, SupervisionSeverity,
+    SupervisionStatus,
 };
+use crate::workers::supervision_replay::{self, ReplayReport};
 
 const USAGE: &str = "usage:
   herdr supervise --report [--all] [--json]
@@ -18,6 +21,7 @@ const USAGE: &str = "usage:
   herdr supervise ack FINDING_ID [--json]
   herdr supervise annotate FINDING_ID --missing <fact|rule> --evidence TEXT [--note TEXT] [--json]
   herdr supervise fixtures PREDICATE [--version N]
+  herdr supervise replay --candidate FILE [--fixtures FILE] [--hold-out FILE] [--json]
       What herdr's supervision sweep (on the server's timer, and when a
       coordinator's pane reports a turn or changes state) saw of each active
       coordinator, and the findings that hold (open or acknowledged; with
@@ -72,9 +76,61 @@ const USAGE: &str = "usage:
       lists it under `annotated`, at the rule version the finding was raised
       at (a finding recorded before herdr stored that version records none).
       One annotation per finding (`already_annotated`); an id that names no
-      finding is `finding_not_found`.";
+      finding is `finding_not_found`.
+  replay --candidate FILE [--fixtures FILE] [--hold-out FILE] [--json]
+      Replays a predicate's recorded cases against the rule a fix proposes,
+      before the fix is accepted; it reads the cases and the candidate only,
+      and touches no pane, job or ledger. FILE holds the candidate as data,
+      from the rule table's own typed vocabulary: predicate, version,
+      counter_evidence (each entry with a kind, an owner and a completion)
+      and expected_event, every one a value of that vocabulary; an unknown
+      predicate, kind, owner, completion or expected event is refused naming
+      the field, and no field defaults. A candidate whose predicate differs
+      from the fixtures' is refused, and so is one at the rule version the
+      cases were recorded at: a fix is a new version. --fixtures names a
+      `fixtures` reply (the default: the server's current one for the
+      candidate's predicate) and --hold-out a second set the fixer was not
+      shown.
+      A recorded case is a hold, not a finding that fired: its
+      counter-evidence held it. It was retracted when its expected event
+      happened (a false positive prevented) and delivered when the
+      continuation ended without it (the finding fired after the hold). The
+      candidate holds a case exactly when one of its entries names the
+      case's recorded counter-evidence, so: every retracted case must still
+      be held and the candidate must expect its recorded event, or the false
+      positive comes back; every delivered case must have the candidate
+      expect its recorded event, or the same continuation would not deliver
+      the known-true finding again; and the set must have a retracted and a
+      delivered case it can decide, or it cannot discriminate and fails.
+      Annotated cases are listed and decide nothing, and so does a recorded
+      text the vocabulary cannot read: it is reported as unrepresentable,
+      never as delivered. The hold-out runs the same checks, its result
+      joins the exit status and its cases stay out of the primary totals;
+      without it the replay is a quick look, not an acceptance. Exits 0 when
+      every check passes on the fixtures and the hold-out, 1 when a case
+      fails, 2 for a bad candidate or file, and 3 when every check passes
+      but no --hold-out set was replayed, so nothing was accepted.";
 
 pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
+    if args.first().map(String::as_str) == Some("replay") {
+        return match parse_replay(&args[1..]) {
+            Ok(Some((replay, json))) => replay_command(
+                &replay.candidate,
+                replay.fixtures.as_deref(),
+                replay.hold_out.as_deref(),
+                json,
+            ),
+            Ok(None) => {
+                println!("{USAGE}");
+                Ok(0)
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                eprintln!("{USAGE}");
+                Ok(2)
+            }
+        };
+    }
     let (command, json) = match parse(args) {
         Ok(Some(parsed)) => parsed,
         Ok(None) => {
@@ -184,6 +240,54 @@ enum Supervise {
         evidence: String,
         note: Option<String>,
     },
+}
+
+/// What `herdr supervise replay` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplayArgs {
+    candidate: String,
+    fixtures: Option<String>,
+    hold_out: Option<String>,
+}
+
+/// `replay --candidate FILE [--fixtures FILE] [--hold-out FILE] [--json]`: `Ok(None)` asks for
+/// help, the flag says `--json`.
+fn parse_replay(args: &[String]) -> Result<Option<(ReplayArgs, bool)>, String> {
+    let mut candidate = None;
+    let mut fixtures = None;
+    let mut hold_out = None;
+    let mut json = false;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--candidate" => match rest.next() {
+                Some(value) if !value.starts_with("--") => candidate = Some(value.clone()),
+                _ => return Err("--candidate takes a file".into()),
+            },
+            "--fixtures" => match rest.next() {
+                Some(value) if !value.starts_with("--") => fixtures = Some(value.clone()),
+                _ => return Err("--fixtures takes a file".into()),
+            },
+            "--hold-out" => match rest.next() {
+                Some(value) if !value.starts_with("--") => hold_out = Some(value.clone()),
+                _ => return Err("--hold-out takes a file".into()),
+            },
+            "--json" => json = true,
+            "help" | "--help" | "-h" => return Ok(None),
+            other => return Err(format!("unexpected argument: {other}")),
+        }
+    }
+    let Some(candidate) = candidate else {
+        return Err("replay takes --candidate FILE".into());
+    };
+    Ok(Some((
+        ReplayArgs {
+            candidate,
+            fixtures,
+            hold_out,
+        },
+        json,
+    )))
 }
 
 /// `Ok(None)` asks for help; the flag says `--json`.
@@ -310,6 +414,113 @@ fn parse(args: &[String]) -> Result<Option<(Supervise, bool)>, String> {
         (false, Some(_)) => Err("--all goes with --report, not --ack".into()),
         (true, Some(_)) => Err("supervise takes --report or --ack, not both".into()),
         (false, None) => Err("supervise takes --report or --ack".into()),
+    }
+}
+
+/// One file the replay reads, refused with what it was for.
+fn replay_file(path: &str, what: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|error| format!("cannot read the {what} {path}: {error}"))
+}
+
+/// The cases the replay reads: the file's reply, or the server's current fixtures for the
+/// candidate's predicate.
+fn recorded_fixtures(
+    predicate: SupervisionPredicate,
+    path: Option<&str>,
+) -> Result<SupervisionFixtures, String> {
+    match path {
+        Some(path) => {
+            replay_file(path, "fixtures").and_then(|text| supervision_replay::parse_fixtures(&text))
+        }
+        None => fixtures_from_server(predicate),
+    }
+}
+
+fn fixtures_from_server(predicate: SupervisionPredicate) -> Result<SupervisionFixtures, String> {
+    let response = super::send_request(&Request {
+        id: "cli:supervise:replay".into(),
+        method: Method::SuperviseFixtures(SuperviseFixturesParams {
+            predicate,
+            version: None,
+        }),
+    })
+    .map_err(|error| format!("cannot read the fixtures from the server: {error}"))?;
+    if let Some(error) = response.get("error") {
+        return Err(format!("the server refused the fixtures: {error}"));
+    }
+    serde_json::from_value::<SupervisionFixtures>(response["result"]["fixtures"].clone())
+        .map_err(|error| format!("the server's fixtures reply is not readable: {error}"))
+}
+
+/// `herdr supervise replay`: replays a predicate's recorded cases against the rule a fix
+/// proposes, before the fix is accepted. It reads the candidate and the cases only: no pane,
+/// job, finding or hold is touched. Exit 0 when every check passes on the primary set and the
+/// hold-out, 1 when a case fails, 2 for a bad candidate or file, and 3 when every check passes
+/// but no hold-out set was replayed, which is not an acceptance.
+fn replay_command(
+    candidate_file: &str,
+    fixtures_file: Option<&str>,
+    hold_out_file: Option<&str>,
+    json: bool,
+) -> std::io::Result<i32> {
+    let candidate = match replay_file(candidate_file, "candidate")
+        .and_then(|text| supervision_replay::parse_candidate(&text))
+    {
+        Ok(candidate) => candidate,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+    let fixtures = match recorded_fixtures(candidate.predicate(), fixtures_file) {
+        Ok(fixtures) => fixtures,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+    let mut report = match ReplayReport::new(&candidate, &fixtures) {
+        Ok(report) => report,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+    if let Some(path) = hold_out_file {
+        let hold_out = match replay_file(path, "hold-out")
+            .and_then(|text| supervision_replay::parse_fixtures(&text))
+        {
+            Ok(hold_out) => hold_out,
+            Err(message) => {
+                eprintln!("{message}");
+                return Ok(2);
+            }
+        };
+        report = match report.with_hold_out(&candidate, &hold_out) {
+            Ok(report) => report,
+            Err(message) => {
+                eprintln!("{message}");
+                return Ok(2);
+            }
+        };
+    }
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.text());
+    }
+    Ok(replay_exit(&report))
+}
+
+/// The exit code of a replay: 0 when it accepted the candidate, 3 when every check passed but
+/// no hold-out set was replayed (a quick look, not an acceptance), and 1 when a case failed.
+fn replay_exit(report: &ReplayReport) -> i32 {
+    if report.accepted() {
+        0
+    } else if report.passed() {
+        3
+    } else {
+        1
     }
 }
 
@@ -709,6 +920,119 @@ mod tests {
             "{}",
             annotation_text(&unknown)
         );
+    }
+
+    #[test]
+    fn replay_takes_a_candidate_and_optional_recorded_sets() {
+        assert_eq!(
+            parse_replay(&args(&["--candidate", "candidate.json"])),
+            Ok(Some((
+                ReplayArgs {
+                    candidate: "candidate.json".into(),
+                    fixtures: None,
+                    hold_out: None,
+                },
+                false,
+            )))
+        );
+        assert_eq!(
+            parse_replay(&args(&[
+                "--candidate",
+                "candidate.json",
+                "--fixtures",
+                "fixtures.json",
+                "--hold-out",
+                "hold-out.json",
+                "--json",
+            ])),
+            Ok(Some((
+                ReplayArgs {
+                    candidate: "candidate.json".into(),
+                    fixtures: Some("fixtures.json".into()),
+                    hold_out: Some("hold-out.json".into()),
+                },
+                true,
+            )))
+        );
+        assert_eq!(parse_replay(&args(&["--help"])), Ok(None));
+        for bad in [
+            &[][..],
+            &["--fixtures", "fixtures.json"],
+            &["--candidate"],
+            &["--candidate", "--json"],
+            &["--candidate", "candidate.json", "--hold-out"],
+            &["--candidate", "candidate.json", "candidate.json"],
+            &["--candidate", "candidate.json", "--bogus"],
+        ] {
+            assert!(parse_replay(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// A replay accepts only with a hold-out set: without one it exits 3 and says so, with one
+    /// it exits 0, and a failed case exits 1.
+    #[test]
+    fn a_replay_without_a_hold_out_exits_three_instead_of_accepting() {
+        let candidate = crate::workers::supervision_replay::parse_candidate(
+            &serde_json::json!({
+                "predicate": "stopped_without_verdict",
+                "version": 2,
+                "counter_evidence": [{
+                    "kind": "live_supervised_job",
+                    "owner": "worker_assignment_pane",
+                    "completion": "worker_live_pane"
+                }],
+                "expected_event": "worker_next_turn_on_assignment"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let recorded = |fingerprint: &str| {
+            serde_json::json!({
+                "fingerprint": fingerprint,
+                "request_id": format!("req-{fingerprint}"),
+                "counter_evidence":
+                    "live_supervised_job/worker_assignment_pane/worker_live_pane",
+                "expected_event": "worker_next_turn_on_assignment",
+                "opened_ms": 1000,
+            })
+        };
+        let set = crate::workers::supervision_replay::parse_fixtures(
+            &serde_json::json!({
+                "predicate": "stopped_without_verdict",
+                "rule_version": 1,
+                "retracted": [recorded("fp-retracted")],
+                "delivered": [recorded("fp-delivered")],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let report = ReplayReport::new(&candidate, &set).unwrap();
+        assert_eq!(replay_exit(&report), 3);
+        assert!(
+            report.text().contains("not an acceptance"),
+            "{}",
+            report.text()
+        );
+        let accepted = ReplayReport::new(&candidate, &set)
+            .unwrap()
+            .with_hold_out(&candidate, &set)
+            .unwrap();
+        assert_eq!(replay_exit(&accepted), 0);
+        let failing = ReplayReport::new(
+            &crate::workers::supervision_replay::parse_candidate(
+                &serde_json::json!({
+                    "predicate": "stopped_without_verdict",
+                    "version": 2,
+                    "counter_evidence": [],
+                    "expected_event": "worker_next_turn_on_assignment"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+            &set,
+        )
+        .unwrap();
+        assert_eq!(replay_exit(&failing), 1);
     }
 
     #[test]

@@ -46,6 +46,97 @@ pub(super) enum ExpectedEvent {
     WorkerNextTurnOnAssignment,
 }
 
+impl JobOwner {
+    /// The owner's text in the vocabulary.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            JobOwner::WorkerAssignmentPane => "worker_assignment_pane",
+        }
+    }
+}
+
+impl CompletionTarget {
+    /// The completion's text in the vocabulary.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            CompletionTarget::WorkerLivePane => "worker_live_pane",
+        }
+    }
+}
+
+impl CounterEvidence {
+    /// The text a hold keeps of this entry, in the store and in `supervise.fixtures`: one
+    /// stable text for the sweep that records it and the replay that matches against it, of
+    /// the vocabulary's own names as `<kind>/<owner>/<completion>`.
+    pub(super) fn recorded(&self) -> String {
+        match self {
+            CounterEvidence::LiveSupervisedJob { owner, completion } => {
+                format!("live_supervised_job/{}/{}", owner.name(), completion.name())
+            }
+        }
+    }
+
+    /// The entry a recorded text names, or `None` when this vocabulary cannot parse it: a hold
+    /// of a rule whose entry no longer exists, or one herdr wrote before the text was stable
+    /// (it then holds the entry's `Debug` output, which [`CounterEvidence::legacy_recorded`]
+    /// still reads). A text the vocabulary cannot parse decides no replay check.
+    pub(super) fn from_recorded(text: &str) -> Option<Self> {
+        let mut fields = text.split('/');
+        if let (Some(kind), Some(owner), Some(completion), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        {
+            if let Ok(entry) = Self::parse(kind, owner, completion) {
+                return Some(entry);
+            }
+        }
+        VOCABULARY
+            .iter()
+            .copied()
+            .find(|entry| entry.legacy_recorded() == text)
+    }
+
+    /// The text a hold written before [`CounterEvidence::recorded`] was stable holds: the
+    /// entry's `Debug` output. Read for compatibility only, never written.
+    fn legacy_recorded(&self) -> String {
+        format!("{self:?}")
+    }
+
+    /// The entry this candidate names, from the vocabulary's own texts. An unknown kind,
+    /// owner or completion is refused naming the field; nothing defaults.
+    pub(super) fn parse(kind: &str, owner: &str, completion: &str) -> Result<Self, String> {
+        if kind != "live_supervised_job" {
+            return Err(format!("unknown counter-evidence kind: {kind}"));
+        }
+        let owner = match owner {
+            "worker_assignment_pane" => JobOwner::WorkerAssignmentPane,
+            other => return Err(format!("unknown counter-evidence owner: {other}")),
+        };
+        let completion = match completion {
+            "worker_live_pane" => CompletionTarget::WorkerLivePane,
+            other => return Err(format!("unknown counter-evidence completion: {other}")),
+        };
+        Ok(CounterEvidence::LiveSupervisedJob { owner, completion })
+    }
+}
+
+impl ExpectedEvent {
+    /// The event this candidate names, from the vocabulary's own texts; an unknown event is
+    /// refused naming the field.
+    pub(super) fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "worker_next_turn_on_assignment" => Ok(ExpectedEvent::WorkerNextTurnOnAssignment),
+            other => Err(format!("unknown expected event: {other}")),
+        }
+    }
+
+    /// The event's text in the vocabulary.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            ExpectedEvent::WorkerNextTurnOnAssignment => "worker_next_turn_on_assignment",
+        }
+    }
+}
+
 /// The rule of one predicate.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PredicateRule {
@@ -60,6 +151,10 @@ const OWN_LIVE_JOB: CounterEvidence = CounterEvidence::LiveSupervisedJob {
     owner: JobOwner::WorkerAssignmentPane,
     completion: CompletionTarget::WorkerLivePane,
 };
+
+/// Every entry of the vocabulary: a recorded text that is not the stable name of an entry is
+/// matched against them, as the `Debug` text herdr wrote before the name was stable.
+const VOCABULARY: &[CounterEvidence] = &[OWN_LIVE_JOB];
 
 pub(super) const RULES: &[PredicateRule] = &[
     PredicateRule {
@@ -186,5 +281,50 @@ pub(super) fn hold_end(expected: ExpectedEvent, hold: &PendingHold) -> HoldEnd {
                 _ => HoldEnd::Resolved,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text a hold records is the vocabulary's own names, and it parses back to the entry;
+    /// a hold written before the text was stable holds the entry's `Debug` output, which still
+    /// parses to it. A text the vocabulary cannot read names no entry.
+    #[test]
+    fn a_recorded_text_parses_back_to_its_entry() {
+        let entry = OWN_LIVE_JOB;
+        let recorded = entry.recorded();
+        assert_eq!(
+            recorded,
+            "live_supervised_job/worker_assignment_pane/worker_live_pane"
+        );
+        assert_eq!(CounterEvidence::from_recorded(&recorded), Some(entry));
+        // The old rows keep what `Debug` wrote then: a change of `Debug` must not silently
+        // drop their case.
+        assert_eq!(
+            entry.legacy_recorded(),
+            "LiveSupervisedJob { owner: WorkerAssignmentPane, completion: WorkerLivePane }"
+        );
+        assert_eq!(
+            CounterEvidence::from_recorded(
+                "LiveSupervisedJob { owner: WorkerAssignmentPane, completion: WorkerLivePane }"
+            ),
+            Some(entry)
+        );
+        assert_eq!(CounterEvidence::from_recorded("PinnedPane"), None);
+        assert_eq!(
+            CounterEvidence::from_recorded("live_supervised_job/any_pane/worker_live_pane"),
+            None
+        );
+        assert_eq!(
+            CounterEvidence::from_recorded("live_supervised_job/worker_assignment_pane"),
+            None
+        );
+        // The event's text parses back too.
+        assert_eq!(
+            ExpectedEvent::parse(ExpectedEvent::WorkerNextTurnOnAssignment.name()),
+            Ok(ExpectedEvent::WorkerNextTurnOnAssignment)
+        );
     }
 }

@@ -52,6 +52,7 @@ mod slot;
 mod status;
 mod store;
 pub(crate) mod supervision;
+pub(crate) mod supervision_replay;
 mod supervision_rules;
 mod supervisor;
 mod target_branch;

@@ -878,6 +878,7 @@ ALTER TABLE usage_admissions ADD COLUMN tenure_epoch INTEGER;
 "#,
     super::supervision::SUPERVISION_ANNOTATIONS_MIGRATION,
     super::supervision::SUPERVISION_FINDING_RULE_VERSION_MIGRATION,
+    super::supervision::SUPERVISION_HOLD_EVENT_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -4534,6 +4535,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP TABLE supervision_annotations;
                  ALTER TABLE supervision_findings DROP COLUMN rule_version;
+                 ALTER TABLE supervision_holds DROP COLUMN expected_event;
                  DROP INDEX events_by_worker_kind;
                  INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
                      ('/a', 0, '{{\"state\": \"open\"}}', 40),
@@ -4545,7 +4547,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 6
+                MIGRATIONS.len() - 7
             ))
             .unwrap();
         drop(store);
@@ -4622,7 +4624,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 37
+                MIGRATIONS.len() - 38
             ))
             .unwrap();
         drop(store);
@@ -4697,7 +4699,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 26
+                MIGRATIONS.len() - 27
             ))
             .unwrap();
         drop(store);

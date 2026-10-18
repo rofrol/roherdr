@@ -19707,7 +19707,7 @@
           "description": "One recorded hold with the facts it was recorded with.",
           "properties": {
             "counter_evidence": {
-              "description": "The counter-evidence entry that held it.",
+              "description": "The counter-evidence entry that held it, in the vocabulary's stable text\n(`<kind>/<owner>/<completion>`); a hold written before that text was stable holds the\nentry's `Debug` output instead.",
               "type": "string"
             },
             "ended_ms": {
@@ -19715,6 +19715,13 @@
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "expected_event": {
+              "description": "The event the rule that held it expected, in the vocabulary's text; absent for a hold\nrecorded before herdr stored it, which a replay then reports as unrepresentable.",
+              "type": [
+                "string",
                 "null"
               ]
             },

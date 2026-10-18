@@ -333,8 +333,14 @@ pub struct SupervisionFixture {
     pub request_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub job_ids: Vec<String>,
-    /// The counter-evidence entry that held it.
+    /// The counter-evidence entry that held it, in the vocabulary's stable text
+    /// (`<kind>/<owner>/<completion>`); a hold written before that text was stable holds the
+    /// entry's `Debug` output instead.
     pub counter_evidence: String,
+    /// The event the rule that held it expected, in the vocabulary's text; absent for a hold
+    /// recorded before herdr stored it, which a replay then reports as unrepresentable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_event: Option<String>,
     /// Unix milliseconds.
     pub opened_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

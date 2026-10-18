@@ -192,6 +192,19 @@ CREATE TRIGGER supervision_annotations_no_delete BEFORE DELETE ON supervision_an
 BEGIN SELECT RAISE(ABORT, 'supervision annotations are never deleted'); END;
 "#;
 
+/// The event the rule that held a case expected.
+pub(super) const SUPERVISION_HOLD_EVENT_MIGRATION: &str = r#"
+-- The event a pending hold awaited, as its rule named it then: the
+-- vocabulary's text (`supervision_rules`). `supervise.fixtures` exports it
+-- with the case so `herdr supervise replay` can tell whether a candidate rule
+-- would still retract a false positive and still deliver a known-true finding:
+-- a different event does neither. A hold recorded before this column keeps
+-- NULL, and a replay reports its case as unrepresentable. The counter-evidence
+-- text holds the vocabulary's stable name from now on; rows written before it
+-- hold the entry's `Debug` output, which is still read.
+ALTER TABLE supervision_holds ADD COLUMN expected_event TEXT;
+"#;
+
 /// Who acknowledged a finding, and the herdr coordinator's reads of it.
 pub(super) const SUPERVISION_INBOX_MIGRATION: &str = r#"
 -- Who acknowledged a finding: `user` (their own client) or `coordinator
@@ -478,7 +491,8 @@ fn fixtures_of(
     state: &str,
 ) -> StoreResult<Vec<SupervisionFixture>> {
     let mut statement = conn.prepare(
-        "SELECT fingerprint, request_id, job_ids, counter_evidence, opened_ms, ended_ms, reason
+        "SELECT fingerprint, request_id, job_ids, counter_evidence, opened_ms, ended_ms, reason,
+             expected_event
          FROM supervision_holds WHERE predicate = ?1 AND rule_version = ?2 AND state = ?3
          ORDER BY id",
     )?;
@@ -489,6 +503,7 @@ fn fixtures_of(
             request_id: row.get(1)?,
             job_ids: serde_json::from_str(&jobs).unwrap_or_default(),
             counter_evidence: row.get(3)?,
+            expected_event: row.get(7)?,
             opened_ms: row.get::<_, i64>(4)?.max(0) as u64,
             ended_ms: row.get::<_, Option<i64>>(5)?.map(|ms| ms.max(0) as u64),
             reason: row.get(6)?,
@@ -820,7 +835,7 @@ fn apply_rule(
         candidate.hold = Some(Hold {
             rule_version: rule.version,
             expected_event: rule.expected_event,
-            counter_evidence: format!("{entry:?}"),
+            counter_evidence: entry.recorded(),
             request_id: assignment.request_id.clone(),
             job_ids,
         });
@@ -1744,8 +1759,8 @@ fn record_candidate(
             None => {
                 conn.execute(
                     "INSERT INTO supervision_holds (fingerprint, predicate, rule_version,
-                         request_id, counter_evidence, job_ids, state, opened_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                         request_id, counter_evidence, job_ids, state, opened_ms, expected_event)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
                     params![
                         candidate.fingerprint,
                         predicate_name(candidate.predicate),
@@ -1754,6 +1769,7 @@ fn record_candidate(
                         hold.counter_evidence,
                         jobs,
                         at_ms as i64,
+                        hold.expected_event.name(),
                     ],
                 )?;
                 hold_event(tx, &candidate.fingerprint, "pending", None, at_ms)?;
@@ -5527,6 +5543,88 @@ mod tests {
         assert_eq!(
             hold_states(&supervisor),
             ["retracted", "retracted", "delivered"]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The replay reads the recorded cases and the candidate only: a replayed set leaves the
+    /// holds as they were, and the evidence a hold records is the rule table's own text, which
+    /// the candidate's entries match against.
+    #[test]
+    fn a_replay_reads_the_fixtures_without_touching_the_holds() {
+        let (supervisor, root) = supervisor("replay-reads");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let with = |n: u32| {
+            let mut candidate = base.clone();
+            candidate.fingerprint = format!("fp{n}");
+            candidate.hold.as_mut().unwrap().request_id = format!("req{n}");
+            candidate
+        };
+        let all: Vec<Candidate> = (0..3).map(with).collect();
+        record_with(&supervisor, &all, 1000, HoldEnd::Resolved);
+        record_with(
+            &supervisor,
+            &all[2..],
+            1100,
+            HoldEnd::Retracted("it resumed"),
+        );
+        let mut fired = all[2].clone();
+        fired.hold = None;
+        record_with(&supervisor, &[fired], 1200, HoldEnd::Resolved);
+        let fixtures = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        assert_eq!(fixtures.retracted.len(), 2);
+        assert_eq!(fixtures.delivered.len(), 1);
+        let recorded = supervision_rules::CounterEvidence::LiveSupervisedJob {
+            owner: supervision_rules::JobOwner::WorkerAssignmentPane,
+            completion: supervision_rules::CompletionTarget::WorkerLivePane,
+        }
+        .recorded();
+        assert_eq!(fixtures.retracted[0].counter_evidence, recorded);
+        assert_eq!(fixtures.retracted[1].counter_evidence, recorded);
+        assert_eq!(fixtures.delivered[0].counter_evidence, recorded);
+        // The event the rule held them for is recorded with each case.
+        for case in fixtures.retracted.iter().chain(&fixtures.delivered) {
+            assert_eq!(
+                case.expected_event.as_deref(),
+                Some("worker_next_turn_on_assignment")
+            );
+        }
+
+        // The candidate keeps that entry and that event: the retracted cases stay held (the
+        // false positive does not come back) and the known-true case still fires after its
+        // hold, as the recorded one did.
+        let replays = |counter_evidence: serde_json::Value| {
+            let candidate = crate::workers::supervision_replay::parse_candidate(
+                &serde_json::json!({
+                    "predicate": "stopped_without_verdict",
+                    "version": 2,
+                    "counter_evidence": counter_evidence,
+                    "expected_event": "worker_next_turn_on_assignment"
+                })
+                .to_string(),
+            )
+            .unwrap();
+            crate::workers::supervision_replay::ReplayReport::new(&candidate, &fixtures).unwrap()
+        };
+        let holds = hold_states(&supervisor);
+        let keeping = replays(serde_json::json!([{
+            "kind": "live_supervised_job",
+            "owner": "worker_assignment_pane",
+            "completion": "worker_live_pane"
+        }]));
+        assert!(keeping.passed(), "{}", keeping.text());
+        // A candidate that drops the evidence would deliver the first retracted case again.
+        let dropping = replays(serde_json::json!([]));
+        assert!(!dropping.passed(), "{}", dropping.text());
+        // Nothing was written: the holds and the cases are as they were.
+        assert_eq!(hold_states(&supervisor), holds);
+        assert_eq!(
+            supervisor
+                .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+                .unwrap(),
+            fixtures
         );
         let _ = std::fs::remove_dir_all(root);
     }
