@@ -11,6 +11,25 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The usage gate's cap counts per recorded path, not per repository: `held_admissions(provider, repo)` [t-i2qzgc22]
+  compares `a.repo`, which is `std::path::absolute(&cwd)` (a run's landing checkout, a `worker run`'s
+  `--cwd`) and is never resolved through git, so a worktree, a subdirectory or a symlink alias is its own
+  bucket (`src/workers/store.rs:1935-1966`, `src/workers/runs.rs:871-920`; the per-repository change is in
+  the working tree, uncommitted, 2026-10-18). Resolve the key once, where the admission is created, to the
+  repository's identity — `git rev-parse --path-format=absolute --git-common-dir`, falling back to the real
+  path and then the absolute path for a directory that is not a git repository — and store that in the
+  existing `repo` column, so the worktrees and subdirectories of one clone share one bucket with no
+  migration and no dual matching (admissions are transient and drain when their workers exit). The refusal
+  keeps naming the bound, the key and that repository's holders, with the display path beside the key.
+  Tests: two worktrees and a subdirectory of one clone are one bucket, so the third admission is refused;
+  two repositories are two buckets; a retry attempt still shares its run's slot; a worker's exit frees its
+  slot; an admission whose server is gone holds none; a barriered race of `todo run` and `worker run`
+  admissions admits exactly the cap per repository; a directory that is not a git repository falls back to
+  its absolute path.
+  From consult round 20261018-040742-f605 (sol, mimo, argon; sol first had the working tree in front of it
+  and caught that the message said "per coordinator" while the key is a path). Decided by the user
+  2026-10-18 (d-lbaeqfpz): the git repository identity, not the recorded path.
+
 - [ ] A run held by the usage gate shows as a red attention card with no [t-3c2zqh76]
   question behind it (report r-103, from game-grounder2's coordinator at the
   user's request, 2026-10-17; follow-up of t-6mjgooqu): runs r-lczmn3ta
@@ -4160,6 +4179,14 @@ user needs to decide or do.
 - [ ] [t-hr7yjmct] Should a gated run's automatic review, answer and draft calls use the run's own agent and model by default?
   Options: inherit the run's backend by default, with `[review] agent` as an override (Recommended by both models of round 20261018-025119-98db) | keep Claude as the default and add `[review] agent = inherit|claude|pi|credits` as an opt-in | always use the Anthropic API credits for decision calls
   Checked: today's default is `claude -p` with `[review] model` unset (src/workers/runs/decision.rs:519, `call_cli`), one retry then escalation; a credit run's calls already go through the proxy; the user's Claude weekly window is at 100% while a DeepSeek pi worker runs.
+
+- [ ] [t-t27j6eyk] Should the per-coordinator worker cap count across providers (any 2 workers) or per provider (2 of each)?
+  Options: keep per provider, so a busy Claude worker never blocks a DeepSeek worker (today, and the historical d-t4luph5r) | one cap across providers, since two workers is the coordinator's orchestration capacity (Sol and Gemini Argon, round 20261018-033630-80a9) | one cap across providers only when they share an account
+  Checked: rounds 20261018-033630-80a9 and 20261018-040748-7953; the cap now counts within one repository (the coordinator's scope); the account-level latch stays per provider either way.
+
+- [ ] [t-wbuang2d] Should `--ignore-usage` keep bypassing the worker concurrency cap, or bypass only a usage reading?
+  Options: keep it bypassing both, recorded as `ignored` (today; one escape hatch, Gemini Argon) | split them: a usage bypass and a separate recorded concurrency override (MiMo and GPT Sol, rounds 20261018-033630-80a9 and 20261018-040748-7953) | drop the concurrency bypass, leaving only a config value
+  Checked: `--ignore-usage` today passes the cap and the refusal is recorded with `cap.ignored`; the cap counts per repository since 2026-10-18.
 
 ### Decide
 
