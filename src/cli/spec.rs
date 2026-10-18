@@ -467,7 +467,16 @@ fn todo_command() -> Command {
             .arg(option("task", "FILE").value_hint(ValueHint::FilePath))
             .arg(option("message", "SUBJECT"))
             .arg(option("paths", "GLOB").num_args(1..))
-            .arg(option("check", "NAME")),
+            .arg(option("check", "NAME"))
+            .arg(
+                option("agent", "AGENT")
+                    .help("The run's worker: claude, pi or pi-anthropic")
+                    .value_parser(["claude", "pi", "pi-anthropic"]),
+            )
+            .arg(
+                option("model", "MODEL")
+                    .help("A pi worker's provider/model; the usage gate reads its provider"),
+            ),
         )
         .subcommand(
             id_command(
@@ -484,6 +493,15 @@ fn todo_command() -> Command {
                 .arg(option("task", "FILE").value_hint(ValueHint::FilePath))
                 .arg(option("request", "REQUEST_ID"))
                 .arg(option("message", "TEXT"))
+                .arg(
+                    option("next-agent", "AGENT")
+                        .help("The agent of the run a close or note starts next")
+                        .value_parser(["claude", "pi", "pi-anthropic"]),
+                )
+                .arg(
+                    option("next-model", "MODEL")
+                        .help("A pi worker's provider/model for the next run"),
+                )
                 .arg(Arg::new("answer").value_name("ANSWER").num_args(0..)),
         )
         .subcommand(id_command("status", "run_id", "Show a run"))
@@ -1849,6 +1867,29 @@ mod tests {
         assert!(agent_start
             .get_arguments()
             .any(|arg| arg.get_id() == "agent_args"));
+    }
+
+    /// The help a coordinator reads names the model choice: `todo run` with
+    /// its agent and model, `todo resume` with the next run's.
+    #[test]
+    fn todo_help_names_the_agent_and_model_choices() {
+        let cmd = super::command();
+        let run = command_path(&cmd, &["todo", "run"]);
+        for name in ["agent", "model", "task", "message", "paths", "check"] {
+            assert!(has_option(run, name), "todo run --{name}");
+        }
+        assert_eq!(
+            option_values(run, "agent"),
+            ["claude", "pi", "pi-anthropic"]
+        );
+        let resume = command_path(&cmd, &["todo", "resume"]);
+        for name in ["next-agent", "next-model"] {
+            assert!(has_option(resume, name), "todo resume --{name}");
+        }
+        assert_eq!(
+            option_values(resume, "next-agent"),
+            ["claude", "pi", "pi-anthropic"]
+        );
     }
 
     fn long_help(path: &[&str]) -> String {
