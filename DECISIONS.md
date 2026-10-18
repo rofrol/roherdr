@@ -2355,3 +2355,30 @@ MiMo and Argon refused the brief as secret-shaped).
 - Rejected: falling back to "any pending row closes admission" (that is the
   refusal the item removes), lowering a reservation while its request runs, and
   any timeout deciding a reservation's fate.
+
+## Every credit call records its stage, and credits status sums by item and stage (t-x46qpegh, 2026-10-18)
+
+The user's decision `d-n55a6wj5`: the credit ledger records run, item and
+stage per request so a review A/B and a later fan-out experiment can be
+measured. Landed as run r-r5zbpbdx (commit 691268eab), after review round
+`20261018-200429-e576` (sol; MiMo and Argon refused the brief as secret-shaped).
+
+- The ledger gains a `stage` column (schema version 3, inside `open_ledger`'s
+  one `BEGIN IMMEDIATE` migration with per-column checks); a row written before
+  it reads as `unknown`, never dropped or guessed.
+- The stage is stated by the caller that opens the credit proxy, never
+  inferred: `draft` in `src/workers/runs/auto_draft.rs`, `worker` for the run's
+  worker proxy in `src/workers/supervisor/lifecycle.rs`, `review` in
+  `auto_review.rs` and `review_eval.rs`, `answer` in `auto_answer.rs`, threaded
+  through `call_model_for`/`with`/`tools`, `CreditCaller`, `credit_call`,
+  `AnthropicProxy::message` and `LoopbackProxy::start`. `register` refuses a
+  stage it cannot name before any grant or row exists.
+- `herdr credits status` reports the per-entry stage and the `by_item` and
+  `by_stage` sums with settled spend and in-flight/abandoned counts. The stage
+  is a label: it enters no admission, reservation or settlement arithmetic, and
+  the widget and the run's accounting are untouched.
+- Left open and proposed separately: a credit call refused before its
+  reservation produces no ledger row, so subscription fallbacks are visible in
+  the run journal's `run_credit_call_fallback` event but not in the by-stage
+  spend; the stage should travel with that event too if the A/B must count
+  fallbacks.
