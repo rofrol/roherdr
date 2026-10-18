@@ -423,11 +423,11 @@ impl WorkerSupervisor {
             return Err(Self::run_active(&active));
         }
         if let Some(active) = store.active_coordinator_of(repo).map_err(store_error)? {
-            return Err(Self::refusal(repo, "none", active));
+            return Err(self.refusal(repo, "none", &active));
         }
         // Usage only: the coordinator's worker takes no slot of the cap,
         // which its own runs' workers need.
-        self.usage_gate(repo, WorkerAgent::Claude, None, false, None)?;
+        self.usage_gate(repo, WorkerAgent::Claude, None, false, None, None)?;
         let id = new_tenure_id(repo, &item);
         let at = now_ms();
         let claimed = store.transaction(|tx| {
@@ -435,7 +435,9 @@ impl WorkerSupervisor {
                 return Ok(Err(Self::run_active(&active)));
             }
             if let Some(active) = tx.active_coordinator(repo)? {
-                return Ok(Err(Self::refusal(repo, "none", active)));
+                // The refusal is built inside the transaction, so it reads
+                // no pending end: only the store's own rows are at hand.
+                return Ok(Err(Self::refusal_message(repo, "none", &active)));
             }
             let tenure = NewTenure {
                 id: &id,

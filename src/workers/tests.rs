@@ -6566,7 +6566,8 @@ mod todo_runs {
                     WorkerAgent::Claude,
                     None,
                     false,
-                    Some(&gate_holder("test"))
+                    Some(&gate_holder("test")),
+                    None,
                 )
                 .unwrap_err()
                 .code(),
@@ -6580,6 +6581,7 @@ mod todo_runs {
                 None,
                 false,
                 Some(&gate_holder("test")),
+                None,
             )
             .unwrap();
         assert_eq!(admitted["decision"], "admit");
@@ -6593,7 +6595,8 @@ mod todo_runs {
                     WorkerAgent::Claude,
                     None,
                     false,
-                    Some(&gate_holder("test"))
+                    Some(&gate_holder("test")),
+                    None,
                 )
                 .unwrap()["reopened"],
             false
@@ -6605,7 +6608,8 @@ mod todo_runs {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("test"))
+                Some(&gate_holder("test")),
+                None,
             )
             .is_err());
         restarted.set_usage_for_test(fresh_usage(85, 0));
@@ -6615,7 +6619,8 @@ mod todo_runs {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("test"))
+                Some(&gate_holder("test")),
+                None,
             )
             .is_err());
     }
@@ -6638,6 +6643,7 @@ mod todo_runs {
                 None,
                 false,
                 Some(&gate_holder("test")),
+                None,
             )
             .unwrap();
         assert_eq!(admitted["state"], "open");
@@ -6649,7 +6655,8 @@ mod todo_runs {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("test"))
+                Some(&gate_holder("test")),
+                None,
             )
             .is_err());
         restarted.set_usage_for_test(Err("DNS lookup failed".into()));
@@ -6660,6 +6667,7 @@ mod todo_runs {
                 None,
                 false,
                 Some(&gate_holder("test")),
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -6680,7 +6688,8 @@ mod todo_runs {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("test"))
+                Some(&gate_holder("test")),
+                None,
             )
             .is_err());
         restarted.set_usage_for_test(fresh_usage(79, 79));
@@ -6690,7 +6699,8 @@ mod todo_runs {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("test"))
+                Some(&gate_holder("test")),
+                None,
             )
             .is_ok());
     }
@@ -7146,6 +7156,7 @@ mod todo_runs {
                 None,
                 false,
                 Some(&gate_holder(agent.as_str())),
+                None,
             )
         };
         let set = |close, reopen| {

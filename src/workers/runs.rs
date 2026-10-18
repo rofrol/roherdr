@@ -880,6 +880,28 @@ pub(super) fn repo_identity(dir: &Path) -> Result<String, WorkerError> {
     }
 }
 
+/// The tenure a start is admitted under: the repository, and the token the
+/// caller presents for its tenure (`worker.run`'s `tenure_token`). The
+/// admission's transaction checks it together with the slot, so the check and
+/// the row that authorizes the start cannot be split by a tenure change; the
+/// start step re-checks the admission's tenure and token before the worker's
+/// process exists ([`super::coordinators::WorkerSupervisor::begin_start_step`]).
+#[derive(Clone, Copy)]
+pub(super) struct TenureAdmission<'a> {
+    pub(super) repo: &'a str,
+    pub(super) token: Option<&'a str>,
+}
+
+/// What the admission transaction decided.
+enum AdmissionDecision {
+    /// The holder's slot is recorded (or it held one already).
+    Held,
+    /// The provider has `max_workers` slots taken under the cap.
+    CapReached(String),
+    /// The repository's tenure refused the start.
+    TenureRefused(String),
+}
+
 /// One admission the gate's cap decides ([`WorkerSupervisor::usage_gate`]).
 struct Admitting<'a> {
     repo: &'a str,
@@ -887,6 +909,11 @@ struct Admitting<'a> {
     holder: &'a usage_gate::Holder,
     ignore_usage: bool,
     max_workers: u32,
+    /// The tenure whose token this admission checks, for a start that
+    /// belongs to one (`worker.run`); `None` for the gate calls that record
+    /// no `worker.run` (`todo.run`'s attempts, whose tenure checks sit
+    /// wherever their step lands, and a headless coordinator's own start).
+    tenure: Option<TenureAdmission<'a>>,
 }
 
 impl Admitting<'_> {
@@ -899,14 +926,28 @@ impl Admitting<'_> {
         &self,
         store: &super::store::Store,
         recorded: &mut Value,
-    ) -> Result<Option<String>, WorkerError> {
+    ) -> Result<AdmissionDecision, WorkerError> {
         let repo = repo_identity(Path::new(self.repo))?;
         let key = self.holder.key();
         let pid = std::process::id();
         let server = (pid, crate::platform::process_start_token(pid));
         let at = now_ms();
+        let mut refused: Option<String> = None;
         let (others, full) = store
             .transaction(|tx| {
+                // The tenure's token check, in this transaction: the usage
+                // admission written below is what authorizes the start, so a
+                // tenure change cannot fall between the check and the start.
+                let tenure = match self.tenure {
+                    Some(tenure) => match tx.tenure_token_check(tenure.repo, tenure.token)? {
+                        Ok(tenure) => tenure,
+                        Err(why) => {
+                            refused = Some(why);
+                            return Ok((Vec::new(), false));
+                        }
+                    },
+                    None => None,
+                };
                 let held = tx.held_admissions(self.provider.id(), &repo)?;
                 let holds = held.iter().any(|admission| admission.holder == key);
                 let others = held
@@ -923,26 +964,32 @@ impl Admitting<'_> {
                         server,
                         ignored: self.ignore_usage,
                         at_ms: at,
+                        tenure: tenure.as_ref().map(|(id, epoch)| (id.as_str(), *epoch)),
                     })?;
                 }
                 Ok((others, full))
             })
             .map_err(store_error)?;
+        if let Some(why) = refused {
+            return Ok(AdmissionDecision::TenureRefused(why));
+        }
         recorded["cap"] = usage_gate::cap_json(
             self.max_workers,
             &others,
             self.holder,
             self.ignore_usage && full,
         );
-        Ok((full && !self.ignore_usage).then(|| {
-            usage_gate::cap_refusal_message(
+        Ok(if full && !self.ignore_usage {
+            AdmissionDecision::CapReached(usage_gate::cap_refusal_message(
                 self.provider,
                 self.max_workers,
                 &others,
                 &repo,
                 self.repo,
-            )
-        }))
+            ))
+        } else {
+            AdmissionDecision::Held
+        })
     }
 }
 
@@ -1838,6 +1885,7 @@ impl WorkerSupervisor {
         model: Option<&str>,
         ignore_usage: bool,
         holder: Option<&usage_gate::Holder>,
+        tenure: Option<TenureAdmission<'_>>,
     ) -> Result<Value, WorkerError> {
         let provider =
             usage_gate::GateProvider::for_worker(agent, model).map_err(WorkerError::Invalid)?;
@@ -1922,9 +1970,17 @@ impl WorkerSupervisor {
                     holder,
                     ignore_usage,
                     max_workers: thresholds.max_workers,
+                    tenure,
                 };
-                if let Some(why) = admitted.admit(store, &mut recorded)? {
-                    refusal = Some(why);
+                match admitted.admit(store, &mut recorded)? {
+                    AdmissionDecision::Held => {}
+                    AdmissionDecision::CapReached(why) => refusal = Some(why),
+                    // The tenure refused the start: nothing is admitted, and
+                    // the caller's answer is a tenure refusal, not a gate one.
+                    AdmissionDecision::TenureRefused(why) => {
+                        drop(_gate_check);
+                        return Err(WorkerError::TenureToken(why));
+                    }
                 }
             }
         }
@@ -2015,6 +2071,7 @@ impl WorkerSupervisor {
                 run.finish.worker_model(),
                 ignore,
                 Some(&holder),
+                None,
             )
         }
     }
@@ -2238,6 +2295,7 @@ impl WorkerSupervisor {
                 params.model.as_deref(),
                 params.ignore_usage,
                 Some(&holder),
+                None,
             )
         };
         let (usage, pending_reason) = match gate {
@@ -3703,7 +3761,10 @@ impl WorkerSupervisor {
             }
             // A step that lands goes on only while the tenure the run was
             // claimed under still holds the repository: a coordinator that
-            // lost it lands nothing.
+            // lost it lands nothing. The admission is one transaction with
+            // the check and holds the tenure until the step lands, so a
+            // tenure change cannot fall between them: an end asked for while
+            // the step runs happens once it has landed, under its own tenure.
             let landing = match run.info.step {
                 TodoStep::CherryPick => Some("cherry-pick"),
                 TodoStep::Install => Some("install"),
@@ -3711,14 +3772,21 @@ impl WorkerSupervisor {
                 TodoStep::Push => Some("push"),
                 _ => None,
             };
-            if let Some(landing) = landing {
-                if let Err(why) =
-                    self.tenure_fence(&run.info.repo, run.owner_coordinator.as_deref())
-                {
-                    self.block_run(&mut run, format!("stopped before its {landing}: {why}"));
-                    continue;
-                }
-            }
+            let landing = match landing {
+                Some(landing) => match self.begin_landing(
+                    &run.info.repo,
+                    run.owner_coordinator.as_deref(),
+                    landing,
+                    &run.info.run_id,
+                ) {
+                    Ok(guard) => Some(guard),
+                    Err(why) => {
+                        self.block_run(&mut run, format!("stopped before its {landing}: {why}"));
+                        continue;
+                    }
+                },
+                None => None,
+            };
             let stepped = match run.info.step {
                 TodoStep::Draft => self.step_draft(&mut run),
                 TodoStep::Preflight | TodoStep::Start => self.step_start(&mut run),
@@ -3736,6 +3804,9 @@ impl WorkerSupervisor {
                     Err(format!("a running run cannot be at step {step:?}"))
                 }
             };
+            // The step landed, or failed: its tenure may end from now on. The
+            // guard releases the step and carries out an end it held back.
+            drop(landing);
             if let Err(why) = stepped {
                 #[cfg(test)]
                 if why == CRASHED_HERE {
@@ -3924,6 +3995,7 @@ impl WorkerSupervisor {
                     run_id: run.info.run_id.clone(),
                     attempt: run.info.attempt,
                 }),
+                None,
             ) {
                 Ok(_) => {}
                 Err(WorkerError::UsageGate(why)) => {

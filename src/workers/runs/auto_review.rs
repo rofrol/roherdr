@@ -1058,6 +1058,7 @@ impl WorkerSupervisor {
             run.finish.worker_model(),
             false,
             Some(&next),
+            None,
         ) {
             Ok(usage) => usage,
             Err(refused) => {

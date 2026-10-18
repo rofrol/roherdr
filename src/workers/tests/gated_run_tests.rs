@@ -309,7 +309,7 @@ fn a_dropped_worker_run_connection_records_termination_and_frees_the_slot() {
     let holder = crate::workers::runs::usage_gate::Holder::WorkerRun("blocker".into());
     fixture
         .supervisor
-        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&holder))
+        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&holder), None)
         .unwrap();
     // A real API connection, closed only after the worker was recorded.
     let path = fixture.root.join("api.sock");
@@ -343,7 +343,7 @@ fn a_dropped_worker_run_connection_records_termination_and_frees_the_slot() {
     assert_eq!(
         fixture
             .supervisor
-            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third))
+            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third), None,)
             .unwrap_err()
             .code(),
         "usage_gate"
@@ -372,7 +372,7 @@ fn a_dropped_worker_run_connection_records_termination_and_frees_the_slot() {
     assert_eq!(fixture.supervisor.admissions(&repo).unwrap().len(), 1);
     fixture
         .supervisor
-        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third))
+        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third), None)
         .unwrap();
     assert_eq!(fixture.supervisor.admissions(&repo).unwrap().len(), 2);
     // The ordinary JSON/outcome path remains covered above and still
@@ -524,6 +524,139 @@ fn an_active_tenure_admits_only_a_run_with_its_current_token() {
     assert_ne!(replaced, current);
     let refused = gated_run(&fixture, &with_token(Some(&current))).unwrap_err();
     assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+}
+
+/// The interleaving a check-then-act token check cannot survive: the holder
+/// rotates its token inside the step the check guards (a latch, not timing).
+/// The admission's transaction re-checks it there, so the run starts nothing,
+/// and a run admitted with the current token records the tenure it was
+/// admitted under.
+#[test]
+fn a_tenure_change_inside_the_guarded_step_starts_nothing() {
+    let fixture = git_fixture("gated-run-tenure-rotate");
+    let repo = repository_of(&fixture.repo).unwrap();
+    let tenure = fixture
+        .supervisor
+        .coordinator_start(&repo, "p1", None)
+        .unwrap();
+    let (_, first) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    // The latch: the holder acquires again (a new token replaces the first)
+    // after the precheck passed and before the usage admission.
+    let rotating = fixture.supervisor.clone();
+    crate::workers::supervisor::gated_run::set_tenure_hook_for_test(Box::new(
+        move |_repo: &str| {
+            rotating.coordinator_token_for_pane("p1").unwrap();
+        },
+    ));
+    let with_token = |token: &str| WorkerGatedRunParams {
+        tenure_token: Some(token.to_owned()),
+        ..run_params(&fixture.repo, "finish")
+    };
+    let refused = gated_run(&fixture, &with_token(&first)).unwrap_err();
+    assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+    assert!(
+        fixture.supervisor.list().is_empty(),
+        "a refusal starts nothing"
+    );
+    let admitted = |supervisor: &WorkerSupervisor, tenure: &str| -> i64 {
+        store_of(supervisor)
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM usage_admissions WHERE tenure_id = ?1",
+                [tenure],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        admitted(&fixture.supervisor, &tenure.coordinator_id),
+        0,
+        "a refused start is admitted nowhere"
+    );
+    // The token the rotation left is the current one: its run starts, and the
+    // admission that authorizes it names the tenure it was admitted under,
+    // also when that tenure changes afterwards.
+    let (_, current) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    let run = gated_run(&fixture, &with_token(&current)).unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+    assert_eq!(
+        admitted(&fixture.supervisor, &tenure.coordinator_id),
+        1,
+        "the admission records the tenure that admitted the start"
+    );
+}
+
+/// The interleaving left open by admission-time checking alone: the token is
+/// rotated, or the tenure ended, after the admission committed and before the
+/// worker's process exists (a latch at the start step, not timing). The start
+/// step re-checks the admission's tenure and token there, so the run starts
+/// nothing and leaves no admission held.
+#[test]
+fn a_tenure_change_between_the_admission_and_the_spawn_starts_nothing() {
+    let fixture = git_fixture("gated-run-start-rotate");
+    let repo = repository_of(&fixture.repo).unwrap();
+    let tenure = fixture
+        .supervisor
+        .coordinator_start(&repo, "p1", None)
+        .unwrap();
+    let (_, first) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    let held = |supervisor: &WorkerSupervisor| -> i64 {
+        store_of(supervisor)
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM usage_admissions
+                 WHERE tenure_id = ?1 AND released_ms IS NULL",
+                [&tenure.coordinator_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let open_steps = |supervisor: &WorkerSupervisor| -> i64 {
+        store_of(supervisor)
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM tenure_steps WHERE retired_ms IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let with_token = |token: &str| WorkerGatedRunParams {
+        tenure_token: Some(token.to_owned()),
+        ..run_params(&fixture.repo, "finish")
+    };
+    // The latch: the holder acquires again (a new token replaces the first)
+    // after the admission committed and before the start step.
+    let rotating = fixture.supervisor.clone();
+    crate::workers::supervisor::gated_run::set_start_hook_for_test(Box::new(move |_repo: &str| {
+        rotating.coordinator_token_for_pane("p1").unwrap();
+    }));
+    let refused = gated_run(&fixture, &with_token(&first)).unwrap_err();
+    assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+    assert!(
+        fixture.supervisor.list().is_empty(),
+        "a refusal starts nothing"
+    );
+    assert_eq!(held(&fixture.supervisor), 0, "nothing stays admitted");
+    assert_eq!(open_steps(&fixture.supervisor), 0, "no start step is left");
+
+    // The same with an end: the tenure is gone by the time the start step runs.
+    let ending = fixture.supervisor.clone();
+    let id = tenure.coordinator_id.clone();
+    crate::workers::supervisor::gated_run::set_start_hook_for_test(Box::new(move |_repo: &str| {
+        ending
+            .coordinator_end(&id, crate::workers::coordinators::ENDED, None)
+            .unwrap();
+    }));
+    let (_, after_rotation) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    let refused = gated_run(&fixture, &with_token(&after_rotation)).unwrap_err();
+    assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
+    assert!(
+        fixture.supervisor.list().is_empty(),
+        "a refusal starts nothing"
+    );
+    assert_eq!(held(&fixture.supervisor), 0, "nothing stays admitted");
+    assert_eq!(open_steps(&fixture.supervisor), 0, "no start step is left");
 }
 
 /// The token a `worker.run` client sends with its request enters no worker

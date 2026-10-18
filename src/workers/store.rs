@@ -821,6 +821,61 @@ ALTER TABLE todo_chains ADD COLUMN worktree TEXT;
 -- cost the cap's read.
 CREATE INDEX events_by_worker_kind ON events (worker_id, direction, type, seq);
 "#,
+    r#"
+-- The step a `todo.run` or a `worker.run` admitted and has not released
+-- (`WorkerSupervisor::begin_landing`, `begin_start_step`): `kind` is the step
+-- (`cherry-pick`, `install`, `TODO edit`, `push` or `start`), `coordinator_id`
+-- and `epoch` the tenure the step was admitted under (none for work claimed
+-- outside any tenure), `server_pid` and `server_start` the server that
+-- admitted it. The row is written in the transaction that checks the tenure,
+-- so a tenure change cannot fall between the check and the step; while one is
+-- open its tenure ends only through this table (see `tenure_pending_ends`).
+-- `retired_ms` and `retired_by_*` name the server that retired a step whose
+-- server is gone, so the row says who released it.
+CREATE TABLE tenure_steps (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    coordinator_id TEXT,
+    epoch INTEGER,
+    kind TEXT NOT NULL,
+    run_id TEXT,
+    server_pid INTEGER NOT NULL,
+    server_start INTEGER,
+    started_ms INTEGER NOT NULL,
+    retired_ms INTEGER,
+    retired_by_pid INTEGER,
+    retired_by_start INTEGER
+);
+CREATE INDEX tenure_steps_by_coordinator ON tenure_steps (coordinator_id, epoch)
+    WHERE retired_ms IS NULL;
+-- `coordinator.acquire` and `coordinator.start` read the steps of a run
+-- claimed outside any tenure by repository (`unowned_landing_steps`): a claim
+-- waits for such a step to land.
+CREATE INDEX tenure_steps_by_repo ON tenure_steps (repo)
+    WHERE coordinator_id IS NULL AND retired_ms IS NULL;
+-- The end of a tenure herdr saw and could not carry out at once (its holder
+-- process exited, its pane closed, its agent exited): the reason and cause,
+-- written before the end is attempted and deleted only once the tenure has
+-- really ended. `epoch` names the tenure the end belongs to, so a stale end
+-- cannot end a later tenure of the same id; the apply names it in its WHERE.
+-- A reader of the tenures (a claim attempt, a server that starts, the release
+-- of a landing step) ends the tenure of every row whose step is gone, so a
+-- failed end is retried by the next event that reads it, never by a timer.
+CREATE TABLE tenure_pending_ends (
+    coordinator_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    cause TEXT,
+    requested_ms INTEGER NOT NULL,
+    PRIMARY KEY (coordinator_id, epoch)
+);
+-- The tenure that admitted a `worker.run`, written in the transaction of its
+-- usage admission: the token check and the row that authorizes the start
+-- cannot be split by a tenure change. NULL for a start that no tenure
+-- admitted, and for the admissions recorded before.
+ALTER TABLE usage_admissions ADD COLUMN tenure_id TEXT;
+ALTER TABLE usage_admissions ADD COLUMN tenure_epoch INTEGER;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1382,6 +1437,25 @@ impl Tx<'_> {
         let Some(tenure) = tenure_by_id(self.tx, id)? else {
             return Ok(None);
         };
+        self.coordinator_ended_at(id, tenure.epoch, reason, cause, at_ms)
+    }
+
+    /// [`Self::coordinator_ended`] for the tenure `(id, epoch)`: an epoch the
+    /// tenure does not have now is stale and ends nothing ([`PendingEnd`]).
+    pub(super) fn coordinator_ended_at(
+        &self,
+        id: &str,
+        epoch: i64,
+        reason: &str,
+        cause: Option<&str>,
+        at_ms: u64,
+    ) -> StoreResult<Option<StoredTenure>> {
+        let Some(tenure) = tenure_by_id(self.tx, id)? else {
+            return Ok(None);
+        };
+        if tenure.epoch != epoch {
+            return Ok(None);
+        }
         if tenure.ended_at.is_some() {
             return Ok(Some(tenure));
         }
@@ -1393,9 +1467,9 @@ impl Tx<'_> {
         });
         self.coordinator_event(id, &event, at_ms)?;
         self.tx.execute(
-            "UPDATE coordinators SET ended_at = ?2, end_reason = ?3
-             WHERE id = ?1 AND ended_at IS NULL",
-            params![id, at_ms as i64, reason],
+            "UPDATE coordinators SET ended_at = ?3, end_reason = ?4
+             WHERE id = ?1 AND epoch = ?2 AND ended_at IS NULL",
+            params![id, epoch, at_ms as i64, reason],
         )?;
         self.tx.execute(
             "UPDATE coordinator_bindings SET to_at = ?2
@@ -1408,6 +1482,192 @@ impl Tx<'_> {
     /// The repository's active tenure, as this transaction sees it.
     pub(super) fn active_coordinator(&self, repo: &str) -> StoreResult<Option<StoredTenure>> {
         Ok(tenures(self.tx, "t.repo = ?1 AND t.ended_at IS NULL", [repo])?.pop())
+    }
+
+    /// [`tenure_token_check`] in this transaction, which also records the
+    /// work the check admits.
+    pub(super) fn tenure_token_check(
+        &self,
+        repo: &str,
+        token: Option<&str>,
+    ) -> StoreResult<Result<Option<(String, i64)>, String>> {
+        tenure_token_check(self.tx, repo, token)
+    }
+
+    /// [`tenure_fence_check`] in this transaction.
+    pub(super) fn tenure_fence(
+        &self,
+        repo: &str,
+        owner: Option<&str>,
+    ) -> StoreResult<Result<(), String>> {
+        tenure_fence_check(self.tx, repo, owner)
+    }
+
+    /// Records a landing step `step` the transaction admitted, in the same
+    /// transaction as its fence check: from here the step's tenure ends only
+    /// through [`Self::settle_pending_ends`].
+    pub(super) fn tenure_step(&self, step: &NewTenureStep<'_>) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO tenure_steps (id, repo, coordinator_id, epoch, kind, run_id,
+                 server_pid, server_start, started_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                step.id,
+                step.repo,
+                step.coordinator.map(|(id, _)| id),
+                step.coordinator.map(|(_, epoch)| epoch),
+                step.kind,
+                step.run_id,
+                step.server.0,
+                step.server.1.map(|start| start as i64),
+                step.at_ms as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Releases landing step `id` and carries out the pending ends it was
+    /// holding back ([`Self::settle_pending_ends`]): the tenure of a step
+    /// that just landed can end from now on.
+    pub(super) fn tenure_step_released(
+        &self,
+        id: &str,
+        at_ms: u64,
+    ) -> StoreResult<Vec<StoredTenure>> {
+        self.tx
+            .execute("DELETE FROM tenure_steps WHERE id = ?1", [id])?;
+        self.settle_pending_ends(at_ms)
+    }
+
+    /// The landing steps of `repo` admitted under no tenure, by kind: a run
+    /// claimed while no tenure was active may be landing one, and a claim
+    /// waits for it (see [`WorkerSupervisor::begin_landing`]). The query uses
+    /// the partial index `tenure_steps_by_repo`.
+    pub(super) fn unowned_landing_steps(&self, repo: &str) -> StoreResult<Vec<String>> {
+        let mut statement = self.tx.prepare(
+            "SELECT kind FROM tenure_steps WHERE repo = ?1 AND coordinator_id IS NULL
+                 AND retired_ms IS NULL
+             ORDER BY started_ms, kind",
+        )?;
+        let mut kinds: Vec<String> = statement
+            .query_map([repo], |row| row.get(0))?
+            .collect::<StoreResult<_>>()?;
+        kinds.dedup();
+        Ok(kinds)
+    }
+
+    /// The landing steps tenure `(coordinator_id, epoch)` admitted and has
+    /// not released, by kind, the first first. The epoch is part of the key:
+    /// a step of an earlier tenure cannot hold a later one back.
+    pub(super) fn open_tenure_steps(
+        &self,
+        coordinator_id: &str,
+        epoch: i64,
+    ) -> StoreResult<Vec<String>> {
+        let mut statement = self.tx.prepare(
+            "SELECT kind FROM tenure_steps WHERE coordinator_id = ?1 AND epoch = ?2
+                 AND retired_ms IS NULL
+             ORDER BY started_ms, kind",
+        )?;
+        let mut kinds: Vec<String> = statement
+            .query_map(params![coordinator_id, epoch], |row| row.get(0))?
+            .collect::<StoreResult<_>>()?;
+        kinds.dedup();
+        Ok(kinds)
+    }
+
+    /// Records the end of a tenure herdr saw ([`PendingEnd`]), keeping an
+    /// earlier request of the same tenure and epoch: the first observation is
+    /// its cause, and a repeated one changes nothing.
+    pub(super) fn request_tenure_end(&self, end: &PendingEnd) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO tenure_pending_ends (coordinator_id, epoch, reason, cause, requested_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (coordinator_id, epoch) DO NOTHING",
+            params![
+                end.coordinator_id,
+                end.epoch,
+                end.reason,
+                end.cause,
+                end.requested_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The ends herdr saw and has not carried out yet.
+    pub(super) fn pending_ends(&self) -> StoreResult<Vec<PendingEnd>> {
+        pending_ends_where(self.tx, "", &[])
+    }
+
+    /// Forgets the pending ends of tenure `coordinator_id`, whatever their
+    /// epoch: a tenure that comes back is not ending.
+    pub(super) fn clear_pending_end(&self, coordinator_id: &str) -> StoreResult<()> {
+        self.tx.execute(
+            "DELETE FROM tenure_pending_ends WHERE coordinator_id = ?1",
+            [coordinator_id],
+        )?;
+        Ok(())
+    }
+
+    /// Carries out the pending ends whose tenure has no landing step in
+    /// flight, in `at_ms`: each tenure ends with the recorded reason and
+    /// cause, and its pending row goes in the same transaction that applies
+    /// it, so a failed delete cannot end a later tenure. The end is applied
+    /// with `WHERE coordinator_id = ? AND epoch = ? AND ended_at IS NULL`
+    /// against the tenure actually active: a stale end recorded for an old
+    /// epoch ends nothing. Returns the tenures that ended. A pending end whose
+    /// step is still in flight stays: the step lands under its own tenure, and
+    /// its release calls this again.
+    pub(super) fn settle_pending_ends(&self, at_ms: u64) -> StoreResult<Vec<StoredTenure>> {
+        let mut ended = Vec::new();
+        for end in self.pending_ends()? {
+            if !self
+                .open_tenure_steps(&end.coordinator_id, end.epoch)?
+                .is_empty()
+            {
+                continue;
+            }
+            let applied = self.coordinator_ended_at(
+                &end.coordinator_id,
+                end.epoch,
+                &end.reason,
+                end.cause.as_deref(),
+                at_ms,
+            )?;
+            self.tx.execute(
+                "DELETE FROM tenure_pending_ends WHERE coordinator_id = ?1 AND epoch = ?2",
+                params![end.coordinator_id, end.epoch],
+            )?;
+            if let Some(tenure) = applied {
+                ended.push(tenure);
+            }
+        }
+        Ok(ended)
+    }
+
+    /// Retires landing steps `ids`, none of whose servers can release them any
+    /// more, recording the server that retires them, and carries out the
+    /// pending ends that leaves (`at_ms`); returns the tenures that ended.
+    pub(super) fn retire_tenure_steps(
+        &self,
+        ids: &[String],
+        at_ms: u64,
+        retired_by: (u32, Option<u64>),
+    ) -> StoreResult<Vec<StoredTenure>> {
+        for id in ids {
+            self.tx.execute(
+                "UPDATE tenure_steps SET retired_ms = ?2, retired_by_pid = ?3, retired_by_start = ?4
+                 WHERE id = ?1 AND retired_ms IS NULL",
+                params![
+                    id,
+                    at_ms as i64,
+                    retired_by.0,
+                    retired_by.1.map(|start| start as i64)
+                ],
+            )?;
+        }
+        self.settle_pending_ends(at_ms)
     }
 
     /// The active tenure bound to `pane_id`, as this transaction sees it.
@@ -1492,6 +1752,8 @@ impl Tx<'_> {
             "UPDATE coordinators SET ended_at = NULL, end_reason = NULL WHERE id = ?1",
             [id],
         )?;
+        // An end herdr saw and never carried out is void: the tenure is back.
+        self.clear_pending_end(id)?;
         self.rebind(id, pane_id, session_id, at_ms)?;
         tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
@@ -1566,6 +1828,9 @@ impl Tx<'_> {
             )?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let started = self.coordinator_started(to, at_ms)?;
+        // The end that was carried out here is the only one: a pending end
+        // recorded for the tenure before it has nothing left to end.
+        self.clear_pending_end(&from.id)?;
         let event = serde_json::json!({
             "type": "handoff",
             "coordinator_id": from.id,
@@ -1934,6 +2199,10 @@ pub(super) struct NewAdmission<'a> {
     pub(super) server: (u32, Option<u64>),
     pub(super) ignored: bool,
     pub(super) at_ms: u64,
+    /// The tenure whose token the admission's transaction checked, which the
+    /// row records so the start it authorizes belongs to that tenure even
+    /// when the tenure changes afterwards.
+    pub(super) tenure: Option<(&'a str, i64)>,
 }
 
 const ADMISSION_COLUMNS: &str =
@@ -2024,17 +2293,40 @@ impl Tx<'_> {
         held_admissions(self.tx, provider, repo)
     }
 
+    /// The tenure an unreleased admission of `holder` was written under, as
+    /// this transaction sees it: `Some(None)` for a start admitted while no
+    /// tenure was active, `None` when the admission is gone. A `worker.run`
+    /// reads it at the spawn ([`crate::workers::supervisor::gated_run`]) to
+    /// re-check the tenure the admission named, before the process exists.
+    pub(super) fn admission_tenure(
+        &self,
+        holder: &str,
+    ) -> StoreResult<Option<Option<(String, i64)>>> {
+        let row: Option<(Option<String>, Option<i64>)> = self
+            .tx
+            .query_row(
+                "SELECT tenure_id, tenure_epoch FROM usage_admissions
+                 WHERE holder = ?1 AND released_ms IS NULL",
+                [holder],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(id, epoch)| id.zip(epoch)))
+    }
+
     /// Writes an admission, replacing an ended one of the same holder.
     pub(super) fn admit(&self, admission: &NewAdmission<'_>) -> StoreResult<()> {
         self.tx.execute(
             "INSERT INTO usage_admissions (holder, provider, repo, run_id, attempt, worker_id,
-                 server_pid, server_start, ignored, admitted_ms, released_ms, release)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, NULL, NULL)
+                 server_pid, server_start, ignored, admitted_ms, released_ms, release, tenure_id,
+                 tenure_epoch)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)
              ON CONFLICT (holder) DO UPDATE SET provider = excluded.provider,
                  repo = excluded.repo, run_id = excluded.run_id, attempt = excluded.attempt,
                  worker_id = NULL, server_pid = excluded.server_pid,
                  server_start = excluded.server_start, ignored = excluded.ignored,
-                 admitted_ms = excluded.admitted_ms, released_ms = NULL, release = NULL",
+                 admitted_ms = excluded.admitted_ms, released_ms = NULL, release = NULL,
+                 tenure_id = excluded.tenure_id, tenure_epoch = excluded.tenure_epoch",
             params![
                 admission.holder,
                 admission.provider,
@@ -2045,6 +2337,8 @@ impl Tx<'_> {
                 admission.server.1.map(|start| start as i64),
                 admission.ignored,
                 admission.at_ms as i64,
+                admission.tenure.map(|(id, _)| id),
+                admission.tenure.map(|(_, epoch)| epoch),
             ],
         )?;
         Ok(())
@@ -2135,6 +2429,139 @@ fn tenure_by_id(conn: &Connection, id: &str) -> StoreResult<Option<StoredTenure>
     Ok(tenures(conn, "t.id = ?1", [id])?.pop())
 }
 
+fn active_coordinator_of(conn: &Connection, repo: &str) -> StoreResult<Option<StoredTenure>> {
+    Ok(tenures(conn, "t.ended_at IS NULL AND t.repo = ?1", [repo])?.pop())
+}
+
+/// The tenure `repo`'s `worker.run` presents `token` for: none while no
+/// tenure is active; the tenure that admits the start when the token is its
+/// current one; the refusal text, naming the holder, when it is not (none
+/// given, another tenure's, or one its holder was given before acquiring
+/// again).
+///
+/// The caller runs this in the transaction that records the work the start is
+/// authorized by (its usage admission), so no tenure change can fall between
+/// the check and the start it lets through.
+pub(super) fn tenure_token_check(
+    conn: &Connection,
+    repo: &str,
+    token: Option<&str>,
+) -> StoreResult<Result<Option<(String, i64)>, String>> {
+    let Some(active) = active_coordinator_of(conn, repo)? else {
+        return Ok(Ok(None));
+    };
+    let holder = super::coordinators::holder_description(&active);
+    match (token, active.token_sha256.as_deref()) {
+        (Some(token), Some(current)) if super::coordinators::token_hash(token) == current => {
+            Ok(Ok(Some((active.id, active.epoch))))
+        }
+        (None, _) => Ok(Err(format!(
+            "repository {repo} is coordinated by {holder}; a start there needs that \
+             tenure's token (`herdr coordinator acquire`, or `herdr coordinator start \
+             --token` in its pane), and none was given; nothing started"
+        ))),
+        (Some(_), _) => Ok(Err(format!(
+            "repository {repo} is coordinated by {holder}, and the token given is not that \
+             tenure's current one (another tenure's, or one replaced by a later acquire); \
+             nothing started"
+        ))),
+    }
+}
+
+/// Whether a `todo.run` of `repo` claimed under tenure `owner` (none for a run
+/// claimed outside any tenure) may take a step that lands (cherry-pick,
+/// install, TODO edit, push): only while that tenure is still the
+/// repository's active one, or, for a run without a tenure, while none is
+/// active. The refusal names the current holder; a store that cannot say
+/// refuses too. The caller runs this in the transaction that admits the step
+/// ([`Tx::tenure_step`]), so the step and the tenure it was admitted under
+/// cannot be split by a tenure change.
+pub(super) fn tenure_fence_check(
+    conn: &Connection,
+    repo: &str,
+    owner: Option<&str>,
+) -> StoreResult<Result<(), String>> {
+    let Some(owner) = owner else {
+        return match active_coordinator_of(conn, repo)? {
+            None => Ok(Ok(())),
+            Some(active) => Ok(Err(format!(
+                "it was claimed under no coordinator tenure, and repository {repo}'s tenure \
+                 is held by {} now; the run lands nothing while another holder holds it",
+                super::coordinators::holder_description(&active)
+            ))),
+        };
+    };
+    // An active tenure is its repository's only one (the store's unique
+    // index), so the owner's own row decides.
+    let tenure = tenure_by_id(conn, owner)?;
+    let tenure_repo = match &tenure {
+        Some(tenure) if tenure.ended_at.is_none() => return Ok(Ok(())),
+        Some(tenure) => tenure.repo.clone(),
+        None => repo.to_owned(),
+    };
+    let held_by = match active_coordinator_of(conn, &tenure_repo)? {
+        Some(active) => format!(
+            "it is held by {}",
+            super::coordinators::holder_description(&active)
+        ),
+        None => "no coordinator holds it now".to_owned(),
+    };
+    Ok(Err(format!(
+        "its coordinator {owner} no longer holds repository {tenure_repo}'s tenure \
+         ({held_by}); the run lands nothing for a coordinator that lost the tenure"
+    )))
+}
+
+/// A landing step a tenure admitted and has not released
+/// ([`Tx::tenure_step`]).
+pub(super) struct NewTenureStep<'a> {
+    pub(super) id: &'a str,
+    pub(super) repo: &'a str,
+    /// The tenure the step was admitted under; none for a run claimed
+    /// outside any tenure.
+    pub(super) coordinator: Option<(&'a str, i64)>,
+    pub(super) kind: &'a str,
+    pub(super) run_id: &'a str,
+    pub(super) server: (u32, Option<u64>),
+    pub(super) at_ms: u64,
+}
+
+/// The end of a tenure herdr saw and has not carried out yet
+/// ([`Tx::request_tenure_end`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingEnd {
+    pub(super) coordinator_id: String,
+    /// The tenure's epoch, so a stale end cannot end a later tenure of the
+    /// same id.
+    pub(super) epoch: i64,
+    pub(super) reason: String,
+    pub(super) cause: Option<String>,
+    pub(super) requested_ms: u64,
+}
+
+fn pending_ends_where(
+    conn: &Connection,
+    filter: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> StoreResult<Vec<PendingEnd>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT coordinator_id, epoch, reason, cause, requested_ms FROM tenure_pending_ends \
+         {filter} ORDER BY requested_ms, coordinator_id"
+    ))?;
+    let ends = statement
+        .query_map(params, |row| {
+            Ok(PendingEnd {
+                coordinator_id: row.get(0)?,
+                epoch: row.get(1)?,
+                reason: row.get(2)?,
+                cause: row.get(3)?,
+                requested_ms: row.get::<_, i64>(4)? as u64,
+            })
+        })?
+        .collect::<StoreResult<Vec<PendingEnd>>>()?;
+    Ok(ends)
+}
+
 impl Store {
     /// The active tenures, of one repository when given.
     pub(super) fn active_coordinators(&self, repo: Option<&str>) -> StoreResult<Vec<StoredTenure>> {
@@ -2151,7 +2578,83 @@ impl Store {
 
     /// The active tenure of `repo`, if any.
     pub(super) fn active_coordinator_of(&self, repo: &str) -> StoreResult<Option<StoredTenure>> {
-        Ok(self.active_coordinators(Some(repo))?.pop())
+        active_coordinator_of(&lock(&self.conn), repo)
+    }
+
+    /// The tenure `repo`'s `worker.run` presents `token` for
+    /// ([`tenure_token_check`]), as the store sees it now: the precheck of a
+    /// start, whose authoritative check and admission are one transaction.
+    pub(super) fn tenure_token_check(
+        &self,
+        repo: &str,
+        token: Option<&str>,
+    ) -> StoreResult<Result<Option<(String, i64)>, String>> {
+        self.read(|conn| tenure_token_check(conn, repo, token))
+    }
+
+    /// One tenure's pending end for `(coordinator_id, epoch)`, if herdr saw
+    /// one.
+    pub(super) fn pending_end(
+        &self,
+        coordinator_id: &str,
+        epoch: i64,
+    ) -> StoreResult<Option<PendingEnd>> {
+        self.read(|conn| {
+            Ok(pending_ends_where(
+                conn,
+                "WHERE coordinator_id = ?1 AND epoch = ?2",
+                &[&coordinator_id, &epoch],
+            )?
+            .pop())
+        })
+    }
+
+    /// Releases landing step `id` and carries out the pending ends it held
+    /// back ([`Tx::tenure_step_released`]); returns the tenures that ended.
+    pub(super) fn finish_tenure_step(
+        &self,
+        id: &str,
+        at_ms: u64,
+    ) -> StoreResult<Vec<StoredTenure>> {
+        self.transaction(|tx| tx.tenure_step_released(id, at_ms))
+    }
+
+    /// Carries out the pending ends no landing step holds back
+    /// ([`Tx::settle_pending_ends`]); returns the tenures that ended.
+    pub(super) fn settle_pending_ends(&self, at_ms: u64) -> StoreResult<Vec<StoredTenure>> {
+        self.transaction(|tx| tx.settle_pending_ends(at_ms))
+    }
+
+    /// Retires landing steps `ids`, recorded by servers that cannot release
+    /// them, records the server that retired them, and carries out the pending
+    /// ends that leaves ([`Tx::retire_tenure_steps`]).
+    pub(super) fn retire_tenure_steps(
+        &self,
+        ids: &[String],
+        at_ms: u64,
+        retired_by: (u32, Option<u64>),
+    ) -> StoreResult<Vec<StoredTenure>> {
+        self.transaction(|tx| tx.retire_tenure_steps(ids, at_ms, retired_by))
+    }
+
+    /// The landing steps still open, each with the server that admitted it
+    /// ([`Tx::tenure_step_servers`]).
+    pub(super) fn tenure_step_servers(&self) -> StoreResult<Vec<(String, u32, Option<u64>)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id, server_pid, server_start FROM tenure_steps WHERE retired_ms IS NULL",
+            )?;
+            let steps = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get::<_, i64>(1)? as u32,
+                        row.get::<_, Option<i64>>(2)?.map(|start| start as u64),
+                    ))
+                })?
+                .collect::<StoreResult<Vec<_>>>()?;
+            Ok(steps)
+        })
     }
 
     /// The chains of item coordinators, active or stopped, of `repo` when
@@ -3594,6 +4097,7 @@ mod tests {
             store
                 .transaction(|tx| {
                     tx.admit(&NewAdmission {
+                        tenure: None,
                         holder,
                         provider: "claude",
                         repo: "/repo",
@@ -3674,6 +4178,7 @@ mod tests {
         store
             .transaction(|tx| {
                 tx.admit(&NewAdmission {
+                    tenure: None,
                     holder: "bound",
                     provider: "claude",
                     repo: "/repo",
@@ -3729,6 +4234,7 @@ mod tests {
             store
                 .transaction(|tx| {
                     tx.admit(&NewAdmission {
+                        tenure: None,
                         holder,
                         provider: "claude",
                         repo: "/repo",
@@ -3985,6 +4491,8 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP TABLE tenure_steps;
+                 DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
@@ -4019,6 +4527,8 @@ mod tests {
             .connection()
             .execute_batch(&format!(
                 "DROP TABLE usage_admissions;
+                 DROP TABLE tenure_steps;
+                 DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
                      ('/a', 0, '{{\"state\": \"open\"}}', 40),
@@ -4030,7 +4540,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 3
+                MIGRATIONS.len() - 4
             ))
             .unwrap();
         drop(store);
@@ -4102,9 +4612,11 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP TABLE tenure_steps;
+                 DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 34
+                MIGRATIONS.len() - 35
             ))
             .unwrap();
         drop(store);
@@ -4174,9 +4686,11 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP TABLE tenure_steps;
+                 DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 23
+                MIGRATIONS.len() - 24
             ))
             .unwrap();
         drop(store);

@@ -5,13 +5,64 @@
 //! stops the worker and answers with the turn's text, usage and outcome.
 //! While the repository has an active coordination tenure, only a run with
 //! that tenure's current token is admitted
-//! ([`WorkerSupervisor::check_tenure_token`]); with none active, any is.
+//! ([`WorkerSupervisor::check_tenure_token`]); with none active, any is. The
+//! token is checked in the transaction that records the usage admission, and
+//! again in the start step just before the worker's process exists
+//! ([`WorkerSupervisor::begin_start_step`]), so no tenure change can fall
+//! between a check and the start it admits.
 
 use super::super::*;
 use crate::api::schema::{
     WorkerGatedRun, WorkerGatedRunOutcome, WorkerGatedRunParams, WorkerModelUsage, WorkerQuestion,
     WorkerTurnResult,
 };
+
+/// The latch a test sets for the window between `worker.run`'s tenure
+/// precheck and the usage admission that authorizes its start
+/// ([`set_tenure_hook_for_test`]).
+#[cfg(all(test, unix))]
+type TenureHook = Box<dyn FnOnce(&str)>;
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static TENURE_HOOK: std::cell::RefCell<Option<TenureHook>> =
+        const { std::cell::RefCell::new(None) };
+    static START_HOOK: std::cell::RefCell<Option<TenureHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `hook` inside `worker.run`, after its tenure precheck passed and
+/// before the usage admission that authorizes its start, so a test can force
+/// a tenure change there: the interleaving the admission's transaction closes.
+/// A latch, never a delay — the hook runs at that exact point, and the next
+/// run has none.
+#[cfg(all(test, unix))]
+pub(in crate::workers) fn set_tenure_hook_for_test(hook: Box<dyn FnOnce(&str)>) {
+    TENURE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+/// Runs `hook` inside `worker.run`, after the usage admission committed and
+/// before the start step that guards the spawn, so a test can force a tenure
+/// change there: the interleaving the start step's transaction closes. A latch,
+/// never a delay — the hook runs at that exact point, and the next run has none.
+#[cfg(all(test, unix))]
+pub(in crate::workers) fn set_start_hook_for_test(hook: Box<dyn FnOnce(&str)>) {
+    START_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+#[cfg(all(test, unix))]
+fn run_tenure_hook(repo: &str) {
+    if let Some(hook) = TENURE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(repo);
+    }
+}
+
+#[cfg(all(test, unix))]
+fn run_start_hook(repo: &str) {
+    if let Some(hook) = START_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(repo);
+    }
+}
 
 /// What ended the run's turn, read from the worker's status.
 struct TurnEnd {
@@ -41,8 +92,14 @@ impl WorkerSupervisor {
         let agent = params.agent.unwrap_or_default();
         let repo = self.gated_run_repository(params)?;
         // The repository's tenure, when one is active, admits only its
-        // holder's current token: a refusal starts nothing.
+        // holder's current token: this precheck refuses before the provider's
+        // usage is read. The authoritative check runs in the transaction that
+        // records the run's usage admission, which also names the tenure it
+        // admitted ([`runs::TenureAdmission`]), so a tenure change cannot
+        // fall between the check and the start.
         self.check_tenure_token(&repo, params.tenure_token.as_deref())?;
+        #[cfg(all(test, unix))]
+        run_tenure_hook(&repo);
         // The gate as `todo.run` passes it: the same state, the same
         // recording; a refusal starts nothing.
         let holder = runs::usage_gate::Holder::new_worker_run();
@@ -52,8 +109,14 @@ impl WorkerSupervisor {
             params.model.as_deref(),
             params.ignore_usage,
             Some(&holder),
+            Some(runs::TenureAdmission {
+                repo: &repo,
+                token: params.tenure_token.as_deref(),
+            }),
         )?;
         usage_gate["ignore_usage"] = json!(params.ignore_usage);
+        #[cfg(all(test, unix))]
+        run_start_hook(&repo);
         let start = WorkerStartParams {
             cwd: params.cwd.clone(),
             prompt: params.prompt.clone(),
@@ -71,20 +134,45 @@ impl WorkerSupervisor {
             command_id: None,
         };
         // The admission ends with the start that failed; once started, the
-        // worker's exit frees its slot.
-        let worker = self
-            .start_once(&start, None, None, Some(&holder.key()))
-            .inspect_err(|_| {
+        // worker's exit frees its slot. The step re-checks the admission's
+        // tenure and its token and holds that tenure through the spawn, so an
+        // end, a successor's claim or a rotated token between the admission and
+        // here starts nothing.
+        let holder_key = holder.key();
+        let step = match self.begin_start_step(&repo, &holder_key, params.tenure_token.as_deref()) {
+            Ok(step) => step,
+            Err(error) => {
                 if let Ok(store) = self.run_store() {
                     if let Err(error) = store.release_admission(
-                        &holder.key(),
-                        "the worker's start failed",
+                        &holder_key,
+                        "the tenure changed before its worker started",
                         now_ms(),
                     ) {
                         warn!(%error, "cannot end worker.run's usage gate admission");
                     }
                 }
-            })?;
+                return Err(error);
+            }
+        };
+        let worker = match self
+            .start_once(&start, None, None, Some(&holder_key))
+            .inspect_err(|_| {
+                if let Ok(store) = self.run_store() {
+                    if let Err(error) =
+                        store.release_admission(&holder_key, "the worker's start failed", now_ms())
+                    {
+                        warn!(%error, "cannot end worker.run's usage gate admission");
+                    }
+                }
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                drop(step);
+                return Err(error);
+            }
+        };
+        // The process exists: the step lets its tenure end from now on.
+        drop(step);
         let worker_id = worker.worker_id;
         if let Some(number) = worker_number(&worker_id) {
             let mut event = json!({"type": "usage_gate", "method": "worker.run", "repo": repo});

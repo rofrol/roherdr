@@ -121,6 +121,7 @@ impl WorkerSupervisor {
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
                 holder_watches: Mutex::new(BTreeSet::new()),
+                failed_step_releases: Mutex::new(BTreeSet::new()),
                 handed_off: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(unix)]
                 broker,
@@ -138,6 +139,8 @@ impl WorkerSupervisor {
                 review_program: Mutex::new(None),
                 #[cfg(all(test, unix))]
                 gated_run_end_failure: Mutex::new(Default::default()),
+                #[cfg(test)]
+                fail_landing_release: Mutex::new(false),
             }),
         };
         for (number, held) in unowned {

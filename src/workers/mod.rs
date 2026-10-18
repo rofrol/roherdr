@@ -476,6 +476,10 @@ struct Shared {
     /// The tenure holder processes whose exit this server watches
     /// ([`crate::platform::watch_process_exit`]), each once.
     holder_watches: Mutex<BTreeSet<store::HolderProcess>>,
+    /// The landing steps whose release failed on this server
+    /// ([`WorkerSupervisor::note_failed_landing_release`]); the next reader
+    /// retries them.
+    failed_step_releases: Mutex<BTreeSet<String>>,
     /// Set once a live handoff succeeded: this server's `todo run` drivers
     /// let go of their runs (and their run locks) for the new server.
     handed_off: std::sync::atomic::AtomicBool,
@@ -511,6 +515,10 @@ struct Shared {
     /// sending it, so the run's handling of a failed stop is tested.
     #[cfg(all(test, unix))]
     gated_run_end_failure: Mutex<supervisor::gated_run::GatedRunEndFailure>,
+    /// A test makes the next landing-step release fail without writing it, so
+    /// the next reader's retry is tested.
+    #[cfg(test)]
+    fail_landing_release: Mutex<bool>,
 }
 
 /// Starts, tracks and stops headless workers.

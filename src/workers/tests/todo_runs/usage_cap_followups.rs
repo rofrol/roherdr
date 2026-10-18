@@ -22,6 +22,7 @@ fn a_lost_living_worker_holds_its_slot_until_its_process_ends() {
             None,
             false,
             Some(&gate_holder("third")),
+            None,
         )
     };
     assert_eq!(held(&fixture.supervisor, &repo).len(), 2);
@@ -56,6 +57,7 @@ fn admissions_list_includes_pending_starts_and_uses_the_caps_predicate() {
             None,
             false,
             Some(&gate_holder(name)),
+            None,
         )
     };
     gate("pending").unwrap();
@@ -98,6 +100,7 @@ fn a_committed_handoff_retires_pending_starts_but_keeps_a_live_workers_slot() {
             None,
             false,
             Some(&gate_holder(name)),
+            None,
         )
     };
     gate(&fixture.supervisor, "pending").unwrap();
@@ -242,6 +245,7 @@ fn reconciliation_frees_a_bound_admission_whose_worker_was_never_written() {
             None,
             false,
             Some(&gate_holder(name)),
+            None,
         )
     };
     gate(&fixture.supervisor, "half-spawned").unwrap();
@@ -299,6 +303,7 @@ fn a_start_its_server_may_still_spawn_keeps_its_slot_without_a_worker_row() {
             None,
             false,
             Some(&gate_holder("spawning")),
+            None,
         )
         .unwrap();
     // Between naming the worker and writing its row there is no journal
@@ -330,6 +335,7 @@ fn a_handoff_retires_the_sources_unbound_starts_and_keeps_its_spawn_in_flight() 
                 None,
                 false,
                 Some(&gate_holder(name)),
+                None,
             )
             .unwrap();
     };
@@ -364,6 +370,7 @@ fn the_sources_late_admissions_are_retired_when_its_exit_event_arrives() {
                 None,
                 false,
                 Some(&gate_holder(name)),
+                None,
             )
             .unwrap();
     };
@@ -423,6 +430,7 @@ fn two_consecutive_handoffs_retire_each_source_and_keep_a_live_workers_slot() {
                 None,
                 false,
                 Some(&gate_holder(name)),
+                None,
             )
             .unwrap();
     };
@@ -490,6 +498,7 @@ fn the_admissions_list_resolves_a_worktrees_repository_like_the_gate() {
             None,
             false,
             Some(&gate_holder("from-worktree")),
+            None,
         )
         .unwrap();
     let listed = fixture.supervisor.admissions(&repo).unwrap();

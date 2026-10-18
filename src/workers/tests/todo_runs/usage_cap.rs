@@ -36,7 +36,7 @@ fn admitted_worker(fixture: &Fixture, dir: &Path, repo: &str, holder: &str) -> S
     let holder = gate_holder(holder);
     fixture
         .supervisor
-        .usage_gate(repo, WorkerAgent::Claude, None, false, Some(&holder))
+        .usage_gate(repo, WorkerAgent::Claude, None, false, Some(&holder), None)
         .unwrap();
     let worker = fixture
         .supervisor
@@ -77,6 +77,7 @@ fn concurrent_starts_in_one_repository_admit_exactly_the_cap() {
                             None,
                             false,
                             Some(&gate_holder(&format!("start-{start}"))),
+                            None,
                         )
                     })
                 })
@@ -125,6 +126,7 @@ fn concurrent_starts_in_one_repository_admit_exactly_the_cap() {
                 None,
                 false,
                 Some(&gate_holder("pi")),
+                None,
             )
             .unwrap();
     }
@@ -166,6 +168,7 @@ fn worktrees_and_subdirectories_of_one_clone_share_a_bucket() {
             None,
             false,
             Some(&gate_holder(holder)),
+            None,
         )
     };
     gate(&worktrees[0], "one").unwrap();
@@ -216,6 +219,7 @@ fn another_repository_has_slots_of_its_own() {
             None,
             false,
             Some(&gate_holder(holder)),
+            None,
         )
     };
     gate(&repo_a, "a1").unwrap();
@@ -244,6 +248,7 @@ fn non_git_directories_use_real_paths_then_absolute_paths() {
             None,
             false,
             Some(&gate_holder(holder)),
+            None,
         )
     };
     gate(&directory, "real").unwrap();
@@ -319,6 +324,7 @@ fn bare_and_separate_git_directories_store_the_common_directory_identity() {
                 None,
                 false,
                 Some(&gate_holder(holder)),
+                None,
             )
             .unwrap();
         // Inspect the persisted identity independently of repo_identity.
@@ -363,6 +369,7 @@ fn invalid_worktree_git_file_falls_back_to_real_path() {
             None,
             false,
             Some(&gate_holder("invalid")),
+            None,
         )
         .unwrap();
     let admissions = store_of(&fixture.supervisor)
@@ -422,6 +429,7 @@ fn todo_and_worker_run_race_for_the_same_git_identity() {
                         None,
                         false,
                         Some(holder),
+                        None,
                     )
                 })
             })
@@ -461,6 +469,7 @@ fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_
             None,
             ignore,
             Some(&gate_holder(holder)),
+            None,
         )
     };
     gate("retried", false).unwrap();
@@ -546,6 +555,7 @@ fn a_duplicate_exit_frees_the_slot_once() {
             None,
             false,
             Some(&gate_holder(holder)),
+            None,
         )
     };
     gate("third").unwrap();
@@ -577,6 +587,7 @@ fn the_cap_counts_the_models_provider_not_its_agent() {
             None,
             false,
             Some(&gate_holder("openai")),
+            None,
         )
         .unwrap();
     // The same agent on a DeepSeek model has DeepSeek's slot.
@@ -588,6 +599,7 @@ fn the_cap_counts_the_models_provider_not_its_agent() {
             Some("deepseek/deepseek-flash"),
             false,
             Some(&gate_holder("deepseek")),
+            None,
         )
         .unwrap();
     // A second ChatGPT-plan worker is still past its cap.
@@ -599,6 +611,7 @@ fn the_cap_counts_the_models_provider_not_its_agent() {
             None,
             false,
             Some(&gate_holder("third")),
+            None,
         )
         .unwrap_err();
     assert_eq!(refused.code(), "usage_gate", "{refused}");
@@ -617,7 +630,8 @@ fn the_cap_counts_the_models_provider_not_its_agent() {
                 WorkerAgent::Claude,
                 None,
                 false,
-                Some(&gate_holder("claude"))
+                Some(&gate_holder("claude")),
+                None,
             )
             .unwrap_err()
             .code(),
@@ -642,7 +656,7 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     let gate = |holder: &Holder| {
         fixture
             .supervisor
-            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(holder))
+            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(holder), None)
             .unwrap();
     };
     // Running, and still running after the restart (its server still holds
@@ -748,6 +762,7 @@ fn the_high_latch_closed_from_one_repository_refuses_another() {
             None,
             false,
             Some(&gate_holder(repo)),
+            None,
         )
     };
     fixture.supervisor.set_usage_for_test(fresh_usage(40, 95));

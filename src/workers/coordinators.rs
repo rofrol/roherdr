@@ -19,7 +19,57 @@
 //! recorded holders again and ends the tenures of those that are gone. A
 //! `todo.run` lands (cherry-pick, install, TODO edit, push) only while the
 //! tenure it was claimed under is still the repository's active one
-//! ([`WorkerSupervisor::tenure_fence`]).
+//! ([`WorkerSupervisor::begin_landing`]).
+//!
+//! A tenure check holds through the step it guards, so a tenure change can
+//! never fall between a check and the work it admits. Two mechanisms, one
+//! for each step:
+//!
+//! - A landing step is admitted in one transaction that checks the fence and
+//!   records the step (`tenure_steps`), and the guard it returns holds its
+//!   tenure from there until the step lands. While a step is in flight its
+//!   tenure ends only through that table: `coordinator_end` records the end
+//!   as pending and the step's release carries it out, so the step lands
+//!   under its own tenure, never under a successor's, and no successor can
+//!   claim the repository in between (the unique index still holds the
+//!   tenure).
+//! - `worker.run`'s token check runs in the transaction that records its
+//!   usage admission ([`crate::workers::store::tenure_token_check`]), which
+//!   also names the tenure it admitted, and the token is checked again in the
+//!   transaction that records the start step just before the worker's process
+//!   exists ([`WorkerSupervisor::begin_start_step`]). A tenure that ended, or
+//!   a token a later acquire replaced, between the admission and the spawn
+//!   starts nothing, and the step holds the tenure through the spawn itself.
+//!
+//! An end herdr saw itself (a holder process exited, a pane closed, an agent
+//! exited) is persisted first (`tenure_pending_ends`) and carried out in the
+//! same call when it can be; one a landing step holds back stays recorded and
+//! is carried out by the next reader — a claim attempt, a server that starts,
+//! `coordinator end`, or the step's release — never by a timer. A pending end
+//! names its tenure's epoch, and it is applied only to that epoch, so a stale
+//! end cannot end a later tenure of the same id. The same readers also check
+//! a recorded holder's process again, so a tenure whose exit event herdr never
+//! received (a watch it could not place, or one the kernel dropped) is
+//! released there.
+//!
+//! A step whose release failed (a busy store, an unwind that did not run) is
+//! retried by the next reader on this server, and a step whose admitting
+//! server is gone is retired by a reader that matches the recorded pid and
+//! start token, never the pid alone; the row records the retirer. A step a
+//! live server genuinely abandoned is not retired by another reader: restart
+//! herdr (a live handoff of an install does it), which gives the step a
+//! server identity no live process has, and the next server retires it. The
+//! Linux `poll` and macOS `kevent` error paths stop a watch without calling
+//! its callback; the next reader's re-check of the holder's process ends that
+//! tenure, and a platform-side fix is a separate change outside this module.
+//!
+//! `coordinator.acquire --pid` takes the pid the caller names: any process of
+//! the same user can name another holder's pid and rotate its token. That is
+//! the same-user trust the design already rests on (a same-user process can
+//! also signal, read and write whatever the holder can), and the user accepted
+//! it (2026-10-17, item t-bbwge2bc). Who rotated is not recorded: the requester
+//! never reaches the store beyond the pid it names, so a fix costs the peer
+//! identity a socket request does not carry.
 //!
 //! The workers and `todo.run`s a coordinator starts belong to its tenure,
 //! not to its pane: when its agent session comes back in another pane
@@ -325,7 +375,7 @@ fn new_token() -> Result<String, WorkerError> {
 }
 
 /// The sha256 of `token`, as the store keeps it.
-fn token_sha256(token: &str) -> String {
+pub(super) fn token_hash(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -403,6 +453,71 @@ pub(crate) fn override_notice(record: &CoordinatorOverride) -> (String, String) 
     )
 }
 
+/// A landing step's id: `s-` and 8 lowercase base32 characters, from a hash
+/// of the time, this process, a counter, the step and the run.
+pub(super) fn new_step_id(kind: &str, run_id: &str) -> String {
+    static STEPS: AtomicU64 = AtomicU64::new(0);
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let step = STEPS.fetch_add(1, Ordering::Relaxed);
+    let digest = Sha256::digest(format!(
+        "{nanos}:{}:{step}:{kind}:{run_id}",
+        std::process::id()
+    ));
+    let bits = digest[..5]
+        .iter()
+        .fold(0u64, |bits, byte| (bits << 8) | u64::from(*byte));
+    let id: String = (0..8)
+        .map(|index| ALPHABET[((bits >> (35 - 5 * index)) & 31) as usize] as char)
+        .collect();
+    format!("s-{id}")
+}
+
+/// Why a claim of `repo` was refused as it read the tenures.
+enum ClaimRefusal {
+    /// Another tenure holds the repository.
+    Active(Box<StoredTenure>),
+    /// A run claimed under no tenure is landing a step here: the claim waits
+    /// for it, so that step lands under the tenure it was admitted under and
+    /// never under the claimant's.
+    Landing(Vec<String>),
+}
+
+/// A landing or start step admitted against its tenure
+/// ([`WorkerSupervisor::begin_landing`], [`WorkerSupervisor::begin_start_step`]):
+/// the check and the record of the step are one transaction, and the step holds
+/// its tenure from there until this guard is dropped. Dropping it releases the
+/// step and carries out the end of its tenure if one was asked for meanwhile; a
+/// release that fails is recorded here and retried by the next reader on this
+/// server, and a server that starts after this one retires it
+/// ([`WorkerSupervisor::holders_at_start`]).
+pub(super) struct LandingStep<'a> {
+    supervisor: &'a WorkerSupervisor,
+    id: String,
+}
+
+impl std::fmt::Debug for LandingStep<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LandingStep").field("id", &self.id).finish()
+    }
+}
+
+impl Drop for LandingStep<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.supervisor.release_landing(&self.id) {
+            self.supervisor.note_failed_landing_release(&self.id);
+            tracing::error!(
+                %error,
+                step = %self.id,
+                "cannot release a landing step; the next reader retries it"
+            );
+        }
+    }
+}
+
 impl WorkerSupervisor {
     pub(super) fn tenure_store(&self) -> Result<&super::store::Store, WorkerError> {
         self.shared
@@ -427,14 +542,25 @@ impl WorkerSupervisor {
                 warn!(%error, pane_id, session_id, "cannot resume the session's coordination tenure");
             }
         }
+        // A reader of the tenures: it retries a step release this server could
+        // not finish and retires the steps of servers that are gone, before it
+        // asks whether the repository is free.
+        self.read_tenures();
         let store = self.tenure_store()?;
         let id = new_tenure_id(repo, pane_id);
+        let at = now_ms();
+        let mut settled: Vec<StoredTenure> = Vec::new();
         let outcome = store.transaction(|tx| {
+            settled.extend(self.settle_before_claim(tx, repo, at)?);
             if let Some(active) = tx.active_coordinator(repo)? {
-                return Ok(Err(active));
+                return Ok(Err(ClaimRefusal::Active(Box::new(active))));
+            }
+            let landing = tx.unowned_landing_steps(repo)?;
+            if !landing.is_empty() {
+                return Ok(Err(ClaimRefusal::Landing(landing)));
             }
             if let Some(bound) = tx.coordinator_of_pane(pane_id)? {
-                return Ok(Err(bound));
+                return Ok(Err(ClaimRefusal::Active(Box::new(bound))));
             }
             let tenure = NewTenure {
                 id: &id,
@@ -443,20 +569,26 @@ impl WorkerSupervisor {
                 session_id,
                 holder: None,
             };
-            tx.coordinator_started(&tenure, now_ms()).map(Ok)
+            tx.coordinator_started(&tenure, at).map(Ok)
         });
+        for tenure in &settled {
+            self.announce_tenure_end(&tenure.id);
+        }
         let refused = match outcome {
             Ok(Ok(tenure)) => {
                 notify_clients();
                 return Ok(info(tenure));
             }
-            Ok(Err(other)) => other,
+            Ok(Err(ClaimRefusal::Landing(kinds))) => {
+                return Err(Self::landing_refusal(repo, &kinds))
+            }
+            Ok(Err(ClaimRefusal::Active(other))) => *other,
             // Another server's tenure committed between the check and the
             // insert: the index refused this one.
             Err(error) if is_unique_violation(&error) => {
                 return match store.active_coordinators(Some(repo)) {
                     Ok(mut active) if !active.is_empty() => {
-                        Err(Self::refusal(repo, pane_id, active.remove(0)))
+                        Err(self.refusal(repo, pane_id, &active.remove(0)))
                     }
                     _ => Err(WorkerError::CoordinatorActive(format!(
                         "repository {repo} already has an active coordinator"
@@ -468,7 +600,7 @@ impl WorkerSupervisor {
         if refused.repo == repo && refused.pane_id.as_deref() == Some(pane_id) {
             return Ok(info(refused));
         }
-        Err(Self::refusal(repo, pane_id, refused))
+        Err(self.refusal(repo, pane_id, &refused))
     }
 
     /// `coordinator.acquire` by a pane: a new token for the active tenure
@@ -480,7 +612,7 @@ impl WorkerSupervisor {
         pane_id: &str,
     ) -> Result<(CoordinatorInfo, String), WorkerError> {
         let token = new_token()?;
-        let hash = token_sha256(&token);
+        let hash = token_hash(&token);
         let issued = self
             .tenure_store()?
             .transaction(|tx| {
@@ -518,18 +650,28 @@ impl WorkerSupervisor {
                 "process {pid} is not running, or herdr cannot read when it started"
             ))
         })?;
+        // A reader of the tenures, as `coordinator.start` is: a failed step
+        // release is retried and a dead server's step retired before the claim
+        // asks whether the repository is free.
+        self.read_tenures();
         let holder = HolderProcess { pid, start };
         let token = new_token()?;
-        let hash = token_sha256(&token);
+        let hash = token_hash(&token);
         let store = self.tenure_store()?;
         let id = new_tenure_id(repo, &format!("pid:{pid}"));
         let at = now_ms();
+        let mut settled: Vec<StoredTenure> = Vec::new();
         let outcome = store.transaction(|tx| {
+            settled.extend(self.settle_before_claim(tx, repo, at)?);
             if let Some(active) = tx.active_coordinator(repo)? {
                 if active.holder != Some(holder) {
-                    return Ok(Err(active));
+                    return Ok(Err(ClaimRefusal::Active(Box::new(active))));
                 }
                 return tx.coordinator_token(&active.id, &hash, at).map(Ok);
+            }
+            let landing = tx.unowned_landing_steps(repo)?;
+            if !landing.is_empty() {
+                return Ok(Err(ClaimRefusal::Landing(landing)));
             }
             let tenure = NewTenure {
                 id: &id,
@@ -543,11 +685,14 @@ impl WorkerSupervisor {
         });
         let tenure = match outcome {
             Ok(Ok(tenure)) => tenure,
-            Ok(Err(other)) => return Err(Self::refusal(repo, "none", other)),
+            Ok(Err(ClaimRefusal::Landing(kinds))) => {
+                return Err(Self::landing_refusal(repo, &kinds))
+            }
+            Ok(Err(ClaimRefusal::Active(other))) => return Err(self.refusal(repo, "none", &other)),
             Err(error) if is_unique_violation(&error) => {
                 return match store.active_coordinators(Some(repo)) {
                     Ok(mut active) if !active.is_empty() => {
-                        Err(Self::refusal(repo, "none", active.remove(0)))
+                        Err(self.refusal(repo, "none", &active.remove(0)))
                     }
                     _ => Err(WorkerError::CoordinatorActive(format!(
                         "repository {repo} already has an active coordinator"
@@ -556,6 +701,9 @@ impl WorkerSupervisor {
             }
             Err(error) => return Err(store_error(error)),
         };
+        for tenure in &settled {
+            self.announce_tenure_end(&tenure.id);
+        }
         notify_clients();
         if let Err(error) = self.watch_holder(holder) {
             let cause = format!("herdr cannot watch holder process {pid}'s exit: {error}");
@@ -597,8 +745,11 @@ impl WorkerSupervisor {
             holder.start,
             Box::new(move || {
                 let supervisor = WorkerSupervisor { shared };
-                lock(&supervisor.shared.holder_watches).remove(&holder);
+                // The watch goes only once the exit is recorded: an end that
+                // could not be carried out is left for the next reader, not
+                // forgotten with the watch ([`Self::holder_exited`]).
                 supervisor.holder_exited(holder);
+                lock(&supervisor.shared.holder_watches).remove(&holder);
             }),
         );
         if watched.is_err() {
@@ -608,7 +759,13 @@ impl WorkerSupervisor {
     }
 
     /// Process `holder` exited (its exit event, or found gone when this
-    /// server started): every active tenure it holds ends `orphaned`.
+    /// server started): every active tenure it holds ends `orphaned`. Each
+    /// end is recorded before it is carried out, so one a landing step holds
+    /// back stays recorded and the next reader carries it out even when this
+    /// call could not finish; a store that cannot be read or written here
+    /// leaves both the end and the tenure for that reader, which also
+    /// re-checks the holder's process (`settle_before_claim`, a server that
+    /// starts).
     fn holder_exited(&self, holder: HolderProcess) {
         let held = match self
             .tenure_store()
@@ -626,21 +783,163 @@ impl WorkerSupervisor {
             .filter(|tenure| tenure.holder == Some(holder))
         {
             if let Err(error) = self.coordinator_end(&tenure.id, ORPHANED, Some(&cause)) {
-                warn!(%error, coordinator_id = %tenure.id, "cannot end the exited holder's tenure");
+                warn!(
+                    %error,
+                    coordinator_id = %tenure.id,
+                    "cannot end the exited holder's tenure; the next reader ends it"
+                );
             }
         }
     }
 
-    /// Reconciles the process holders from the store when this server
-    /// starts (also after a live handoff, whose new server starts here): a
-    /// recorded holder that is gone, or whose pid names a later process,
-    /// releases its tenure now; a live one is watched for its exit event.
-    /// A holder whose exit cannot be watched releases its tenure too.
+    /// What a claim attempt reads before it asks for a repository: the ends
+    /// herdr saw and has not carried out yet are carried out now, and a
+    /// tenure whose recorded holder process is gone ends even when no exit
+    /// event reached herdr (a watch it could not place, a kernel event it
+    /// lost, or an end whose store write failed). Returns the tenures that
+    /// ended, which the caller announces after its commit.
+    fn settle_before_claim(
+        &self,
+        tx: &Tx<'_>,
+        repo: &str,
+        at_ms: u64,
+    ) -> super::store::StoreResult<Vec<StoredTenure>> {
+        let active = tx.active_coordinator(repo)?;
+        if let Some(holder) = active.as_ref().and_then(|active| active.holder) {
+            // The start token tells the holder's process from a later one that
+            // reused its pid; a process herdr cannot inspect counts as gone,
+            // as it does when a watch cannot be placed.
+            if crate::platform::process_start_token(holder.pid) != Some(holder.start) {
+                if let Some(active) = active {
+                    tx.request_tenure_end(&super::store::PendingEnd {
+                        coordinator_id: active.id,
+                        epoch: active.epoch,
+                        reason: ORPHANED.to_owned(),
+                        cause: Some(format!("its holder process {} exited", holder.pid)),
+                        requested_ms: at_ms,
+                    })?;
+                }
+            }
+        }
+        tx.settle_pending_ends(at_ms)
+    }
+
+    /// A reader of the tenures, called before a claim (or `coordinator end`)
+    /// asks for a repository: it retries a step release this server could not
+    /// finish, and retires the steps of servers that are gone (with the end
+    /// each held back). Neither runs on a timer.
+    fn read_tenures(&self) {
+        self.retry_failed_landing_releases();
+        self.retire_dead_tenure_steps();
+    }
+
+    /// Whether the server that admitted a step is gone. Only its pid and start
+    /// token identify it: one recorded without a start token can never be
+    /// proven gone, so a pid alone never retires a step.
+    fn step_server_gone(pid: u32, start: Option<u64>) -> bool {
+        let Some(recorded) = start else {
+            return false;
+        };
+        crate::platform::process_start_token(pid) != Some(recorded)
+    }
+
+    /// Retires the landing steps of servers that are gone, recording that this
+    /// server retired them, and carries out the ends they held back. A step of
+    /// a live server is left to its release, or to the next server when that
+    /// release was lost with the process.
+    fn retire_dead_tenure_steps(&self) {
+        let store = match self.tenure_store() {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(%error, "cannot read the tenures' landing steps");
+                return;
+            }
+        };
+        let gone: Vec<String> = match store.tenure_step_servers() {
+            Ok(steps) => steps
+                .into_iter()
+                .filter(|(_, pid, start)| Self::step_server_gone(*pid, *start))
+                .map(|(id, _, _)| id)
+                .collect(),
+            Err(error) => {
+                warn!(%error, "cannot read the tenures' landing steps");
+                return;
+            }
+        };
+        if gone.is_empty() {
+            return;
+        }
+        let pid = std::process::id();
+        let retired_by = (pid, crate::platform::process_start_token(pid));
+        match store.retire_tenure_steps(&gone, now_ms(), retired_by) {
+            Ok(ended) => {
+                for tenure in &ended {
+                    self.announce_tenure_end(&tenure.id);
+                }
+            }
+            Err(error) => {
+                warn!(%error, "cannot retire the landing steps of the servers that are gone")
+            }
+        }
+    }
+
+    /// Records a step whose release failed, so the next reader on this server
+    /// retries it. The step stays open meanwhile, so the tenure it holds does
+    /// not end under the work the step guards.
+    fn note_failed_landing_release(&self, id: &str) {
+        lock(&self.shared.failed_step_releases).insert(id.to_owned());
+    }
+
+    /// Retries the releases of steps recorded by [`Self::note_failed_landing_release`].
+    fn retry_failed_landing_releases(&self) {
+        let ids: Vec<String> = lock(&self.shared.failed_step_releases)
+            .iter()
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let store = match self.tenure_store() {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::error!(%error, "cannot retry the landing steps' releases");
+                return;
+            }
+        };
+        for id in ids {
+            match store.finish_tenure_step(&id, now_ms()) {
+                Ok(ended) => {
+                    lock(&self.shared.failed_step_releases).remove(&id);
+                    for tenure in &ended {
+                        self.announce_tenure_end(&tenure.id);
+                    }
+                }
+                Err(error) => tracing::error!(
+                    %error,
+                    step = %id,
+                    "cannot release a landing step; the next reader retries it"
+                ),
+            }
+        }
+    }
+
+    /// Reconciles the tenures' landing steps and pending ends when this
+    /// server starts (also after a live handoff, whose new server starts
+    /// here): a step of a server that is gone is retired and the end it held
+    /// back is carried out. Then the process holders: a recorded holder that
+    /// is gone, or whose pid names a later process, releases its tenure now;
+    /// a live one is watched for its exit event. A holder whose exit cannot
+    /// be watched releases its tenure too.
     pub(super) fn holders_at_start(&self) {
-        let active = match self
-            .tenure_store()
-            .and_then(|store| store.active_coordinators(None).map_err(store_error))
-        {
+        self.read_tenures();
+        let store = match self.tenure_store() {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(%error, "cannot read the tenures' holder processes");
+                return;
+            }
+        };
+        let active = match store.active_coordinators(None) {
             Ok(active) => active,
             Err(error) => {
                 warn!(%error, "cannot read the tenures' holder processes");
@@ -669,87 +968,218 @@ impl WorkerSupervisor {
     /// current one: none given, another tenure's, or one its holder was
     /// given before acquiring again. With no active tenure nothing is
     /// checked.
+    ///
+    /// This is the precheck, before the start reads the provider's usage: the
+    /// authoritative check runs in the transaction that records the start's
+    /// usage admission ([`super::store::tenure_token_check`]), so a tenure
+    /// change cannot fall between the check and the start it admits.
     pub(crate) fn check_tenure_token(
         &self,
         repo: &str,
         token: Option<&str>,
     ) -> Result<(), WorkerError> {
-        let Some(active) = self
+        match self
             .tenure_store()?
-            .active_coordinator_of(repo)
+            .tenure_token_check(repo, token)
             .map_err(store_error)?
-        else {
-            return Ok(());
-        };
-        let holder = holder_description(&active);
-        match (token, active.token_sha256.as_deref()) {
-            (Some(token), Some(current)) if token_sha256(token) == current => Ok(()),
-            (None, _) => Err(WorkerError::TenureToken(format!(
-                "repository {repo} is coordinated by {holder}; a start there needs that \
-                 tenure's token (`herdr coordinator acquire`, or `herdr coordinator start \
-                 --token` in its pane), and none was given; nothing started"
-            ))),
-            (Some(_), _) => Err(WorkerError::TenureToken(format!(
-                "repository {repo} is coordinated by {holder}, and the token given is not that \
-                 tenure's current one (another tenure's, or one replaced by a later acquire); \
-                 nothing started"
-            ))),
+        {
+            Ok(_) => Ok(()),
+            Err(why) => Err(WorkerError::TenureToken(why)),
         }
     }
 
-    /// Whether a `todo.run` of `repo` claimed under tenure `owner` (none for
-    /// a run claimed outside any tenure) may take a step that lands
-    /// (cherry-pick, install, TODO edit, push): only while that tenure is
-    /// still the repository's active one, or, for a run without a tenure,
-    /// while none is active. The refusal names the current holder; a store
-    /// that cannot say refuses too.
-    pub(super) fn tenure_fence(&self, repo: &str, owner: Option<&str>) -> Result<(), String> {
+    /// Admits the landing step `kind` of run `run_id` in `repo`, claimed under
+    /// tenure `owner` (none for a run claimed outside any tenure), and holds
+    /// the tenure until the returned guard is dropped: one transaction checks
+    /// the fence ([`super::store::tenure_fence_check`]) and records the step,
+    /// so a tenure change cannot fall between the check and the step. While
+    /// the step is in flight its tenure does not end — `coordinator_end`
+    /// records the end and carries it out once the step has landed, and a
+    /// successor can claim the repository only then. The refusal names the
+    /// current holder; a store that cannot say refuses too.
+    pub(super) fn begin_landing(
+        &self,
+        repo: &str,
+        owner: Option<&str>,
+        kind: &str,
+        run_id: &str,
+    ) -> Result<LandingStep<'_>, String> {
         let unreadable =
             |error: WorkerError| format!("cannot read repository {repo}'s tenure: {error}");
         let store = self.tenure_store().map_err(unreadable)?;
-        let Some(owner) = owner else {
-            return match store
-                .active_coordinator_of(repo)
-                .map_err(|error| unreadable(store_error(error)))?
-            {
-                None => Ok(()),
-                Some(active) => Err(format!(
-                    "it was claimed under no coordinator tenure, and repository {repo}'s tenure \
-                     is held by {} now; the run lands nothing while another holder holds it",
-                    holder_description(&active)
-                )),
-            };
-        };
-        // An active tenure is its repository's only one (the store's
-        // unique index), so the owner's own row decides.
-        let tenure = store
-            .coordinator(owner)
+        let id = new_step_id(kind, run_id);
+        let at = now_ms();
+        let pid = std::process::id();
+        let admitted = store
+            .transaction(|tx| {
+                match tx.tenure_fence(repo, owner)? {
+                    Ok(()) => {}
+                    Err(why) => return Ok(Err(why)),
+                }
+                let coordinator = match owner {
+                    Some(owner) => tx.coordinator(owner)?.map(|tenure| (owner, tenure.epoch)),
+                    None => None,
+                };
+                tx.tenure_step(&super::store::NewTenureStep {
+                    id: &id,
+                    repo,
+                    coordinator,
+                    kind,
+                    run_id,
+                    server: (pid, crate::platform::process_start_token(pid)),
+                    at_ms: at,
+                })?;
+                Ok(Ok(()))
+            })
             .map_err(|error| unreadable(store_error(error)))?;
-        let tenure_repo = match &tenure {
-            Some(tenure) if tenure.ended_at.is_none() => return Ok(()),
-            Some(tenure) => tenure.repo.clone(),
-            None => repo.to_owned(),
+        admitted?;
+        Ok(LandingStep {
+            supervisor: self,
+            id,
+        })
+    }
+
+    /// Admits the start of the `worker.run` whose usage admission is `holder`'s
+    /// and holds its tenure through the spawn: one transaction re-checks the
+    /// admission's tenure and its token ([`super::store::Tx::admission_tenure`],
+    /// [`super::store::Tx::tenure_token_check`]) and records the step, so an
+    /// end, a successor's claim or a token rotated after the admission starts
+    /// nothing, and one that comes after this transaction waits for the guard.
+    /// The caller releases the admission on a refusal.
+    pub(super) fn begin_start_step(
+        &self,
+        repo: &str,
+        holder: &str,
+        token: Option<&str>,
+    ) -> Result<LandingStep<'_>, WorkerError> {
+        let store = self.tenure_store()?;
+        let id = new_step_id("start", holder);
+        let at = now_ms();
+        let pid = std::process::id();
+        let admitted = store
+            .transaction(|tx| {
+                let Some(recorded) = tx.admission_tenure(holder)? else {
+                    return Ok(Err(
+                        "its usage admission ended before its worker started; nothing started"
+                            .to_owned(),
+                    ));
+                };
+                let current = match tx.tenure_token_check(repo, token)? {
+                    Ok(current) => current,
+                    Err(why) => return Ok(Err(why)),
+                };
+                if current != recorded {
+                    return Ok(Err(format!(
+                    "repository {repo}'s coordination tenure changed between the run's admission \
+                     and its worker's start; nothing started"
+                )));
+                }
+                tx.tenure_step(&super::store::NewTenureStep {
+                    id: &id,
+                    repo,
+                    coordinator: recorded
+                        .as_ref()
+                        .map(|(coordinator_id, epoch)| (coordinator_id.as_str(), *epoch)),
+                    kind: "start",
+                    run_id: holder,
+                    server: (pid, crate::platform::process_start_token(pid)),
+                    at_ms: at,
+                })?;
+                Ok(Ok(()))
+            })
+            .map_err(store_error)?;
+        admitted.map_err(WorkerError::TenureToken)?;
+        Ok(LandingStep {
+            supervisor: self,
+            id,
+        })
+    }
+
+    /// Releases landing step `id` and carries out the end it held back
+    /// ([`super::store::Store::finish_tenure_step`]).
+    fn release_landing(&self, id: &str) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        if std::mem::take(&mut *lock(&self.shared.fail_landing_release)) {
+            return Err(WorkerError::Io(std::io::Error::other(
+                "the step release failed (test hook)",
+            )));
+        }
+        let ended = self
+            .tenure_store()?
+            .finish_tenure_step(id, now_ms())
+            .map_err(store_error)?;
+        for tenure in &ended {
+            self.announce_tenure_end(&tenure.id);
+        }
+        Ok(())
+    }
+
+    /// Makes the next landing-step release fail without writing it, so a test
+    /// can check that the next reader retries it.
+    #[cfg(test)]
+    pub(in crate::workers) fn fail_next_landing_release_for_test(&self) {
+        *lock(&self.shared.fail_landing_release) = true;
+    }
+
+    /// Wakes what waits on tenure `id`'s end: a `worker.events` wait on the
+    /// tenure, which answers once it has ended, through the registry lock it
+    /// holds from its check to its block, so the wake cannot fall in between;
+    /// and the clients. A tenure that ends has nothing left to hand over.
+    fn announce_tenure_end(&self, id: &str) {
+        lock(&self.shared.registry).handoffs.remove(id);
+        drop(lock(&self.shared.registry));
+        self.shared.changed.notify_all();
+        notify_clients();
+    }
+
+    /// The refusal for a repository another holder coordinates, naming it (and
+    /// the end herdr already saw, when a landing step still holds it back).
+    pub(super) fn refusal(&self, repo: &str, pane_id: &str, other: &StoredTenure) -> WorkerError {
+        let refusal = Self::refusal_message(repo, pane_id, other);
+        let Some(note) = self.pending_end_note(&other.id, other.epoch) else {
+            return refusal;
         };
-        let held_by = match store
-            .active_coordinator_of(&tenure_repo)
-            .map_err(|error| unreadable(store_error(error)))?
-        {
-            Some(active) => format!("it is held by {}", holder_description(&active)),
-            None => "no coordinator holds it now".to_owned(),
-        };
-        Err(format!(
-            "its coordinator {owner} no longer holds repository {tenure_repo}'s tenure \
-             ({held_by}); the run lands nothing for a coordinator that lost the tenure"
+        match refusal {
+            WorkerError::CoordinatorActive(message) => {
+                WorkerError::CoordinatorActive(format!("{message} ({note})"))
+            }
+            refusal => refusal,
+        }
+    }
+
+    /// The refusal for a repository whose run, claimed under no tenure, is
+    /// landing a step: a claim waits for it to land, so the step stays under
+    /// the tenure it was admitted under (none) and never lands for a holder
+    /// that claimed the repository meanwhile.
+    fn landing_refusal(repo: &str, kinds: &[String]) -> WorkerError {
+        WorkerError::Busy(format!(
+            "repository {repo} has a run landing its {} step, claimed under no coordinator \
+             tenure; a claim waits for it to land, so run it again then",
+            kinds.join(", ")
         ))
     }
 
-    pub(super) fn refusal(repo: &str, pane_id: &str, other: StoredTenure) -> WorkerError {
+    /// Why a tenure herdr saw end has not ended yet, when a landing step of
+    /// its run still holds it back: the refusal of a successor's claim says it,
+    /// so a waiting holder is not mistaken for a stranded one.
+    fn pending_end_note(&self, id: &str, epoch: i64) -> Option<String> {
+        let end = self
+            .tenure_store()
+            .ok()
+            .and_then(|store| store.pending_end(id, epoch).ok().flatten())?;
+        Some(format!(
+            "herdr saw it end ({}), and the end waits for its landing step to land",
+            end.cause.unwrap_or(end.reason)
+        ))
+    }
+
+    pub(super) fn refusal_message(repo: &str, pane_id: &str, other: &StoredTenure) -> WorkerError {
         if other.holder.is_some() {
             return WorkerError::CoordinatorActive(format!(
                 "repository {} already has {}; it ends when that process exits, or with \
                  `herdr coordinator end --id {}`",
                 other.repo,
-                holder_description(&other),
+                holder_description(other),
                 other.id
             ));
         }
@@ -779,8 +1209,15 @@ impl WorkerSupervisor {
         })
     }
 
-    /// Ends tenure `id` with `reason` (and `cause`, what herdr saw); a
-    /// tenure that has ended already is returned as it is.
+    /// Ends tenure `id` with `reason` and `cause` (what herdr saw); a tenure
+    /// that has ended already is returned as it is.
+    ///
+    /// The end is recorded (`tenure_pending_ends`) and carried out in the
+    /// same transaction, unless a landing step of the tenure is in flight:
+    /// the step holds its tenure until it lands, so the end waits for it and
+    /// the returned tenure is not ended yet (the CLI says so). Nothing is
+    /// lost when the store cannot write: the record goes first, and the next
+    /// reader carries it out.
     pub(crate) fn coordinator_end(
         &self,
         id: &str,
@@ -793,21 +1230,36 @@ impl WorkerSupervisor {
                 "reason must be one nonempty line of at most 200 bytes".into(),
             ));
         }
-        let ended = self
-            .tenure_store()?
-            .transaction(|tx| tx.coordinator_ended(id, reason, cause, now_ms()))
+        let at = now_ms();
+        let store = self.tenure_store()?;
+        let Some(tenure) = store.coordinator(id).map_err(store_error)? else {
+            return Err(WorkerError::CoordinatorNotFound(format!(
+                "coordinator {id} not found"
+            )));
+        };
+        // A reader of the tenures: a failed step release is retried and a dead
+        // server's step retired before this end asks to be recorded.
+        self.read_tenures();
+        let request = super::store::PendingEnd {
+            coordinator_id: id.to_owned(),
+            epoch: tenure.epoch,
+            reason: reason.to_owned(),
+            cause: cause.map(str::to_owned),
+            requested_ms: at,
+        };
+        // Two transactions, in this order: the end is durable before it is
+        // attempted, so a failure here is left for the next reader instead of
+        // vanishing with the call.
+        store
+            .transaction(|tx| tx.request_tenure_end(&request))
             .map_err(store_error)?;
-        let tenure = ended.ok_or_else(|| {
+        let ended = store.settle_pending_ends(at).map_err(store_error)?;
+        for tenure in &ended {
+            self.announce_tenure_end(&tenure.id);
+        }
+        let tenure = store.coordinator(id).map_err(store_error)?.ok_or_else(|| {
             WorkerError::CoordinatorNotFound(format!("coordinator {id} not found"))
         })?;
-        // A tenure that ends has nothing left to hand over.
-        lock(&self.shared.registry).handoffs.remove(id);
-        // Wakes a `worker.events` wait on the tenure, which answers once it
-        // has ended: through the registry lock, which that wait holds from
-        // its check to its block, so the wake cannot fall in between.
-        drop(lock(&self.shared.registry));
-        self.shared.changed.notify_all();
-        notify_clients();
         Ok(info(tenure))
     }
 
@@ -1105,7 +1557,18 @@ impl WorkerSupervisor {
                     ))));
                 }
                 if let Some(other) = tx.coordinator_of_pane(to_pane)? {
-                    return Ok(Err(Self::refusal(&from.repo, to_pane, other)));
+                    return Ok(Err(Self::refusal_message(&from.repo, to_pane, &other)));
+                }
+                // The run a landing step carries must land under this tenure,
+                // not under its successor's: the handoff waits for it.
+                let in_flight = tx.open_tenure_steps(&from.id, from.epoch)?;
+                if !in_flight.is_empty() {
+                    return Ok(Err(WorkerError::Busy(format!(
+                        "coordinator {} has a landing step in flight ({}); the handoff waits for it \
+                         to land, so run it again then",
+                        from.id,
+                        in_flight.join(", ")
+                    ))));
                 }
                 let id = new_tenure_id(&from.repo, to_pane);
                 let next = NewTenure {
@@ -1656,7 +2119,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn ended_cause(supervisor: &WorkerSupervisor, id: &str) -> String {
         supervisor
             .tenure_store()
@@ -1698,7 +2160,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             stored.token_sha256.as_deref(),
-            Some(token_sha256(&token).as_str())
+            Some(token_hash(&token).as_str())
         );
         let events: Vec<String> = supervisor
             .tenure_store()
@@ -1844,18 +2306,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// A landing step admitted for `owner`, or its refusal.
+    fn land<'a>(
+        supervisor: &'a WorkerSupervisor,
+        repo: &str,
+        owner: Option<&str>,
+        kind: &str,
+    ) -> Result<LandingStep<'a>, String> {
+        supervisor.begin_landing(repo, owner, kind, "r-test")
+    }
+
     #[test]
     fn a_run_lands_only_under_the_tenure_it_was_claimed_under() {
         let (root, supervisor) = scratch("fence");
         // No tenure, then and now: it lands.
-        assert_eq!(supervisor.tenure_fence("/repo", None), Ok(()));
+        drop(land(&supervisor, "/repo", None, "push").unwrap());
         let first = supervisor.coordinator_start("/repo", "p1", None).unwrap();
-        assert_eq!(
-            supervisor.tenure_fence("/repo", Some(&first.coordinator_id)),
-            Ok(())
-        );
+        drop(land(&supervisor, "/repo", Some(&first.coordinator_id), "push").unwrap());
         // Claimed under no tenure while a holder holds the repository.
-        let refused = supervisor.tenure_fence("/repo", None).unwrap_err();
+        let refused = land(&supervisor, "/repo", None, "push").unwrap_err();
         assert!(
             refused.contains("p1") && refused.contains(&first.coordinator_id),
             "{refused}"
@@ -1864,19 +2333,387 @@ mod tests {
         supervisor
             .coordinator_end(&first.coordinator_id, ENDED, None)
             .unwrap();
-        let refused = supervisor
-            .tenure_fence("/repo", Some(&first.coordinator_id))
-            .unwrap_err();
+        let refused = land(&supervisor, "/repo", Some(&first.coordinator_id), "push").unwrap_err();
         assert!(refused.contains("no coordinator holds it now"), "{refused}");
         // Another holder now: named.
         let second = supervisor.coordinator_start("/repo", "p2", None).unwrap();
-        let refused = supervisor
-            .tenure_fence("/repo", Some(&first.coordinator_id))
-            .unwrap_err();
+        let refused = land(&supervisor, "/repo", Some(&first.coordinator_id), "push").unwrap_err();
         assert!(
             refused.contains(&second.coordinator_id) && refused.contains("p2"),
             "{refused}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A run claimed while no tenure was active lands its step under no
+    /// tenure: a claim made meanwhile waits for it, so the step never lands
+    /// for a holder that claimed the repository in between.
+    #[test]
+    fn a_claim_waits_for_a_step_a_run_claimed_outside_any_tenure_is_landing() {
+        let (root, supervisor) = scratch("fence-unowned");
+        let step = land(&supervisor, "/repo", None, "push").unwrap();
+        let refused = supervisor
+            .coordinator_start("/repo", "p1", None)
+            .unwrap_err();
+        assert_eq!(refused.code(), "worker_busy", "{refused}");
+        assert!(refused.to_string().contains("push"), "{refused}");
+        // The step lands, and the repository is free for the claim.
+        drop(step);
+        let claimed = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        assert_eq!(claimed.pane_id.as_deref(), Some("p1"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The interleaving a check-then-act fence cannot survive: the tenure
+    /// changes while the step it admitted is in flight (a latch: the test
+    /// holds the step open across the tenure change, no timing).
+    #[test]
+    fn a_holder_that_ends_during_a_landing_ends_once_the_step_has_landed() {
+        let (root, supervisor) = scratch("fence-latch");
+        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        let store = supervisor.tenure_store().unwrap();
+        let step = land(&supervisor, "/repo", Some(&tenure.coordinator_id), "push").unwrap();
+        // The holder asks to end inside the step: the end is recorded here
+        // and carried out once the step lands, so the step lands under its
+        // own tenure and the repository has no successor meanwhile.
+        let ending = supervisor
+            .coordinator_end(&tenure.coordinator_id, ENDED, None)
+            .unwrap();
+        assert_eq!(ending.ended_ms, None, "ended inside its push step");
+        assert_eq!(
+            store
+                .pending_end(&tenure.coordinator_id, tenure.epoch)
+                .unwrap()
+                .map(|end| end.reason),
+            Some(ENDED.to_owned())
+        );
+        let refused = supervisor
+            .coordinator_start("/repo", "p2", None)
+            .unwrap_err();
+        assert_eq!(refused.code(), "coordinator_active", "{refused}");
+        // The step lands, and only then does the tenure end: the successor
+        // gets the repository afterwards, and the landed run can land
+        // nothing more.
+        drop(step);
+        let ended = store.coordinator(&tenure.coordinator_id).unwrap().unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ENDED));
+        assert!(
+            store
+                .pending_end(&tenure.coordinator_id, tenure.epoch)
+                .unwrap()
+                .is_none(),
+            "a carried-out end is no longer pending"
+        );
+        let refused = land(
+            &supervisor,
+            "/repo",
+            Some(&tenure.coordinator_id),
+            "install",
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("lost the tenure") || refused.contains("no longer holds"),
+            "{refused}"
+        );
+        let second = supervisor.coordinator_start("/repo", "p2", None).unwrap();
+        assert_eq!(second.epoch, tenure.epoch + 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The same interleaving for an end herdr saw itself (a pane closed, a
+    /// holder process exited): it cannot be refused, so it is recorded and
+    /// carried out by the next reader.
+    #[test]
+    fn an_end_herdr_saw_is_recorded_before_it_is_carried_out() {
+        let (root, supervisor) = scratch("fence-observed");
+        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        let store = supervisor.tenure_store().unwrap();
+        let step = land(
+            &supervisor,
+            "/repo",
+            Some(&tenure.coordinator_id),
+            "install",
+        )
+        .unwrap();
+        supervisor.orphan_coordinator("p1", "the coordinator's pane closed");
+        assert_eq!(
+            store
+                .pending_end(&tenure.coordinator_id, tenure.epoch)
+                .unwrap()
+                .map(|end| end.reason),
+            Some(ORPHANED.to_owned())
+        );
+        // A claim attempt reads the tenures: it carries out what no step
+        // holds back, and this one is held back — and the refusal says the
+        // end is coming, so a waiting holder is not taken for a stranded one.
+        let refused = supervisor
+            .coordinator_start("/repo", "p2", None)
+            .unwrap_err();
+        assert_eq!(refused.code(), "coordinator_active", "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("the end waits for its landing step to land"),
+            "{refused}"
+        );
+        assert!(store
+            .coordinator(&tenure.coordinator_id)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_none());
+        // The step releases the end, with the cause herdr saw.
+        drop(step);
+        let ended = store.coordinator(&tenure.coordinator_id).unwrap().unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ORPHANED));
+        assert!(
+            ended_cause(&supervisor, &tenure.coordinator_id).contains("pane closed"),
+            "{}",
+            ended_cause(&supervisor, &tenure.coordinator_id)
+        );
+        supervisor.coordinator_start("/repo", "p2", None).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A tenure whose exit event never reached herdr (a watch it could not
+    /// place, a kernel event it lost, an end whose store write failed) is
+    /// released by the next claim attempt, which re-checks the recorded
+    /// holder's process instead of waiting for a server to start.
+    #[cfg(unix)]
+    #[test]
+    fn a_claim_attempt_releases_a_tenure_whose_holder_is_gone() {
+        let (root, supervisor) = scratch("claim-gone-holder");
+        let mut holder = holder_process();
+        let holder_pid = holder.id();
+        let start = crate::platform::process_start_token(holder_pid).unwrap();
+        // Recorded with no watch in place: this server never saw its exit.
+        supervisor
+            .tenure_store()
+            .unwrap()
+            .transaction(|tx| {
+                tx.coordinator_started(
+                    &NewTenure {
+                        id: "c-gonewatch",
+                        repo: "/repo",
+                        pane_id: None,
+                        session_id: None,
+                        holder: Some(HolderProcess {
+                            pid: holder_pid,
+                            start,
+                        }),
+                    },
+                    now_ms(),
+                )
+            })
+            .unwrap();
+        drop(holder.stdin.take());
+        holder.wait().unwrap();
+        let claimed = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        assert_eq!(claimed.pane_id.as_deref(), Some("p1"));
+        let ended = supervisor
+            .tenure_store()
+            .unwrap()
+            .coordinator("c-gonewatch")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ORPHANED));
+        assert!(
+            ended_cause(&supervisor, "c-gonewatch")
+                .contains(&format!("holder process {holder_pid} exited")),
+            "{}",
+            ended_cause(&supervisor, "c-gonewatch")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A landing step whose server is gone (a restart, a live handoff) holds
+    /// no tenure: a server that starts retires it and carries out the end it
+    /// held back. The end is recorded first, so a server that ends between
+    /// the record and the end loses nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_starts_retires_a_dead_servers_landing_step() {
+        let (root, supervisor) = scratch("fence-dead-server");
+        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        // The server that admitted the step is gone: its process exited
+        // before the step could land.
+        let mut server = holder_process();
+        let server_identity = (
+            server.id(),
+            Some(crate::platform::process_start_token(server.id()).unwrap()),
+        );
+        drop(server.stdin.take());
+        server.wait().unwrap();
+        {
+            let store = supervisor.tenure_store().unwrap();
+            store
+                .transaction(|tx| {
+                    tx.tenure_step(&super::super::store::NewTenureStep {
+                        id: "s-deadstep",
+                        repo: "/repo",
+                        coordinator: Some((&tenure.coordinator_id, tenure.epoch)),
+                        kind: "push",
+                        run_id: "r-dead",
+                        server: server_identity,
+                        at_ms: now_ms(),
+                    })
+                })
+                .unwrap();
+            store
+                .transaction(|tx| {
+                    tx.request_tenure_end(&super::super::store::PendingEnd {
+                        coordinator_id: tenure.coordinator_id.clone(),
+                        epoch: tenure.epoch,
+                        reason: ORPHANED.to_owned(),
+                        cause: Some("its pane closed".to_owned()),
+                        requested_ms: now_ms(),
+                    })
+                })
+                .unwrap();
+        }
+        drop(supervisor);
+        let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
+        supervisor.owners_at_start(|_| None);
+        let store = supervisor.tenure_store().unwrap();
+        let ended = store.coordinator(&tenure.coordinator_id).unwrap().unwrap();
+        assert_eq!(ended.end_reason.as_deref(), Some(ORPHANED));
+        // The retired step says who retired it: this server, by pid and start
+        // token, never by the pid the dead server recorded.
+        let retired: (Option<i64>, Option<i64>, Option<i64>) = store
+            .connection()
+            .query_row(
+                "SELECT retired_ms, retired_by_pid, retired_by_start FROM tenure_steps
+                 WHERE id = 's-deadstep'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let pid = std::process::id();
+        assert!(retired.0.is_some(), "the step records when it was retired");
+        assert_eq!(retired.1, Some(i64::from(pid)));
+        assert_eq!(
+            retired.2,
+            crate::platform::process_start_token(pid).map(|start| start as i64)
+        );
+        supervisor.coordinator_start("/repo", "p2", None).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An end recorded for an earlier epoch of a tenure's id is stale: it is
+    /// dropped without ending the tenure that is active now.
+    #[test]
+    fn a_stale_pending_end_for_an_old_epoch_ends_nothing() {
+        let (root, supervisor) = scratch("stale-pending-end");
+        let tenure = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        let store = supervisor.tenure_store().unwrap();
+        let stale_epoch = tenure.epoch - 1;
+        store
+            .transaction(|tx| {
+                tx.request_tenure_end(&super::super::store::PendingEnd {
+                    coordinator_id: tenure.coordinator_id.clone(),
+                    epoch: stale_epoch,
+                    reason: ORPHANED.to_owned(),
+                    cause: Some("an earlier holder exited".to_owned()),
+                    requested_ms: now_ms(),
+                })
+            })
+            .unwrap();
+        assert!(store
+            .pending_end(&tenure.coordinator_id, stale_epoch)
+            .unwrap()
+            .is_some());
+        assert!(store.settle_pending_ends(now_ms()).unwrap().is_empty());
+        assert!(
+            store
+                .coordinator(&tenure.coordinator_id)
+                .unwrap()
+                .unwrap()
+                .ended_at
+                .is_none(),
+            "a stale end leaves the active tenure alone"
+        );
+        assert!(store
+            .pending_end(&tenure.coordinator_id, stale_epoch)
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A step whose release failed stays open (it still holds its tenure) and
+    /// is retried by the next reader, so the repository is not stranded while
+    /// this server lives.
+    #[test]
+    fn a_failed_step_release_is_retried_by_the_next_claim() {
+        let (root, supervisor) = scratch("release-retry");
+        let step = land(&supervisor, "/repo", None, "push").unwrap();
+        supervisor.fail_next_landing_release_for_test();
+        drop(step);
+        let store = supervisor.tenure_store().unwrap();
+        let open_steps = || -> i64 {
+            store
+                .connection()
+                .query_row(
+                    "SELECT count(*) FROM tenure_steps WHERE retired_ms IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(open_steps(), 1, "the failed release left the step open");
+        let claimed = supervisor.coordinator_start("/repo", "p1", None).unwrap();
+        assert_eq!(claimed.pane_id.as_deref(), Some("p1"));
+        assert_eq!(open_steps(), 0, "the next claim retried the release");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A step recorded without a start token cannot be proven gone by its pid
+    /// alone, so no reader retires it.
+    #[test]
+    fn a_step_without_a_start_token_is_never_retired_by_pid_alone() {
+        let (root, supervisor) = scratch("step-no-start-token");
+        supervisor
+            .tenure_store()
+            .unwrap()
+            .transaction(|tx| {
+                tx.tenure_step(&super::super::store::NewTenureStep {
+                    id: "s-no-start",
+                    repo: "/repo",
+                    coordinator: None,
+                    kind: "push",
+                    run_id: "r-no-start",
+                    server: (std::process::id(), None),
+                    at_ms: now_ms(),
+                })
+            })
+            .unwrap();
+        let refused = supervisor
+            .coordinator_start("/repo", "p1", None)
+            .unwrap_err();
+        assert_eq!(refused.code(), "worker_busy", "{refused}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `coordinator.acquire`, like `coordinator.start`, waits for a run claimed
+    /// outside any tenure to land its step.
+    #[cfg(unix)]
+    #[test]
+    fn coordinator_acquire_waits_for_an_untenured_landing_step() {
+        let (root, supervisor) = scratch("acquire-unowned-step");
+        let mut holder = holder_process();
+        let pid = holder.id();
+        let step = land(&supervisor, "/repo", None, "push").unwrap();
+        let refused = supervisor
+            .coordinator_acquire_process("/repo", pid)
+            .unwrap_err();
+        assert_eq!(refused.code(), "worker_busy", "{refused}");
+        assert!(refused.to_string().contains("push"), "{refused}");
+        drop(step);
+        let (tenure, _) = supervisor
+            .coordinator_acquire_process("/repo", pid)
+            .unwrap();
+        assert_eq!(tenure.holder_pid, Some(pid));
+        drop(holder.stdin.take());
+        holder.wait().unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 

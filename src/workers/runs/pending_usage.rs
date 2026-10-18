@@ -117,6 +117,7 @@ impl WorkerSupervisor {
                 run_id: run.info.run_id.clone(),
                 attempt: run.info.attempt,
             }),
+            None,
         ) {
             Ok(_) => {
                 // A gate that closed after drafting must not draft a second task.

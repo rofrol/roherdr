@@ -89,8 +89,24 @@ pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
         }
         _ => None,
     };
+    let ending = matches!(&method, Method::CoordinatorEnd(_));
     let response = super::send_request(&Request { id, method })?;
     let Some(pane_id) = token_for_pane.filter(|_| response.get("error").is_none()) else {
+        // An end a landing step of the tenure's run holds back still ended
+        // nothing: the reply shows the tenure as it is, and this says why.
+        if ending && response.get("error").is_none() {
+            let coordinator = &response["coordinator"];
+            if coordinator["ended_ms"].is_null() {
+                eprintln!(
+                    "coordinator {} is ending: a landing step of its run (cherry-pick, \
+                     install, TODO edit or push) is in flight, and it ends once that step \
+                     has landed",
+                    coordinator["coordinator_id"]
+                        .as_str()
+                        .unwrap_or("the tenure")
+                );
+            }
+        }
         return super::print_response(&response);
     };
     super::print_response(&super::send_request(&Request {
