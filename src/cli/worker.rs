@@ -34,7 +34,7 @@ const USAGE: &str =
     become the worker's owner.
   herdr worker run [--cwd DIR] [--agent claude|pi] [--model MODEL] [--name TASK]
                    [--workspace ID] [--item ID] [--ignore-usage] [--prompt-file FILE]
-                   [--tenure-token TOKEN]
+                   [--tenure-token TOKEN | --tenure-token-fd N]
     A gated, blocking headless run for an orchestrator outside herdr's TODO
     driver (todo run). The server admits it through the same usage gate as
     todo run, for the repository of DIR (default: the current directory) and
@@ -50,10 +50,15 @@ const USAGE: &str =
     whether or not a worker ran there), with no branch, verify, landing or
     TODO edit. While the repository has an active coordination tenure, the
     run needs that tenure's current token (from herdr coordinator acquire,
-    or coordinator start --token in its pane): TOKEN, else
-    $HERDR_TENURE_TOKEN; without it, or with another or a replaced one, it
-    is refused (tenure_token_refused) and nothing starts. With no active
-    tenure no token is checked. It sends the
+    or coordinator start --token in its pane): the token on descriptor N
+    (--tenure-token-fd, Unix, read once to the end of the file and closed
+    here), else TOKEN, else $HERDR_TENURE_TOKEN; without it, or with another or a
+    replaced one, it is refused (tenure_token_refused) and nothing starts.
+    Prefer the descriptor: the token is a capability, so it travels through
+    a channel the caller's own children cannot read; TOKEN shows in the
+    process list, and $HERDR_TENURE_TOKEN is inherited by every process the
+    caller starts, while the descriptor is closed here and never given to
+    the worker. With no active tenure no token is checked. It sends the
     prompt (FILE's text, else standard input) as the one turn, waits for that
     turn's end on the worker's own events, stops the worker and waits for its
     exit, then prints one JSON object: worker_id, outcome (ended, failed,
@@ -287,9 +292,95 @@ fn gated_run_exit(response: &serde_json::Value) -> i32 {
     }
 }
 
-/// Where `worker run` finds the tenure token without `--tenure-token`, so
-/// it need not show in the process list.
+/// The tenure token's environment channel, used when neither
+/// `--tenure-token` nor `--tenure-token-fd` is given: the fallback for a run
+/// herdr itself launches. A supervisor that runs other agents passes the
+/// token on a descriptor (`--tenure-token-fd`) instead, because every
+/// process it starts inherits its environment.
 const TENURE_TOKEN_ENV: &str = "HERDR_TENURE_TOKEN";
+
+/// A tenure token is 64 hex characters (`coordinator.acquire`'s shape);
+/// a descriptor that carries anything else cannot hold one.
+#[cfg(unix)]
+const TENURE_TOKEN_LEN: usize = 64;
+
+/// How much `--tenure-token-fd` reads at most: far more than a token and the
+/// trailing whitespace a caller's `echo` adds, and a bound on what a
+/// descriptor that never ends of file can make this process hold.
+#[cfg(unix)]
+const TENURE_TOKEN_READ_LIMIT: u64 = 4096;
+
+#[cfg(unix)]
+fn is_tenure_token_shape(token: &str) -> bool {
+    token.len() == TENURE_TOKEN_LEN && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Reads the tenure token from the descriptor the caller passed as
+/// `--tenure-token-fd`, to the end of the file (at most
+/// [`TENURE_TOKEN_READ_LIMIT`] bytes, so a descriptor that never ends is
+/// refused rather than buffered): a caller writes the token and closes its
+/// end (`echo` leaves a trailing newline, which is trimmed), and the shape
+/// check refuses anything else, so the token needs no delimiter. The
+/// descriptor is closed before its content is even checked, so a refused
+/// token does not stay readable, this process's arguments and environment
+/// never carry it, and nothing it starts can read it.
+#[cfg(unix)]
+fn read_tenure_token_fd(number: &str) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, RawFd};
+
+    let descriptor: RawFd = number
+        .parse()
+        .map_err(|_| format!("--tenure-token-fd takes a descriptor number, not {number}"))?;
+    if descriptor < 0 {
+        return Err(format!(
+            "--tenure-token-fd takes a descriptor number, not {number}"
+        ));
+    }
+    // SAFETY: fcntl(F_GETFD) takes no pointer; it only says whether the
+    // descriptor is open, so a refusal never closes a number another process
+    // reused.
+    if unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0 {
+        return Err(format!(
+            "--tenure-token-fd {descriptor} is not an open descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the check above found the descriptor open and this function is
+    // its only owner from here, so dropping `file` closes it exactly once.
+    let mut file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    let mut text = String::new();
+    let read = (&mut file)
+        .take(TENURE_TOKEN_READ_LIMIT)
+        .read_to_string(&mut text);
+    drop(file);
+    read.map_err(|error| format!("cannot read --tenure-token-fd {descriptor}: {error}"))?;
+    let token = text.trim();
+    if token.is_empty() {
+        return Err(format!(
+            "--tenure-token-fd {descriptor} was empty; write the tenure token to it and \
+             close it"
+        ));
+    }
+    if !is_tenure_token_shape(token) {
+        return Err(format!(
+            "--tenure-token-fd {descriptor} did not carry a tenure token (64 hex characters); \
+             nothing started"
+        ));
+    }
+    Ok(token.to_owned())
+}
+
+/// Windows has no descriptor numbers a shell hands over, so the token's
+/// channel there is the environment or `--tenure-token`.
+#[cfg(not(unix))]
+fn read_tenure_token_fd(_number: &str) -> Result<String, String> {
+    Err(
+        "--tenure-token-fd is not available on Windows; give the token with --tenure-token or \
+         HERDR_TENURE_TOKEN"
+            .into(),
+    )
+}
 
 /// `worker run`'s options; the prompt from `--prompt-file`, else from
 /// `stdin`.
@@ -305,11 +396,10 @@ fn parse_gated_run(
     let (item, rest) = take_string_option(&rest, "--item")?;
     let (prompt_file, rest) = take_string_option(&rest, "--prompt-file")?;
     let (tenure_token, rest) = take_string_option(&rest, "--tenure-token")?;
-    let tenure_token = tenure_token.or_else(|| {
-        std::env::var(TENURE_TOKEN_ENV)
-            .ok()
-            .filter(|token| !token.is_empty())
-    });
+    let (tenure_token_fd, rest) = take_string_option(&rest, "--tenure-token-fd")?;
+    if tenure_token.is_some() && tenure_token_fd.is_some() {
+        return Err("worker run takes either --tenure-token or --tenure-token-fd, not both".into());
+    }
     let ignore_usage = match rest.as_slice() {
         [] => false,
         [flag] if flag == "--ignore-usage" => true,
@@ -345,6 +435,17 @@ fn parse_gated_run(
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
     let cwd = std::path::absolute(&cwd).map_err(|error| error.to_string())?;
+    // The descriptor is read only once the rest of the command is valid, so
+    // a usage error leaves it untouched for the caller to retry with.
+    let tenure_token = if let Some(token) = tenure_token {
+        Some(token)
+    } else if let Some(number) = tenure_token_fd {
+        Some(read_tenure_token_fd(&number)?)
+    } else {
+        std::env::var(TENURE_TOKEN_ENV)
+            .ok()
+            .filter(|token| !token.is_empty())
+    };
     Ok(WorkerGatedRunParams {
         cwd: cwd.display().to_string(),
         prompt,
@@ -1262,6 +1363,143 @@ mod tests {
         let error = parse_gated_run(&args(&[]), &mut " \n".as_bytes()).unwrap_err();
         assert!(error.contains("needs a prompt"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A 64-hex tenure token, as `coordinator.acquire` issues one.
+    fn tenure_token() -> String {
+        "0123456789abcdef".repeat(4)
+    }
+
+    /// A fresh directory for one token test.
+    #[cfg(unix)]
+    fn token_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("herdr-worker-run-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The descriptor of a file holding `contents`; the test hands its
+    /// ownership to `worker run`.
+    #[cfg(unix)]
+    fn token_fd(dir: &std::path::Path, name: &str, contents: &str) -> i32 {
+        use std::os::fd::IntoRawFd;
+
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        std::fs::File::open(&path).unwrap().into_raw_fd()
+    }
+
+    /// The test process runs one test (nextest starts one per test), so a
+    /// closed descriptor's number is not taken again before the assertions
+    /// below read it.
+    #[cfg(unix)]
+    fn assert_descriptor_closed(descriptor: i32) {
+        // SAFETY: fcntl(F_GETFD) takes no pointer.
+        assert_eq!(
+            unsafe { libc::fcntl(descriptor, libc::F_GETFD) },
+            -1,
+            "descriptor {descriptor} is still open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_run_reads_the_tenure_token_from_a_descriptor_and_closes_it() {
+        let dir = token_dir("tenure-fd");
+        let token = tenure_token();
+        let descriptor = token_fd(&dir, "token", &format!("{token}\n"));
+        let number = descriptor.to_string();
+        let params = parse_gated_run(
+            &args(&["--tenure-token-fd", &number]),
+            &mut "task".as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(params.tenure_token.as_deref(), Some(token.as_str()));
+
+        // Reading the token closed the descriptor: a second read of that
+        // number finds nothing, so the token cannot be read twice and leaks
+        // into no child of the caller.
+        assert_descriptor_closed(descriptor);
+        let error = parse_gated_run(
+            &args(&["--tenure-token-fd", &number]),
+            &mut "task".as_bytes(),
+        )
+        .unwrap_err();
+        assert!(error.contains("not an open descriptor"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_run_refuses_a_descriptor_that_is_missing_empty_or_malformed() {
+        let dir = token_dir("tenure-fd-bad");
+        // A descriptor number no process can have open; using it avoids
+        // depending on a closed number not being taken again.
+        let missing = i32::MAX.to_string();
+        let empty = token_fd(&dir, "empty", " \n");
+        let malformed = token_fd(&dir, "malformed", "not a tenure token\n");
+        let short = token_fd(&dir, "short", &tenure_token()[..63]);
+        let long = token_fd(&dir, "long", &format!("{}0", tenure_token()));
+        let endless = token_fd(&dir, "endless", &"a".repeat(8192));
+        for (value, why) in [
+            (missing.as_str(), "not an open descriptor"),
+            ("token", "descriptor number"),
+            ("-1", "descriptor number"),
+            (&empty.to_string(), "was empty"),
+            (&malformed.to_string(), "64 hex characters"),
+            (&short.to_string(), "64 hex characters"),
+            (&long.to_string(), "64 hex characters"),
+            (&endless.to_string(), "64 hex characters"),
+        ] {
+            let error =
+                parse_gated_run(&args(&["--tenure-token-fd", value]), &mut "task".as_bytes())
+                    .unwrap_err();
+            assert!(error.contains(why), "{value}: {error}");
+        }
+        // A refused token is closed too, so it does not stay readable.
+        for descriptor in [empty, malformed, short, long, endless] {
+            assert_descriptor_closed(descriptor);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn worker_run_takes_the_tenure_token_from_the_environment_and_refuses_two_channels() {
+        /// Restores the variable even when an assertion below fails.
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var(TENURE_TOKEN_ENV, value),
+                    None => std::env::remove_var(TENURE_TOKEN_ENV),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(TENURE_TOKEN_ENV));
+        let token = tenure_token();
+        std::env::set_var(TENURE_TOKEN_ENV, &token);
+        let params = parse_gated_run(&args(&[]), &mut "task".as_bytes()).unwrap();
+        assert_eq!(params.tenure_token.as_deref(), Some(token.as_str()));
+        // `--tenure-token` still replaces what herdr itself launched with.
+        let params = parse_gated_run(
+            &args(&["--tenure-token", "another", "--ignore-usage"]),
+            &mut "task".as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(params.tenure_token.as_deref(), Some("another"));
+        // An empty variable is no token at all.
+        std::env::set_var(TENURE_TOKEN_ENV, "");
+        let params = parse_gated_run(&args(&[]), &mut "task".as_bytes()).unwrap();
+        assert_eq!(params.tenure_token, None);
+        // The two channels are alternatives, not a precedence.
+        for extra in [
+            vec!["--tenure-token", "another", "--tenure-token-fd", "0"],
+            vec!["--tenure-token-fd", "0", "--tenure-token", "another"],
+        ] {
+            let error = parse_gated_run(&args(&extra), &mut "task".as_bytes()).unwrap_err();
+            assert!(error.contains("not both"), "{error}");
+        }
     }
 
     #[test]

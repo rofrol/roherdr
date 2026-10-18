@@ -526,6 +526,43 @@ fn an_active_tenure_admits_only_a_run_with_its_current_token() {
     assert_eq!(refused.code(), "tenure_token_refused", "{refused}");
 }
 
+/// The token a `worker.run` client sends with its request enters no worker
+/// process: not its command line (which the process list shows) and not its
+/// environment (herdr strips every `HERDR_*` variable). The descriptor a
+/// supervisor hands to the CLI is closed there before the request is sent
+/// (`src/cli/worker.rs` tests), so it reaches no process either.
+#[test]
+fn a_gated_run_keeps_the_tenure_token_out_of_the_workers_argv_and_environment() {
+    let fixture = git_fixture("gated-run-tenure-token-worker");
+    let repo = repository_of(&fixture.repo).unwrap();
+    fixture
+        .supervisor
+        .coordinator_start(&repo, "p1", None)
+        .unwrap();
+    let (_, token) = fixture.supervisor.coordinator_token_for_pane("p1").unwrap();
+    let run = gated_run(
+        &fixture,
+        &WorkerGatedRunParams {
+            tenure_token: Some(token.clone()),
+            ..run_params(&fixture.repo, "finish")
+        },
+    )
+    .unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended, "{}", run.message);
+    let journal = fixture.journal(&run.worker_id);
+    let started = journal
+        .iter()
+        .find(|record| record["event"]["type"] == "started")
+        .expect("the worker's started event");
+    let argv = started["event"]["args"].to_string();
+    assert!(!argv.contains(&token), "{argv}");
+    let init = journal
+        .iter()
+        .find(|record| record["event"]["subtype"] == "init")
+        .expect("the worker's init event");
+    assert_eq!(init["event"]["herdr_env"], serde_json::json!([]));
+}
+
 /// `worker.run` reads the gate of its model's provider too, as `todo.run`
 /// does: a `deepseek/` model is admitted while the ChatGPT plan is closed,
 /// and a provider herdr has no live usage read for starts nothing.
