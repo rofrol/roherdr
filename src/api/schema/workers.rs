@@ -76,6 +76,27 @@ pub struct WorkerStartChoiceParams {
     pub agent_choice: Option<WorkerAgentChoice>,
 }
 
+/// The held usage admissions in the git repository containing `cwd`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAdmissionsParams {
+    pub cwd: String,
+}
+
+/// One slot held by the usage gate, including starts not yet spawned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAdmission {
+    pub holder: String,
+    pub provider: String,
+    pub repo: String,
+    pub run_id: Option<String>,
+    pub attempt: Option<u32>,
+    pub worker_id: Option<String>,
+    pub bound: bool,
+    pub admitted_ms: u64,
+    pub server_pid: Option<u32>,
+    pub server_start: Option<u64>,
+}
+
 /// `worker.run`: a gated, blocking headless run for an orchestrator outside
 /// herdr's TODO driver. The server admits it through the same usage gate as
 /// `todo.run` (the repository of `cwd`, the agent's provider), starts the

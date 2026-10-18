@@ -7,6 +7,9 @@ mod subscriptions;
 mod wait;
 mod workers;
 
+#[cfg(all(test, unix))]
+pub(crate) use workers::handle_worker_request;
+
 pub use event_hub::EventHub;
 pub use server::ServerHandle;
 pub(crate) use server::{api_method_name, start_server_with_stop_control, SERVER_HANDED_OFF};

@@ -398,14 +398,78 @@ impl WorkerSupervisor {
         }
     }
 
+    /// The same held rows the cap counts, across all providers in a git
+    /// repository. Pending admissions are visible before a worker exists.
+    /// The repository key is [`super::repo_identity`], the gate's
+    /// ([`Self::usage_gate`] admits under the same), so the list cannot miss
+    /// or mix one repository's rows whether it is asked from a worktree, a
+    /// subdirectory or outside git.
+    pub(crate) fn admissions(
+        &self,
+        cwd: &str,
+    ) -> Result<Vec<crate::api::schema::WorkerAdmission>, WorkerError> {
+        let repo = super::repo_identity(std::path::Path::new(cwd))?;
+        self.run_store()?
+            .repository_admissions(&repo)
+            .map_err(super::store_error)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| crate::api::schema::WorkerAdmission {
+                        bound: row.worker_id.is_some(),
+                        holder: row.holder,
+                        provider: row.provider,
+                        repo: row.repo,
+                        run_id: row.run_id,
+                        attempt: row.attempt,
+                        worker_id: row.worker_id,
+                        admitted_ms: row.admitted_ms,
+                        server_pid: row.server_pid,
+                        server_start: row.server_start,
+                    })
+                    .collect()
+            })
+    }
+
     /// At a server's start: ends the usage gate's admissions whose start no
-    /// row records and that no live server still makes: a `worker.run`
-    /// admitted by a server process that is gone, and one bound to a worker
-    /// the store does not hold whose journal no server owns (the server
-    /// ended between naming the worker and recording its start). A worker
-    /// that survived the restart keeps its slot, since its row shows it
-    /// running; one that did not was recorded `lost`, which frees it.
+    /// row records and that no live server still makes
+    /// ([`Self::reconcile_handoff_admissions`]). A worker that survived the
+    /// restart keeps its slot, since its row shows it running; a lost worker
+    /// also keeps its slot while its process lives.
     pub(in crate::workers) fn reconcile_admissions(&self) {
+        self.reconcile_handoff_admissions(None);
+    }
+
+    /// Ends the usage gate's admissions whose worker row the store does not
+    /// hold and whose admitting server provably cannot still make them: a
+    /// `worker.run` admitted by a server process that is gone, and one bound
+    /// to a worker the store does not hold when the server that bound it is
+    /// gone (it ended between naming the worker and recording its start).
+    ///
+    /// The evidence is the identity recorded with the row
+    /// (`server_pid`/`server_start`), never a clock: the row keeps its slot
+    /// while that process still runs with that start token, since it may be
+    /// between binding the worker and writing its row, and is retired once
+    /// the process is gone — or, for the source of a committed handoff
+    /// (`retiring`), at the import, even while it finishes shutting down. A
+    /// bound row of that source is kept until it exits, because it may be
+    /// spawning a worker right then; the exit reconcile
+    /// ([`crate::workers::reconcile_admissions_after_handoff`]) hands the
+    /// same identity again, which retires what the source admitted after the
+    /// import.
+    ///
+    /// Two rows carry no usable identity: one from a server that recorded
+    /// none, and one from a journal that predates it. A bound one is judged
+    /// by its journal's ownership lock alone (that lock cannot tell a spawn
+    /// in flight from one a dead server left), and an unbound one is
+    /// retired. A handoff whose manifest names no source identity falls back
+    /// to the pid its socket's peer names
+    /// ([`crate::server::handoff::admission_server`]); a source whose start
+    /// token cannot be read at all leaves its bound rows to the next server
+    /// start, which retires them then.
+    pub(in crate::workers) fn reconcile_handoff_admissions(
+        &self,
+        retiring: Option<(u32, Option<u64>)>,
+    ) {
         let Ok(store) = self.run_store() else {
             return;
         };
@@ -418,29 +482,49 @@ impl WorkerSupervisor {
         };
         let mut released = false;
         for admission in admissions {
-            let why = match &admission.worker_id {
-                None => {
-                    let alive = match (admission.server_pid, admission.server_start) {
-                        (Some(pid), Some(start)) => {
-                            crate::platform::process_start_token(pid) == Some(start)
-                        }
-                        _ => false,
-                    };
-                    if alive {
-                        continue;
-                    }
-                    "its server ended before the worker was started"
+            let named_worker = admission.worker_id.is_some();
+            // The source of a committed handoff: its starts that name no
+            // worker can no longer become a worker of this session.
+            let source = retiring.is_some_and(|(pid, start)| {
+                admission.server_pid == Some(pid) && admission.server_start == start
+            });
+            let alive = match (admission.server_pid, admission.server_start) {
+                (Some(pid), Some(start)) => {
+                    crate::platform::process_start_token(pid) == Some(start)
                 }
-                Some(worker_id) => {
-                    match crate::workers::journal::journal_ownership(&self.journal_path(worker_id))
-                    {
-                        Ok(crate::workers::journal::Ownership::Owned(_)) => continue,
-                        _ => "its server ended before the worker was recorded",
-                    }
-                }
+                // A row from before the admitting server was recorded: only
+                // the worker's journal names the server holding it.
+                _ => match &admission.worker_id {
+                    Some(worker_id) => matches!(
+                        crate::workers::journal::journal_ownership(&self.journal_path(worker_id)),
+                        Ok(crate::workers::journal::Ownership::Owned(_))
+                    ),
+                    None => false,
+                },
             };
-            match store.release_admission(&admission.holder, why, now_ms()) {
-                Ok(()) => released = true,
+            // A start that names no worker is retired for a handoff's
+            // source whatever its process does; any other row keeps its
+            // slot while the server that admitted it may still make it.
+            let keep = if source && !named_worker {
+                false
+            } else {
+                alive
+            };
+            if keep {
+                continue;
+            }
+            let why = match (named_worker, source) {
+                (true, true) => {
+                    "its server was retired by a handoff before the worker was recorded"
+                }
+                (true, false) => "its server ended before the worker was recorded",
+                (false, true) => {
+                    "its server was retired by a handoff before the worker was started"
+                }
+                (false, false) => "its server ended before the worker was started",
+            };
+            match store.retire_unrecorded_admission(&admission.holder, why, now_ms()) {
+                Ok(ended) => released |= ended,
                 Err(error) => {
                     tracing::warn!(%error, holder = admission.holder, "cannot end an admission")
                 }

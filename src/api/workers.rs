@@ -20,6 +20,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerGatedRun(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
+            | Method::WorkerAdmissions(_)
             | Method::WorkerWait(_)
             | Method::WorkerEvents(_)
             | Method::WorkerPrompt(_)
@@ -73,7 +74,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
 
 /// Answers one `worker.*` request. `None` means the client went away or the
 /// server is stopping while `worker.wait` was blocked.
-pub(super) fn handle_worker_request(
+pub(crate) fn handle_worker_request(
     request_id: String,
     method: Method,
     stream: &mut LocalStream,
@@ -200,6 +201,11 @@ fn handle_immediate(
         Method::WorkerStartChoice(params) => {
             supervisor.fence_pane(params.start.owner_pane_id.as_deref())?;
             supervisor.start_choice(params)?
+        }
+        Method::WorkerAdmissions(params) => {
+            return Ok(ResponseResult::WorkerAdmissions {
+                admissions: supervisor.admissions(&params.cwd)?,
+            })
         }
         Method::WorkerStatus(target) => supervisor.status(&target.worker_id)?,
         Method::WorkerList(_) => {

@@ -662,6 +662,36 @@ pub(crate) fn prepare_for_handoff(force: bool) -> Result<(), String> {
     }
 }
 
+/// Reconciles the usage slots when the import assumes ownership: it retires
+/// the source's unbound starts at the import, and again, with the same
+/// source identity, when that process's exit event arrives, since a call the
+/// source finishes while shutting down is admitted after the import.
+///
+/// A live handoff exists on Unix only (its manifest and descriptor passing
+/// do), so there is no source to reconcile on Windows; the start of a Windows
+/// server runs [`WorkerSupervisor::reconcile_admissions`], which retires what
+/// a gone server admitted.
+#[cfg(unix)]
+pub(crate) fn reconcile_admissions_after_handoff(source: Option<(u32, Option<u64>)>) {
+    let supervisor = supervisor();
+    supervisor.reconcile_handoff_admissions(source);
+    if let Some((pid, Some(start))) = source {
+        // The source can still be finishing an API call admitted before
+        // the handoff. Its exit is the producing event, not a timer: retire
+        // what that call left by the identity that admitted it.
+        let supervisor = supervisor.clone();
+        if let Err(error) = crate::platform::watch_process_exit(
+            pid,
+            start,
+            Box::new(move || {
+                supervisor.reconcile_handoff_admissions(Some((pid, Some(start))));
+            }),
+        ) {
+            tracing::warn!(%error, "cannot watch the handoff source's admission cleanup");
+        }
+    }
+}
+
 /// After a live handoff succeeded, hands the `todo run`s
 /// ([`WorkerSupervisor::let_go_of_runs`]) and the workers with a broker to
 /// the new server ([`WorkerSupervisor::detach_for_handoff`]).

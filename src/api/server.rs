@@ -1304,6 +1304,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerGatedRun(_) => "worker.run",
         Method::WorkerStatus(_) => "worker.status",
         Method::WorkerList(_) => "worker.list",
+        Method::WorkerAdmissions(_) => "worker.admissions",
         Method::WorkerWait(_) => "worker.wait",
         Method::WorkerEvents(_) => "worker.events",
         Method::WorkerPrompt(_) => "worker.prompt",

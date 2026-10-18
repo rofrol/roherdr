@@ -290,6 +290,103 @@ fn a_caller_that_gives_up_leaves_no_worker_running() {
 }
 
 #[test]
+fn a_dropped_worker_run_connection_records_termination_and_frees_the_slot() {
+    use interprocess::local_socket::traits::Listener;
+    use std::sync::atomic::AtomicBool;
+    // The broker fixture has a short root suitable for Unix socket paths.
+    let fixture = Fixture::with_broker();
+    git_in(&fixture.repo, &["init", "-q", "-b", "master"]);
+    std::fs::write(fixture.repo.join("a.txt"), "a\n").unwrap();
+    git_in(&fixture.repo, &["add", "."]);
+    git_in(&fixture.repo, &["commit", "-q", "-m", "init"]);
+    fixture
+        .supervisor
+        .set_usage_gate_config_for_test(crate::config::UsageConfig {
+            gate_max_workers: 2,
+            ..Default::default()
+        });
+    let repo = fixture.repo.display().to_string();
+    let holder = crate::workers::runs::usage_gate::Holder::WorkerRun("blocker".into());
+    fixture
+        .supervisor
+        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&holder))
+        .unwrap();
+    // A real API connection, closed only after the worker was recorded.
+    let path = fixture.root.join("api.sock");
+    let listener = crate::ipc::bind_local_listener(&path).unwrap();
+    let client = crate::ipc::connect_local_stream(&path).unwrap();
+    let mut stream = listener.accept().unwrap();
+    let params = run_params(&fixture.repo, "block");
+    let supervisor = fixture.supervisor.clone();
+    let connection = std::thread::spawn(move || {
+        crate::workers::set_test_supervisor(supervisor);
+        crate::api::handle_worker_request(
+            "dropped-run".into(),
+            crate::api::schema::Method::WorkerGatedRun(params),
+            &mut stream,
+            &Arc::new(AtomicBool::new(true)),
+        )
+    });
+    let mut registry = lock(&fixture.supervisor.shared.registry);
+    while registry.workers.is_empty() {
+        let waited = fixture
+            .supervisor
+            .shared
+            .changed
+            .wait_timeout(registry, HANG_GUARD)
+            .unwrap();
+        registry = waited.0;
+        assert!(!waited.1.timed_out(), "worker was not recorded");
+    }
+    drop(registry);
+    let third = crate::workers::runs::usage_gate::Holder::WorkerRun("third".into());
+    assert_eq!(
+        fixture
+            .supervisor
+            .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third))
+            .unwrap_err()
+            .code(),
+        "usage_gate"
+    );
+    drop(client);
+    assert!(connection.join().unwrap().is_none());
+    let workers = fixture.supervisor.list();
+    assert_eq!(workers.len(), 1);
+    let worker = fixture.wait(&workers[0].worker_id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.state, WorkerState::Exited);
+    assert!(worker.exit_signal.is_some() || worker.exit_code.is_some());
+    assert_eq!(fixture.herdr_events(&worker.worker_id, "signal").len(), 1);
+    assert_eq!(fixture.herdr_events(&worker.worker_id, "exited").len(), 1);
+    // The termination is durable, not only a freed slot: the worker's row
+    // records the exit and its end event is in the journal.
+    let (exited, lost, exit_code): (bool, bool, Option<i64>) = store_of(&fixture.supervisor)
+        .connection()
+        .query_row(
+            "SELECT exited, lost, exit_code FROM workers WHERE id = ?1",
+            [&worker.worker_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(exited && !lost, "exited={exited} lost={lost}");
+    assert_eq!(exit_code, worker.exit_code.map(i64::from));
+    assert_eq!(fixture.supervisor.admissions(&repo).unwrap().len(), 1);
+    fixture
+        .supervisor
+        .usage_gate(&repo, WorkerAgent::Claude, None, false, Some(&third))
+        .unwrap();
+    assert_eq!(fixture.supervisor.admissions(&repo).unwrap().len(), 2);
+    // The ordinary JSON/outcome path remains covered above and still
+    // works after the disconnected run has relinquished its slot.
+    store_of(&fixture.supervisor)
+        .release_admission(&third.key(), "test released", now_ms())
+        .unwrap();
+    let run = gated_run(&fixture, &run_params(&fixture.repo, "usage")).unwrap();
+    assert_eq!(run.outcome, WorkerGatedRunOutcome::Ended);
+    let reply = serde_json::to_value(ResponseResult::WorkerGatedRun { run }).unwrap();
+    assert_eq!(reply["run"]["text"], "final text");
+}
+
+#[test]
 fn a_folder_slot_no_worker_ran_in_is_refused_by_its_path() {
     let fixture = git_fixture("gated-run-unused-slot");
     let repo = &fixture.repo;

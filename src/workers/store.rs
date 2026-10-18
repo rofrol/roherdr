@@ -813,6 +813,14 @@ DELETE FROM usage_gates WHERE substr(repo, 1, 9) != 'provider:';
 ALTER TABLE todo_queues ADD COLUMN worktree TEXT;
 ALTER TABLE todo_chains ADD COLUMN worktree TEXT;
 "#,
+    r#"
+-- The usage gate reads a lost worker's latest `started` event to compare its
+-- process start token; `events_by_worker` would walk that worker's journal
+-- backwards to find it. This index seeks straight to the worker's `herdr`
+-- events of one type in `seq` order, so a worker's own event volume does not
+-- cost the cap's read.
+CREATE INDEX events_by_worker_kind ON events (worker_id, direction, type, seq);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1904,6 +1912,17 @@ pub(super) struct Admission {
     pub(super) worker_id: Option<String>,
     pub(super) server_pid: Option<u32>,
     pub(super) server_start: Option<u64>,
+    pub(super) provider: String,
+    pub(super) admitted_ms: u64,
+}
+
+/// Whether [`Store::bind_admission`] named the admission's worker, or found
+/// it already ended (retired by a handoff's reconciliation, or by a failed
+/// spawn): a start in that state must not spawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BindOutcome {
+    Bound,
+    Ended,
 }
 
 /// An admission as the gate writes it.
@@ -1918,7 +1937,7 @@ pub(super) struct NewAdmission<'a> {
 }
 
 const ADMISSION_COLUMNS: &str =
-    "a.holder, a.repo, a.run_id, a.attempt, a.worker_id, a.server_pid, a.server_start";
+    "a.holder, a.repo, a.run_id, a.attempt, a.worker_id, a.server_pid, a.server_start, a.provider, a.admitted_ms";
 
 fn admission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Admission> {
     Ok(Admission {
@@ -1929,31 +1948,70 @@ fn admission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Admission> {
         worker_id: row.get(4)?,
         server_pid: row.get(5)?,
         server_start: row.get::<_, Option<i64>>(6)?.map(|start| start as u64),
+        provider: row.get(7)?,
+        admitted_ms: row.get::<_, i64>(8)? as u64,
     })
 }
 
-/// The admissions of `provider` in `repo` that hold a slot, oldest first:
-/// not ended, and, by what the rows they name show now, one whose worker has
-/// not exited or been lost (a worker the store does not hold yet is being
-/// spawned), one of a run in progress whose worker is not started yet, at
-/// that attempt or a later one admitted for a retry, or a `worker.run` not
-/// yet bound to its worker.
-fn held_admissions(conn: &Connection, provider: &str, repo: &str) -> StoreResult<Vec<Admission>> {
-    let mut statement = conn.prepare(&format!(
-        "SELECT {ADMISSION_COLUMNS} FROM usage_admissions a
+/// [`held_admissions`]'s query, which a test asks SQLite's plan for.
+fn held_admissions_sql() -> String {
+    format!(
+        "SELECT {ADMISSION_COLUMNS}, w.lost, w.pid,
+             CASE WHEN w.lost = 1 THEN
+                 (SELECT json_extract(e.body, '$.process_start') FROM events e
+                  WHERE e.worker_id = w.id AND e.direction = 'herdr' AND e.type = 'started'
+                  ORDER BY e.seq DESC LIMIT 1)
+             END
+         FROM usage_admissions a
          LEFT JOIN workers w ON w.id = a.worker_id
          LEFT JOIN runs r ON r.id = a.run_id
          WHERE a.provider = ?1 AND a.repo = ?2 AND a.released_ms IS NULL
            AND CASE
-               WHEN a.worker_id IS NOT NULL THEN w.id IS NULL OR (w.exited = 0 AND w.lost = 0)
+               WHEN a.worker_id IS NOT NULL THEN w.id IS NULL OR w.exited = 0
                WHEN a.run_id IS NOT NULL THEN coalesce(r.status IN ('running', 'waiting')
                    AND r.attempt <= a.attempt, 0)
                ELSE 1
            END
          ORDER BY a.admitted_ms, a.holder"
-    ))?;
-    let rows = statement.query_map([provider, repo], admission_from_row)?;
-    rows.collect()
+    )
+}
+
+/// The admissions of `provider` in `repo` that hold a slot, oldest first:
+/// not ended, and, by what the rows they name show now, one whose worker has
+/// not exited (a lost worker counts while its process lives; a worker the
+/// store does not hold yet is being spawned), one of a run in progress
+/// whose worker is not started yet, at that attempt or a later one admitted
+/// for a retry, or a `worker.run` not yet bound to its worker.
+fn held_admissions(conn: &Connection, provider: &str, repo: &str) -> StoreResult<Vec<Admission>> {
+    let mut statement = conn.prepare(&held_admissions_sql())?;
+    let rows = statement.query_map([provider, repo], |row| {
+        let admission = admission_from_row(row)?;
+        let lost = row.get::<_, Option<bool>>(9)?.unwrap_or(false);
+        let pid = row.get::<_, Option<u32>>(10)?;
+        let start = row.get::<_, Option<i64>>(11)?.map(|start| start as u64);
+        Ok((admission, lost, pid, start))
+    })?;
+    let mut held = Vec::new();
+    for row in rows {
+        let (admission, lost, pid, start) = row?;
+        // The start token tells this worker's process from a later process
+        // that got its pid, which `events_by_worker_kind` leads straight to.
+        // A journal from a build before the token, and a worker whose start
+        // event carried none, have only the pid: while any process of the
+        // group led by it lives, the slot is kept, so a process group that
+        // reused the pid keeps it too (a documented over-count, never a
+        // slot released under a worker that still runs).
+        let alive = || {
+            pid.is_some_and(|pid| match start {
+                Some(start) => crate::platform::process_start_token(pid) == Some(start),
+                None => crate::platform::process_group_alive(pid),
+            })
+        };
+        if !lost || alive() {
+            held.push(admission);
+        }
+    }
+    Ok(held)
 }
 
 impl Tx<'_> {
@@ -2839,15 +2897,67 @@ impl Store {
         held_admissions(&lock(&self.conn), provider, repo)
     }
 
-    /// Names the worker an admission starts, before its spawn; an
-    /// admission that is not there, or already ended, is left alone.
-    pub(super) fn bind_admission(&self, holder: &str, worker_id: &str) -> StoreResult<()> {
-        lock(&self.conn).execute(
+    /// Every provider's held admissions in a repository, including starts
+    /// not yet bound to a worker. Uses the same predicate as the cap.
+    pub(super) fn repository_admissions(&self, repo: &str) -> StoreResult<Vec<Admission>> {
+        let mut conn = lock(&self.conn);
+        // One read snapshot even when a different server writes through
+        // its own connection during a live handoff.
+        let tx = conn.transaction()?;
+        let providers = {
+            let mut statement = tx.prepare(
+                "SELECT DISTINCT provider FROM usage_admissions WHERE repo = ?1 AND released_ms IS NULL",
+            )?;
+            let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
+            rows.collect::<StoreResult<Vec<_>>>()?
+        };
+        let mut admissions = Vec::new();
+        for provider in providers {
+            admissions.extend(held_admissions(&tx, &provider, repo)?);
+        }
+        tx.commit()?;
+        admissions.sort_by(|a, b| (a.admitted_ms, &a.holder).cmp(&(b.admitted_ms, &b.holder)));
+        Ok(admissions)
+    }
+
+    /// Names the worker before its spawn. A handoff that already retired
+    /// this admission fences the old server's delayed spawn: it then names
+    /// no worker ([`BindOutcome::Ended`]), which the caller refuses.
+    pub(super) fn bind_admission(&self, holder: &str, worker_id: &str) -> StoreResult<BindOutcome> {
+        let changed = lock(&self.conn).execute(
             "UPDATE usage_admissions SET worker_id = ?2
              WHERE holder = ?1 AND released_ms IS NULL",
             params![holder, worker_id],
         )?;
-        Ok(())
+        Ok(if changed == 0 {
+            BindOutcome::Ended
+        } else {
+            BindOutcome::Bound
+        })
+    }
+
+    /// Retires a start whose worker row the store does not hold, atomically
+    /// with respect to writing that row: a row that is bound while this
+    /// runs keeps its worker's slot, and a bound row whose worker appears
+    /// afterwards is never retired. A start of a recorded run is left to
+    /// the run's own state.
+    pub(super) fn retire_unrecorded_admission(
+        &self,
+        holder: &str,
+        why: &str,
+        at_ms: u64,
+    ) -> StoreResult<bool> {
+        lock(&self.conn)
+            .execute(
+                "UPDATE usage_admissions SET released_ms = ?2, release = ?3
+             WHERE holder = ?1 AND released_ms IS NULL
+               AND ((worker_id IS NULL AND run_id IS NULL)
+                 OR (worker_id IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM workers w
+                                     WHERE w.id = usage_admissions.worker_id)))",
+                params![holder, at_ms as i64, why],
+            )
+            .map(|changed| changed != 0)
     }
 
     /// Ends an admission for `why` (a failed spawn, a refusal); one already
@@ -2863,7 +2973,9 @@ impl Store {
 
     /// The admissions not ended whose start no row records yet: a
     /// `worker.run` admitted but not bound to a worker, or one bound to a
-    /// worker the store does not hold. A server's start reconciles them.
+    /// worker the store does not hold. A server's start and a committed
+    /// handoff reconcile them
+    /// ([`crate::workers::WorkerSupervisor::reconcile_admissions`]).
     pub(super) fn unrecorded_admissions(&self) -> StoreResult<Vec<Admission>> {
         let conn = lock(&self.conn);
         let mut statement = conn.prepare(&format!(
@@ -3458,6 +3570,208 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn in_memory_lost_admissions_follow_process_identity_and_list_pending_starts() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let pid = std::process::id();
+        let start =
+            crate::platform::process_start_token(pid).expect("this process has a start token");
+        append(
+            &store,
+            "w1",
+            &json!({
+                "type": "started", "pid": pid, "process_start": start,
+                "cwd": "/repo", "name": "lost worker",
+            }),
+        )
+        .unwrap();
+        store
+            .connection()
+            .execute("UPDATE workers SET lost = 1 WHERE id = 'w1'", [])
+            .unwrap();
+        for holder in ["bound", "pending"] {
+            store
+                .transaction(|tx| {
+                    tx.admit(&NewAdmission {
+                        holder,
+                        provider: "claude",
+                        repo: "/repo",
+                        run: None,
+                        server: (pid, Some(start)),
+                        ignored: false,
+                        at_ms: 42,
+                    })
+                })
+                .unwrap();
+        }
+        store.bind_admission("bound", "w1").unwrap();
+        let rows = store.repository_admissions("/repo").unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "a lost but living worker still holds its slot"
+        );
+        assert_eq!(rows[0].worker_id.as_deref(), Some("w1"));
+        assert_eq!(rows[1].worker_id, None);
+        assert_eq!(rows[1].provider, "claude");
+        assert_eq!(rows[1].admitted_ms, 42);
+        assert_eq!(rows[1].server_start, Some(start));
+        // A recycled PID must not keep the old process's slot.
+        store.connection().execute(
+            "UPDATE events SET body = json_set(body, '$.process_start', ?1) WHERE type = 'started'",
+            [start.wrapping_add(1) as i64],
+        ).unwrap();
+        assert_eq!(store.held_admissions("claude", "/repo").unwrap().len(), 1);
+        // Also force an actual process exit, not just a token mismatch.
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_pid = child.id();
+        let child_start = crate::platform::process_start_token(child_pid).unwrap();
+        store
+            .connection()
+            .execute("UPDATE workers SET pid = ?1 WHERE id = 'w1'", [child_pid])
+            .unwrap();
+        store.connection().execute(
+            "UPDATE events SET body = json_set(body, '$.process_start', ?1) WHERE type = 'started'",
+            [child_start as i64],
+        ).unwrap();
+        assert_eq!(store.held_admissions("claude", "/repo").unwrap().len(), 2);
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert_eq!(store.held_admissions("claude", "/repo").unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lost_workers_row_without_a_start_token_follows_its_process_group() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        // In a process group of its own, as a worker's CLI is (its pid
+        // leads the group).
+        let mut command = std::process::Command::new("cat");
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // A journal from before herdr recorded a start token: the pid is
+        // all it has.
+        append(
+            &store,
+            "w-legacy",
+            &json!({"type": "started", "pid": pid, "cwd": "/repo", "name": "legacy"}),
+        )
+        .unwrap();
+        store
+            .connection()
+            .execute("UPDATE workers SET lost = 1 WHERE id = 'w-legacy'", [])
+            .unwrap();
+        store
+            .transaction(|tx| {
+                tx.admit(&NewAdmission {
+                    holder: "bound",
+                    provider: "claude",
+                    repo: "/repo",
+                    run: None,
+                    server: (1, Some(1)),
+                    ignored: false,
+                    at_ms: 1,
+                })
+            })
+            .unwrap();
+        store.bind_admission("bound", "w-legacy").unwrap();
+        // Documented limit: with no start token only the pid decides, so a
+        // process group that reused the pid keeps the slot too. What it
+        // never does is free the slot under a worker that still runs.
+        assert_eq!(store.held_admissions("claude", "/repo").unwrap().len(), 1);
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert!(store.held_admissions("claude", "/repo").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_lost_workers_start_event_is_looked_up_by_its_own_index() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let plan = {
+            let conn = lock(&store.conn);
+            let mut statement = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", held_admissions_sql()))
+                .unwrap();
+            let rows = statement
+                .query_map(["claude", "/repo"], |row| row.get::<_, String>(3))
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("\n")
+        };
+        assert!(
+            plan.contains("events_by_worker_kind"),
+            "the start-token lookup walks the worker's journal: {plan}"
+        );
+    }
+
+    #[test]
+    fn retirement_and_binding_are_mutually_exclusive() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        // The worker of one row the store holds, and none for the others.
+        append(
+            &store,
+            "w2",
+            &json!({"type": "started", "pid": 1, "cwd": "/repo", "name": "w2"}),
+        )
+        .unwrap();
+        for holder in ["retire-first", "bound-unrecorded", "bound-recorded"] {
+            store
+                .transaction(|tx| {
+                    tx.admit(&NewAdmission {
+                        holder,
+                        provider: "claude",
+                        repo: "/repo",
+                        run: None,
+                        server: (1, Some(1)),
+                        ignored: false,
+                        at_ms: 1,
+                    })
+                })
+                .unwrap();
+        }
+        // A retired start can never name its worker, so a delayed spawn of
+        // the server that admitted it takes no second slot.
+        assert!(store
+            .retire_unrecorded_admission("retire-first", "handoff", 2)
+            .unwrap());
+        assert_eq!(
+            store.bind_admission("retire-first", "w1").unwrap(),
+            BindOutcome::Ended,
+            "a retired admission cannot spawn later"
+        );
+        // A row that names a worker the store does not hold is still
+        // unrecorded: retiring it is the caller's decision, taken from the
+        // evidence that its server is gone.
+        store.bind_admission("bound-unrecorded", "w-never").unwrap();
+        assert!(store
+            .retire_unrecorded_admission("bound-unrecorded", "handoff", 2)
+            .unwrap());
+        // Once the worker's row exists the row is recorded, and a retire
+        // that races the write cannot free a running worker's slot.
+        store.bind_admission("bound-recorded", "w2").unwrap();
+        assert!(
+            !store
+                .retire_unrecorded_admission("bound-recorded", "handoff", 2)
+                .unwrap(),
+            "a recorded worker keeps its slot"
+        );
+        let rows = store.repository_admissions("/repo").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].holder, "bound-recorded");
+        assert_eq!(rows[0].worker_id.as_deref(), Some("w2"));
+    }
+
     #[test]
     fn a_fresh_store_has_the_schema_and_no_workers() {
         let dir = scratch("fresh");
@@ -3671,6 +3985,7 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3704,6 +4019,7 @@ mod tests {
             .connection()
             .execute_batch(&format!(
                 "DROP TABLE usage_admissions;
+                 DROP INDEX events_by_worker_kind;
                  INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
                      ('/a', 0, '{{\"state\": \"open\"}}', 40),
                      ('/b', 1, '{{\"state\": \"unknown\"}}', 30),
@@ -3714,7 +4030,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 2
+                MIGRATIONS.len() - 3
             ))
             .unwrap();
         drop(store);
@@ -3786,8 +4102,9 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 33
+                MIGRATIONS.len() - 34
             ))
             .unwrap();
         drop(store);
@@ -3857,8 +4174,9 @@ mod tests {
                  DROP TABLE supervision_findings;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
+                 DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 22
+                MIGRATIONS.len() - 23
             ))
             .unwrap();
         drop(store);

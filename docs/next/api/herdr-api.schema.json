@@ -7099,6 +7099,18 @@
           ],
           "type": "object"
         },
+        "WorkerAdmissionsParams": {
+          "description": "The held usage admissions in the git repository containing `cwd`.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd"
+          ],
+          "type": "object"
+        },
         "WorkerAgent": {
           "description": "The agent CLI a headless worker runs.",
           "oneOf": [
@@ -8617,6 +8629,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "All held usage slots in a repository, including pending spawns.",
+          "properties": {
+            "method": {
+              "const": "worker.admissions",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerAdmissionsParams"
             }
           },
           "required": [
@@ -17561,6 +17590,26 @@
               "type": "object"
             },
             {
+              "description": "The authoritative held usage admissions in a repository.",
+              "properties": {
+                "admissions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerAdmission"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "worker_admissions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "admissions"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.run`'s reply: how the gated run ended, its text and usage.",
               "properties": {
                 "run": {
@@ -21720,6 +21769,72 @@
             "id",
             "label",
             "used_percent"
+          ],
+          "type": "object"
+        },
+        "WorkerAdmission": {
+          "description": "One slot held by the usage gate, including starts not yet spawned.",
+          "properties": {
+            "admitted_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "bound": {
+              "type": "boolean"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server_pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "server_start": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "holder",
+            "provider",
+            "repo",
+            "bound",
+            "admitted_ms"
           ],
           "type": "object"
         },

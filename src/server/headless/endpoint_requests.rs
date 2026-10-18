@@ -95,6 +95,24 @@ impl HeadlessServer {
             return false;
         }
 
+        if let api::schema::Method::WorkerAdmissions(params) = &request.method {
+            let message = match crate::workers::supervisor().admissions(&params.cwd) {
+                Ok(admissions) => crate::server::client_commands::success_message_with_result(
+                    boot_id,
+                    request_id,
+                    api::schema::ResponseResult::WorkerAdmissions { admissions },
+                ),
+                Err(error) => crate::server::client_commands::error_message(
+                    boot_id,
+                    request_id,
+                    error.code(),
+                    error.to_string(),
+                ),
+            };
+            self.send_to_client(client_id, message);
+            return false;
+        }
+
         let api_request_id = format!(
             "endpoint:{}:{client_id}:{request_id}",
             self.client_shell_boot_id

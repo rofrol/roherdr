@@ -300,6 +300,10 @@ pub enum ResponseResult {
     Report {
         report: ReportInfo,
     },
+    /// The authoritative held usage admissions in a repository.
+    WorkerAdmissions {
+        admissions: Vec<super::WorkerAdmission>,
+    },
     /// `worker.run`'s reply: how the gated run ended, its text and usage.
     WorkerGatedRun {
         run: WorkerGatedRun,

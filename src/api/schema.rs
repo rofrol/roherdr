@@ -90,6 +90,9 @@ pub enum Method {
     WorkerStatus(WorkerTarget),
     #[serde(rename = "worker.list")]
     WorkerList(EmptyParams),
+    /// All held usage slots in a repository, including pending spawns.
+    #[serde(rename = "worker.admissions")]
+    WorkerAdmissions(WorkerAdmissionsParams),
     #[serde(rename = "worker.wait")]
     WorkerWait(WorkerWaitParams),
     /// One coordinator's inbox over all of its workers: their events after a

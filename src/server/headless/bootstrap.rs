@@ -167,6 +167,13 @@ fn take_startup_cwd() -> Option<PathBuf> {
 fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> {
     let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
+    // Read while the source still runs: a manifest from before the field
+    // names no source identity, and the pid the stream's peer names, with
+    // its start token read now, stands in for it.
+    let admission_server = crate::server::handoff::admission_server(
+        received.manifest.admission_server,
+        crate::server::handoff::source_pid(&received.stream),
+    );
     // Before anything is restored. Held from here on, also if the import
     // fails: dropping this copy leaves the source's.
     let session_lock = crate::server::handoff::import_session_lock(
@@ -271,6 +278,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             crate::pty::usage::PtyAlerts::from_handoff(received.manifest.pty_alerts.take());
         crate::server::handoff::report_ready(&mut received.stream)?;
         wait_committed_or_stopped(&mut received.stream, &server_stop)?;
+        crate::workers::reconcile_admissions_after_handoff(admission_server);
         server.app.assume_handoff_ownership();
         if let Some(lock) = &server.server_lock {
             lock.write_record();

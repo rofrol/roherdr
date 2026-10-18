@@ -42,6 +42,10 @@ pub(crate) const MAX_ALTERNATE_SCREEN_BYTES_PER_PANE: usize = 64 * 1024;
 pub(crate) struct HandoffManifest {
     pub version: u32,
     pub source_version: String,
+    /// The source whose unbound usage admissions the committed import retires.
+    /// Optional for handoffs from servers predating admission reconciliation.
+    #[serde(default)]
+    pub admission_server: Option<(u32, Option<u64>)>,
     pub source_protocol: u32,
     pub expected_version: Option<String>,
     pub expected_protocol: Option<u32>,
@@ -790,6 +794,22 @@ fn check_held_by_source(path: &Path, source: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
+/// The server whose unrecorded usage admissions the import retires: the
+/// identity the manifest carries, or, for a source from before that field
+/// existed, the pid the stream's peer names, with the start token read now
+/// while that process still runs. `None` when neither is known: the import
+/// then leaves the source's rows to the next server start.
+#[cfg(unix)]
+pub(crate) fn admission_server(
+    manifest: Option<(u32, Option<u64>)>,
+    source_pid: Option<u32>,
+) -> Option<(u32, Option<u64>)> {
+    manifest.or_else(|| {
+        let pid = source_pid?;
+        Some((pid, crate::platform::process_start_token(pid)))
+    })
+}
+
 /// The process id a peer description (`pid 42 (herdr), ...`) starts with.
 #[cfg(unix)]
 fn described_pid(description: &str) -> Option<u32> {
@@ -802,7 +822,7 @@ fn described_pid(description: &str) -> Option<u32> {
 
 /// The handoff source's process id, from the stream's peer.
 #[cfg(unix)]
-fn source_pid(stream: &UnixStream) -> Option<u32> {
+pub(crate) fn source_pid(stream: &UnixStream) -> Option<u32> {
     let stream = crate::ipc::LocalStream::from(
         interprocess::os::unix::uds_local_socket::Stream::from(stream.try_clone().ok()?),
     );
@@ -938,6 +958,10 @@ pub(crate) fn manifest_for(
     HandoffManifest {
         version: HANDOFF_VERSION,
         source_version: crate::build_info::version(),
+        admission_server: Some((
+            std::process::id(),
+            crate::platform::process_start_token(std::process::id()),
+        )),
         source_protocol: crate::protocol::PROTOCOL_VERSION,
         expected_version,
         expected_protocol,
@@ -1713,6 +1737,42 @@ mod tests {
         drop(source);
         let closed = wait_committed(&mut import, wake_rx.as_fd()).expect_err("closed");
         assert_eq!(closed.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_manifest_without_the_source_identity_falls_back_to_the_peers_pid() {
+        let manifest = manifest_offering(None);
+        let pid = std::process::id();
+        let mut json = serde_json::to_value(&manifest).expect("a manifest");
+        assert_eq!(
+            json.get("admission_server"),
+            Some(&serde_json::json!([
+                pid,
+                crate::platform::process_start_token(pid)
+            ])),
+            "a source names itself"
+        );
+        // A source from before the field sends none, and the manifest still
+        // deserializes.
+        json.as_object_mut()
+            .expect("an object")
+            .remove("admission_server");
+        let older: HandoffManifest = serde_json::from_value(json).expect("an older manifest");
+        assert_eq!(older.admission_server, None);
+        // Its stream's peer names the pid; the start token is read while
+        // that process still runs, so a later process with the pid cannot
+        // pass for it.
+        assert_eq!(
+            admission_server(None, Some(pid)),
+            Some((pid, crate::platform::process_start_token(pid)))
+        );
+        // A manifest that names its source is used as it is.
+        assert_eq!(
+            admission_server(Some((7, Some(11))), Some(pid)),
+            Some((7, Some(11)))
+        );
+        // Neither: the import leaves the source's rows to the next start.
+        assert_eq!(admission_server(None, None), None);
     }
 
     #[test]

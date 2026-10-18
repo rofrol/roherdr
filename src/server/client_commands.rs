@@ -65,6 +65,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "usage.set_enabled",
     "usage.set_provider",
     "usage.settings",
+    "worker.admissions",
     "worker.answer",
     "worker.deny_and_stop",
     "worker.open_log",
@@ -319,6 +320,10 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         // Freeze additive methods separately without rewriting the published fixture.
+        assert_eq!(
+            actual.remove("worker.admissions").as_deref(),
+            Some("710249bc1aa8bf8d50017fc2af960b411aaf76cdc0000f5f4a83a0c580c86231")
+        );
         assert_eq!(
             actual.remove("agent.handoff").as_deref(),
             Some("9e4ddf4f97ad0b4f8ac64465876862022d6aff9baa90e77f3dd8473517ab65dd")

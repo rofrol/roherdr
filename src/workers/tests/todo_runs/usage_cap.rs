@@ -4,6 +4,9 @@
 use super::*;
 use crate::workers::runs::usage_gate::Holder;
 
+#[path = "usage_cap_followups.rs"]
+mod followups;
+
 /// `fixture`'s gate with at most `max_workers` workers per provider.
 fn cap(fixture: &Fixture, max_workers: u32) {
     fixture
@@ -648,26 +651,46 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     // Exited before the restart.
     let exited = admitted_worker(&fixture, &fixture.repo, &repo, "exited");
     stop(&fixture, &exited);
-    // Named before its spawn, by a server that ended before recording it.
+    // A server that ended before recording a worker it had named, and one
+    // that ended before the start it admitted.
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let gone_pid = gone.id();
+    gone.wait().unwrap();
     gate(&gate_holder("unknown"));
     store_of(&fixture.supervisor)
         .bind_admission("worker.run:unknown", "w999")
         .unwrap();
-    // A worker.run admitted by a server that ended before the start.
     gate(&gate_holder("crashed"));
-    let mut gone = std::process::Command::new("true").spawn().unwrap();
-    let gone_pid = gone.id();
-    gone.wait().unwrap();
     store_of(&fixture.supervisor)
         .connection()
         .execute(
             "UPDATE usage_admissions SET server_pid = ?1, server_start = 1
-             WHERE holder = 'worker.run:crashed'",
+             WHERE holder IN ('worker.run:unknown', 'worker.run:crashed')",
             [gone_pid],
+        )
+        .unwrap();
+    // Named before its spawn, from a server that recorded no identity at all
+    // (written before the admissions carried one).
+    gate(&gate_holder("legacy"));
+    store_of(&fixture.supervisor)
+        .bind_admission("worker.run:legacy", "w998")
+        .unwrap();
+    store_of(&fixture.supervisor)
+        .connection()
+        .execute(
+            "UPDATE usage_admissions SET server_pid = NULL, server_start = NULL
+             WHERE holder = 'worker.run:legacy'",
+            [],
         )
         .unwrap();
     // A worker.run admitted by a server that still runs (this process).
     gate(&gate_holder("starting"));
+    // A start this process admitted and named, whose worker row it has not
+    // written yet: it may be spawning right now.
+    gate(&gate_holder("spawning"));
+    store_of(&fixture.supervisor)
+        .bind_admission("worker.run:spawning", "w997")
+        .unwrap();
     // A run's attempt admitted before the run was recorded: no run holds it.
     gate(&Holder::Run {
         run_id: "r-never-recorded".into(),
@@ -677,7 +700,9 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
         held(&fixture.supervisor, &repo),
         [
             "worker.run:crashed",
+            "worker.run:legacy",
             "worker.run:live",
+            "worker.run:spawning",
             "worker.run:starting",
             "worker.run:unknown"
         ]
@@ -689,20 +714,26 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     );
     assert_eq!(
         held(&restarted, &repo),
-        ["worker.run:live", "worker.run:starting"]
+        [
+            "worker.run:live",
+            "worker.run:spawning",
+            "worker.run:starting"
+        ]
     );
-    let released = store_of(&restarted)
-        .connection()
-        .query_row(
-            "SELECT release FROM usage_admissions WHERE holder = 'worker.run:unknown'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap();
-    assert!(
-        released.contains("before the worker was recorded"),
-        "{released}"
-    );
+    for holder in ["worker.run:unknown", "worker.run:legacy"] {
+        let released = store_of(&restarted)
+            .connection()
+            .query_row(
+                "SELECT release FROM usage_admissions WHERE holder = ?1",
+                [holder],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert!(
+            released.contains("before the worker was recorded"),
+            "{released}"
+        );
+    }
     drop(restarted);
     stop(&fixture, &live);
 }

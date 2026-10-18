@@ -373,14 +373,31 @@ impl WorkerSupervisor {
                     .map_err(|error| error.to_string()),
                 Err(error) => Err(error.clone()),
             };
-            if let Err(error) = bound {
-                remove_temp_dir(&temp_dir);
-                if let Some(extension) = &pi_extension {
-                    let _ = std::fs::remove_file(extension);
+            match bound {
+                Ok(store::BindOutcome::Bound) => {}
+                // A handoff's reconciliation retired this admission before
+                // the worker was named: it holds no slot, so it must not
+                // start. Nothing ran and nothing was recorded.
+                Ok(store::BindOutcome::Ended) => {
+                    remove_temp_dir(&temp_dir);
+                    if let Some(extension) = &pi_extension {
+                        let _ = std::fs::remove_file(extension);
+                    }
+                    return Err(WorkerError::UsageGate(format!(
+                        "the usage gate's admission for this start ended before worker \
+                         {worker_id} was named, so this start holds no slot; it was not \
+                         started"
+                    )));
                 }
-                return Err(WorkerError::Io(std::io::Error::other(format!(
-                    "the usage gate's admission could not name worker {worker_id}: {error}"
-                ))));
+                Err(error) => {
+                    remove_temp_dir(&temp_dir);
+                    if let Some(extension) = &pi_extension {
+                        let _ = std::fs::remove_file(extension);
+                    }
+                    return Err(WorkerError::Io(std::io::Error::other(format!(
+                        "the usage gate's admission could not name worker {worker_id}: {error}"
+                    ))));
+                }
             }
         }
         let spawned = self
@@ -425,6 +442,7 @@ impl WorkerSupervisor {
             "temp_dir": temp_dir.display().to_string(),
             "removed_env": removed_env,
             "pid": pid,
+            "process_start": crate::platform::process_start_token(pid),
             "broker": spawned.broker.as_ref().map(|(broker_pid, socket)| json!({
                 "pid": broker_pid,
                 "socket": socket,
