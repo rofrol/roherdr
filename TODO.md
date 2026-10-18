@@ -442,6 +442,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   item (owner-click capture); the initial dotfiles checks.toml is proposed
   by the home coordinator for the owner's review; point 5 needs no separate
   mechanism while every HOME patch needs the owner's approval.
+  From `herdr coordinator open` (t-4h2cmwvj, 2026-10-18): the new command
+  refuses a space whose repository is HOME, because `tab role <tab>
+  coordinator` — the claim it uses — is exactly the path that point 1 keeps
+  opt-in; only `coordinator start --repo ~` claims it. Opening a coordinator
+  there needs a way for a new tab to claim explicitly (a claim by pane with the
+  home path named), which belongs to this item.
 
 - [ ] Turn the todo skill's new rules into herdr mechanisms (the user, [t-cndvjrq2]
   2026-10-12: "a skill? sounds non-deterministic; ask the models";
