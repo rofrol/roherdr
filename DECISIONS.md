@@ -1730,3 +1730,91 @@ No migration: an admission already stores its repository. A run refused by the
 old global cap starts by itself, because its driver re-reads the gate at the
 counted events (a worker exit, a usage measurement, a server start), and the
 update's install is a server start.
+
+## A gated, blocking headless run for an external orchestrator (t-kxejzkf7, 2026-10-16)
+
+The user asked on 2026-10-16 (d-r4weskqo, from agentic-workflow-bend-claude)
+for this workflow to be integrated into herdr narrowly, and round
+`20261016-120247-cf00` (all five models) said the usage gate must cover such a
+supervisor's agents or there is no integration. Landed as `204a4512a` (run
+r-6ahe2rtv, attempt 2; r-orzdxtqq aborted when its paths did not cover the new
+method).
+
+- `herdr worker run` (`worker.run`) passes the same server-side usage gate as
+  `todo run` (`WorkerSupervisor::usage_gate`, one gate, never a second),
+  records the decision as a `usage_gate` journal event, runs one turn in the
+  directory the caller names (no folder slot, no landing, no TODO edit) under
+  the same sandbox, stops the worker and prints one JSON result: outcome
+  `ended|failed|stopped|policy_refused`, the final text, per-model usage and
+  the gate. Exit 0 ended, 3 another outcome, 4 gate refusal, 2 usage, 1 error.
+  A client that goes away kills the worker.
+- Review round `20261016-130105-cc17` (sol, MiMo, DeepSeek; Argon and Wonder
+  failed on OpenRouter limits), fixed in attempt 2: a folder slot is refused
+  by its path wherever it is used, and a failed stop either kills a live
+  worker or returns the error.
+- Interpretations kept: a non-git `--cwd` is refused, and pi reports no usage.
+- Open then, proposed separately: the gate reads usage and reserves nothing,
+  so two concurrent starts (two `worker run`s, or one and a `todo run`) can
+  both be admitted; the same holds for `todo run`.
+- Its run was aborted at install (d-astkzjod) because the live handoff failed
+  (t-qgtdc57s) and the retry's `just check` failed on t-djdhewk3; the commit
+  reached master, was installed and pushed by the next run.
+
+## A live handoff passes the bound listening sockets (t-qgtdc57s, 2026-10-16)
+
+Report r-86 (2026-10-16, from the install of run r-6ahe2rtv) showed a live
+handoff failing because
+`wait_for_old_public_sockets_to_close` polled every 50 ms until a deadline, a
+timed wait that Rule 10 forbids. Landed as `b2f75c066` (run r-cults2sq;
+r-i2bmn5y7 aborted: its first attempt's rename design was rejected in review
+round `20261016-150857-ff68`, its second was blocked on `src/api/server.rs`).
+
+- Two builds that know this handoff pass their bound, listening API and client
+  sockets over `SCM_RIGHTS` (manifest field `public_listeners`). No path is
+  unlinked, renamed or re-bound; connections queue in the backlog; the importer
+  accepts after `committed`; a failed import resumes the old server on its own
+  listeners.
+- `src/api/server.rs` gained a start on a given listener and a poll-and-wake
+  pause/resume. The 50 ms poll and its deadline are gone.
+- One transitional install was accepted by the user (d-wwhkh2ix): with a
+  previous-build importer the paths are unlinked by their owner before its
+  bind; with a previous-build source the importer renames its own listeners in
+  after a liveness check. Both windows are narrow and named in the run's final
+  message.
+- Open, proposed separately: a stop signal arriving together with `committed`,
+  and the old server's 500 ms wait for `owned` after the commit.
+- Approved before t-xhaho72w (d-fhaul4cr).
+
+## One herdr server per session, held by a lock (t-h6dxi6wv, 2026-10-16)
+
+On 2026-10-16 a client that found no socket during a failed handoff
+auto-started a second full server, which resumed every agent session a second
+time. Design round `20261016-151348-2ae6` (all five models); approved by the
+user as d-j7tcusiv, right after t-qgtdc57s. Landed as `fd411e50e` (run
+r-j2phuths, attempt 2).
+
+- The live server holds an exclusive `flock` on `herdr-server.lock` beside the
+  API socket for its whole life, taken before any startup effect (Unix
+  `flock`, Windows `LockFileEx`), opened `O_CLOEXEC` and never unlinked or
+  replaced; a pid record only names the holder.
+- Any server start takes the lock first and refuses before it binds or
+  restores anything, naming the holder.
+- A live handoff passes the locked descriptor in an optional manifest field
+  (`take-server-lock`) and the source keeps its copy until the commit; the
+  importer checks it by file identity.
+- A client that cannot connect while the lock is held says a server is
+  starting or handing off instead of starting one, and learns a spawned
+  server's outcome from a start-report pipe (`ready`, `refused <pid>`, or the
+  pipe's close) rather than from a probe that would take the lock.
+- Every descriptor received over `SCM_RIGHTS` gets `FD_CLOEXEC` (listeners
+  passed since t-qgtdc57s could leak to children before).
+- Review rounds `20261016-151348-2ae6` (design) and `20261016-170554-f593`
+  (diff).
+- Remaining, proposed separately: a handoff to an older build leaves that
+  server unlocked; on Windows the start report is not passed, so the client
+  waits for the socket as before; a client that spawns an older binary waits
+  on the inherited pipe until that server ends; a stop waits for the process;
+  atomic CLOEXEC on Linux.
+- Its run was aborted at install because `just check` failed on its own
+  killed-holder test (t-5p6nblgy); the commit reached master, was installed
+  and pushed by the next run.

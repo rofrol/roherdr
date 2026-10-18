@@ -29,6 +29,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   From consult round 20261018-040742-f605 (sol, mimo, argon; sol first had the working tree in front of it
   and caught that the message said "per coordinator" while the key is a path). Decided by the user
   2026-10-18 (d-lbaeqfpz): the git repository identity, not the recorded path.
+  Landed 2026-10-18 without this item: the cap counts per repository (47e827f50,
+  "fix: the worker concurrency cap counts per repository, not globally"); what
+  stays open is only the key: the admission stores the recorded path, not the
+  repository's git identity.
 
 - [ ] A run held by the usage gate shows as a red attention card with no [t-3c2zqh76]
   question behind it (report r-103, from game-grounder2's coordinator at the
@@ -106,113 +110,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
   verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
   pilot uses only `worker run`, one worker, no push).
-
-- [ ] A gated, blocking headless run for an external orchestrator (the user, [t-kxejzkf7]
-  2026-10-16, d-r4weskqo, in agentic-workflow-bend-claude: "integrate the
-  use of this workflow by roherdr now, narrowly"; consult round
-  `20261016-120247-cf00`, all five models: the usage gate must cover the
-  supervisor's agents or do not integrate). `herdr worker run` (or a flag of
-  `worker start` that waits) admits the start through the same server-side
-  usage gate as `todo run` (`WorkerSupervisor::usage_gate`, one gate, never a
-  second), runs the headless worker in the directory the caller names (a
-  worktree the orchestrator owns; no folder slot, no landing, no TODO edit)
-  under the same sandbox, blocks until the worker's turn ends and prints one
-  JSON result (final text, usage per model, status); a refusal exits with
-  its own status and message, which the caller records, never a retry on a
-  timer. agentic-workflow-bend-claude's `scripts/agent-worker` then runs it
-  as its agent command (its item t-adaptrun), and herdr-bend implements the
-  same contract at M3.
-  In flight 2026-10-16: run r-6ahe2rtv (the first, r-orzdxtqq, was aborted:
-  the new method needs src/api/schema.rs, server.rs, workers.rs and
-  src/app/api.rs, now allowed).
-  Landed 2026-10-16 (run r-6ahe2rtv, attempt 2; r-orzdxtqq aborted for
-  its paths): `herdr worker run` / `worker.run` passes `usage_gate` for the
-  repository of `--cwd`, records the decision as a `usage_gate` journal
-  event, runs one turn without a folder slot, stops the worker and prints
-  JSON (outcome `ended|failed|stopped|policy_refused`, text, per-model
-  usage, gate); exit 0 ended, 3 other outcome, 4 gate refusal, 2 usage, 1
-  error; a client that goes away kills the worker. Review with round
-  `20261016-130105-cc17` (sol, MiMo, DeepSeek; Argon and Wonder failed on
-  OpenRouter limits) fixed in attempt 2: a folder slot is refused by its
-  path (`slot::places_of`), used or not; a failed stop kills a live worker
-  or returns the error. Interpretations kept: a non-git `--cwd` is refused;
-  pi reports no usage. Open: the gate reads usage, it reserves nothing, so
-  two concurrent starts (two `worker run`s, or one and a `todo run`) can
-  both be admitted (DeepSeek; the same holds for `todo run` today), see
-  the Proposed item on admitting concurrent starts.
-  The run was aborted at its install (d-astkzjod): the live handoff failed
-  (report r-87, t-qgtdc57s), and the retry's `just check` failed on the
-  queue race t-djdhewk3; 204a4512a is on master, installed and pushed by
-  the next run.
-
-- [ ] A live handoff fails when the old server's public sockets stay open [t-qgtdc57s]
-  (report r-86, 2026-10-16, run r-6ahe2rtv's install: "handoff replacement
-  server did not become ready ... old server sockets did not close before
-  handoff import bind"; the previous binary was restored).
-  `wait_for_old_public_sockets_to_close` (src/server/headless/lifecycle.rs,
-  around line 435) polls every 50 ms until a deadline, a timed wait that
-  Rule 10 forbids; find what keeps the old listeners accepting (an open
-  wait connection, a worker broker, a client) and make the old server
-  acknowledge its listeners closed as an event the new one waits on.
-  Reproduce first with a stress loop of live handoffs while open waits
-  (`todo wait`, `worker wait`) and brokered workers are attached. Touches
-  handoff, so it waits for approval.
-  Decided by the user 2026-10-16 (d-fhaul4cr): approved, before t-xhaho72w.
-  Decided by the user 2026-10-16 (d-wwhkh2ix): the first install of this fix
-  runs live as usual; the user accepts its one transitional window.
-  In flight 2026-10-16: run r-cults2sq (listener transfer; r-i2bmn5y7 aborted:
-  attempt 1 de6fdc82d rename design rejected in review round
-  20261016-150857-ff68, attempt 2 blocked on src/api/server.rs).
-  Landed 2026-10-16 (run r-cults2sq; r-i2bmn5y7 aborted): a live handoff
-  between two builds that know it passes the bound, listening API and
-  client sockets over SCM_RIGHTS (manifest field `public_listeners`); no
-  path is unlinked, renamed or re-bound, connections queue in the backlog,
-  the importer accepts after `committed`, a failed import resumes the old
-  server on its own listeners; `src/api/server.rs` gained a start on a
-  given listener and a poll-and-wake pause/resume. The 50 ms poll and its
-  deadline are gone. Remaining for the one transitional install (accepted
-  by the user, d-wwhkh2ix): with a previous-build importer the paths are
-  unlinked by owner before its bind; with a previous-build source the
-  importer renames its own listeners in after a liveness check (two narrow
-  windows, named in the run's final message). Open, proposed separately:
-  a stop signal arriving with `committed`, and the old server's 500 ms
-  wait for `owned` after the commit.
-
-- [ ] One herdr server per session, held by a lock (follow-up of [t-h6dxi6wv]
-  t-qgtdc57s; design round `20261016-151348-2ae6`, all five): on
-  2026-10-16 a client that found no socket during a failed handoff
-  auto-started a second full server, which resumed every agent session a
-  second time. The live server holds an exclusive `flock` on a lock file
-  in the state directory for its whole life (opened `O_CLOEXEC`, never
-  unlinked or replaced, passed to the importer in a live handoff with the
-  other descriptors); any server start takes it first and refuses, naming
-  the holder, when it is held; a client that cannot connect while the
-  lock is held says a server is starting or handing off instead of
-  starting one. Every spawn path is checked not to inherit it (an agent
-  holding it after a crash would block every new server). Windows gets
-  the equivalent in its platform module. Touches server start, so it
-  waits for approval.
-  Decided by the user 2026-10-16 (d-j7tcusiv): approved, right after t-qgtdc57s.
-  Landed 2026-10-16 (run r-j2phuths, attempt 2): the server takes an
-  exclusive lock on `herdr-server.lock` beside the API socket before any
-  startup effect (Unix `flock`, Windows `LockFileEx`; `O_CLOEXEC`, never
-  unlinked; a pid record only names the holder); a second start refuses
-  before it binds or restores anything; a live handoff passes the locked
-  descriptor (optional manifest field, `take-server-lock`) and the source
-  keeps its copy until the commit; the importer checks it by file
-  identity. No probe takes the lock: the client learns a spawned server's
-  outcome from a start-report pipe (`ready`, `refused <pid>`, or the
-  pipe's close). Every descriptor received over SCM_RIGHTS gets
-  `FD_CLOEXEC` (listeners passed since t-qgtdc57s could leak to children
-  before). Review rounds `20261016-151348-2ae6` (design) and
-  `20261016-170554-f593` (diff). Remaining: a handoff to an older build
-  leaves that server unlocked; on Windows the start report is not passed
-  (the client waits for the socket as before); a client that spawns an
-  older binary waits on the inherited pipe until that server ends.
-  Proposed: stop waits for the process, atomic CLOEXEC on Linux.
-  The run was aborted at its install: `just check` failed on its own
-  killed-holder test (t-5p6nblgy); fd411e50e is on master, installed and
-  pushed by the next run.
 
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
