@@ -21,7 +21,7 @@ const USAGE: &str = "usage:
       pi-anthropic (headless pi on the Anthropic API credits). Without it
       the run uses [workers] default_agent (default claude); an explicit
       --agent wins. --model MODEL runs a pi worker on MODEL, a
-      provider/model id as pi names it (e.g. deepseek/deepseek-chat)
+      provider/model id as pi names it (e.g. deepseek/deepseek-flash)
       instead of openai-codex/gpt-6.1-sol; the run pins it for all its
       attempts and its events record it. The usage gate reads the provider
       MODEL belongs to (the ChatGPT plan for openai-codex/*, DeepSeek's
@@ -1728,13 +1728,13 @@ mod tests {
             "--next-agent",
             "pi",
             "--next-model",
-            "deepseek/deepseek-chat",
+            "deepseek/deepseek-flash",
         ]) else {
             panic!("--next-model did not parse");
         };
         let next = params.next.unwrap();
         assert_eq!(next.agent, Some(WorkerAgentChoice::Pi));
-        assert_eq!(next.model.as_deref(), Some("deepseek/deepseek-chat"));
+        assert_eq!(next.model.as_deref(), Some("deepseek/deepseek-flash"));
         let Ok(Some(Method::TodoResume(params))) = resume(&[]) else {
             panic!("--next did not parse");
         };
@@ -1747,7 +1747,7 @@ mod tests {
                 "--next-agent",
                 agent,
                 "--next-model",
-                "deepseek/deepseek-chat",
+                "deepseek/deepseek-flash",
             ]) else {
                 panic!("a {agent} next run took a pi model");
             };
@@ -1771,7 +1771,7 @@ mod tests {
             }
             words.extend_from_slice(&[
                 "--model",
-                "deepseek/deepseek-chat",
+                "deepseek/deepseek-flash",
                 "--task",
                 &task,
                 "--message",
@@ -1786,15 +1786,15 @@ mod tests {
         let Ok(Some(Method::TodoRunWait(params))) = with(Some("pi")) else {
             panic!("run --agent pi --model did not parse");
         };
-        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-flash"));
         let wire = serde_json::to_value(Method::TodoRunWait(params)).unwrap();
-        assert_eq!(wire["params"]["model"], "deepseek/deepseek-chat");
+        assert_eq!(wire["params"]["model"], "deepseek/deepseek-flash");
         // Without --agent the server resolves [workers] default_agent.
         let Ok(Some(Method::TodoRunWait(params))) = with(None) else {
             panic!("run --model without --agent did not parse");
         };
         assert_eq!(params.agent, None);
-        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-flash"));
         let Err(error) = with(Some("claude")) else {
             panic!("a Claude run took a pi model");
         };
@@ -1812,11 +1812,11 @@ mod tests {
             "--agent",
             "pi",
             "--model",
-            "deepseek/deepseek-chat",
+            "deepseek/deepseek-flash",
         ])) else {
             panic!("draft --model did not parse");
         };
-        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-chat"));
+        assert_eq!(params.model.as_deref(), Some("deepseek/deepseek-flash"));
         let Err(error) = parse(&args(&[
             "run",
             "t-abcd2345",
@@ -1824,7 +1824,7 @@ mod tests {
             "--agent",
             "pi-anthropic",
             "--model",
-            "deepseek/deepseek-chat",
+            "deepseek/deepseek-flash",
         ])) else {
             panic!("a credit draft took a pi model");
         };
@@ -1836,7 +1836,7 @@ mod tests {
             "--agent",
             "claude",
             "--model",
-            "deepseek/deepseek-chat",
+            "deepseek/deepseek-flash",
         ])) else {
             panic!("a Claude draft took a pi model");
         };

@@ -4875,14 +4875,14 @@ mod tests {
     fn a_pi_models_run_keeps_its_model_and_an_older_run_keeps_none() {
         let finish = RunFinish {
             agent: Some(WorkerAgent::Pi),
-            model: Some("deepseek/deepseek-chat".into()),
+            model: Some("deepseek/deepseek-flash".into()),
             ..Default::default()
         };
         let stored = serde_json::to_value(&finish).unwrap();
-        assert_eq!(stored["model"], "deepseek/deepseek-chat");
+        assert_eq!(stored["model"], "deepseek/deepseek-flash");
         let restored: RunFinish = serde_json::from_value(stored).unwrap();
         assert_eq!(restored.model, finish.model);
-        assert_eq!(restored.worker_model(), Some("deepseek/deepseek-chat"));
+        assert_eq!(restored.worker_model(), Some("deepseek/deepseek-flash"));
         // A run stored before the field existed, and one with no model.
         for old in [
             json!({"agent": "pi"}),

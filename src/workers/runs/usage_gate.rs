@@ -97,12 +97,12 @@ impl GateProvider {
         let model = model.unwrap_or(super::super::pi::DEFAULT_MODEL);
         let Some((provider, name)) = model.split_once('/') else {
             return Err(format!(
-                "a pi model is provider/model (for example deepseek/deepseek-chat), not {model:?}"
+                "a pi model is provider/model (for example deepseek/deepseek-flash), not {model:?}"
             ));
         };
         if name.is_empty() {
             return Err(format!(
-                "a pi model is provider/model (for example deepseek/deepseek-chat), not {model:?}"
+                "a pi model is provider/model (for example deepseek/deepseek-flash), not {model:?}"
             ));
         }
         match provider {
@@ -729,7 +729,7 @@ mod tests {
             assert_eq!(P::for_worker(WorkerAgent::Pi, Some(model)), Ok(P::OpenAi));
         }
         assert_eq!(
-            P::for_worker(WorkerAgent::Pi, Some("deepseek/deepseek-chat")),
+            P::for_worker(WorkerAgent::Pi, Some("deepseek/deepseek-flash")),
             Ok(P::DeepSeek)
         );
         // A provider herdr cannot read is refused, never gated on nothing,

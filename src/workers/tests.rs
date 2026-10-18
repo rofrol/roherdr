@@ -9535,7 +9535,7 @@ mod todo_runs {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_pi_chain_keeps_the_closed_runs_model() {
-        const MODEL: &str = "deepseek/deepseek-chat";
+        const MODEL: &str = "deepseek/deepseek-flash";
         let fixture = todo_repo("todo-pi-chain-model");
         super::pi_workers::use_pi_stub(&fixture, "pi");
         with_finish(&fixture);
@@ -9588,7 +9588,7 @@ mod todo_runs {
     #[test]
     fn a_parked_deepseek_run_wakes_on_a_spendable_balance() {
         use crate::api::schema::TodoRunStatus;
-        const MODEL: &str = "deepseek/deepseek-chat";
+        const MODEL: &str = "deepseek/deepseek-flash";
         let fixture = todo_repo("todo-pi-model-pending");
         super::pi_workers::use_pi_stub(&fixture, "pi");
         fixture
@@ -15016,7 +15016,7 @@ while True:
         );
     }
 
-    /// A run on a chosen pi model: `--model deepseek/deepseek-chat` starts pi
+    /// A run on a chosen pi model: `--model deepseek/deepseek-flash` starts pi
     /// with that model, pins it in the run, and its usage gate reads the
     /// model's provider, so the ChatGPT plan's closed window does not refuse
     /// it.
@@ -15024,7 +15024,7 @@ while True:
     #[test]
     fn a_todo_run_with_a_pi_model_reads_that_models_provider_and_records_it() {
         use crate::api::schema::{TodoEventKind, TodoRunParams};
-        const MODEL: &str = "deepseek/deepseek-chat";
+        const MODEL: &str = "deepseek/deepseek-flash";
         let fixture = todo_runs::todo_repo("todo-pi-model");
         use_pi_stub(&fixture, "pi");
         // The ChatGPT plan is closed; DeepSeek's balance is spendable.
@@ -15093,7 +15093,7 @@ while True:
             .supervisor
             .todo_run(TodoRunParams {
                 agent: Some(WorkerAgent::Pi),
-                model: Some("deepseek/deepseek-chat".into()),
+                model: Some("deepseek/deepseek-flash".into()),
                 ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
             })
             .unwrap_err();
@@ -15125,7 +15125,7 @@ while True:
             .supervisor
             .todo_run(TodoRunParams {
                 agent: Some(WorkerAgent::Claude),
-                model: Some("deepseek/deepseek-chat".into()),
+                model: Some("deepseek/deepseek-flash".into()),
                 ..todo_runs::params(&fixture, "commit a.txt feat: add a", "ok")
             })
             .unwrap_err();
@@ -15151,7 +15151,7 @@ while True:
     #[test]
     fn a_model_without_an_agent_resolves_the_default_agent_and_its_provider() {
         use crate::api::schema::{TodoEventKind, TodoRunParams};
-        const MODEL: &str = "deepseek/deepseek-chat";
+        const MODEL: &str = "deepseek/deepseek-flash";
         let fixture = todo_runs::todo_repo("todo-default-agent-model");
         use_pi_stub(&fixture, "pi");
         set_default_agent(&fixture, "pi");

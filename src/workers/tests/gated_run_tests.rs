@@ -447,7 +447,7 @@ fn a_gated_run_with_a_pi_model_reads_that_models_provider() {
         &fixture,
         &WorkerGatedRunParams {
             agent: Some(WorkerAgent::Pi),
-            model: Some("deepseek/deepseek-chat".into()),
+            model: Some("deepseek/deepseek-flash".into()),
             ..run_params(&fixture.repo, "finish")
         },
     )
@@ -457,7 +457,7 @@ fn a_gated_run_with_a_pi_model_reads_that_models_provider() {
     assert_eq!(run.usage_gate["decision"], "admit");
     let started = &fixture.herdr_events(&run.worker_id, "started")[0];
     assert_eq!(started["agent"], "pi");
-    assert_eq!(started["model"], "deepseek/deepseek-chat");
+    assert_eq!(started["model"], "deepseek/deepseek-flash");
 
     let refused = gated_run(
         &fixture,

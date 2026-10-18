@@ -55,7 +55,7 @@ pub struct TodoRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<super::workers::WorkerAgent>,
     /// The model the run's workers run, as pi names it (`provider/model`,
-    /// e.g. `deepseek/deepseek-chat`), pinned for all attempts of the run.
+    /// e.g. `deepseek/deepseek-flash`), pinned for all attempts of the run.
     /// The usage gate reads the provider the model belongs to (the ChatGPT
     /// plan for `openai-codex/*`, DeepSeek's balance for `deepseek/*`), so a
     /// run on another provider is admitted while the ChatGPT plan is at its

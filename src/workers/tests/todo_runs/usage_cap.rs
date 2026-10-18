@@ -260,7 +260,7 @@ fn the_cap_counts_the_models_provider_not_its_agent() {
         .usage_gate(
             repo,
             WorkerAgent::Pi,
-            Some("deepseek/deepseek-chat"),
+            Some("deepseek/deepseek-flash"),
             false,
             Some(&gate_holder("deepseek")),
         )

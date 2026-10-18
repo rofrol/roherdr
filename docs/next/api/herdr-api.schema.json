@@ -6912,7 +6912,7 @@
               "type": "string"
             },
             "model": {
-              "description": "The model the run's workers run, as pi names it (`provider/model`,\ne.g. `deepseek/deepseek-chat`), pinned for all attempts of the run.\nThe usage gate reads the provider the model belongs to (the ChatGPT\nplan for `openai-codex/*`, DeepSeek's balance for `deepseek/*`), so a\nrun on another provider is admitted while the ChatGPT plan is at its\nlimit. Only a pi run takes it; pi's default model when absent.",
+              "description": "The model the run's workers run, as pi names it (`provider/model`,\ne.g. `deepseek/deepseek-flash`), pinned for all attempts of the run.\nThe usage gate reads the provider the model belongs to (the ChatGPT\nplan for `openai-codex/*`, DeepSeek's balance for `deepseek/*`), so a\nrun on another provider is admitted while the ChatGPT plan is at its\nlimit. Only a pi run takes it; pi's default model when absent.",
               "type": [
                 "string",
                 "null"
