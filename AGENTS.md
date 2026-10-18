@@ -237,6 +237,14 @@ When updating libghostty-vt, check every active patch in `vendor/libghostty-vt.p
 
 `skills/herdr/SKILL.md` tracks the latest stable Herdr release because the unversioned `npx skills add herdrdev/herdr --skill herdr -g` command installs it from `master`. Do not update this file in feature or preview work. Review and update it only during stable release preparation, and include the change in the release commit with the `Cargo.toml` version bump. Preview builds keep the latest stable skill.
 
+Install that skill in the place your agents read skills; without it an agent
+outside this repository never sees the rules in it. `npx skills add
+herdrdev/herdr --skill herdr -g` installs the released copy; on a machine that
+has this checkout, link the skill directory instead (`~/.agents/skills/herdr`
+for Pi and the shared agent skills directory, `~/.claude/skills/herdr` for
+Claude Code), so the single copy stays in this repository and never goes stale.
+When a session has only the CLI, `herdr --skill` prints the same text.
+
 Unreleased docs live in `docs/next/website/src/content/docs/`. Update those when a user-facing change needs docs before the next release. They are committed drafts but are never production website input. `docs/next/README.md` stages root README changes. `docs/next/CHANGELOG.md` is curated during stable release preparation, not maintained by normal feature and fix work.
 
 The active preview release docs live in `docs/preview/website/`. Preview CI owns this mutable snapshot and commits it atomically with `distribution/preview.json`; never edit it manually. Validate it with `node scripts/docs/preview.mjs check`.
