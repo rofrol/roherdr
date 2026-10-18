@@ -204,6 +204,14 @@ pub(super) fn review_text(review: &TodoReview) -> String {
                 if !check.detail.is_empty() {
                     out.push_str(&indented(&indented(&check.detail)));
                 }
+                // The guarded paths decide whether the commit is acceptable:
+                // the coordinator reads them and approves it only explicitly.
+                if check.check == "guarded" && !verification.guarded_paths.is_empty() {
+                    out.push_str(
+                        "    read the guarded paths, then approve only with \
+                         --accept-guarded-paths\n",
+                    );
+                }
             }
         }
     }
@@ -272,6 +280,7 @@ mod tests {
                 base: "b0".into(),
                 head: Some("c2".into()),
                 commits: vec!["c2".into()],
+                guarded_paths: Vec::new(),
                 checks: vec![
                     WorkerVerifyCheck {
                         check: "message".into(),
@@ -370,6 +379,55 @@ Decision
   landed as l9
 "
         );
+    }
+
+    #[test]
+    fn a_review_names_the_guarded_paths_the_commit_changes() {
+        let mut verification = stub().verification.expect("verified");
+        verification.guarded_paths = vec![".herdr/checks.toml".into()];
+        verification.checks.push(WorkerVerifyCheck {
+            check: "guarded".into(),
+            outcome: WorkerCheckOutcome::Passed,
+            path: None,
+            name: None,
+            detail: ".herdr/checks.toml".into(),
+        });
+        let review = TodoReview {
+            verification: Some(verification),
+            ..stub()
+        };
+        let text = review_text(&review);
+        assert!(text.contains("guarded: passed"), "{text}");
+        assert!(text.contains(".herdr/checks.toml\n"), "{text}");
+        assert!(
+            text.contains(
+                "read the guarded paths, then approve only with --accept-guarded-paths\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_review_says_when_the_guarded_paths_could_not_be_read() {
+        let mut verification = stub().verification.expect("verified");
+        verification.checks.push(WorkerVerifyCheck {
+            check: "guarded".into(),
+            outcome: WorkerCheckOutcome::Unavailable,
+            path: None,
+            name: None,
+            detail: "cannot read .herdr/checks.toml at b0".into(),
+        });
+        let review = TodoReview {
+            verification: Some(verification),
+            ..stub()
+        };
+        let text = review_text(&review);
+        assert!(
+            text.contains("cannot read .herdr/checks.toml at b0"),
+            "{text}"
+        );
+        // No guard was read, so there is nothing to accept.
+        assert!(!text.contains("--accept-guarded-paths"), "{text}");
     }
 
     #[test]

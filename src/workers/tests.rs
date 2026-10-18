@@ -6409,6 +6409,7 @@ mod todo_runs {
             env: Some(caller_env()),
             ignore_usage: false,
             keep_open: false,
+            accept_guarded_paths: false,
             note: None,
             close: None,
             next: None,
@@ -7678,6 +7679,7 @@ mod todo_runs {
                 env: Some(caller_env()),
                 ignore_usage: false,
                 keep_open: false,
+                accept_guarded_paths: false,
                 note: None,
                 close: None,
                 next: None,
@@ -8854,6 +8856,7 @@ mod todo_runs {
             env: Some(caller_env()),
             ignore_usage: false,
             keep_open: false,
+            accept_guarded_paths: false,
             note: None,
             close: None,
             next: None,
@@ -8862,6 +8865,323 @@ mod todo_runs {
             caller_session_id: None,
             caller_workspace_id: Some("ws-coordinator".into()),
         }
+    }
+
+    #[test]
+    fn a_commit_that_edits_the_reviews_fixtures_is_approved_only_explicitly() {
+        let fixture = todo_repo("todo-guarded-approve");
+        // The diff under `.herdr/` makes the verify add the `tests` check,
+        // which this fixture's recipe passes while `src/api/a.txt` exists.
+        std::fs::create_dir_all(fixture.repo.join("src/api")).unwrap();
+        std::fs::write(fixture.repo.join("src/api/a.txt"), "a\n").unwrap();
+        git_in(&fixture.repo, &["add", "."]);
+        git_in(&fixture.repo, &["commit", "-q", "-m", "add src/api/a.txt"]);
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                paths: vec!["*.txt".into(), ".herdr/**".into()],
+                ..params(
+                    &fixture,
+                    &format!("commit .herdr/review-checklist.md {SUBJECT}"),
+                    "ok",
+                )
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let refused = |params: TodoResumeParams| {
+            let error = fixture.supervisor.todo_resume(params).unwrap_err();
+            assert_eq!(error.code(), "invalid_request", "{error}");
+            error.to_string()
+        };
+        // An approval that does not say it read them is refused, naming
+        // them and the flag.
+        let message = refused(resume_params(
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+        ));
+        assert!(message.contains(".herdr/review-checklist.md"), "{message}");
+        assert!(message.contains("--accept-guarded-paths"), "{message}");
+        // The flag is the approval's alone.
+        let message = refused(TodoResumeParams {
+            accept_guarded_paths: true,
+            task: Some("change it".into()),
+            ..resume_params(&run.run_id, review.event_id, TodoAction::Retry)
+        });
+        assert!(
+            message.contains("only approve takes accept_guarded_paths"),
+            "{message}"
+        );
+        // A refusal leaves the run waiting on its review.
+        assert_eq!(
+            fixture
+                .supervisor
+                .todo_status(&run.run_id)
+                .unwrap()
+                .pending_event,
+            Some(review.event_id)
+        );
+
+        // The coordinator read them: the approval goes through, and the
+        // run records both the paths and that they were accepted.
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                accept_guarded_paths: true,
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(
+            master_subjects(&fixture),
+            [SUBJECT, "add src/api/a.txt", "init"]
+        );
+        // The verify named the file among the guarded paths, and passed.
+        let verification = fixture
+            .supervisor
+            .todo_review(&run.run_id, Some(1), true)
+            .unwrap()
+            .verification
+            .expect("verified");
+        assert_eq!(verification.verdict, WorkerVerdict::Verified);
+        assert_eq!(verification.guarded_paths, [".herdr/review-checklist.md"]);
+        let resumed = run_events(&fixture, &run.run_id, "run_resumed");
+        let approval = resumed
+            .iter()
+            .find(|event| event["action"] == "approve")
+            .unwrap_or_else(|| panic!("no approval: {resumed:#?}"));
+        assert_eq!(approval["accept_guarded_paths"], serde_json::json!(true));
+        assert_eq!(
+            approval["guarded_paths"],
+            serde_json::json!([".herdr/review-checklist.md"])
+        );
+    }
+
+    #[test]
+    fn a_commit_that_edits_no_guarded_path_is_approved_as_before() {
+        let fixture = todo_repo("todo-unguarded-approve");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // No extra word for a commit that changes none of the guarded paths.
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        // Nothing is reported for it, and the field is absent for a client
+        // that does not know it.
+        let verification = fixture
+            .supervisor
+            .todo_review(&run.run_id, Some(1), true)
+            .unwrap()
+            .verification
+            .expect("verified");
+        assert!(verification.guarded_paths.is_empty(), "{verification:#?}");
+        assert!(
+            serde_json::to_value(&verification)
+                .unwrap()
+                .get("guarded_paths")
+                .is_none(),
+            "{verification:#?}"
+        );
+        let resumed = run_events(&fixture, &run.run_id, "run_resumed");
+        let approval = resumed
+            .iter()
+            .find(|event| event["action"] == "approve")
+            .unwrap();
+        assert_eq!(approval["guarded_paths"], serde_json::json!([]));
+    }
+
+    /// Replaces the attempt's stored verification with `verification`, as an
+    /// earlier server, or a verification of another range, left it.
+    fn store_verification(fixture: &Fixture, run_id: &str, verification: &serde_json::Value) {
+        let changed = store_of(&fixture.supervisor)
+            .connection()
+            .execute(
+                "UPDATE attempts SET verification = ?1 WHERE run_id = ?2 AND attempt = 1",
+                rusqlite::params![serde_json::to_string(verification).unwrap(), run_id],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "no attempt row of {run_id}");
+    }
+
+    /// A verification of `base..head` as an attempt row keeps it, with
+    /// `guarded` as its guarded paths (the field absent when `None`).
+    fn verification_of(base: &str, head: &str, guarded: Option<&[&str]>) -> serde_json::Value {
+        let mut verification = serde_json::json!({
+            "verdict": "verified",
+            "base": base,
+            "head": head,
+            "commits": [head],
+            "checks": [],
+            "verified_ms": 1,
+        });
+        if let Some(guarded) = guarded {
+            verification["guarded_paths"] = serde_json::json!(guarded);
+        }
+        verification
+    }
+
+    /// A run whose one attempt changes `.herdr/review-checklist.md`, waiting
+    /// on its review: the setup of the tests that check which verification
+    /// an approval may trust.
+    fn guarded_run_waiting_on_its_review(name: &str) -> (Fixture, TodoRunInfo, TodoRunEvent) {
+        let fixture = todo_repo(name);
+        // The diff under `.herdr/` makes the verify add the `tests` check,
+        // which this fixture's recipe passes while `src/api/a.txt` exists.
+        std::fs::create_dir_all(fixture.repo.join("src/api")).unwrap();
+        std::fs::write(fixture.repo.join("src/api/a.txt"), "a\n").unwrap();
+        git_in(&fixture.repo, &["add", "."]);
+        git_in(&fixture.repo, &["commit", "-q", "-m", "add src/api/a.txt"]);
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                paths: vec!["*.txt".into(), ".herdr/**".into()],
+                ..params(
+                    &fixture,
+                    &format!("commit .herdr/review-checklist.md {SUBJECT}"),
+                    "ok",
+                )
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        (fixture, run, review)
+    }
+
+    #[test]
+    fn an_approval_cannot_trust_a_verification_of_another_base() {
+        let (fixture, run, review) = guarded_run_waiting_on_its_review("todo-guarded-other-base");
+        let commit = review.commits.last().expect("a commit").clone();
+        // A verification of another range says nothing about this commit, so
+        // the approval reads the paths from git, where they are guarded.
+        store_verification(
+            &fixture,
+            &run.run_id,
+            &verification_of(&"0".repeat(40), &commit, Some(&[])),
+        );
+        let refused = fixture
+            .supervisor
+            .todo_resume(resume_params(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+            ))
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        assert!(
+            refused.to_string().contains(".herdr/review-checklist.md"),
+            "{refused}"
+        );
+        // Read, it is approved explicitly, and the verify runs again.
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                accept_guarded_paths: true,
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(
+            master_subjects(&fixture),
+            [SUBJECT, "add src/api/a.txt", "init"]
+        );
+    }
+
+    #[test]
+    fn an_approval_cannot_trust_a_verification_without_guarded_paths() {
+        let (fixture, run, review) = guarded_run_waiting_on_its_review("todo-guarded-old-record");
+        let base = run.base.clone().expect("a base");
+        let commit = review.commits.last().expect("a commit").clone();
+        // A verification recorded before the guard existed has no
+        // `guarded_paths`: its guard is unknown, never "none", so the
+        // approval reads it from git and refuses.
+        store_verification(
+            &fixture,
+            &run.run_id,
+            &verification_of(&base, &commit, None),
+        );
+        let refused = fixture
+            .supervisor
+            .todo_resume(resume_params(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+            ))
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        assert!(
+            refused.to_string().contains(".herdr/review-checklist.md"),
+            "{refused}"
+        );
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                accept_guarded_paths: true,
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(
+            master_subjects(&fixture),
+            [SUBJECT, "add src/api/a.txt", "init"]
+        );
+    }
+
+    #[test]
+    fn an_approval_is_refused_when_the_guard_cannot_be_read() {
+        let (fixture, run, review) = guarded_run_waiting_on_its_review("todo-guarded-unreadable");
+        // A run whose recorded base cannot be read: its guard is unknown, and
+        // an approval that cannot know it is refused, naming what failed,
+        // with or without the flag.
+        let unknown = "0".repeat(40);
+        store_of(&fixture.supervisor)
+            .connection()
+            .execute(
+                "UPDATE runs SET base = ?1 WHERE id = ?2",
+                rusqlite::params![unknown, run.run_id],
+            )
+            .unwrap();
+        for accept_guarded_paths in [false, true] {
+            let refused = fixture
+                .supervisor
+                .todo_resume(TodoResumeParams {
+                    accept_guarded_paths,
+                    ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+                })
+                .unwrap_err();
+            assert_eq!(refused.code(), "invalid_request", "{refused}");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("cannot be checked for the paths"),
+                "{refused}"
+            );
+            assert!(refused.to_string().contains(&unknown), "{refused}");
+        }
+        // The refusal left the run waiting on its review.
+        assert_eq!(
+            fixture
+                .supervisor
+                .todo_status(&run.run_id)
+                .unwrap()
+                .pending_event,
+            Some(review.event_id)
+        );
     }
 
     #[test]
@@ -12036,6 +12356,78 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
         }
 
         #[test]
+        fn an_automatic_approval_of_a_guarded_commit_waits_for_the_coordinator() {
+            let fixture = reviewed("todo-auto-guarded", &[r#"{"action": "approve"}"#]);
+            // The diff under `.herdr/` makes the verify add the `tests`
+            // check, which this fixture's recipe passes while
+            // `src/api/a.txt` exists.
+            std::fs::create_dir_all(fixture.repo.join("src/api")).unwrap();
+            std::fs::write(fixture.repo.join("src/api/a.txt"), "a\n").unwrap();
+            git_in(&fixture.repo, &["add", "."]);
+            git_in(&fixture.repo, &["commit", "-q", "-m", "add src/api/a.txt"]);
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: true,
+                    paths: vec!["*.txt".into(), ".herdr/**".into()],
+                    ..params(
+                        &fixture,
+                        &format!("commit .herdr/review-checklist.md {SUBJECT}"),
+                        "ok",
+                    )
+                })
+                .unwrap();
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            // The server approved nothing: the run waits on the
+            // coordinator, with the paths and the way in named.
+            assert!(run_events(&fixture, &run.run_id, "run_auto_reviewed").is_empty());
+            assert_eq!(waiting.status, TodoRunStatus::Waiting);
+            let decisions = run_events(&fixture, &run.run_id, "run_review_decision");
+            assert_eq!(
+                decisions[0]["guarded_paths"],
+                serde_json::json!([".herdr/review-checklist.md"]),
+                "{decisions:#?}"
+            );
+            let error = escalated.error.as_deref().unwrap_or_default();
+            assert!(error.contains(".herdr/review-checklist.md"), "{error}");
+            assert!(error.contains("--accept-guarded-paths"), "{error}");
+            assert!(
+                escalated.actions.contains(&TodoAction::Approve),
+                "{escalated:#?}"
+            );
+            assert_eq!(master_subjects(&fixture), ["add src/api/a.txt", "init"]);
+
+            // The coordinator reads them and approves explicitly.
+            let refused = fixture
+                .supervisor
+                .todo_resume(resume_params(
+                    &run.run_id,
+                    escalated.event_id,
+                    TodoAction::Approve,
+                ))
+                .unwrap_err();
+            assert_eq!(refused.code(), "invalid_request", "{refused}");
+            assert!(
+                refused.to_string().contains(".herdr/review-checklist.md"),
+                "{refused}"
+            );
+            fixture
+                .supervisor
+                .todo_resume(TodoResumeParams {
+                    accept_guarded_paths: true,
+                    ..resume_params(&run.run_id, escalated.event_id, TodoAction::Approve)
+                })
+                .unwrap();
+            let (done, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(
+                master_subjects(&fixture),
+                [SUBJECT, "add src/api/a.txt", "init"]
+            );
+        }
+
+        #[test]
         fn a_retry_starts_the_next_attempt_with_its_review() {
             let fixture = reviewed(
                 "todo-auto-retry",
@@ -13435,6 +13827,58 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     git_in(&fixture.repo, &["rev-parse", "master"]),
                     master_before
                 );
+            }
+
+            #[test]
+            fn the_queues_own_approval_of_a_guarded_commit_waits_for_the_coordinator() {
+                let drafted = serde_json::json!({
+                    "action": "draft",
+                    "task": format!("commit .herdr/review-checklist.md {SUBJECT}"),
+                    "message": SUBJECT,
+                    "paths": ["*.txt", ".herdr/**"],
+                    "checks": ["ok"],
+                })
+                .to_string();
+                let answers = [drafted.as_str(), APPROVE];
+                let (fixture, _) = queued("todo-queue-guarded", &[ITEM], &answers);
+                // The diff under `.herdr/` makes the verify add the `tests`
+                // check, which this fixture's recipe passes while
+                // `src/api/a.txt` exists.
+                std::fs::create_dir_all(fixture.repo.join("src/api")).unwrap();
+                std::fs::write(fixture.repo.join("src/api/a.txt"), "a\n").unwrap();
+                git_in(&fixture.repo, &["add", "."]);
+                git_in(&fixture.repo, &["commit", "-q", "-m", "add src/api/a.txt"]);
+                set(&fixture, TodoQueueMode::On);
+                let waiting = wait_queue(&fixture, "the guarded commit's review", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                let run_id = waiting.run_id.clone().unwrap();
+                // The queue's own approval was refused: nothing landed and
+                // the item stays open, for the coordinator's word.
+                assert!(run_events(&fixture, &run_id, "run_auto_reviewed").is_empty());
+                let master = git_in(&fixture.repo, &["log", "--format=%s", "master"]);
+                assert!(!master.contains(SUBJECT), "{master}");
+                let todo = std::fs::read_to_string(fixture.repo.join("TODO.md")).unwrap();
+                assert!(todo.contains(ITEM), "{todo}");
+                let (escalated, _) = wait(&fixture, &run_id, None);
+                assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+                let error = escalated.error.as_deref().unwrap_or_default();
+                assert!(error.contains(".herdr/review-checklist.md"), "{error}");
+
+                // Read, it is approved explicitly, and the queue goes on.
+                fixture
+                    .supervisor
+                    .todo_resume(TodoResumeParams {
+                        accept_guarded_paths: true,
+                        ..resume_params(&run_id, escalated.event_id, TodoAction::Approve)
+                    })
+                    .unwrap();
+                let (done, _) = wait(&fixture, &run_id, Some(escalated.event_id));
+                assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+                let master = git_in(&fixture.repo, &["log", "--format=%s", "master"]);
+                assert!(master.contains(SUBJECT), "{master}");
+                let todo = std::fs::read_to_string(fixture.repo.join("TODO.md")).unwrap();
+                assert!(!todo.contains(ITEM), "{todo}");
             }
 
             #[test]

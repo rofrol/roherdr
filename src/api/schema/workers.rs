@@ -376,6 +376,12 @@ pub struct WorkerVerification {
     /// The commits from `base` to the head, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commits: Vec<String>,
+    /// The changed paths that decide whether the commit is acceptable (the
+    /// checks the verify runs, the review's checklist and its golden set):
+    /// none is a verdict against it, but no automatic approval passes them
+    /// and a coordinator approves such a commit only explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guarded_paths: Vec<String>,
     pub checks: Vec<WorkerVerifyCheck>,
     /// Unix milliseconds when the verdict was reached.
     pub verified_ms: u64,

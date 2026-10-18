@@ -5276,6 +5276,7 @@ fn worker_runs_reply() -> crate::api::schema::ResponseResult {
                             base: "base1".into(),
                             head: Some("abc1234".into()),
                             commits: vec!["abc1234".into()],
+                            guarded_paths: Vec::new(),
                             checks: Vec::new(),
                             verified_ms: 1_790_632_600_000,
                         }),
@@ -5466,6 +5467,7 @@ fn todo_review_reply() -> crate::api::schema::ResponseResult {
                 base: "0123456789abcdef".into(),
                 head: Some("fedcba9876543210".into()),
                 commits: vec!["fedcba9876543210".into()],
+                guarded_paths: Vec::new(),
                 checks: vec![WorkerVerifyCheck {
                     check: "command".into(),
                     outcome: WorkerCheckOutcome::Passed,

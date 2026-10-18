@@ -198,6 +198,12 @@ pub struct TodoResumeParams {
     /// queue never runs an approved item again. Excludes `close`.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub keep_open: bool,
+    /// With `approve`: the coordinator read the paths the attempt's verify
+    /// flagged as guarded (the checks, the review's checklist and its golden
+    /// set) and approves the commit that changes them all the same. Without
+    /// it such an approval is refused, and no automatic approval passes it.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub accept_guarded_paths: bool,
     /// The caller's pane. A run owned by another pane that is still there
     /// is refused (`run_owned_elsewhere`); once the owner's pane or agent
     /// is gone, the caller takes the run over: its pane, agent session and

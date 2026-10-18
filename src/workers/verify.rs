@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use super::runs::{declared_guarded_paths, CHECKS_FILE};
 use crate::api::schema::{
     WorkerCheckOutcome, WorkerGeneratedFile, WorkerVerdict, WorkerVerification, WorkerVerifyCheck,
 };
@@ -33,6 +34,40 @@ const TAIL_LINES: usize = 40;
 const TAIL_CHARS: usize = 4000;
 /// How many entries of a list (paths, dirty files) the evidence names.
 const LISTED: usize = 20;
+
+/// The paths that decide whether a commit is acceptable: the files the
+/// verify's checks and the automatic review read. A commit that changes one
+/// is reported ([`WorkerVerification::guarded_paths`]) and is never approved
+/// automatically: a coordinator reads them and approves it explicitly
+/// (`herdr todo resume --action approve --accept-guarded-paths`). Editing
+/// them is legitimate, so this changes no verdict. Kept in one place here,
+/// with the reason for each; a repository that guards more declares them in
+/// `.herdr/checks.toml`'s `[review] guarded_paths` (`runs::ChecksFile`), and
+/// the guarded set is this list plus those, never instead of them: no
+/// repository config can drop herdr's own guard. The configured list is read
+/// at the commit's base, never at the commit: a commit cannot add or drop its
+/// own guard.
+///
+/// The match is lexical, over the commit's changed pathnames:
+///
+/// - a rename is covered: the diff is read with `--no-renames`, so moving a
+///   guarded file away shows its source as a deletion, which matches;
+/// - a symlink is not: a link committed at a guarded pathname is guarded,
+///   but the file it points to is another pathname and is not read; and
+/// - a differently-cased pathname is not on a case-insensitive filesystem,
+///   where git may store one spelling and the glob match another.
+///
+/// A repository that needs the last two guarded is out of this guard's
+/// scope.
+pub(super) const GUARDED_PATHS: [&str; 3] = [
+    // The registered checks the verify runs (and the install it makes): a
+    // commit could weaken the checks it is verified with.
+    CHECKS_FILE,
+    // The bug classes the automatic review is told to look for.
+    ".herdr/review-checklist.md",
+    // The cases `todo review-eval` replays the review against.
+    ".herdr/review-golden/**",
+];
 
 /// What to check in `dir`.
 pub(super) struct Request<'a> {
@@ -131,6 +166,25 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
         checks.push(check_paths(dir, base, head, request.allowed_paths));
     }
 
+    // The changed paths that decide whether the commit is acceptable: they
+    // are reported beside the other checks, not judged (the verdict stays
+    // what the checks made it). A guard that cannot be read is `unavailable`,
+    // never a pass: nothing approves a commit whose guard is unknown.
+    let (guarded, guarded_check) = match (&base_commit, &head) {
+        (Ok(base), Some(head)) => match guarded_paths(dir, base, head) {
+            Ok(paths) => (
+                paths.clone(),
+                passed("guarded", listed(paths.iter().map(String::as_str))),
+            ),
+            Err(why) => (Vec::new(), unavailable("guarded", &why)),
+        },
+        _ => (
+            Vec::new(),
+            skipped("guarded", "the commit and its base are unknown"),
+        ),
+    };
+    checks.push(guarded_check);
+
     // The worktree is clean; ignored files do not count.
     let clean = check_clean(dir);
     let tree_clean = clean.outcome == WorkerCheckOutcome::Passed;
@@ -214,7 +268,99 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
         head,
         commits,
         checks,
+        guarded_paths: guarded,
         verified_ms: now_ms,
+    }
+}
+
+/// The changed paths of `base..head` that match a guard glob
+/// ([`GUARDED_PATHS`] plus the repository's own), sorted. Git matches the
+/// globs itself, as `:(glob)` pathspecs. An error names what could not be
+/// read (the tree, the configured list, the diff); [`verify`] reports it as
+/// an `unavailable` check and `todo resume` refuses an approval of the commit
+/// then, so neither approves a commit whose guard is unknown. Both read the
+/// same list from here.
+pub(super) fn guarded_paths(dir: &Path, base: &str, head: &str) -> Result<Vec<String>, String> {
+    let specs: Vec<String> = guarded_globs(dir, base)?
+        .iter()
+        // `top`: the globs name top-level paths even when `dir` is below the
+        // worktree's root, as the diff reports them.
+        .map(|glob| format!(":(glob,top){glob}"))
+        .collect();
+    let mut args = vec![
+        "diff",
+        "--name-only",
+        // A rename shows its guarded source as a deletion, which matches.
+        "--no-renames",
+        "-z",
+        base,
+        head,
+        "--",
+    ];
+    args.extend(specs.iter().map(String::as_str));
+    let out = git(dir, &args)
+        .map_err(|error| format!("cannot read the diff {base}..{head}: {}", git_error(error)))?;
+    let mut paths: Vec<String> = out
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// The guard globs: [`GUARDED_PATHS`] plus the repository's own
+/// `[review] guarded_paths` as `.herdr/checks.toml` has them at `base`. An
+/// absent file there is normal (herdr's own globs guard the commit alone); a
+/// list that cannot be read or parsed is an error, never silently dropped.
+fn guarded_globs(dir: &Path, base: &str) -> Result<Vec<String>, String> {
+    let mut globs: Vec<String> = GUARDED_PATHS
+        .iter()
+        .map(|glob| (*glob).to_owned())
+        .collect();
+    if !has_file_at(dir, base, CHECKS_FILE)? {
+        return Ok(globs);
+    }
+    let text = git(dir, &["show", &format!("{base}:{CHECKS_FILE}")])
+        .map_err(|error| format!("cannot read {CHECKS_FILE} at {base}: {}", git_error(error)))?;
+    let declared = declared_guarded_paths(&text).map_err(|why| {
+        format!("cannot read the [review] guarded_paths of {CHECKS_FILE} at {base}: {why}")
+    })?;
+    globs.extend(
+        declared
+            .unwrap_or_default()
+            .into_iter()
+            .map(|glob| glob.trim().to_owned())
+            .filter(|glob| !glob.is_empty()),
+    );
+    globs.dedup();
+    Ok(globs)
+}
+
+/// Whether `base`'s tree has `path`. A missing `.herdr/checks.toml` at the
+/// base is normal, and git's message for a missing file cannot be told from
+/// another failure, so this asks the tree itself: an unreadable tree is an
+/// error, an absent file is not.
+fn has_file_at(dir: &Path, base: &str, path: &str) -> Result<bool, String> {
+    let out = git(
+        dir,
+        &[
+            "ls-tree",
+            "--name-only",
+            base,
+            "--",
+            &format!(":(top){path}"),
+        ],
+    )
+    .map_err(|error| format!("cannot read the tree of {base}: {}", git_error(error)))?;
+    Ok(!out.trim().is_empty())
+}
+
+/// A [`Git`] failure's text.
+fn git_error(error: Git) -> String {
+    match error {
+        Git::Unavailable(why) | Git::Failed(why) => why,
     }
 }
 
@@ -829,6 +975,255 @@ mod tests {
             .find(|check| check.check == name)
             .unwrap_or_else(|| panic!("no {name} check: {verification:#?}"))
             .outcome
+    }
+
+    /// [`repo`] with the guarded files herdr knows committed in its base:
+    /// the checks, the review's checklist and one case of its golden set.
+    fn repo_with_guards(name: &str) -> (PathBuf, String) {
+        let (dir, _) = repo(name);
+        std::fs::create_dir_all(dir.join(".herdr/review-golden/r-1-a1")).unwrap();
+        std::fs::write(
+            dir.join(".herdr/checks.toml"),
+            "[checks]\nok = [\"true\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".herdr/review-checklist.md"),
+            "- a bug class (source: abc1234)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".herdr/review-golden/r-1-a1/case.json"), "{}\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "init the guards"]);
+        let base = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        (dir, base)
+    }
+
+    /// The verify of `base..HEAD` in `dir`, with only `allowed` paths.
+    fn verify_change(dir: &Path, base: &str, allowed: &[&str]) -> WorkerVerification {
+        let allowed: Vec<String> = allowed.iter().map(|glob| (*glob).to_owned()).collect();
+        verify(
+            &Request {
+                dir,
+                base,
+                expected_message: SUBJECT,
+                allowed_paths: &allowed,
+                commands: Vec::new(),
+                generated: &[],
+                env: None,
+                processes: Vec::new(),
+            },
+            7,
+        )
+    }
+
+    /// Commits every guarded path and an ordinary source file in one
+    /// commit.
+    fn commit_the_guards(dir: &Path) {
+        std::fs::write(
+            dir.join(".herdr/checks.toml"),
+            "[checks]\nok = [\"sh\", \"true\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".herdr/review-checklist.md"),
+            "- another bug class (source: def5678)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".herdr/review-golden/r-1-a1/case.json"),
+            "{\"case\": 1}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/a.rs"), "b\n").unwrap();
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-q", "-m", SUBJECT]);
+    }
+
+    #[test]
+    fn a_commit_that_edits_the_guarded_files_is_reported_without_a_verdict() {
+        let (dir, base) = repo_with_guards("guarded");
+        commit_the_guards(&dir);
+        let verification = verify_change(&dir, &base, &["src/**", ".herdr/**"]);
+        assert_eq!(
+            verification.verdict,
+            WorkerVerdict::Verified,
+            "{verification:#?}"
+        );
+        assert_eq!(
+            verification.guarded_paths,
+            [
+                ".herdr/checks.toml",
+                ".herdr/review-checklist.md",
+                ".herdr/review-golden/r-1-a1/case.json"
+            ]
+        );
+        // Every other check is what it is without the flag: editing the
+        // guarded files is legitimate, it is only never approved unnoticed.
+        assert_eq!(outcome(&verification, "paths"), WorkerCheckOutcome::Passed);
+        assert_eq!(
+            outcome(&verification, "message"),
+            WorkerCheckOutcome::Passed
+        );
+        assert_eq!(
+            outcome(&verification, "commits"),
+            WorkerCheckOutcome::Passed
+        );
+        // The flag is visible beside the other checks, with the paths.
+        assert_eq!(
+            outcome(&verification, "guarded"),
+            WorkerCheckOutcome::Passed
+        );
+        assert_eq!(
+            detail(&verification, "guarded"),
+            ".herdr/checks.toml, .herdr/review-checklist.md, \
+             .herdr/review-golden/r-1-a1/case.json"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_commit_that_edits_no_guarded_file_reports_none() {
+        let (dir, base) = repo_with_guards("unguarded");
+        // An ordinary source file, beside the guarded ones in the base.
+        commit(&dir, SUBJECT);
+        let verification = verify_change(&dir, &base, &["src/**"]);
+        assert_eq!(
+            verification.verdict,
+            WorkerVerdict::Verified,
+            "{verification:#?}"
+        );
+        assert!(verification.guarded_paths.is_empty(), "{verification:#?}");
+        assert_eq!(
+            outcome(&verification, "guarded"),
+            WorkerCheckOutcome::Passed
+        );
+        assert_eq!(detail(&verification, "guarded"), "");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_repositorys_guarded_paths_add_to_herdrs_own() {
+        let (dir, _) = repo_with_guards("guarded-config");
+        // Declared at the base, so no commit can add or drop its own guard.
+        std::fs::write(
+            dir.join(".herdr/checks.toml"),
+            "[checks]\nok = [\"true\"]\n\n[review]\nguarded_paths = [\"docs/**\"]\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "declare the guards"]);
+        let base = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/a.md"), "a\n").unwrap();
+        std::fs::write(dir.join(".herdr/review-checklist.md"), "- b (source: c)\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", SUBJECT]);
+        // The declared glob is guarded beside herdr's own, which no
+        // repository can drop.
+        let verification = verify_change(&dir, &base, &["docs/**", ".herdr/**"]);
+        assert_eq!(
+            verification.guarded_paths,
+            [".herdr/review-checklist.md", "docs/a.md"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_repository_list_leaves_herdrs_own_guards() {
+        let (dir, _) = repo_with_guards("guarded-config-empty");
+        std::fs::write(
+            dir.join(".herdr/checks.toml"),
+            "[checks]\nok = [\"true\"]\n\n[review]\nguarded_paths = []\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "declare no guards"]);
+        let base = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(dir.join(".herdr/review-checklist.md"), "- b (source: c)\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", SUBJECT]);
+        let verification = verify_change(&dir, &base, &[".herdr/**"]);
+        assert_eq!(
+            verification.guarded_paths,
+            [".herdr/review-checklist.md"],
+            "{verification:#?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_guard_that_cannot_be_read_is_unavailable_never_a_pass() {
+        let (dir, _) = repo_with_guards("guarded-broken");
+        // A base whose checks file cannot be read as one: herdr's own guards
+        // would still apply, but a configured list it cannot read is not
+        // silently dropped.
+        std::fs::write(dir.join(".herdr/checks.toml"), "[nope]\nx = 1\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "break the checks file"]);
+        let base = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(dir.join("src/a.rs"), "b\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", SUBJECT]);
+        let head = git_in(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let why = guarded_paths(&dir, &base, &head).unwrap_err();
+        assert!(
+            why.contains(".herdr/checks.toml") && why.contains(&base),
+            "{why}"
+        );
+        let verification = verify_change(&dir, &base, &["src/**"]);
+        assert_eq!(verification.verdict, WorkerVerdict::Unavailable);
+        assert_eq!(
+            outcome(&verification, "guarded"),
+            WorkerCheckOutcome::Unavailable
+        );
+        assert!(verification.guarded_paths.is_empty(), "{verification:#?}");
+        assert!(detail(&verification, "guarded").contains(".herdr/checks.toml"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_base_that_cannot_be_read_is_unavailable_never_a_pass() {
+        let (dir, _) = repo_with_guards("guarded-no-diff");
+        commit(&dir, SUBJECT);
+        let missing = "0".repeat(40);
+        let why = guarded_paths(&dir, &missing, "HEAD").unwrap_err();
+        assert!(why.contains("cannot read the tree of"), "{why}");
+        assert!(why.contains(&missing), "{why}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_verification_names_guarded_paths_in_json_only_when_there_are_some() {
+        let (dir, base) = repo_with_guards("guarded-json");
+        commit(&dir, SUBJECT);
+        let plain = serde_json::to_value(verify_change(&dir, &base, &["src/**"])).unwrap();
+        assert!(plain.get("guarded_paths").is_none(), "{plain}");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (dir, base) = repo_with_guards("guarded-json-set");
+        commit_the_guards(&dir);
+        let flagged =
+            serde_json::to_value(verify_change(&dir, &base, &["src/**", ".herdr/**"])).unwrap();
+        assert_eq!(
+            flagged["guarded_paths"],
+            serde_json::json!([
+                ".herdr/checks.toml",
+                ".herdr/review-checklist.md",
+                ".herdr/review-golden/r-1-a1/case.json"
+            ]),
+            "{flagged}"
+        );
+        // An older client reads a verification without the field.
+        let mut older = flagged.clone();
+        older.as_object_mut().unwrap().remove("guarded_paths");
+        assert_eq!(
+            serde_json::from_value::<WorkerVerification>(older)
+                .unwrap()
+                .guarded_paths,
+            Vec::<String>::new()
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

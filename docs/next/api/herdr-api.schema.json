@@ -6715,6 +6715,10 @@
         "TodoResumeParams": {
           "description": "The coordinator's answer to a run's event.",
           "properties": {
+            "accept_guarded_paths": {
+              "description": "With `approve`: the coordinator read the paths the attempt's verify\nflagged as guarded (the checks, the review's checklist and its golden\nset) and approves the commit that changes them all the same. Without\nit such an approval is refused, and no automatic approval passes it.",
+              "type": "boolean"
+            },
             "action": {
               "$ref": "#/schemas/request/$defs/TodoAction"
             },
@@ -23578,6 +23582,13 @@
             },
             "commits": {
               "description": "The commits from `base` to the head, oldest first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "guarded_paths": {
+              "description": "The changed paths that decide whether the commit is acceptable (the\nchecks the verify runs, the review's checklist and its golden set):\nnone is a verdict against it, but no automatic approval passes them\nand a coordinator approves such a commit only explicitly.",
               "items": {
                 "type": "string"
               },

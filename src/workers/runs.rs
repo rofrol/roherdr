@@ -646,6 +646,24 @@ struct ReviewFile {
     /// herdr always keeps (`review_diff::FULL_PATHS`).
     #[serde(default)]
     full_paths: Vec<String>,
+    /// The paths that decide whether a commit is acceptable, besides the
+    /// `verify::GUARDED_PATHS` herdr always guards; none when absent. A
+    /// commit that changes one is never approved automatically and a
+    /// coordinator approves it only explicitly.
+    #[serde(default)]
+    guarded_paths: Option<Vec<String>>,
+}
+
+/// The `[review] guarded_paths` `.herdr/checks.toml`'s `text` declares:
+/// `Ok(None)` when it declares none, `Ok(Some(globs))` when it does (herdr's
+/// own guards apply either way, so an empty list changes nothing). An error
+/// names why the text cannot be read as that file; nothing approves a commit
+/// whose guard could not be read, so this never falls back silently.
+/// The verify reads it at the commit's base, so a commit cannot add or drop
+/// its own guard.
+pub(super) fn declared_guarded_paths(text: &str) -> Result<Option<Vec<String>>, String> {
+    let file: ChecksFile = toml::from_str(text).map_err(|error| error.to_string())?;
+    Ok(file.review.guarded_paths)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1614,6 +1632,91 @@ fn step_name(step: TodoStep) -> String {
         .ok()
         .and_then(|step| step.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// Refuses an approval of an attempt that changes a guarded path
+/// ([`verify::guarded_paths`]), unless the approval explicitly accepts them
+/// (`--accept-guarded-paths`), and answers the paths the approval names, for
+/// its record. The paths are the verification's of the commit and base the
+/// approval binds when that verification covers exactly that range; else
+/// they are read from git the same way, so an approval binds what it saw,
+/// never a verification of another commit. A guard that cannot be read
+/// refuses the approval outright.
+fn guarded_approval(
+    params: &TodoResumeParams,
+    run: &Run,
+    reviewed: Option<&str>,
+) -> Result<Vec<String>, WorkerError> {
+    if params.action != TodoAction::Approve {
+        if params.accept_guarded_paths {
+            return Err(WorkerError::Invalid(
+                "only approve takes accept_guarded_paths".into(),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let Some(commit) = reviewed else {
+        return Ok(Vec::new());
+    };
+    let guarded = match guarded_paths_of(run, commit) {
+        Ok(guarded) => guarded,
+        Err(why) => {
+            return Err(WorkerError::Invalid(format!(
+                "commit {commit} cannot be checked for the paths that decide whether a commit \
+                 is acceptable (the checks the verify runs, the review's checklist and its golden \
+                 set): {why}. Nothing approves a commit whose guard cannot be read; retry the \
+                 attempt once that can be read again."
+            )))
+        }
+    };
+    if guarded.is_empty() || params.accept_guarded_paths {
+        return Ok(guarded);
+    }
+    Err(WorkerError::Invalid(format!(
+        "commit {commit} changes {}, which decide whether a commit is acceptable (the checks the \
+         verify runs, the review's checklist and its golden set). Read them, then approve again \
+         with `herdr todo resume {} --event {} --action approve --accept-guarded-paths`; nothing \
+         approves such a commit automatically.",
+        guarded.join(", "),
+        run.info.run_id,
+        params.event
+    )))
+}
+
+/// A stored verification's range and guarded paths, as the run's attempt row
+/// keeps it. An older record has no `guarded_paths`: its guard is unknown,
+/// which is not the same as "nothing guarded".
+#[derive(serde::Deserialize)]
+struct RecordedVerification {
+    base: String,
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    guarded_paths: Option<Vec<String>>,
+}
+
+/// The guarded paths of `commit`, the one an approval binds: those of the
+/// attempt's verification when it covers exactly the base and commit being
+/// approved (the automatic review verifies first), else the same list read
+/// from git for that range. A verification of another range, or one recorded
+/// before the guard existed, is not evidence about this one.
+fn guarded_paths_of(run: &Run, commit: &str) -> Result<Vec<String>, String> {
+    let base = run.info.base.clone().ok_or_else(|| {
+        "the run records no base, so the range this commit changes is unknown".to_owned()
+    })?;
+    let recorded = run
+        .current
+        .verification
+        .as_deref()
+        .and_then(|verification| serde_json::from_str::<RecordedVerification>(verification).ok())
+        .filter(|verification| {
+            verification.base == base && verification.head.as_deref() == Some(commit)
+        })
+        .and_then(|verification| verification.guarded_paths);
+    match recorded {
+        Some(guarded) => Ok(guarded),
+        None => super::verify::guarded_paths(Path::new(&run.info.repo), &base, commit),
+    }
 }
 
 /// What `todo.resume` takes while an event is pending (or the blocked
@@ -3152,6 +3255,11 @@ impl WorkerSupervisor {
                 ));
             }
         }
+        // A commit that changes what decides whether a commit is acceptable
+        // (the checks, the review's checklist and its golden set) is approved
+        // only once a coordinator read those files and said so: no approval
+        // passes them by accident, and none approves them automatically.
+        let guarded = guarded_approval(&params, &run, reviewed.as_deref())?;
         self.check_after_close(&run, &params)?;
         // In queue mode an approval closes the item as the queue's own
         // review does, unless it keeps it open (a note, or keep_open): the
@@ -3338,6 +3446,8 @@ impl WorkerSupervisor {
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
+            "accept_guarded_paths": params.accept_guarded_paths,
+            "guarded_paths": guarded,
             "landing_approved_by": (params.action == TodoAction::ApproveLanding)
                 .then_some(&params.caller_pane_id),
         });

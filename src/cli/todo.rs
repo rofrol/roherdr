@@ -139,7 +139,14 @@ const USAGE: &str = "usage:
       queue mode (a run the queue started, or any run while the queue is on)
       approve without --note or --close closes the item as the queue's own
       review does (a section of DECISIONS.md), so the queue never runs it
-      again; --keep-open leaves it open. With --next, once this run is
+      again; --keep-open leaves it open. A commit that changes a guarded
+      path (the checks of .herdr/checks.toml, the review's
+      .herdr/review-checklist.md or a case of .herdr/review-golden/, and
+      whatever the repository's [review] guarded_paths adds) is approved
+      only with --accept-guarded-paths, which says you read those files;
+      the verify reports them (guarded_paths) and never fails for them, a
+      guard that cannot be read refuses the approval, and no automatic
+      approval passes one. With --next, once this run is
       done the driver starts ITEM's run itself (as todo run with those
       parameters, this run's checks unless --next-check names others, owned
       by this run's owner); a refused start (preflight, usage gate) is a
@@ -890,6 +897,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "resume" => {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
             let (keep_open, rest) = take_switch(&rest, "--keep-open")?;
+            let (accept_guarded_paths, rest) = take_switch(&rest, "--accept-guarded-paths")?;
             let (event, rest) = take_string_option(&rest, "--event")?;
             let (action, rest) = take_string_option(&rest, "--action")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -957,6 +965,9 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if keep_open && close.is_some() {
                 return Err("--keep-open and --close exclude each other".into());
             }
+            if accept_guarded_paths && action != TodoAction::Approve {
+                return Err("only --action approve takes --accept-guarded-paths".into());
+            }
             let next = next_run(
                 close.is_some() || note.is_some(),
                 next_item,
@@ -999,6 +1010,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 caller_workspace_id: super::target::caller_workspace_id(),
                 ignore_usage,
                 keep_open,
+                accept_guarded_paths,
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {
@@ -1585,11 +1597,25 @@ mod tests {
             panic!("approve --keep-open did not parse");
         };
         assert!(params.keep_open);
+        // The guarded paths are the approval's own word, and only its own.
+        let Ok(Some(Method::TodoResume(params))) = parse(&args(&[
+            "resume",
+            "r-abcd2345",
+            "--event",
+            "9",
+            "--action",
+            "approve",
+            "--accept-guarded-paths",
+        ])) else {
+            panic!("approve --accept-guarded-paths did not parse");
+        };
+        assert!(params.accept_guarded_paths);
         for bad in [
             &["--action", "approve", "--note", &note, "--close", &note][..],
             &["--action", "abort", "--note", &note][..],
             &["--action", "abort", "--keep-open"][..],
             &["--action", "approve", "--keep-open", "--close", &note][..],
+            &["--action", "abort", "--accept-guarded-paths"][..],
         ] {
             let mut words = vec!["resume", "r-abcd2345", "--event", "9"];
             words.extend_from_slice(bad);

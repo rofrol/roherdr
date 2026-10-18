@@ -8,7 +8,9 @@
 //!   approve` makes, bound to the event's commit and the run's base; the
 //!   verify that passed before the review is not run again unless the
 //!   commit changed, and an approval of a commit whose verify failed is
-//!   escalated;
+//!   escalated, as is one of a commit that changes a guarded path (the
+//!   checks, the review's checklist and its golden set) or of one whose
+//!   guard could not be read: those only a coordinator approves, explicitly;
 //! - `retry` (the review text): the next attempt, as `--action retry`
 //!   starts it, behind the same usage gate;
 //! - `escalate` (a question for the user with options): a new `review`
@@ -561,6 +563,15 @@ struct DecisionRecord {
     /// The verdict of the verify run before the review, of `commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verdict: Option<WorkerVerdict>,
+    /// The paths that verify flagged as guarded (the checks, the review's
+    /// checklist and its golden set): an approval of such a commit is never
+    /// the server's, only the coordinator's, and only explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    guarded_paths: Vec<String>,
+    /// Why the verify could not read those paths, when it could not: nothing
+    /// approves a commit whose guard is unknown, whatever the verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guarded_error: Option<String>,
     /// Its checks that failed, with their evidence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     failed_checks: Vec<String>,
@@ -878,6 +889,10 @@ impl WorkerSupervisor {
             errors,
             cut_files,
             verdict: verification.map(|verification| verification.verdict),
+            guarded_paths: verification
+                .map(|verification| verification.guarded_paths.clone())
+                .unwrap_or_default(),
+            guarded_error: verification.and_then(guarded_error_of),
             failed_checks: verification.map(failed_checks).unwrap_or_default(),
         };
         let mut body = serde_json::to_value(&record).map_err(|error| error.to_string())?;
@@ -981,6 +996,32 @@ impl WorkerSupervisor {
                         }),
                         if record.cut_files.len() == 1 { "that file" } else { "those files" },
                     ),
+                        review_options(),
+                    )
+                }
+                Ok(Some(Decision::Approve { .. })) if !record.guarded_paths.is_empty() => {
+                    Outcome::Escalate(
+                        format!(
+                            "The automatic review approved commit {}, but that commit changes {}, \
+                         which decide whether a commit is acceptable (the checks the verify runs, \
+                         the review's checklist and its golden set). Only a coordinator approves \
+                         it, after reading them and only explicitly (`herdr todo resume --action \
+                         approve --accept-guarded-paths`); nothing here approves it for you.",
+                            record.commit.as_deref().unwrap_or("none"),
+                            record.guarded_paths.join(", "),
+                        ),
+                        guarded_options(),
+                    )
+                }
+                Ok(Some(Decision::Approve { .. })) if record.guarded_error.is_some() => {
+                    Outcome::Escalate(
+                        format!(
+                            "The automatic review approved commit {}, but the verify could not \
+                         read the paths that decide whether a commit is acceptable: {}. Nothing \
+                         here approves a commit whose guard is unknown; review it.",
+                            record.commit.as_deref().unwrap_or("none"),
+                            record.guarded_error.as_deref().unwrap_or("unknown"),
+                        ),
                         review_options(),
                     )
                 }
@@ -1208,6 +1249,26 @@ impl WorkerSupervisor {
 fn review_options() -> Vec<String> {
     vec![
         "approve the attempt".into(),
+        "retry with a review".into(),
+        "abort the run".into(),
+    ]
+}
+
+/// Why the verify could not read the guarded paths, when its `guarded`
+/// check says it could not.
+fn guarded_error_of(verification: &WorkerVerification) -> Option<String> {
+    verification
+        .checks
+        .iter()
+        .find(|check| check.check == "guarded" && check.outcome == WorkerCheckOutcome::Unavailable)
+        .map(|check| decision::cut(&check.detail))
+}
+
+/// The choices an approval the server will not make leaves the coordinator:
+/// it reads the guarded paths first, then approves explicitly.
+fn guarded_options() -> Vec<String> {
+    vec![
+        "approve the attempt after reading the guarded files".into(),
         "retry with a review".into(),
         "abort the run".into(),
     ]
