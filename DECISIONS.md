@@ -2290,3 +2290,34 @@ Reject and roll back the pilot on: a second worker for a task; a tenure still he
 worker at the end; a ref moving outside the integration branch; the check
 failing on the merged commit; zero or two admissions for an item; a cost over
 the budget; and any step that cannot say what it did from its records.
+
+## An in-flight credit request is not a closed accounting (t-t2nwbl6y, 2026-10-18)
+
+The footer painted `AN!$14.20/$200 spend` red while a credit request was still
+streaming (the user's screenshot, 2026-10-12): `credit_report` turned any
+pending ledger row into `status = Error`, `limit_enforcing` and "Incomplete
+accounting: spending is closed". Landed as run r-6eypslt7 (attempt 2, commit
+335ebff5c), after review round `20261018-182310-a2dd` (sol; MiMo and Argon
+refused the brief as secret-shaped, so the round is a single review).
+
+- The ledger now records who owns a pending row (the proxy's pid and start
+  token, under the ledger's own `PRAGMA user_version` migration; a row written
+  before the columns existed is abandoned, since it cannot be proven live) and
+  a row's pending-ness is a state: settled, in flight, abandoned. A stream
+  that ends without settling marks its row abandoned, also when finishing or
+  the settle write fails; a failed abandonment is remembered in the process so
+  a finished request is never reported in flight while its writer lives (after
+  a restart its owner is gone, so it is abandoned anyway).
+- `credit_report` reports by class: live pending only is shown as normal spend
+  with a "1 in flight" note and no closed text; an abandoned row, an unreadable
+  ledger, or the cap keeps exactly today's red closed state. Admission is
+  unchanged: any pending row, in flight or abandoned, admits no new request.
+- The accounting is read in one SQLite snapshot (review finding: two reads
+  could see a settling request in neither and understate the spend), and the
+  ledger's connections use SQLite's busy timeout so a transient writer does not
+  lose the write. `herdr credits status` reports the same three states and its
+  settled spend equals the widget's; a pending row carries no cost until it
+  settles.
+- Rejected: any timer or sweep deciding a row's state (the owner's liveness is
+  the positive fact, checked with pid and start token, the pattern the
+  coordination tenure uses), and clearing the abandon state by age.

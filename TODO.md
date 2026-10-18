@@ -96,16 +96,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   typed vocabulary, the replay-gated fix acceptance with a hold-out set, the
   owner's approval of a code fix, predicate retirement).
 
-- [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
-  [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
-  `AN!$14.20/$200 spend` while run r-onxx7w3b's worker had one request in
-  flight). `credit_report` (src/usage/mod.rs:534) sets status `Error`,
-  `limit_enforcing` and "Incomplete accounting: spending is closed" for any
-  `pending != 0`, so every refresh during a request paints the red `!`.
-  Show an in-flight request as normal (its own state, e.g. "1 in flight"),
-  and keep the red closed state for a pending row whose request has ended
-  without settling (the proxy's fail-closed case) and for the cap.
-
 - [ ] Concurrent credit workers refuse each other (found by the coordinator [t-alwaqkn5]
   2026-10-12 while answering the user's "AN spend in red"): the credit
   proxy admits a request only when no ledger row is pending
