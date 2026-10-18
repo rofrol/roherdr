@@ -1374,6 +1374,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::SuperviseAcknowledge(_) => "supervise.acknowledge",
         Method::SuperviseAck(_) => "supervise.ack",
         Method::SuperviseFixtures(_) => "supervise.fixtures",
+        Method::SuperviseAnnotate(_) => "supervise.annotate",
         Method::NotificationShow(_) => "notification.show",
         Method::NotificationShowForPane(_) => "notification.show_for_pane",
         Method::ProductAnnouncementDismiss(_) => "product_announcement.dismiss",

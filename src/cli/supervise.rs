@@ -7,7 +7,8 @@
 
 use crate::api::schema::{
     AgentStatus, Method, Request, SuperviseAckParams, SuperviseAcknowledgeParams,
-    SuperviseFixturesParams, SuperviseReportParams, SupervisionDelivery, SupervisionFinding,
+    SuperviseAnnotateParams, SuperviseFixturesParams, SuperviseReportParams, SupervisionAnnotation,
+    SupervisionDelivery, SupervisionFinding, SupervisionMissing, SupervisionMissingRequest,
     SupervisionPredicate, SupervisionReport, SupervisionSeverity, SupervisionStatus,
 };
 
@@ -15,6 +16,7 @@ const USAGE: &str = "usage:
   herdr supervise --report [--all] [--json]
   herdr supervise --ack FINDING_ID [--json]
   herdr supervise ack FINDING_ID [--json]
+  herdr supervise annotate FINDING_ID --missing <fact|rule> --evidence TEXT [--note TEXT] [--json]
   herdr supervise fixtures PREDICATE [--version N]
       What herdr's supervision sweep (on the server's timer, and when a
       coordinator's pane reports a turn or changes state) saw of each active
@@ -55,10 +57,22 @@ const USAGE: &str = "usage:
       Prints JSON, read only: the holds recorded for a predicate
       (stopped_without_verdict or unaccounted_assignment) at its rule version
       (the current one by default): `retracted`, the cases that must not
-      fire, and `delivered`, the known-true cases that must still fire, each
-      with its fingerprint, request id, job ids, counter-evidence, opened and
-      ended times and the reason it ended. A `predicate_review_due` finding
-      points here.";
+      fire, `delivered`, the known-true cases that must still fire, and
+      `annotated`, the cases the predicate cannot express, each with its
+      fingerprint, request id, job ids, counter-evidence, opened and ended
+      times and the reason it ended (an annotation: its evidence handle, note
+      and when it was added). A `predicate_review_due` finding points here.
+  annotate FINDING_ID --missing <fact|rule> --evidence TEXT [--note TEXT]
+      Records that the predicate that raised the finding cannot express a
+      case: a fact the sweep cannot see (`fact`) or a rule it has none of
+      (`rule`). `--evidence` names where the case can be seen (a job id, a
+      pane, a log path, a commit), `--note` adds free text. It changes
+      nothing of the finding: not its state, its delivery, its
+      acknowledgement or the holds, and it is not a dispute; `fixtures`
+      lists it under `annotated`, at the rule version the finding was raised
+      at (a finding recorded before herdr stored that version records none).
+      One annotation per finding (`already_annotated`); an id that names no
+      finding is `finding_not_found`.";
 
 pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
     let (command, json) = match parse(args) {
@@ -75,10 +89,22 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
     };
     let pane_id = super::target::caller_pane_id();
     let fixtures = matches!(command, Supervise::Fixtures { .. });
+    let annotating = matches!(command, Supervise::Annotate { .. });
     let method = match command {
         Supervise::Fixtures { predicate, version } => {
             Method::SuperviseFixtures(SuperviseFixturesParams { predicate, version })
         }
+        Supervise::Annotate {
+            finding_id,
+            missing,
+            evidence,
+            note,
+        } => Method::SuperviseAnnotate(SuperviseAnnotateParams {
+            finding_id,
+            missing,
+            evidence,
+            note,
+        }),
         Supervise::Report { all } => Method::SuperviseReport(SuperviseReportParams {
             all,
             pane_id: pane_id.clone(),
@@ -114,6 +140,17 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
             Err(_) => super::print_response(&response),
         };
     }
+    if annotating {
+        return match serde_json::from_value::<SupervisionAnnotation>(
+            response["result"]["annotation"].clone(),
+        ) {
+            Ok(annotation) => {
+                println!("{}", annotation_text(&annotation));
+                Ok(0)
+            }
+            Err(_) => super::print_response(&response),
+        };
+    }
     match serde_json::from_value::<SupervisionReport>(response["result"]["report"].clone()) {
         Ok(report) => {
             print!(
@@ -140,6 +177,13 @@ enum Supervise {
         predicate: SupervisionPredicate,
         version: Option<u32>,
     },
+    /// `annotate FINDING_ID --missing <fact|rule> --evidence TEXT [--note TEXT]`.
+    Annotate {
+        finding_id: String,
+        missing: SupervisionMissingRequest,
+        evidence: String,
+        note: Option<String>,
+    },
 }
 
 /// `Ok(None)` asks for help; the flag says `--json`.
@@ -162,6 +206,56 @@ fn parse(args: &[String]) -> Result<Option<(Supervise, bool)>, String> {
             Some(finding) => Ok(Some((Supervise::AckNotice(finding), json))),
             None => Err("ack takes a finding id (f-N)".into()),
         };
+    }
+    if args.first().map(String::as_str) == Some("annotate") {
+        let mut finding = None;
+        let mut missing = None;
+        let mut evidence = None;
+        let mut note = None;
+        let mut json = false;
+        let mut rest = args[1..].iter();
+        while let Some(arg) = rest.next() {
+            match arg.as_str() {
+                "--missing" => match rest.next().map(String::as_str) {
+                    Some("fact") => missing = Some(SupervisionMissingRequest::Fact),
+                    Some("rule") => missing = Some(SupervisionMissingRequest::Rule),
+                    _ => return Err("--missing takes fact or rule".into()),
+                },
+                "--evidence" => match rest.next() {
+                    Some(value) if !value.starts_with("--") => evidence = Some(value.clone()),
+                    _ => return Err("--evidence takes where the missing case can be seen".into()),
+                },
+                "--note" => match rest.next() {
+                    Some(value) if !value.starts_with("--") => note = Some(value.clone()),
+                    _ => return Err("--note takes text".into()),
+                },
+                "--json" => json = true,
+                "help" | "--help" | "-h" => return Ok(None),
+                other if other.starts_with("--") => {
+                    return Err(format!("unexpected argument: {other}"))
+                }
+                other if finding.is_none() => finding = Some(other.to_owned()),
+                other => return Err(format!("unexpected argument: {other}")),
+            }
+        }
+        let Some(finding_id) = finding else {
+            return Err("annotate takes a finding id (f-N)".into());
+        };
+        let Some(missing) = missing else {
+            return Err("annotate takes --missing fact or --missing rule".into());
+        };
+        let Some(evidence) = evidence else {
+            return Err("annotate takes --evidence, where the missing case can be seen".into());
+        };
+        return Ok(Some((
+            Supervise::Annotate {
+                finding_id,
+                missing,
+                evidence,
+                note,
+            },
+            json,
+        )));
     }
     if args.first().map(String::as_str) == Some("fixtures") {
         let mut predicate = None;
@@ -236,6 +330,40 @@ fn agent_status(status: AgentStatus) -> &'static str {
         AgentStatus::Done => "done",
         AgentStatus::Unknown => "unknown",
     }
+}
+
+/// What an annotation says is missing, as `herdr supervise annotate` prints it.
+fn missing_text(missing: SupervisionMissing) -> &'static str {
+    match missing {
+        SupervisionMissing::Fact => "a fact the sweep cannot see",
+        SupervisionMissing::Rule => "a rule the predicate has none of",
+        SupervisionMissing::Unknown => "unknown",
+    }
+}
+
+/// The wire name of a value, for the text output.
+fn wire_name<T: serde::Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// One annotation on one line: the finding, the predicate and the rule version it was raised
+/// at, what was missing and the evidence handle.
+fn annotation_text(annotation: &SupervisionAnnotation) -> String {
+    let version = annotation
+        .rule_version
+        .map(|version| format!("v{version}"))
+        .unwrap_or_else(|| "version unknown".into());
+    format!(
+        "{}  {} rule {}  missing: {}  evidence: {}",
+        annotation.finding_id,
+        wire_name(annotation.predicate),
+        version,
+        missing_text(annotation.missing),
+        annotation.evidence
+    )
 }
 
 /// One finding; `herdr` is the herdr repository's active tenure, whose
@@ -436,11 +564,99 @@ mod tests {
                 true
             )))
         );
+        assert_eq!(
+            parse(&args(&[
+                "annotate",
+                "f-3",
+                "--missing",
+                "fact",
+                "--evidence",
+                "job j-1",
+                "--note",
+                "no job id",
+                "--json"
+            ])),
+            Ok(Some((
+                Supervise::Annotate {
+                    finding_id: "f-3".into(),
+                    missing: SupervisionMissingRequest::Fact,
+                    evidence: "job j-1".into(),
+                    note: Some("no job id".into())
+                },
+                true
+            )))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "annotate",
+                "f-3",
+                "--missing",
+                "rule",
+                "--evidence",
+                "log reports/j-1.log"
+            ])),
+            Ok(Some((
+                Supervise::Annotate {
+                    finding_id: "f-3".into(),
+                    missing: SupervisionMissingRequest::Rule,
+                    evidence: "log reports/j-1.log".into(),
+                    note: None
+                },
+                false
+            )))
+        );
         for bad in [
             &["fixtures"][..],
             &["fixtures", "nonsense"],
             &["fixtures", "disk_low", "--version"],
             &["fixtures", "disk_low", "--version", "x"],
+            &["annotate"][..],
+            &["annotate", "f-3", "--evidence", "job j-1"],
+            &[
+                "annotate",
+                "f-3",
+                "--missing",
+                "nonsense",
+                "--evidence",
+                "x",
+            ],
+            &["annotate", "f-3", "--missing", "fact"],
+            &["annotate", "--missing", "fact", "--evidence", "x"],
+            &[
+                "annotate",
+                "f-3",
+                "--missing",
+                "fact",
+                "--evidence",
+                "--json",
+            ],
+            &[
+                "annotate",
+                "f-3",
+                "--missing",
+                "fact",
+                "--evidence",
+                "x",
+                "--note",
+            ],
+            &[
+                "annotate",
+                "f-3",
+                "--missing",
+                "fact",
+                "--evidence",
+                "x",
+                "f-4",
+            ],
+            &[
+                "annotate",
+                "f-3",
+                "--missing",
+                "fact",
+                "--evidence",
+                "x",
+                "--bogus",
+            ],
             &["ack"][..],
             &["ack", "f-3", "f-4"],
             &["ack", "f-3", "--all"],
@@ -451,6 +667,48 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    /// An annotation prints as one line: the finding, the predicate and the rule version it was
+    /// raised at, what was missing and the evidence handle.
+    #[test]
+    fn an_annotation_prints_the_finding_what_is_missing_and_where_it_shows() {
+        let annotation = SupervisionAnnotation {
+            finding_id: "f-7".into(),
+            fingerprint: Some("0123456789abcdef".into()),
+            predicate: SupervisionPredicate::StoppedWithoutVerdict,
+            rule_version: Some(1),
+            job_ids: vec!["j-1".into()],
+            pane_id: Some("w1:p2".into()),
+            missing: SupervisionMissing::Fact,
+            evidence: "job j-1".into(),
+            note: Some("the sweep sees no job id".into()),
+            added_ms: 0,
+        };
+        assert_eq!(
+            annotation_text(&annotation),
+            "f-7  stopped_without_verdict rule v1  missing: a fact the sweep cannot see  \
+             evidence: job j-1"
+        );
+        let rule = SupervisionAnnotation {
+            missing: SupervisionMissing::Rule,
+            ..annotation
+        };
+        assert!(
+            annotation_text(&rule).contains("missing: a rule the predicate has none of"),
+            "{}",
+            annotation_text(&rule)
+        );
+        // A finding recorded before herdr stored its rule version records none.
+        let unknown = SupervisionAnnotation {
+            rule_version: None,
+            ..rule
+        };
+        assert!(
+            annotation_text(&unknown).contains("rule version unknown"),
+            "{}",
+            annotation_text(&unknown)
+        );
     }
 
     #[test]

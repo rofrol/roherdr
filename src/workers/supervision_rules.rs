@@ -76,8 +76,37 @@ pub(super) const RULES: &[PredicateRule] = &[
     },
 ];
 
-pub(super) fn rule_for(predicate: SupervisionPredicate) -> Option<&'static PredicateRule> {
-    RULES.iter().find(|rule| rule.predicate == predicate)
+#[cfg(test)]
+thread_local! {
+    /// A test-only bump of one rule's version, as a change of the rule table would make it.
+    static TEST_RULE_VERSION: std::cell::Cell<Option<(SupervisionPredicate, u32)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The rule of `predicate`, as the table has it now; a test can bump one rule's version.
+pub(super) fn rule_for(predicate: SupervisionPredicate) -> Option<PredicateRule> {
+    let rule = *RULES.iter().find(|rule| rule.predicate == predicate)?;
+    #[cfg(test)]
+    {
+        if let Some((bumped, version)) = TEST_RULE_VERSION.with(std::cell::Cell::get) {
+            if bumped == predicate {
+                return Some(PredicateRule { version, ..rule });
+            }
+        }
+    }
+    Some(rule)
+}
+
+/// Test-only: the rule of `predicate` at `version`, as its next version would be.
+#[cfg(test)]
+pub(super) fn set_test_rule_version(predicate: SupervisionPredicate, version: u32) {
+    TEST_RULE_VERSION.with(|cell| cell.set(Some((predicate, version))));
+}
+
+/// Test-only: the rule table's versions again.
+#[cfg(test)]
+pub(super) fn clear_test_rule_version() {
+    TEST_RULE_VERSION.with(|cell| cell.set(None));
 }
 
 /// The counter-evidence that holds for the worker's pane (`None`: the pane is gone), with

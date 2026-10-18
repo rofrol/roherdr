@@ -876,6 +876,8 @@ CREATE TABLE tenure_pending_ends (
 ALTER TABLE usage_admissions ADD COLUMN tenure_id TEXT;
 ALTER TABLE usage_admissions ADD COLUMN tenure_epoch INTEGER;
 "#,
+    super::supervision::SUPERVISION_ANNOTATIONS_MIGRATION,
+    super::supervision::SUPERVISION_FINDING_RULE_VERSION_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -4489,6 +4491,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN end_by_owner;
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
+                 DROP TABLE supervision_annotations;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
                  DROP TABLE tenure_steps;
@@ -4529,6 +4532,8 @@ mod tests {
                 "DROP TABLE usage_admissions;
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
+                 DROP TABLE supervision_annotations;
+                 ALTER TABLE supervision_findings DROP COLUMN rule_version;
                  DROP INDEX events_by_worker_kind;
                  INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
                      ('/a', 0, '{{\"state\": \"open\"}}', 40),
@@ -4540,7 +4545,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 4
+                MIGRATIONS.len() - 6
             ))
             .unwrap();
         drop(store);
@@ -4610,13 +4615,14 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN end_by_owner;
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
+                 DROP TABLE supervision_annotations;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 35
+                MIGRATIONS.len() - 37
             ))
             .unwrap();
         drop(store);
@@ -4684,13 +4690,14 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN end_by_owner;
                  DROP TABLE supervision_holds;
                  DROP TABLE supervision_findings;
+                 DROP TABLE supervision_annotations;
                  DROP TABLE supervision_deliveries;
                  DROP TABLE usage_admissions;
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 24
+                MIGRATIONS.len() - 26
             ))
             .unwrap();
         drop(store);

@@ -334,6 +334,11 @@ pub enum Method {
     /// fixtures for a fix of the predicate. Reads only.
     #[serde(rename = "supervise.fixtures")]
     SuperviseFixtures(SuperviseFixturesParams),
+    /// Records that the predicate that raised a finding cannot express a case
+    /// (a missing fact or rule), for the predicate's review. Changes nothing
+    /// of the finding.
+    #[serde(rename = "supervise.annotate")]
+    SuperviseAnnotate(SuperviseAnnotateParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

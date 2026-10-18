@@ -115,7 +115,7 @@ Raw socket method names use dot notation:
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
 | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
 | Reports | `report.record`, `report.list`, `report.close` |
-| Supervision | `supervise.report`, `supervise.acknowledge`, `supervise.ack`, `supervise.fixtures` |
+| Supervision | `supervise.report`, `supervise.acknowledge`, `supervise.ack`, `supervise.fixtures`, `supervise.annotate` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -1322,11 +1322,26 @@ id, it is evaluated when a hold ends, and it resolves when the rule's version fo
 that predicate changes. Clients that do not know the value read it as `unknown`.
 `supervise.fixtures` (`predicate`, optional `version`, the predicate's current
 rule version by default) reads only and answers `supervision_fixtures` with
-`predicate`, `rule_version`, `retracted` (the holds that must not fire) and
-`delivered` (known-true cases that must still fire), each with `fingerprint`,
-`request_id`, `job_ids`, `counter_evidence`, `opened_ms`, `ended_ms` and
-`reason`. A predicate without a rule needs an explicit `version`
+`predicate`, `rule_version`, `retracted` (the holds that must not fire),
+`delivered` (known-true cases that must still fire) and `annotated` (the cases
+the predicate cannot express at that rule version, oldest first), each hold with
+`fingerprint`, `request_id`, `job_ids`, `counter_evidence`, `opened_ms`,
+`ended_ms` and `reason`. A predicate without a rule needs an explicit `version`
 (`invalid_request` otherwise). An older server refuses it as `invalid_request`.
+`supervise.annotate` (`finding_id`, `missing`, `evidence`, optional `note`)
+records that the predicate that raised a finding cannot express a case: a fact
+the sweep cannot see (`fact`) or a rule it has none of (`rule`), with `evidence`
+saying where the case can be seen (a job id, a pane, a log path, a commit). It
+answers `supervision_annotation` with the finding's id, its `fingerprint` when it
+has one, the `predicate` and `rule_version` the finding was raised at (absent
+for a finding recorded before herdr stored its rule version), the `job_ids` and
+`pane_id` the finding names, `missing`, `evidence`, `note` and `added_ms`. It
+changes nothing of the finding: not its state, its delivery, its acknowledgement
+or the holds, and it is not a dispute; `supervise.fixtures` lists it under
+`annotated`, oldest first, at that rule version, and a predicate's digest line
+names how many annotations it has. One annotation per finding: a second is
+refused as `already_annotated`, never merged, and an id that names no finding is
+`finding_not_found`. An older server refuses it as `invalid_request`.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

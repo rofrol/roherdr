@@ -7,8 +7,8 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    ResponseResult, SuperviseAckParams, SuperviseAcknowledgeParams, SuperviseFixturesParams,
-    SuperviseReportParams,
+    ResponseResult, SuperviseAckParams, SuperviseAcknowledgeParams, SuperviseAnnotateParams,
+    SuperviseFixturesParams, SuperviseReportParams,
 };
 use crate::app::App;
 use crate::workers::supervision::PaneFacts;
@@ -112,6 +112,30 @@ impl App {
         };
         match supervisor.supervision_fixtures(params.predicate, params.version) {
             Ok(fixtures) => encode_success(id, ResponseResult::SupervisionFixtures { fixtures }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `supervise.annotate`: records that the predicate that raised a finding
+    /// cannot express a case. It changes nothing of the finding.
+    pub(super) fn handle_supervise_annotate(
+        &mut self,
+        id: String,
+        params: SuperviseAnnotateParams,
+    ) -> String {
+        let Some(supervisor) = crate::workers::coordinators() else {
+            let error = unavailable();
+            return encode_error(id, error.code(), error.to_string());
+        };
+        match supervisor.supervision_annotate(
+            &params.finding_id,
+            params.missing.into(),
+            &params.evidence,
+            params.note.as_deref(),
+        ) {
+            Ok(annotation) => {
+                encode_success(id, ResponseResult::SupervisionAnnotation { annotation })
+            }
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

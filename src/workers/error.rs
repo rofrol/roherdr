@@ -69,6 +69,12 @@ pub(crate) enum WorkerError {
     /// (their own client) or the herdr repository's coordinator (its
     /// tenure's pane); the message names who may.
     FindingAckRefused(String),
+    /// `supervise.annotate` named no supervision finding: a malformed id, or
+    /// one no finding has. The message names the finding.
+    FindingNotFound(String),
+    /// `supervise.annotate` named a finding that has an annotation already:
+    /// one annotation per finding, never merged. The message names it.
+    AlreadyAnnotated(String),
     /// A `worker.answer_as` from a tenure that no longer owns the worker;
     /// the message names the owner. The answer was not applied.
     OwnershipTransferred(String),
@@ -119,6 +125,8 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "grant_required",
     "grant_needs_user",
     "finding_ack_refused",
+    "finding_not_found",
+    "already_annotated",
     "ownership_transferred",
     "coordinator_frozen",
     "coordinator_superseded",
@@ -159,6 +167,8 @@ impl WorkerError {
             Self::GrantRequired(_) => "grant_required",
             Self::GrantNeedsUser(_) => "grant_needs_user",
             Self::FindingAckRefused(_) => "finding_ack_refused",
+            Self::FindingNotFound(_) => "finding_not_found",
+            Self::AlreadyAnnotated(_) => "already_annotated",
             Self::OwnershipTransferred(_) => "ownership_transferred",
             Self::CoordinatorFrozen(_) => "coordinator_frozen",
             Self::CoordinatorSuperseded(_) => "coordinator_superseded",
@@ -210,6 +220,8 @@ impl std::fmt::Display for WorkerError {
             | Self::GrantRequired(message)
             | Self::GrantNeedsUser(message)
             | Self::FindingAckRefused(message)
+            | Self::FindingNotFound(message)
+            | Self::AlreadyAnnotated(message)
             | Self::CoordinatorFrozen(message)
             | Self::CoordinatorSuperseded(message)
             | Self::HandoffRefused(message)

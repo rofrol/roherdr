@@ -1500,3 +1500,38 @@ fn pane_link_resolve_round_trips() {
         result
     );
 }
+
+#[test]
+fn a_fixtures_reply_without_annotated_deserializes() {
+    let fixtures: SupervisionFixtures = serde_json::from_value(serde_json::json!({
+        "predicate": "stopped_without_verdict",
+        "rule_version": 1,
+        "retracted": [],
+        "delivered": []
+    }))
+    .unwrap();
+    assert!(fixtures.annotated.is_empty());
+}
+
+#[test]
+fn an_annotate_request_names_only_a_fact_or_a_rule() {
+    let params: SuperviseAnnotateParams = serde_json::from_value(serde_json::json!({
+        "finding_id": "f-1",
+        "missing": "fact",
+        "evidence": "job j-1"
+    }))
+    .unwrap();
+    assert_eq!(params.missing, SupervisionMissingRequest::Fact);
+    assert_eq!(
+        SupervisionMissing::from(SupervisionMissingRequest::Rule),
+        SupervisionMissing::Rule
+    );
+    assert!(
+        serde_json::from_value::<SuperviseAnnotateParams>(serde_json::json!({
+            "finding_id": "f-1",
+            "missing": "unknown",
+            "evidence": "job j-1"
+        }))
+        .is_err()
+    );
+}

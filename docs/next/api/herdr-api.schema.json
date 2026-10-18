@@ -5798,6 +5798,34 @@
           ],
           "type": "object"
         },
+        "SuperviseAnnotateParams": {
+          "description": "`supervise.annotate`: records that the predicate that raised a finding\ncannot express a case, so a review of the predicate sees it\n(`supervise.fixtures`). It changes nothing of the finding: not its state,\nits delivery, its acknowledgement or the holds, and it is not a dispute.",
+          "properties": {
+            "evidence": {
+              "description": "Where the missing case can be seen: a job id, a pane, a log path, a\ncommit.",
+              "type": "string"
+            },
+            "finding_id": {
+              "description": "`f-` and the finding's number.",
+              "type": "string"
+            },
+            "missing": {
+              "$ref": "#/schemas/request/$defs/SupervisionMissingRequest"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "finding_id",
+            "missing",
+            "evidence"
+          ],
+          "type": "object"
+        },
         "SuperviseFixturesParams": {
           "description": "`supervise.fixtures`: the recorded holds of one predicate and rule version. Reads only.",
           "properties": {
@@ -5834,6 +5862,21 @@
             }
           },
           "type": "object"
+        },
+        "SupervisionMissingRequest": {
+          "description": "What a predicate lacks, as `supervise.annotate` asks for it: a fact or a\nrule only, so the request never names a case the server would refuse.",
+          "oneOf": [
+            {
+              "const": "fact",
+              "description": "A fact the sweep cannot see: the case can be shown, but no predicate\ncan express it.",
+              "type": "string"
+            },
+            {
+              "const": "rule",
+              "description": "A rule: the predicate has nothing that decides the case.",
+              "type": "string"
+            }
+          ]
         },
         "SupervisionPredicate": {
           "description": "The predicate a finding names: a positive fact and the event that did\nnot follow it. Quiet output is never one: it only means progress cannot\nbe established.",
@@ -9811,6 +9854,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/SuperviseFixturesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Records that the predicate that raised a finding cannot express a case\n(a missing fact or rule), for the predicate's review. Changes nothing\nof the finding.",
+          "properties": {
+            "method": {
+              "const": "supervise.annotate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SuperviseAnnotateParams"
             }
           },
           "required": [
@@ -17556,6 +17616,23 @@
               "type": "object"
             },
             {
+              "description": "`supervise.annotate`'s reply: the annotation recorded.",
+              "properties": {
+                "annotation": {
+                  "$ref": "#/schemas/success_response/$defs/SupervisionAnnotation"
+                },
+                "type": {
+                  "const": "supervision_annotation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "annotation"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`supervise.acknowledge`'s and `supervise.ack`'s reply.",
               "properties": {
                 "finding": {
@@ -19260,6 +19337,75 @@
           ],
           "type": "object"
         },
+        "SupervisionAnnotation": {
+          "description": "An annotation on a finding: the case the predicate that raised it cannot\nexpress, with the predicate and rule version it was made at. It says only\nthat the predicate lacks something; it is neither a retracted case (one\nthat must not fire) nor a known-true one.",
+          "properties": {
+            "added_ms": {
+              "description": "When it was added, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "evidence": {
+              "description": "Where the missing case can be seen.",
+              "type": "string"
+            },
+            "finding_id": {
+              "description": "`f-` and the finding's number.",
+              "type": "string"
+            },
+            "fingerprint": {
+              "description": "The finding's fingerprint, when it has one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "job_ids": {
+              "description": "The jobs the finding named.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "missing": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionMissing"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The pane the finding named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "predicate": {
+              "$ref": "#/schemas/success_response/$defs/SupervisionPredicate"
+            },
+            "rule_version": {
+              "description": "The rule version the finding was raised at; absent for a finding\nrecorded before herdr stored its rule version, and for a predicate\nwithout a rule.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "finding_id",
+            "predicate",
+            "missing",
+            "evidence",
+            "added_ms"
+          ],
+          "type": "object"
+        },
         "SupervisionDelivery": {
           "description": "One notice of a finding's state (its id and severity) to one coordinator:\nqueued at once, typed into the coordinator's pane with `agent.prompt` only\nat a turn boundary (its agent rests), then acknowledged by the coordinator\n(`supervise.ack`). Dispatch and acknowledgement are recorded apart; no\ntimer moves any of them.",
           "properties": {
@@ -19609,6 +19755,13 @@
         "SupervisionFixtures": {
           "description": "`supervise.fixtures`' reply: the cases a fix of the predicate must respect.",
           "properties": {
+            "annotated": {
+              "description": "The annotations of the predicate at `rule_version`, the oldest first:\ncases the predicate cannot express, which are neither retracted nor\nknown-true. Absent from older servers.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/SupervisionAnnotation"
+              },
+              "type": "array"
+            },
             "delivered": {
               "description": "The delivered holds: known-true cases that must still fire.",
               "items": {
@@ -19675,6 +19828,27 @@
             "rule_version"
           ],
           "type": "object"
+        },
+        "SupervisionMissing": {
+          "description": "What a predicate lacks, as an annotation records it.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "fact",
+              "description": "A fact the sweep cannot see: the case can be shown, but no predicate\ncan express it.",
+              "type": "string"
+            },
+            {
+              "const": "rule",
+              "description": "A rule: the predicate has nothing that decides the case.",
+              "type": "string"
+            }
+          ]
         },
         "SupervisionPendingHold": {
           "description": "A finding kept back (pending) because an allowed continuation is live.",

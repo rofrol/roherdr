@@ -1364,6 +1364,9 @@ impl App {
             Method::SuperviseFixtures(params) => {
                 return self.handle_supervise_fixtures(request.id, params);
             }
+            Method::SuperviseAnnotate(params) => {
+                return self.handle_supervise_annotate(request.id, params);
+            }
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }

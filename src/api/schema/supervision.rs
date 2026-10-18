@@ -343,6 +343,88 @@ pub struct SupervisionFixture {
     pub reason: Option<String>,
 }
 
+/// What a predicate lacks, as an annotation records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisionMissing {
+    /// A fact the sweep cannot see: the case can be shown, but no predicate
+    /// can express it.
+    Fact,
+    /// A rule: the predicate has nothing that decides the case.
+    Rule,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a predicate lacks, as `supervise.annotate` asks for it: a fact or a
+/// rule only, so the request never names a case the server would refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisionMissingRequest {
+    /// A fact the sweep cannot see: the case can be shown, but no predicate
+    /// can express it.
+    Fact,
+    /// A rule: the predicate has nothing that decides the case.
+    Rule,
+}
+
+impl From<SupervisionMissingRequest> for SupervisionMissing {
+    fn from(missing: SupervisionMissingRequest) -> Self {
+        match missing {
+            SupervisionMissingRequest::Fact => Self::Fact,
+            SupervisionMissingRequest::Rule => Self::Rule,
+        }
+    }
+}
+
+/// `supervise.annotate`: records that the predicate that raised a finding
+/// cannot express a case, so a review of the predicate sees it
+/// (`supervise.fixtures`). It changes nothing of the finding: not its state,
+/// its delivery, its acknowledgement or the holds, and it is not a dispute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SuperviseAnnotateParams {
+    /// `f-` and the finding's number.
+    pub finding_id: String,
+    pub missing: SupervisionMissingRequest,
+    /// Where the missing case can be seen: a job id, a pane, a log path, a
+    /// commit.
+    pub evidence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// An annotation on a finding: the case the predicate that raised it cannot
+/// express, with the predicate and rule version it was made at. It says only
+/// that the predicate lacks something; it is neither a retracted case (one
+/// that must not fire) nor a known-true one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SupervisionAnnotation {
+    /// `f-` and the finding's number.
+    pub finding_id: String,
+    /// The finding's fingerprint, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    pub predicate: SupervisionPredicate,
+    /// The rule version the finding was raised at; absent for a finding
+    /// recorded before herdr stored its rule version, and for a predicate
+    /// without a rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_version: Option<u32>,
+    /// The jobs the finding named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_ids: Vec<String>,
+    /// The pane the finding named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    pub missing: SupervisionMissing,
+    /// Where the missing case can be seen.
+    pub evidence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// When it was added, Unix milliseconds.
+    pub added_ms: u64,
+}
+
 /// `supervise.fixtures`' reply: the cases a fix of the predicate must respect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SupervisionFixtures {
@@ -352,6 +434,11 @@ pub struct SupervisionFixtures {
     pub retracted: Vec<SupervisionFixture>,
     /// The delivered holds: known-true cases that must still fire.
     pub delivered: Vec<SupervisionFixture>,
+    /// The annotations of the predicate at `rule_version`, the oldest first:
+    /// cases the predicate cannot express, which are neither retracted nor
+    /// known-true. Absent from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotated: Vec<SupervisionAnnotation>,
 }
 
 /// `supervise.report`'s reply.

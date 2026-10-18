@@ -50,6 +50,15 @@
 //! acknowledges a finding; a worker's or another agent's `worker.answer` is
 //! refused with `finding_ack_refused`, since the agent that stalled could
 //! otherwise silence its own finding.
+//!
+//! A coordinator that sees a finding fire on a case the predicate cannot
+//! express records it as an annotation on that finding
+//! (`supervise.annotate`): a missing fact or rule, an evidence handle saying
+//! where the case can be seen and a note. An annotation changes nothing of the
+//! finding, its state, its delivery, its acknowledgement or the holds, and it
+//! is not a dispute: it says only that the predicate lacks something. It is
+//! kept append-only beside the holds, and `supervise.fixtures` lists it under
+//! `annotated` at the rule version the finding was raised at.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,12 +77,12 @@ use super::supervision_rules::{self, ExpectedEvent, HoldEnd, PendingHold};
 use super::{lock, notify_clients, now_ms, Direction, PendingWorkerQuestion};
 use super::{WorkerError, WorkerSupervisor};
 use crate::api::schema::{
-    AgentStatus, CoordinatorInfo, SupervisedCoordinator, SupervisionDelivery,
-    SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding, SupervisionFixture,
-    SupervisionFixtures, SupervisionHoldCount, SupervisionPendingHold, SupervisionPredicate,
-    SupervisionReport, SupervisionSeverity, SupervisionStatus, TodoRunnableState,
-    WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion, WorkerQuestionDetail,
-    WorkerQuestionKind, WorkerQuestionState, WorkerState,
+    AgentStatus, CoordinatorInfo, SupervisedCoordinator, SupervisionAnnotation,
+    SupervisionDelivery, SupervisionDeliveryRole, SupervisionEvidence, SupervisionFinding,
+    SupervisionFixture, SupervisionFixtures, SupervisionHoldCount, SupervisionMissing,
+    SupervisionPendingHold, SupervisionPredicate, SupervisionReport, SupervisionSeverity,
+    SupervisionStatus, TodoRunnableState, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
+    WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerState,
 };
 
 /// The findings table.
@@ -138,6 +147,49 @@ CREATE UNIQUE INDEX supervision_holds_pending
     ON supervision_holds (fingerprint) WHERE state = 'pending';
 CREATE TRIGGER supervision_holds_no_delete BEFORE DELETE ON supervision_holds
 BEGIN SELECT RAISE(ABORT, 'supervision holds are never deleted'); END;
+"#;
+
+/// The rule version a finding was raised at, kept with the finding.
+pub(super) const SUPERVISION_FINDING_RULE_VERSION_MIGRATION: &str = r#"
+-- The rule version its predicate had when the finding was first recorded. An
+-- annotation copies it, so a rule version bumped after the finding does not
+-- change the version the annotation names. A finding recorded before this
+-- column keeps NULL; its annotation then records no version.
+ALTER TABLE supervision_findings ADD COLUMN rule_version INTEGER;
+"#;
+
+/// The cases a predicate cannot express (`supervise.annotate`).
+pub(super) const SUPERVISION_ANNOTATIONS_MIGRATION: &str = r#"
+-- An annotation on a finding: the predicate cannot express a fact (the
+-- sweep cannot see it) or a rule, and `evidence` says where the case can be
+-- seen (a job id, a pane, a log path, a commit). It changes nothing of the
+-- finding, its state, deliveries, acknowledgements or the holds, and it is
+-- not a dispute: at most one annotation per finding. `predicate` and
+-- `rule_version` are the ones the finding was raised at, so a rule's version
+-- change hides its old annotations from `supervise.fixtures` without removing
+-- them; `rule_version` is NULL for a finding recorded before herdr stored it,
+-- and the annotation then records no version. `job_ids` is JSON; `fingerprint`
+-- is the finding's when it has one; times are Unix milliseconds. Rows are never
+-- deleted.
+CREATE TABLE supervision_annotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    fingerprint TEXT,
+    predicate TEXT NOT NULL,
+    rule_version INTEGER,
+    job_ids TEXT NOT NULL,
+    pane_id TEXT,
+    missing TEXT NOT NULL CHECK (missing IN ('fact', 'rule')),
+    evidence TEXT NOT NULL,
+    note TEXT,
+    added_ms INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX supervision_annotations_finding ON supervision_annotations (finding);
+CREATE INDEX supervision_annotations_rule
+    ON supervision_annotations (predicate, rule_version, id);
+CREATE TRIGGER supervision_annotations_no_delete BEFORE DELETE ON supervision_annotations
+BEGIN SELECT RAISE(ABORT, 'supervision annotations are never deleted'); END;
 "#;
 
 /// Who acknowledged a finding, and the herdr coordinator's reads of it.
@@ -445,6 +497,135 @@ fn fixtures_of(
     rows.collect()
 }
 
+/// The columns of [`SupervisionAnnotation`] in `supervision_annotations`.
+const ANNOTATION_COLUMNS: &str =
+    "finding_id, fingerprint, predicate, rule_version, job_ids, pane_id, missing, evidence, \
+     note, added_ms";
+
+/// The rule version a finding was raised at; `None` for a finding recorded before herdr
+/// stored it, and for a predicate without a rule.
+fn finding_rule_version(conn: &rusqlite::Connection, number: i64) -> StoreResult<Option<u32>> {
+    conn.query_row(
+        "SELECT rule_version FROM supervision_findings WHERE id = ?1",
+        [number],
+        |row| row.get(0),
+    )
+}
+
+/// The annotation of finding `number`, if it has one.
+fn annotation_of_finding(
+    conn: &rusqlite::Connection,
+    number: i64,
+) -> StoreResult<Option<SupervisionAnnotation>> {
+    conn.query_row(
+        &format!("SELECT {ANNOTATION_COLUMNS} FROM supervision_annotations WHERE finding = ?1"),
+        [number],
+        annotation_from_row,
+    )
+    .optional()
+}
+
+/// The annotations of `predicate` at rule `version`, the oldest first.
+fn annotations_of(
+    conn: &rusqlite::Connection,
+    predicate: SupervisionPredicate,
+    version: u32,
+) -> StoreResult<Vec<SupervisionAnnotation>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {ANNOTATION_COLUMNS} FROM supervision_annotations
+         WHERE predicate = ?1 AND rule_version = ?2 ORDER BY id"
+    ))?;
+    let rows = statement.query_map(
+        params![predicate_name(predicate), version],
+        annotation_from_row,
+    )?;
+    rows.collect()
+}
+
+fn annotation_from_row(row: &rusqlite::Row<'_>) -> StoreResult<SupervisionAnnotation> {
+    let jobs: String = row.get(4)?;
+    Ok(SupervisionAnnotation {
+        finding_id: row.get(0)?,
+        fingerprint: row.get(1)?,
+        predicate: parse_predicate(&row.get::<_, String>(2)?),
+        rule_version: row.get(3)?,
+        job_ids: serde_json::from_str(&jobs).unwrap_or_default(),
+        pane_id: row.get(5)?,
+        missing: parse_missing(&row.get::<_, String>(6)?),
+        evidence: row.get(7)?,
+        note: row.get(8)?,
+        added_ms: row.get::<_, i64>(9)?.max(0) as u64,
+    })
+}
+
+fn missing_name(missing: SupervisionMissing) -> &'static str {
+    match missing {
+        SupervisionMissing::Fact => "fact",
+        SupervisionMissing::Rule => "rule",
+        SupervisionMissing::Unknown => "unknown",
+    }
+}
+
+fn parse_missing(name: &str) -> SupervisionMissing {
+    serde_json::from_value(serde_json::Value::String(name.to_owned()))
+        .unwrap_or(SupervisionMissing::Unknown)
+}
+
+/// What recording an annotation of one finding came to.
+enum Annotated {
+    /// The annotation was recorded, and is this one.
+    Recorded(SupervisionAnnotation),
+    /// No finding has that number.
+    Missing,
+    /// The finding has an annotation already.
+    Already,
+}
+
+/// Records an annotation of finding `number`: the first one only, never a change of the finding.
+fn annotate(
+    tx: &Tx<'_>,
+    number: i64,
+    missing: SupervisionMissing,
+    evidence: &str,
+    note: Option<&str>,
+    at_ms: u64,
+) -> StoreResult<Annotated> {
+    let conn = tx.connection();
+    let Some(finding) = finding_by_number(conn, number)? else {
+        return Ok(Annotated::Missing);
+    };
+    if annotation_of_finding(conn, number)?.is_some() {
+        return Ok(Annotated::Already);
+    }
+    // The rule version the finding was raised at, never the predicate's current one: a rule
+    // version bumped after the finding does not change what its annotation names.
+    let rule_version = finding_rule_version(conn, number)?;
+    let jobs = serde_json::to_string(&finding.job_ids).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO supervision_annotations
+         (finding, finding_id, fingerprint, predicate, rule_version, job_ids, pane_id, missing,
+          evidence, note, added_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            number,
+            finding.finding_id,
+            finding.fingerprint,
+            predicate_name(finding.predicate),
+            rule_version,
+            jobs,
+            finding.pane_id,
+            missing_name(missing),
+            evidence,
+            note,
+            at_ms as i64,
+        ],
+    )?;
+    Ok(match annotation_of_finding(conn, number)? {
+        Some(annotation) => Annotated::Recorded(annotation),
+        None => Annotated::Missing,
+    })
+}
+
 fn parse_predicate(name: &str) -> SupervisionPredicate {
     serde_json::from_value(serde_json::Value::String(name.to_owned()))
         .unwrap_or(SupervisionPredicate::Unknown)
@@ -630,7 +811,7 @@ fn apply_rule(
         return candidate;
     };
     if let Some((entry, job_ids)) =
-        supervision_rules::counter_evidence(rule, pane, assignment.accepted_ms)
+        supervision_rules::counter_evidence(&rule, pane, assignment.accepted_ms)
     {
         candidate
             .evidence
@@ -1591,14 +1772,17 @@ fn record_candidate(
     }
     match holding {
         None => {
+            let rule_version =
+                supervision_rules::rule_for(candidate.predicate).map(|rule| rule.version);
             conn.execute(
-                "INSERT INTO supervision_findings (fingerprint, predicate, severity, status,
-                     summary, expected_event, repo, coordinator_id, pane_id, run_id, job_ids,
-                     evidence, first_seen_ms, last_seen_ms)
-                 VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                "INSERT INTO supervision_findings (fingerprint, predicate, rule_version, severity,
+                     status, summary, expected_event, repo, coordinator_id, pane_id, run_id,
+                     job_ids, evidence, first_seen_ms, last_seen_ms)
+                 VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
                 params![
                     candidate.fingerprint,
                     predicate_name(candidate.predicate),
+                    rule_version,
                     severity_name(candidate.severity),
                     candidate.summary,
                     candidate.expected_event,
@@ -2044,7 +2228,7 @@ pub(crate) struct DeliveryBatch {
 }
 
 /// One predicate's line of a digest: the findings that are open (not acknowledged, not
-/// resolved) and the holds by state, over every rule version.
+/// resolved), the holds by state and the annotations it has, over every rule version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PredicateDigest {
     pub(crate) predicate: SupervisionPredicate,
@@ -2053,6 +2237,8 @@ pub(crate) struct PredicateDigest {
     pub(crate) retracted: u64,
     pub(crate) delivered: u64,
     pub(crate) resolved: u64,
+    /// The cases the predicate cannot express (`supervise.annotate`).
+    pub(crate) annotated: u64,
 }
 
 /// The digest lines of the predicates of `findings`, from the findings and holds recorded.
@@ -2075,6 +2261,11 @@ fn predicate_digest(
             [name],
             |row| row.get(0),
         )?;
+        let annotations: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM supervision_annotations WHERE predicate = ?1",
+            [name],
+            |row| row.get(0),
+        )?;
         let mut line = PredicateDigest {
             predicate,
             open_findings: open_findings.max(0) as u64,
@@ -2082,6 +2273,7 @@ fn predicate_digest(
             retracted: 0,
             delivered: 0,
             resolved: 0,
+            annotated: annotations.max(0) as u64,
         };
         let mut statement = conn.prepare(
             "SELECT state, COUNT(*) FROM supervision_holds WHERE predicate = ?1 GROUP BY state",
@@ -2175,13 +2367,14 @@ pub(crate) fn notice_text(batch: &DeliveryBatch) -> String {
     for line in &batch.digest {
         out.push_str(&format!(
             "- {}: {} open finding(s); holds: pending {}, retracted {}, delivered {}, \
-             resolved {}\n",
+             resolved {}; annotated {}\n",
             predicate_name(line.predicate),
             line.open_findings,
             line.pending,
             line.retracted,
             line.delivered,
-            line.resolved
+            line.resolved,
+            line.annotated
         ));
     }
     let ids: Vec<&str> = batch
@@ -2757,9 +2950,10 @@ impl WorkerSupervisor {
         })
     }
 
-    /// `supervise.fixtures`: the retracted holds (cases that must not fire) and the delivered
-    /// holds (known-true cases that must still fire) of `predicate` at rule `version` (its
-    /// current one by default), each with the facts recorded. Reads only.
+    /// `supervise.fixtures`: the retracted holds (cases that must not fire), the delivered
+    /// holds (known-true cases that must still fire) and the annotations (cases the predicate
+    /// cannot express) of `predicate` at rule `version` (its current one by default), each with
+    /// the facts recorded. Reads only.
     pub(crate) fn supervision_fixtures(
         &self,
         predicate: SupervisionPredicate,
@@ -2775,12 +2969,13 @@ impl WorkerSupervisor {
                 )))
             }
         };
-        let (retracted, delivered) = self
+        let (retracted, delivered, annotated) = self
             .supervision_store()?
             .read(|conn| {
                 Ok((
                     fixtures_of(conn, predicate, version, "retracted")?,
                     fixtures_of(conn, predicate, version, "delivered")?,
+                    annotations_of(conn, predicate, version)?,
                 ))
             })
             .map_err(store_error)?;
@@ -2789,7 +2984,55 @@ impl WorkerSupervisor {
             rule_version: version,
             retracted,
             delivered,
+            annotated,
         })
+    }
+
+    /// `supervise.annotate`: records that the predicate that raised `finding_id`
+    /// cannot express a case (a missing fact or rule), with `evidence` saying where
+    /// the case can be seen and an optional `note`, for the predicate's review
+    /// (`supervise.fixtures`). It changes nothing of the finding: not its state, its
+    /// delivery, its acknowledgement or the holds, and it is not a dispute. A
+    /// malformed id or one no finding has is `finding_not_found`; a finding with an
+    /// annotation already is `already_annotated`, never merged.
+    pub(crate) fn supervision_annotate(
+        &self,
+        finding_id: &str,
+        missing: SupervisionMissing,
+        evidence: &str,
+        note: Option<&str>,
+    ) -> Result<SupervisionAnnotation, WorkerError> {
+        let number = finding_number(finding_id).ok_or_else(|| {
+            WorkerError::FindingNotFound(format!("{finding_id} is not a supervision finding id"))
+        })?;
+        let id = id_of(number);
+        if missing == SupervisionMissing::Unknown {
+            return Err(WorkerError::Invalid(
+                "--missing says what the predicate lacks: fact or rule".into(),
+            ));
+        }
+        let evidence = evidence.trim();
+        if evidence.is_empty() {
+            return Err(WorkerError::Invalid(
+                "--evidence says where the missing case can be seen: a job id, a pane, a log path, \
+                 a commit"
+                    .into(),
+            ));
+        }
+        let note = note.map(str::trim).filter(|note| !note.is_empty());
+        let outcome = self
+            .supervision_store()?
+            .transaction(|tx| annotate(tx, number, missing, evidence, note, now_ms()))
+            .map_err(store_error)?;
+        match outcome {
+            Annotated::Recorded(annotation) => Ok(annotation),
+            Annotated::Missing => Err(WorkerError::FindingNotFound(format!(
+                "no supervision finding {id}"
+            ))),
+            Annotated::Already => Err(WorkerError::AlreadyAnnotated(format!(
+                "{id} is annotated already: one annotation per finding"
+            ))),
+        }
     }
 
     /// Acknowledges finding `finding_id` as `by`: it leaves the `?` list
@@ -4572,7 +4815,7 @@ mod tests {
         assert!(
             digest.contains(
                 "- verdict_undelivered: 1 open finding(s); holds: pending 0, retracted 0, \
-                 delivered 0, resolved 0"
+                 delivered 0, resolved 0; annotated 0"
             ),
             "{digest}"
         );
@@ -5288,6 +5531,458 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// An annotation on an open finding names what its predicate lacks (a fact or a rule), the
+    /// predicate and rule version it was made at, the finding's fingerprint, jobs and pane, the
+    /// evidence handle, the note and when it was added; nothing of the finding moves.
+    #[test]
+    fn an_annotation_records_a_case_the_predicate_cannot_express_and_changes_nothing() {
+        let (supervisor, root) = supervisor("annotate-delivered");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut pending = base;
+        pending.fingerprint = "fp0".into();
+        pending.hold.as_mut().unwrap().request_id = "req0".into();
+        record_with(
+            &supervisor,
+            std::slice::from_ref(&pending),
+            1000,
+            HoldEnd::Resolved,
+        );
+        // Its job ended and its worker did not continue: the hold is delivered and the finding
+        // opens, the case a fix of the predicate must still fire.
+        let mut fired = pending;
+        fired.hold = None;
+        let changes = record_with(&supervisor, &[fired], 1100, HoldEnd::Resolved);
+        assert_eq!(changes.opened.len(), 1);
+        let finding = changes.opened[0].clone();
+        assert_eq!(hold_states(&supervisor), ["delivered"]);
+
+        let annotation = supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Fact,
+                "job j-1, log reports/j-1.log",
+                Some("the sweep sees no job id the worker named"),
+            )
+            .unwrap();
+        assert_eq!(annotation.finding_id, finding.finding_id);
+        assert_eq!(
+            annotation.fingerprint.as_deref(),
+            Some(finding.fingerprint.as_str())
+        );
+        assert_eq!(annotation.predicate, finding.predicate);
+        assert_eq!(annotation.rule_version, Some(1));
+        assert_eq!(annotation.job_ids, finding.job_ids);
+        assert_eq!(annotation.pane_id, finding.pane_id);
+        assert_eq!(annotation.missing, SupervisionMissing::Fact);
+        assert_eq!(annotation.evidence, "job j-1, log reports/j-1.log");
+        assert_eq!(
+            annotation.note.as_deref(),
+            Some("the sweep sees no job id the worker named")
+        );
+        assert!(annotation.added_ms > 0);
+
+        // The finding is as it was: its state, its deliveries and the holds.
+        assert_eq!(
+            supervisor.supervision_findings(true).unwrap(),
+            vec![finding.clone()]
+        );
+        assert_eq!(hold_states(&supervisor), ["delivered"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A finding whose hold was retracted still takes an annotation, and `fixtures` lists that
+    /// only under `annotated`: never as a case that must not fire, never as a known-true one.
+    #[test]
+    fn an_annotation_of_a_finding_whose_hold_was_retracted_is_only_annotated() {
+        let (supervisor, root) = supervisor("annotate-retracted");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut candidate = base;
+        candidate.fingerprint = "fp0".into();
+        candidate.hold.as_mut().unwrap().request_id = "req0".into();
+        // Pending, then its worker resumed: the hold is retracted and no finding opens.
+        record_with(
+            &supervisor,
+            std::slice::from_ref(&candidate),
+            1000,
+            HoldEnd::Resolved,
+        );
+        record_with(&supervisor, &[], 1100, HoldEnd::Retracted("it resumed"));
+        assert_eq!(hold_states(&supervisor), ["retracted"]);
+        assert!(supervisor.supervision_findings(true).unwrap().is_empty());
+        // The same fingerprint later opens a finding, which takes the annotation.
+        let mut fired = candidate;
+        fired.hold = None;
+        let changes = record_with(&supervisor, &[fired], 1200, HoldEnd::Resolved);
+        let finding = changes.opened[0].clone();
+
+        let annotation = supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Rule,
+                "commit 9c1f2ab",
+                None,
+            )
+            .unwrap();
+        assert_eq!(annotation.missing, SupervisionMissing::Rule);
+        assert_eq!(annotation.note, None);
+        assert_eq!(annotation.rule_version, Some(1));
+
+        let fixtures = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        let prints = |fixtures: &[SupervisionFixture]| -> Vec<String> {
+            fixtures.iter().map(|f| f.fingerprint.clone()).collect()
+        };
+        assert_eq!(prints(&fixtures.retracted), ["fp0"]);
+        assert!(fixtures.delivered.is_empty());
+        assert_eq!(fixtures.annotated, vec![annotation.clone()]);
+        // Another rule version lists none of them: an annotation names the version it was
+        // raised at, and nothing is removed when a rule changes version.
+        let older = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, Some(7))
+            .unwrap();
+        assert!(older.annotated.is_empty());
+        // The annotation is still there, and it is still the only one for its finding.
+        assert_eq!(
+            supervisor
+                .supervision_annotate(
+                    &finding.finding_id,
+                    SupervisionMissing::Fact,
+                    "job j-1",
+                    None
+                )
+                .unwrap_err()
+                .code(),
+            "already_annotated"
+        );
+        // Nothing of the finding or the holds moved.
+        assert_eq!(hold_states(&supervisor), ["retracted"]);
+        assert_eq!(
+            supervisor.supervision_findings(true).unwrap(),
+            vec![finding]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An annotation names the rule version the finding was raised at, not the predicate's
+    /// current one after a rule version bump.
+    #[test]
+    fn an_annotation_records_the_rule_version_the_finding_was_raised_at() {
+        let (supervisor, root) = supervisor("annotate-version");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut pending = base;
+        pending.fingerprint = "fp0".into();
+        pending.hold.as_mut().unwrap().request_id = "req0".into();
+        record_with(
+            &supervisor,
+            std::slice::from_ref(&pending),
+            1000,
+            HoldEnd::Resolved,
+        );
+        let mut fired = pending;
+        fired.hold = None;
+        let changes = record_with(&supervisor, &[fired], 1100, HoldEnd::Resolved);
+        let finding = changes.opened[0].clone();
+
+        // The rule table moves to version 2 after the finding was raised.
+        supervision_rules::set_test_rule_version(SupervisionPredicate::StoppedWithoutVerdict, 2);
+        let current = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        assert_eq!(current.rule_version, 2);
+        assert!(current.annotated.is_empty());
+
+        let annotation = supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Fact,
+                "job j-1",
+                None,
+            )
+            .unwrap();
+        assert_eq!(annotation.rule_version, Some(1));
+        // The annotation stays at the version the finding was raised at, not the current
+        // version, which lists none of it.
+        let raised = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, Some(1))
+            .unwrap();
+        assert_eq!(raised.annotated, vec![annotation]);
+        assert!(supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap()
+            .annotated
+            .is_empty());
+        supervision_rules::clear_test_rule_version();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A finding recorded before herdr stored its rule version keeps none, and its annotation
+    /// records none rather than the predicate's current version.
+    #[test]
+    fn an_annotation_of_a_finding_without_a_stored_rule_version_records_none() {
+        let (supervisor, root) = supervisor("annotate-no-version");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut candidate = base;
+        candidate.fingerprint = "fp0".into();
+        candidate.hold = None;
+        let changes = record_with(&supervisor, &[candidate], 1000, HoldEnd::Resolved);
+        let finding = changes.opened[0].clone();
+        // A finding written before the rule version column: its version is NULL.
+        let number = finding_number(&finding.finding_id).unwrap();
+        supervisor
+            .supervision_store()
+            .unwrap()
+            .transaction(|tx| {
+                tx.connection().execute(
+                    "UPDATE supervision_findings SET rule_version = NULL WHERE id = ?1",
+                    [number],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let annotation = supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Fact,
+                "job j-1",
+                None,
+            )
+            .unwrap();
+        assert_eq!(annotation.rule_version, None);
+        // It names no version, so no version's fixtures list it.
+        assert!(supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap()
+            .annotated
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Two annotations of different findings of one predicate and rule version are listed
+    /// oldest first.
+    #[test]
+    fn annotations_of_different_findings_are_listed_oldest_first() {
+        let (supervisor, root) = supervisor("annotate-order");
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut findings = Vec::new();
+        for n in 0..2 {
+            let mut candidate = base.clone();
+            candidate.fingerprint = format!("fp{n}");
+            candidate.hold = None;
+            let changes = record_with(
+                &supervisor,
+                &[candidate],
+                1000 + n as u64,
+                HoldEnd::Resolved,
+            );
+            findings.push(changes.opened[0].clone());
+        }
+        let first = supervisor
+            .supervision_annotate(
+                &findings[0].finding_id,
+                SupervisionMissing::Fact,
+                "job j-1",
+                None,
+            )
+            .unwrap();
+        let second = supervisor
+            .supervision_annotate(
+                &findings[1].finding_id,
+                SupervisionMissing::Rule,
+                "commit 9c1f2ab",
+                None,
+            )
+            .unwrap();
+        let fixtures = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        assert_eq!(
+            fixtures
+                .annotated
+                .iter()
+                .map(|annotation| annotation.finding_id.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                findings[0].finding_id.clone(),
+                findings[1].finding_id.clone()
+            ]
+        );
+        assert_eq!(fixtures.annotated, vec![first, second]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An id that names no finding, a malformed one, an annotation twice and an empty evidence
+    /// handle are refused, each naming what it refused.
+    #[test]
+    fn an_annotation_of_no_finding_or_of_an_annotated_one_is_refused() {
+        let (supervisor, root) = supervisor("annotate-refused");
+        let missing = supervisor
+            .supervision_annotate("f-42", SupervisionMissing::Fact, "job j-1", None)
+            .unwrap_err();
+        assert_eq!(missing.code(), "finding_not_found");
+        assert!(missing.to_string().contains("f-42"), "{missing}");
+        let malformed = supervisor
+            .supervision_annotate("nonsense", SupervisionMissing::Fact, "job j-1", None)
+            .unwrap_err();
+        assert_eq!(malformed.code(), "finding_not_found");
+        assert!(malformed.to_string().contains("nonsense"), "{malformed}");
+
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        record_with(
+            &supervisor,
+            std::slice::from_ref(&base),
+            1000,
+            HoldEnd::Resolved,
+        );
+        let mut fired = base;
+        fired.hold = None;
+        let changes = record_with(&supervisor, &[fired], 1100, HoldEnd::Resolved);
+        let finding = changes.opened[0].clone();
+        assert_eq!(
+            supervisor
+                .supervision_annotate(&finding.finding_id, SupervisionMissing::Rule, "  ", None)
+                .unwrap_err()
+                .code(),
+            "invalid_request"
+        );
+        supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Fact,
+                "job j-1",
+                None,
+            )
+            .unwrap();
+        let again = supervisor
+            .supervision_annotate(
+                &finding.finding_id,
+                SupervisionMissing::Rule,
+                "job j-2",
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(again.code(), "already_annotated");
+        assert!(again.to_string().contains(&finding.finding_id), "{again}");
+        // One annotation, the first: the second is not merged into it.
+        let fixtures = supervisor
+            .supervision_fixtures(SupervisionPredicate::StoppedWithoutVerdict, None)
+            .unwrap();
+        assert_eq!(fixtures.annotated.len(), 1);
+        assert_eq!(fixtures.annotated[0].missing, SupervisionMissing::Fact);
+        assert_eq!(fixtures.annotated[0].evidence, "job j-1");
+        // The request type has no `unknown`; the worker refuses one all the same, never stored.
+        assert_eq!(
+            supervisor
+                .supervision_annotate(
+                    &finding.finding_id,
+                    SupervisionMissing::Unknown,
+                    "job j-3",
+                    None
+                )
+                .unwrap_err()
+                .code(),
+            "invalid_request"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An annotation does not change what raises `predicate_review_due`: it fires at the
+    /// configured retractions and its evidence holds only them, while the digest line for the
+    /// predicate names the annotations it has.
+    #[test]
+    fn an_annotation_changes_no_review_and_the_digest_names_it() {
+        let (supervisor, root) = supervisor("annotate-review");
+        let review = reviewing(3);
+        // Two retractions are under the count, annotated or not.
+        retract_holds(&supervisor, 0..2, 1000, &review);
+        assert!(supervisor.supervision_findings(true).unwrap().is_empty());
+        // A delivered hold of the same predicate gives a finding an annotation can name.
+        let base = evaluate(&stopped_upgrade_facts(&["make app (upgrade test)"])).remove(0);
+        let mut delivered = base;
+        delivered.fingerprint = "fp9".into();
+        delivered.hold.as_mut().unwrap().request_id = "req9".into();
+        record_with(
+            &supervisor,
+            std::slice::from_ref(&delivered),
+            1500,
+            HoldEnd::Resolved,
+        );
+        let mut fired = delivered;
+        fired.hold = None;
+        let changes = record_with(&supervisor, &[fired], 1600, HoldEnd::Resolved);
+        let annotated = changes.opened[0].clone();
+        supervisor
+            .supervision_annotate(
+                &annotated.finding_id,
+                SupervisionMissing::Rule,
+                "job j-9",
+                Some("no rule decides it"),
+            )
+            .unwrap();
+        assert_eq!(supervisor.supervision_findings(true).unwrap().len(), 1);
+        // The third retraction raises the review: one finding, whose evidence is the three
+        // retracted holds and nothing of the annotation.
+        let changes = retract_holds(&supervisor, 2..3, 2000, &review);
+        assert_eq!(changes.opened.len(), 1);
+        let due = changes.opened[0].clone();
+        assert_eq!(due.predicate, SupervisionPredicate::PredicateReviewDue);
+        assert_eq!(
+            due.evidence.event_ids,
+            vec![
+                "retracted hold fp0 (request req0)",
+                "retracted hold fp1 (request req1)",
+                "retracted hold fp2 (request req2)",
+            ]
+        );
+        assert_eq!(
+            due.evidence.facts,
+            vec![
+                "predicate: stopped_without_verdict",
+                "rule_version: 1",
+                "retracted_holds: 3",
+                "review_after_retractions: 3",
+            ]
+        );
+        assert!(
+            !due.summary.contains("annotation") && !due.expected_event.contains("annotation"),
+            "{due:?}"
+        );
+        // The digest line for the predicate names its annotation beside the holds.
+        let digest = supervisor
+            .supervision_store()
+            .unwrap()
+            .read(|conn| predicate_digest(conn, &[&annotated]))
+            .unwrap();
+        assert_eq!(
+            digest,
+            vec![PredicateDigest {
+                predicate: SupervisionPredicate::StoppedWithoutVerdict,
+                open_findings: 0,
+                pending: 0,
+                retracted: 3,
+                delivered: 1,
+                resolved: 0,
+                annotated: 1,
+            }]
+        );
+        let batch = DeliveryBatch {
+            coordinator_id: "c-herdr".into(),
+            pane_id: "w3:p1".into(),
+            items: Vec::new(),
+            digest,
+        };
+        let text = notice_text(&batch);
+        assert!(
+            text.contains(
+                "- stopped_without_verdict: 0 open finding(s); holds: pending 0, retracted 3, \
+                 delivered 1, resolved 0; annotated 1"
+            ),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// R9: the digest to the herdr coordinator counts per predicate, by open findings and by
     /// the holds' states.
     #[test]
@@ -5319,6 +6014,7 @@ mod tests {
                 retracted: 2,
                 delivered: 0,
                 resolved: 0,
+                annotated: 0,
             }]
         );
         let _ = std::fs::remove_dir_all(root);
