@@ -96,22 +96,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   typed vocabulary, the replay-gated fix acceptance with a hold-out set, the
   owner's approval of a code fix, predicate retirement).
 
-- [ ] Concurrent credit workers refuse each other (found by the coordinator [t-alwaqkn5]
-  2026-10-12 while answering the user's "AN spend in red"): the credit
-  proxy admits a request only when no ledger row is pending
-  (src/platform/anthropic_proxy.rs:242, "pending unaccounted request",
-  402), so while one worker's request streams, every other credit
-  request (another repository's worker, a run's review call) is refused
-  and falls back to pi or `claude -p`; the server log shows one such
-  refusal so far. Six coordinators were told on 2026-10-12 to use
-  `--agent pi-anthropic`, which makes this common. Fail-closed accounting
-  is the point (an unsettled row may be an interrupted response), so the
-  fix must keep it: reserve each request's worst-case cost against the cap
-  instead of closing on any pending row, and close only for a pending row
-  whose request has ended unsettled. Touches the money boundary.
-  Decided by the user 2026-10-12 (d-ugtj6hag): yes, a per-request
-  worst-case reservation against the cap.
-
 - [ ] Tag every credit call with its stage (from the user's question [t-x46qpegh]
   2026-10-12 on Managed Agents dynamic workflows; round in [t-ic5rrxn3],
   all three models naming it the first step): the credit ledger records

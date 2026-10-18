@@ -2321,3 +2321,37 @@ refused the brief as secret-shaped, so the round is a single review).
 - Rejected: any timer or sweep deciding a row's state (the owner's liveness is
   the positive fact, checked with pid and start token, the pattern the
   coordination tenure uses), and clearing the abandon state by age.
+
+## Credit requests reserve their worst case instead of refusing each other (t-alwaqkn5, 2026-10-18)
+
+The credit proxy admitted a request only when no ledger row was pending, so
+while one worker's request streamed every other credit request was refused
+(402) and fell back to pi or `claude -p` (the user's decision `d-ugtj6hag`: a
+per-request worst-case reservation against the cap). Landed as run r-thii4vf6
+(attempt 2, commit 49b202a7c), after review round `20261018-191436-9fe7` (sol;
+MiMo and Argon refused the brief as secret-shaped).
+
+- Each request persists its worst-case reservation with its pending row: the
+  validated body's input bound at the standard Sonnet input/cache price plus
+  `max_tokens` at its output price, with the long-context premium — the figure
+  already computed before any upstream byte, now a `reserved` column of the
+  ledger, written in the same `BEGIN IMMEDIATE` transaction that checks
+  admission, so two simultaneous admissions cannot both fill the same gap.
+- Admission refuses only for: an abandoned row (a request that ended without
+  settling — fail-closed, only its owner's release clears it), an in-flight row
+  whose reservation the ledger does not record (a row written before the
+  column, so its worst case is unknown and nothing may run beside it), the cap
+  (settled spend plus in-flight reservations plus this reservation; the cap may
+  be reached exactly, a request that would exceed it is refused), and the kill
+  switch. Settling writes the actual cost and clears the reservation; release
+  clears it; abandonment keeps it recorded but reserves nothing.
+- The accounting and `herdr credits status` report the reserved amount beside
+  the in-flight count, and the footer keeps its classes: live requests show as
+  spend with a "1 in flight" note, an abandoned row or the cap turns it red.
+- Review findings fixed in the second attempt: a legacy in-flight row was
+  counted as zero reserved and could overspend the cap beside a new request,
+  the racing-admission test did not force contention, and the snapshot test
+  could not detect a reservation left out of the accounting.
+- Rejected: falling back to "any pending row closes admission" (that is the
+  refusal the item removes), lowering a reservation while its request runs, and
+  any timeout deciding a reservation's fate.
