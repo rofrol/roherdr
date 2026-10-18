@@ -4019,6 +4019,36 @@ Items agents add. Not approved until the user moves them up.
   leaves the branch as it is (as `--action abort` does) and ends the run
   `aborted`, without needing a pending event.
 
+- [ ] A space's own state counts headless workers, not just panes (the user, [t-5eiu4pqy]
+  2026-10-18: he ran an item in rormpc and "the card's state did not show that
+  anything works in this space"; only the coordinator's `herdr-job` wait tab was
+  visible). Verified: a headless `todo run`/`worker run` has no pane, its worker
+  line sits in the space's list and `todo run` publishes `run r-x · <step>`, but
+  the space's own `agent_status` is computed on the server from the workspace's
+  panes alone (`pane_agent_status(ws.aggregate_state(&terminals))`), so a
+  collapsed spaces list and the space card show nothing working.
+  Consult round `20261018-113913-b8c4` (sol, mimo, argon, all three): fix it in
+  the server-side workspace projection, because a fact shown to every client
+  belongs in server state and the API — a client-side derivation would make the
+  space's state depend on which lines the client filters out, and a CLI or web
+  client reading the space API would treat a space as idle while a headless
+  worker mutates it. Keep `AppState` pure: pass an immutable slice of pure worker
+  facts (space, headless because no pane, `working | waiting`) into the
+  projection beside the terminals, never the runtime worker store; count each
+  actor once by excluding pane-backed workers (a pane already counts). A headless
+  worker waiting on the owner outranks working (a question is a space's most
+  urgent fact); a merely working one shows the same working state, optionally
+  marked headless. The coordinator's `herdr-job` wait tab is wake plumbing: it
+  must not manufacture work in the space's state. Liveness must not lie: a worker
+  whose server died or whose exit was missed must not leave a space working
+  forever — reconcile the registry at the named events (server start, handoff,
+  turn end), never on a timer.
+  Not yet decided, to settle before building: whether the working mark is
+  distinct for headless work or the same with a badge; whether the `run r-x ·
+  <step>` line should carry it instead of a second indicator; and the change's
+  real size (`pane_agent_status`'s signature, the snapshot/API projection and
+  every consumer of a space's state, which are already covered by tests).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
