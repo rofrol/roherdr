@@ -1880,3 +1880,53 @@ behaviour, so nothing had to change.
   configuration value alone.
 - The cap it bypasses is the repository's, per provider (t-t27j6eyk), keyed on
   the repository's git identity (t-i2qzgc22).
+
+## A blocked preflight offers retry, not only abort (t-wevbvnt2, 2026-10-18)
+
+A run refused at preflight (rormpc's r-iigptjsv: 0.4 GiB free against the 15 GiB
+guard) got a `blocked` event whose only action was `abort`. Aborting and
+dispatching the item again lost the run id and the attempt history, although the
+condition was transient (28 GiB free minutes later). The user asked for a fix as
+the next item and for the design to be reviewed with models first (round
+`20261018-045149-d167`, sol, mimo, argon).
+
+- A preflight refusal now carries a typed cause (`TodoPreflightCause`: DiskSpace,
+  BaseMoved, SlotBusy, SlotDirty, Checks, BaseMissing, Prerequisites, with
+  `#[serde(other)] Unknown` for forward compatibility). It rides the blocked event
+  in a new optional `preflight_cause` field of `TodoRunEvent`, so published
+  clients keep parsing older and newer events.
+- `retry` is offered on a blocked event only for `DiskSpace`, `BaseMoved` and
+  `SlotBusy`, and only while the run has attempts left (`attempt < MAX_ATTEMPTS`).
+  Everything else stays abort-only, deliberately including `Prerequisites`, which
+  is where every refusal propagated as a plain string or `WorkerError` lands (an
+  unreadable free-space reading, a failed slot `git status`, operation planning).
+- Every attempt re-observes the whole preflight at its start: `step_start` calls
+  `refresh_preflight`, which re-runs `preflight()` (base, checks file, free disk,
+  folder slot, grants) before admission, so a retry cannot spawn against a stale
+  plan. A new post-gate check blocks a run whose target branch moved while
+  preparation and the usage read ran, with the retryable `BaseMoved`.
+- A preflight retry takes no `--task` (there is no review to append); every other
+  retry still requires one.
+- History: `run_attempt_ended` records the attempt's decision, its error and
+  whether it was a preflight retry; a still-refusing retry emits a new blocked
+  event on the next attempt, and the earlier attempt keeps its verdict and error.
+- Review rounds `20261018-055049-24af` (sol, mimo, argon), then the fixes: a retry
+  advertised on the last attempt ended the run as blocked, the success and
+  exhaustion cases and the `--task` refusal had no tests, and the
+  `Prerequisites` funnel was undocumented. All three were fixed before landing.
+- Kept, not changed: a `SlotBusy` retry can still race the slot's holder (the
+  retry re-observes and refuses again, costing an attempt); once the attempts are
+  used, the blocked event offers only abort; spawning from the recorded base SHA
+  instead of re-checking the ref is a different design.
+- Found by the verify of the second attempt: a retry with no review appended an
+  empty `Review of attempt N:` block to the next attempt's task. `next_task` now
+  passes the task through unchanged when the review is empty, so an agent is
+  never pointed at a review that does not exist; the test pins that.
+- Found by the verify and the round that followed: `step_restart` set
+  `from_attempt` even when the attempt never started a worker, so a retry after a
+  refused preflight told the agent its branch "shows what that attempt did" and
+  named a branch that never existed. It is set only when there is a worker or a
+  commit to carry. The regression test also drove its worker with a task the test
+  stub silently ignored, which hung the turn; it uses a supported command now and
+  asserts the prompt and carry state, so a regression fails fast instead of
+  timing out.
