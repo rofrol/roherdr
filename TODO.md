@@ -4083,7 +4083,14 @@ Items agents add. Not approved until the user moves them up.
   return, a flusher thread that ended early, or a spool write path that lost
   the last record), and make the broker's end observable rather than depend
   on one thread finishing. No timer: the fix is an event the server reads.
-  Manual repair that worked, 2026-10-18 05:35 (the installed 0.9.3 build, no\n  rebuild): `kill -TERM 96453` on the orphaned broker. The live server's reader\n  then got EOF on the broker connection, found no exit in the spool, and\n  recorded `{"type": "exited", "code": null, "error": "the worker's broker ended\n  before the worker's exit"}` (journal seq 224861); w458 turned `exited`, and run\n  r-z4prcxfk got a `review` event (224862, actions approve/retry/abort). So the\n  live server does record the end when the broker goes away: what it cannot do\n  is notice a broker that stays alive with no child.
+  Manual repair that worked, 2026-10-18 05:35 (the installed 0.9.3 build, no
+  rebuild): `kill -TERM 96453` on the orphaned broker. The live server's reader
+  then got EOF on the broker connection, found no exit in the spool, and
+  recorded `{"type": "exited", "code": null, "error": "the worker's broker ended
+  before the worker's exit"}` (journal seq 224861); w458 turned `exited`, and run
+  r-z4prcxfk got a `review` event (224862, actions approve/retry/abort). So the
+  live server does record the end when the broker goes away: what it cannot do
+  is notice a broker that stays alive with no child.
 
 - [ ] `todo abort <run>` ends a run that has no pending event to answer [t-6l2zokpu]
   (report r-105 from todo-rormpc, 2026-10-18, from the same incident): abort
