@@ -1,6 +1,6 @@
 //! Capped API transport for explicit credit-backed pi workers. Existing
 //! subscription workers are never silently switched to paid API access.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection};
 use serde_json::Value;
+
+use crate::workers::CreditStage;
 
 #[cfg(test)]
 const MODEL: &str = "claude-sonnet-5-5";
@@ -32,9 +34,10 @@ const IN_FLIGHT: i64 = 1;
 /// release` clears it, so spending stays closed until then.
 const ABANDONED: i64 = 2;
 /// The ledger schema herdr writes: the pending states above, the owner columns
-/// of a row, and the worst-case reservation an in-flight row holds.
-/// `PRAGMA user_version` tells whether an older ledger was migrated to it.
-const SCHEMA_VERSION: i64 = 2;
+/// of a row, the worst-case reservation an in-flight row holds, and the stage
+/// of the run's work that made the call. `PRAGMA user_version` tells whether an
+/// older ledger was migrated to it.
+const SCHEMA_VERSION: i64 = 3;
 /// How long a ledger connection waits for another connection's lock. SQLite's
 /// own busy handler polls for the lock: a designed backoff for a transient
 /// writer, never a retry of a write that was lost.
@@ -221,7 +224,7 @@ pub(crate) struct AnthropicProxy {
     /// The ledger's path, the key under which this process remembers rows whose
     /// abandonment it could not write.
     ledger_path: PathBuf,
-    grants: HashMap<String, (String, String)>,
+    grants: HashMap<String, (String, String, CreditStage)>,
     killed: bool,
 }
 
@@ -269,15 +272,17 @@ impl AnthropicProxy {
 
     /// One `POST /v1/messages` of `body` made in-process, with no listener:
     /// the proxy's whole request validation, reservation and ledger
-    /// accounting apply, under `run` and `item`. Returns the HTTP status and
-    /// body the proxy answered; an `Err` means it answered nothing.
+    /// accounting apply, under `run`, `item` and the caller's `stage`.
+    /// Returns the HTTP status and body the proxy answered; an `Err` means it
+    /// answered nothing.
     pub(crate) fn message(
         mut self,
         run: &str,
         item: &str,
+        stage: &str,
         body: &str,
     ) -> io::Result<(u16, String)> {
-        let token = self.register(run, item)?;
+        let token = self.register(run, item, stage)?;
         let request = format!(
             "POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
@@ -297,15 +302,24 @@ impl AnthropicProxy {
     }
 
     /// Tokens live only in the owning server and the run's authenticated client.
-    pub(crate) fn register(&mut self, run: &str, item: &str) -> io::Result<String> {
+    ///
+    /// `stage` is the stage of the run's work that makes the call, stated by
+    /// the caller ([`CreditStage`]): the ledger records it with every row, so
+    /// spend can be summed per stage. A stage this build cannot name is refused
+    /// here, before any row exists: only a row an older build wrote reads as
+    /// `unknown`.
+    pub(crate) fn register(&mut self, run: &str, item: &str, stage: &str) -> io::Result<String> {
         if run.is_empty() || item.is_empty() {
             return Err(refused());
         }
+        let stage =
+            CreditStage::from_name(stage).ok_or_else(|| deny(403, "credit stage not named"))?;
         self.admission_gate(0.0)?;
         let mut bytes = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        self.grants.insert(token.clone(), (run.into(), item.into()));
+        self.grants
+            .insert(token.clone(), (run.into(), item.into(), stage));
         Ok(token)
     }
 
@@ -426,7 +440,7 @@ impl AnthropicProxy {
     /// byte is sent. The wait blocks only the proxy thread attempting the
     /// write, which is the accept loop of this run's own listener; another
     /// run's listener thread keeps serving its requests meanwhile.
-    fn reserve(&self, run: &str, item: &str, reserve: f64) -> io::Result<i64> {
+    fn reserve(&self, run: &str, item: &str, stage: CreditStage, reserve: f64) -> io::Result<i64> {
         // A row whose owner could not be recorded would never be provable in
         // flight, so the request is refused rather than written unowned.
         let owner = Owner::this_process().ok_or_else(refused)?;
@@ -437,11 +451,12 @@ impl AnthropicProxy {
             self.available(reserve)?;
             self.ledger
                 .execute(
-                    "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start,reserved) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    "INSERT INTO anthropic_requests(run,item,stage,model,pending,owner_pid,owner_start,reserved) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                     params![
                         run,
                         item,
+                        stage.as_str(),
                         self.model,
                         IN_FLIGHT,
                         owner.pid,
@@ -505,7 +520,7 @@ impl AnthropicProxy {
                 deny(403, "request shape or content not allowlisted")
             }
         })?;
-        let (run, item) = self
+        let (run, item, stage) = self
             .grants
             .get(&request.token)
             .cloned()
@@ -527,7 +542,7 @@ impl AnthropicProxy {
             write!(output, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len())?;
             return output.write_all(&bytes);
         }
-        let id = self.reserve(&run, &item, request.reserve)?;
+        let id = self.reserve(&run, &item, stage, request.reserve)?;
         let mut response = Response {
             output,
             streaming: request.streaming,
@@ -719,8 +734,9 @@ impl LoopbackProxy {
         ledger: std::path::PathBuf,
         run: &str,
         item: &str,
+        stage: &str,
     ) -> io::Result<Self> {
-        Self::start_with(proxy, ledger, run, item, upstream_transport())
+        Self::start_with(proxy, ledger, run, item, stage, upstream_transport())
     }
 
     fn start_with(
@@ -728,9 +744,10 @@ impl LoopbackProxy {
         ledger: std::path::PathBuf,
         run: &str,
         item: &str,
+        stage: &str,
         upstream: fn(&str, &Request, &mut dyn Write) -> io::Result<()>,
     ) -> io::Result<Self> {
-        let token = proxy.register(run, item)?;
+        let token = proxy.register(run, item, stage)?;
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -828,10 +845,13 @@ pub(crate) fn ledger_path(config: &crate::config::WorkersConfig) -> io::Result<s
 /// the reservation column: a row written before it holds no reservation, which
 /// reads as unknown rather than as zero, so admission refuses while such a row
 /// is in flight until it settles or is released — the migration never invents
-/// a reservation it cannot know. Runs once per ledger (`PRAGMA user_version`),
-/// so it never relabels a row a live request wrote. The migration's own
-/// `BEGIN IMMEDIATE` waits at most [`LEDGER_BUSY_TIMEOUT`], and a failure here
-/// refuses the proxy before it serves any request.
+/// a reservation it cannot know. The third added the stage column: a row
+/// written before it was made before the callers stated a stage, so it reads
+/// as `unknown` and is never relabelled, dropped or guessed at. Runs once per
+/// ledger (`PRAGMA user_version`), so it never relabels a row a live request
+/// wrote. The migration's own `BEGIN IMMEDIATE` waits at most
+/// [`LEDGER_BUSY_TIMEOUT`], and a failure here refuses the proxy before it
+/// serves any request.
 fn open_ledger(db: &Connection) -> io::Result<()> {
     db.busy_timeout(LEDGER_BUSY_TIMEOUT)
         .map_err(|_| refused())?;
@@ -839,9 +859,10 @@ fn open_ledger(db: &Connection) -> io::Result<()> {
         "PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS anthropic_requests (
           id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
-          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
-          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
-          owner_pid INTEGER, owner_start INTEGER, reserved REAL);",
+          stage TEXT, model TEXT NOT NULL, input INTEGER, output INTEGER,
+          cache_read INTEGER, cache_write INTEGER, cost REAL,
+          pending INTEGER NOT NULL, owner_pid INTEGER, owner_start INTEGER,
+          reserved REAL);",
     )
     .map_err(|_| refused())?;
     let version: i64 = db
@@ -859,6 +880,7 @@ fn open_ledger(db: &Connection) -> io::Result<()> {
             ("owner_pid", "INTEGER"),
             ("owner_start", "INTEGER"),
             ("reserved", "REAL"),
+            ("stage", "TEXT"),
         ] {
             if !columns.iter().any(|name| name == column) {
                 db.execute_batch(&format!(
@@ -926,17 +948,105 @@ fn reserved_column(db: &Connection) -> io::Result<&'static str> {
     })
 }
 
+/// The stage column's SQL for one ledger, or `NULL` for a ledger written before
+/// it: such a row was made before callers stated a stage, so it reads as
+/// `unknown` and is never dropped or guessed at.
+fn stage_column(db: &Connection) -> io::Result<&'static str> {
+    let columns = table_columns(db)?;
+    Ok(if columns.iter().any(|column| column == "stage") {
+        "stage"
+    } else {
+        "NULL"
+    })
+}
+
+/// One row's share of a ledger total: its settled spend and, while it is still
+/// pending, whether it is in flight or abandoned.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tally {
+    spent_usd: f64,
+    in_flight: usize,
+    abandoned: usize,
+}
+
+impl Tally {
+    fn add(&mut self, entry: &Value) {
+        if let Some(cost) = entry["cost_usd"].as_f64() {
+            self.spent_usd += cost;
+        }
+        match entry["state"].as_str() {
+            Some("in flight") => self.in_flight += 1,
+            Some("abandoned") => self.abandoned += 1,
+            _ => {}
+        }
+    }
+
+    fn json(self, key: &str, name: &str) -> Value {
+        serde_json::json!({key: name, "spent_usd": self.spent_usd,
+            "in_flight": self.in_flight, "abandoned": self.abandoned})
+    }
+}
+
+/// The status's per-item sums, by item name: the settled spend each item's
+/// calls came to, and the pending rows it still has in flight or abandoned.
+fn item_sums(entries: &[Value]) -> Vec<Value> {
+    let mut sums: BTreeMap<&str, Tally> = BTreeMap::new();
+    for entry in entries {
+        if let Some(item) = entry["item"].as_str() {
+            sums.entry(item).or_default().add(entry);
+        }
+    }
+    sums.into_iter()
+        .map(|(item, tally)| tally.json("item", item))
+        .collect()
+}
+
+/// The status's per-stage sums: the four stages a caller states, `unknown` for
+/// the rows an older build wrote, and any stage a newer build wrote (summed
+/// after them, never dropped from the entries).
+fn stage_sums(entries: &[Value]) -> Vec<Value> {
+    let mut sums: BTreeMap<&str, Tally> = BTreeMap::new();
+    for entry in entries {
+        // A row without a stage predates the column: it is summed as
+        // `unknown`, never left out of every total.
+        let stage = entry["stage"].as_str().unwrap_or("unknown");
+        sums.entry(stage).or_default().add(entry);
+    }
+    let mut names: Vec<&str> = CreditStage::ALL
+        .iter()
+        .map(|stage| stage.as_str())
+        .collect();
+    names.push("unknown");
+    for stage in sums.keys().copied().collect::<Vec<_>>() {
+        if !names.contains(&stage) {
+            names.push(stage);
+        }
+    }
+    names
+        .into_iter()
+        .map(|stage| {
+            sums.get(stage)
+                .copied()
+                .unwrap_or_default()
+                .json("stage", stage)
+        })
+        .collect()
+}
+
 /// Owner-only local ledger inspection; never loads the API key. Its `spent_usd`
 /// is the settled spend [`AnthropicProxy::accounting`] reports: a pending row
 /// has no cost until its owner settles or releases it, so a cost left on a
 /// pending row is never added to the total. `reserved_usd` is what the requests
 /// in flight hold back from the cap; `unreserved` counts the requests in flight
 /// whose reservation the ledger does not record, which admission refuses on.
+/// Each entry names its run, item and stage; `by_item` and `by_stage` sum the
+/// same entries per item and per stage.
 pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
     match std::fs::metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(serde_json::json!(
-                {"spent_usd":0.0,"reserved_usd":0.0,"unreserved":0,"pending":0,"in_flight":0,"abandoned":0,"entries":[]}
+                {"spent_usd":0.0,"reserved_usd":0.0,"unreserved":0,"pending":0,"in_flight":0,"abandoned":0,
+                 "entries":[],"by_item":[],"by_stage":stage_sums(&[])}
             ));
         }
         Err(error) => return Err(error),
@@ -948,11 +1058,13 @@ pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
         .map_err(|_| refused())?;
     // A ledger from before the owner or reservation column is inspected as it
     // is; its pending rows have no owner and no reservation, so they read as
-    // abandoned and hold nothing until a proxy migrates it.
+    // abandoned and hold nothing until a proxy migrates it. One from before
+    // the stage column reads its rows as `unknown`.
     let owners = owner_columns(&db)?;
     let reserved = reserved_column(&db)?;
+    let stage = stage_column(&db)?;
     let mut query = db
-        .prepare(&format!("SELECT id,run,item,model,cost,pending,input,{owners},{reserved} FROM anthropic_requests ORDER BY id"))
+        .prepare(&format!("SELECT id,run,item,model,cost,pending,input,{owners},{reserved},{stage} FROM anthropic_requests ORDER BY id"))
         .map_err(|_| refused())?;
     let mut reserved_usd = 0.0;
     let entries = query.query_map([], |row| {
@@ -962,6 +1074,7 @@ pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
         let pid: Option<i64> = row.get(7)?;
         let start: Option<i64> = row.get(8)?;
         let held: Option<f64> = row.get(9)?;
+        let stage: Option<String> = row.get(10)?;
         // A pending row reads "in flight" only while its owner still runs; the
         // owner's release clears either kind.
         let in_flight = pending == IN_FLIGHT
@@ -979,6 +1092,7 @@ pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
         }
         Ok(serde_json::json!({"id":id,"run":row.get::<_,String>(1)?,
             "item":row.get::<_,String>(2)?,"model":row.get::<_,String>(3)?,
+            "stage":stage.filter(|stage| !stage.is_empty()).unwrap_or_else(|| "unknown".to_owned()),
             "cost_usd":if pending == SETTLED {row.get::<_,Option<f64>>(4)?} else {None},
             "reserved_usd":if in_flight {held.map_or(Value::Null, Value::from)} else {Value::Null},
             "state":if in_flight {"in flight"} else if pending != SETTLED {"abandoned"} else if input.is_none() {"released"} else {"accounted"}}))
@@ -1001,10 +1115,13 @@ pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
         .iter()
         .filter(|entry| entry["state"] == "in flight" && entry["reserved_usd"].is_null())
         .count();
+    let by_item = item_sums(&entries);
+    let by_stage = stage_sums(&entries);
     Ok(
         serde_json::json!({"spent_usd":cost,"reserved_usd":reserved_usd,"unreserved":unreserved,
         "pending":in_flight + abandoned,
-        "in_flight":in_flight,"abandoned":abandoned,"entries":entries}),
+        "in_flight":in_flight,"abandoned":abandoned,"entries":entries,
+        "by_item":by_item,"by_stage":by_stage}),
     )
 }
 

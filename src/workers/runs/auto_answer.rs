@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::decision::{self, Prompt, MAX_CALLS};
-use super::{event_of, new_event, pending_questions, Run};
+use super::{event_of, new_event, pending_questions, CreditStage, Run};
 use crate::api::schema::{
     TodoEventKind, TodoRunStatus, TodoStep, WorkerAnswerParams, WorkerDecision, WorkerQuestion,
     WorkerQuestionKind,
@@ -502,7 +502,7 @@ impl WorkerSupervisor {
             while decided.is_none() && errors.len() < MAX_CALLS {
                 let call = errors.len() + 1;
                 let answered = self
-                    .call_model_for(run, &prompt, &text)
+                    .call_model_for(run, CreditStage::Answer, &prompt, &text)
                     .and_then(|(output, model)| Ok((parse_decision(&output, question)?, model)));
                 let note = match &answered {
                     Ok((decision, model)) => json!({

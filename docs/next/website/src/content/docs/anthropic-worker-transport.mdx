@@ -192,9 +192,9 @@ Run `herdr credits status` on the server host as its owner. It reads the local
 configured cycle's ledger without reading the API key and prints USD, the
 reserved USD held by requests in flight, the `unreserved` count of requests in
 flight whose reservation the ledger does not record, the pending count split
-into `in_flight` and `abandoned`, and entries (id, run, item, model, cost, state
-and, for a request in flight, the reservation it holds or `null` when the ledger
-records none). Its USD is settled spend
+into `in_flight` and `abandoned`, and entries (id, run, item, model, stage,
+cost, state and, for a request in flight, the reservation it holds or `null`
+when the ledger records none). Its USD is settled spend
 only, the same figure the usage widget and the run journal call spend: a
 pending row has no cost until its owner settles or releases it, so a cost left
 on a pending row is not added to it and reads as no cost at all. States are
@@ -210,6 +210,21 @@ switch refuses new requests. That last state is fail-closed: a row written
 before the reservation column may still be streaming, so nothing is admitted
 beside it until it settles or the owner releases it. This is a local owner
 command, not an advertised remote client method.
+
+Every row also records the **stage** of the run's work that made the call, and
+the status adds two sums beside the entries: `by_item` (per item) and
+`by_stage` (per stage), each with the settled spend and, while a call is still
+pending, its in-flight and abandoned counts. The four stages are `draft` (the
+server's draft call for a run), `worker` (the pi worker spending through the
+proxy it was started with), `review` (the server's review call, including
+`herdr todo review-eval --credits`) and `answer` (the server's answer to a
+worker's question). The caller that opens the credit proxy states the stage; it
+is never inferred from what the run is doing, and a caller whose stage this
+build cannot name is refused at registration, so a wrong stage fails the call
+instead of being recorded. A row written before the stage column reads as
+`unknown` in its entry and in `by_stage`; it is never dropped or guessed at.
+The stage is a label on spend only: it takes no part in admission, reservation
+or settlement arithmetic.
 
 Before running `herdr credits release <entry>`, stop the affected worker and
 verify through the upstream error or Console that its request consumed no

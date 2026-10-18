@@ -47,8 +47,8 @@ use super::escalations;
 use super::review_diff;
 use super::review_tools::{self, DiffLines, RepoTools};
 use super::{
-    event_of, git, is_gone, new_event, read_checks, Run, APPROVE, DECISIONS_FILE, MAX_ATTEMPTS,
-    NO_DEADLINE, RETRY,
+    event_of, git, is_gone, new_event, read_checks, CreditStage, Run, APPROVE, DECISIONS_FILE,
+    MAX_ATTEMPTS, NO_DEADLINE, RETRY,
 };
 use crate::api::schema::{
     TodoEventKind, TodoRunEvent, TodoRunStatus, TodoStep, WorkerCheckOutcome, WorkerCommandTarget,
@@ -799,8 +799,14 @@ impl WorkerSupervisor {
         let mut recorded_tool_calls = 0;
         while decided.is_none() && errors.len() < MAX_CALLS {
             let call = errors.len() + 1;
-            let called =
-                self.call_model_tools(run, &PROMPT, &text, model.as_deref(), tools.as_mut());
+            let called = self.call_model_tools(
+                run,
+                CreditStage::Review,
+                &PROMPT,
+                &text,
+                model.as_deref(),
+                tools.as_mut(),
+            );
             if let Some(tools) = &tools {
                 for (index, tool_call) in tools.calls.iter().enumerate().skip(recorded_tool_calls) {
                     let mut note = tool_call.to_json();

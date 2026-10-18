@@ -43,7 +43,7 @@ use super::decision::{self, Prompt, MAX_CALLS};
 use super::escalations;
 use super::{
     check_message, check_paths, git, new_event, path_checks_of, read_checks, registered_checks,
-    ChecksFile, Run, RunCheck, CHECKS_FILE, DECISIONS_FILE,
+    ChecksFile, CreditStage, Run, RunCheck, CHECKS_FILE, DECISIONS_FILE,
 };
 use crate::api::schema::{TodoDraft, TodoEventKind, TodoRunStatus, TodoStep};
 use crate::workers::{now_ms, WorkerSupervisor};
@@ -433,7 +433,7 @@ impl WorkerSupervisor {
             }
             let call = errors.len() + 1;
             let answered = self
-                .call_model_for(run, &prompt, &text)
+                .call_model_for(run, CreditStage::Draft, &prompt, &text)
                 .and_then(|(output, model)| Ok((parse_decision(&output, checks)?, model)));
             let note = match &answered {
                 Ok((decision, model)) => json!({

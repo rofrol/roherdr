@@ -344,6 +344,9 @@ impl WorkerSupervisor {
                 ledger,
                 accounting_run,
                 params.item.as_deref().unwrap_or(&worker_id),
+                // The worker's own spend, apart from the server's draft,
+                // review and answer calls for the run.
+                crate::workers::runs::CreditStage::Worker.as_str(),
             )?;
             let agent_dir = temp_dir.join("pi-agent");
             std::fs::create_dir(&agent_dir)?;

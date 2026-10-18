@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::review_tools::{self, RepoTools};
-use super::{lock, CHANGES};
+use super::{lock, CreditStage, CHANGES};
 use crate::api::schema::{TodoEventKind, TodoRunEvent, TodoRunInfo, TodoRunStatus};
 use crate::workers::{now_ms, WorkerSupervisor};
 
@@ -339,18 +339,20 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// The call of one of `run`'s decisions. A run on the API credits
-    /// (`pi-anthropic`) makes it through herdr's credit proxy, its cost in the
-    /// credit ledger under the run; a credit refusal (the proxy, the cap, the
-    /// key) falls back once to `claude -p` and is recorded as a
-    /// `run_credit_call_fallback` event. Other runs call `claude -p` as ever.
+    /// The call of one of `run`'s decisions, booked as `stage`. A run on the
+    /// API credits (`pi-anthropic`) makes it through herdr's credit proxy, its
+    /// cost in the credit ledger under the run and that stage; a credit
+    /// refusal (the proxy, the cap, the key) falls back once to `claude -p`
+    /// and is recorded as a `run_credit_call_fallback` event. Other runs call
+    /// `claude -p` as ever.
     pub(in crate::workers) fn call_model_for(
         &self,
         run: &super::Run,
+        stage: CreditStage,
         prompt: &Prompt<'_>,
         input: &str,
     ) -> Result<(Value, Option<String>), String> {
-        self.call_model_with(run, prompt, input, None)
+        self.call_model_with(run, stage, prompt, input, None)
     }
 
     /// [`Self::call_model_for`] with `model` when given: `claude -p --model`,
@@ -359,11 +361,12 @@ impl WorkerSupervisor {
     pub(in crate::workers) fn call_model_with(
         &self,
         run: &super::Run,
+        stage: CreditStage,
         prompt: &Prompt<'_>,
         input: &str,
         model: Option<&str>,
     ) -> Result<(Value, Option<String>), String> {
-        self.call_model_tools(run, prompt, input, model, None)
+        self.call_model_tools(run, stage, prompt, input, model, None)
     }
 
     /// [`Self::call_model_with`] with the read-only repository `tools` when
@@ -373,6 +376,7 @@ impl WorkerSupervisor {
     pub(in crate::workers) fn call_model_tools(
         &self,
         run: &super::Run,
+        stage: CreditStage,
         prompt: &Prompt<'_>,
         input: &str,
         model: Option<&str>,
@@ -381,7 +385,7 @@ impl WorkerSupervisor {
         if !run.finish.anthropic_credits {
             return self.call_model(prompt, input, model);
         }
-        match self.call_credit(run, prompt, input, model, tools) {
+        match self.call_credit(run, stage, prompt, input, model, tools) {
             Ok(CreditCall::Answered { reply, cost }) => {
                 let note = json!({"type": "run_credit_call", "run_spent_usd": cost});
                 self.write_note(&run.info.run_id, &note)?;
@@ -400,6 +404,7 @@ impl WorkerSupervisor {
     fn call_credit(
         &self,
         run: &super::Run,
+        stage: CreditStage,
         prompt: &Prompt<'_>,
         input: &str,
         model: Option<&str>,
@@ -408,6 +413,7 @@ impl WorkerSupervisor {
         let caller = CreditCaller {
             run_id: &run.info.run_id,
             item: &run.info.item,
+            stage,
             credit_model: run.finish.credit_model.as_deref(),
         };
         credit_call(&caller, prompt, input, model, tools)
@@ -432,12 +438,14 @@ impl WorkerSupervisor {
 }
 
 /// Whom a credit call is booked to in the credit ledger: a run and its item,
-/// and the run's pinned credit model.
+/// the stage of the run's work that made the call, and the run's pinned credit
+/// model.
 // The credit proxy is Unix only: elsewhere a credit call reads none of it.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(in crate::workers) struct CreditCaller<'a> {
     pub(in crate::workers) run_id: &'a str,
     pub(in crate::workers) item: &'a str,
+    pub(in crate::workers) stage: CreditStage,
     pub(in crate::workers) credit_model: Option<&'a str>,
 }
 
@@ -480,7 +488,12 @@ pub(in crate::workers) fn credit_call(
     let send = |body: &Value| -> Result<(Value, f64), String> {
         let proxy = AnthropicProxy::open(&config, &ledger).map_err(|error| error.to_string())?;
         let (status, reply) = proxy
-            .message(caller.run_id, caller.item, &body.to_string())
+            .message(
+                caller.run_id,
+                caller.item,
+                caller.stage.as_str(),
+                &body.to_string(),
+            )
             .map_err(|error| format!("the credit proxy refused the call: {error}"))?;
         if status != 200 {
             return Err(format!(

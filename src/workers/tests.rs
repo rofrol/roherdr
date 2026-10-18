@@ -11811,7 +11811,24 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             }
         }
 
-        /// S7: a `pi-anthropic` run's draft/review calls go through the
+        /// The ledger's newest row: the run, item and stage it was booked
+        /// under.
+        #[cfg(unix)]
+        fn newest_ledger_row(ledger: &std::path::Path) -> (String, String, String) {
+            let db = rusqlite::Connection::open_with_flags(
+                ledger,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            db.query_row(
+                "SELECT run,item,stage FROM anthropic_requests ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+        }
+
+        /// S7: a `pi-anthropic` run's decision calls go through the
         /// credit proxy, not `claude -p`, and land in the credit ledger
         /// under the run, each with an event.
         #[cfg(unix)]
@@ -11825,7 +11842,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             for _ in 0..2 {
                 let (output, model) = fixture
                     .supervisor
-                    .call_model_for(&run, &prompt(), "{}")
+                    .call_model_for(&run, CreditStage::Review, &prompt(), "{}")
                     .unwrap();
                 assert_eq!(output, serde_json::json!({"action": "approve"}));
                 assert_eq!(model.as_deref(), Some("claude-sonnet-5-5"));
@@ -11845,6 +11862,83 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             assert!(run_events(&fixture, &run.info.run_id, "run_credit_call_fallback").is_empty());
         }
 
+        /// The draft step's call site: its calls are booked as `draft`, not
+        /// as whatever the run's other stages spend.
+        #[cfg(unix)]
+        #[test]
+        fn a_credit_run_books_its_draft_calls_as_draft() {
+            use crate::platform::anthropic_proxy::TEST_UPSTREAM;
+            let fixture = reviewed("todo-credit-draft-stage", &[]);
+            let ledger = credit_config(&fixture, 5.0);
+            *TEST_UPSTREAM.lock().unwrap() = Some(fake_api);
+            let run = run_for_calls(&fixture, true);
+            let (output, _) = fixture
+                .supervisor
+                .call_model_for(&run, CreditStage::Draft, &prompt(), "{}")
+                .unwrap();
+            assert_eq!(output, serde_json::json!({"action": "approve"}));
+            assert!(calls(&fixture).is_empty(), "claude -p was called");
+            assert_eq!(
+                newest_ledger_row(&ledger),
+                (
+                    run.info.run_id.clone(),
+                    run.info.item.clone(),
+                    "draft".to_owned()
+                )
+            );
+        }
+
+        /// The answer step's call site: its calls are booked as `answer`.
+        #[cfg(unix)]
+        #[test]
+        fn a_credit_run_books_its_answer_calls_as_answer() {
+            use crate::platform::anthropic_proxy::TEST_UPSTREAM;
+            let fixture = reviewed("todo-credit-answer-stage", &[]);
+            let ledger = credit_config(&fixture, 5.0);
+            *TEST_UPSTREAM.lock().unwrap() = Some(fake_api);
+            let run = run_for_calls(&fixture, true);
+            let (output, _) = fixture
+                .supervisor
+                .call_model_for(&run, CreditStage::Answer, &prompt(), "{}")
+                .unwrap();
+            assert_eq!(output, serde_json::json!({"action": "approve"}));
+            assert!(calls(&fixture).is_empty(), "claude -p was called");
+            assert_eq!(
+                newest_ledger_row(&ledger),
+                (
+                    run.info.run_id.clone(),
+                    run.info.item.clone(),
+                    "answer".to_owned()
+                )
+            );
+        }
+
+        /// The review step's call site: its calls (with the repository
+        /// tools) are booked as `review`.
+        #[cfg(unix)]
+        #[test]
+        fn a_credit_run_books_its_review_calls_as_review() {
+            use crate::platform::anthropic_proxy::TEST_UPSTREAM;
+            let fixture = reviewed("todo-credit-review-stage", &[]);
+            let ledger = credit_config(&fixture, 5.0);
+            *TEST_UPSTREAM.lock().unwrap() = Some(fake_api);
+            let run = run_for_calls(&fixture, true);
+            let (output, _) = fixture
+                .supervisor
+                .call_model_tools(&run, CreditStage::Review, &prompt(), "{}", None, None)
+                .unwrap();
+            assert_eq!(output, serde_json::json!({"action": "approve"}));
+            assert!(calls(&fixture).is_empty(), "claude -p was called");
+            assert_eq!(
+                newest_ledger_row(&ledger),
+                (
+                    run.info.run_id.clone(),
+                    run.info.item.clone(),
+                    "review".to_owned()
+                )
+            );
+        }
+
         /// S6: a credit refusal (here the cap) falls back to `claude -p`
         /// for that call once, recorded as an event.
         #[cfg(unix)]
@@ -11858,7 +11952,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             let run = run_for_calls(&fixture, true);
             let (output, model) = fixture
                 .supervisor
-                .call_model_for(&run, &prompt(), "{}")
+                .call_model_for(&run, CreditStage::Answer, &prompt(), "{}")
                 .unwrap();
             assert_eq!(output["note"], "by claude");
             assert_eq!(model.as_deref(), Some("stub-review-model"));
@@ -11878,7 +11972,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             let run = run_for_calls(&fixture, false);
             let (output, model) = fixture
                 .supervisor
-                .call_model_for(&run, &prompt(), "{}")
+                .call_model_for(&run, CreditStage::Review, &prompt(), "{}")
                 .unwrap();
             assert_eq!(output["action"], "approve");
             assert_eq!(model.as_deref(), Some("stub-review-model"));
@@ -12326,7 +12420,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             let run = fixture.supervisor.load_run(&run.run_id).unwrap();
             fixture
                 .supervisor
-                .call_model_for(&run, &prompt(), "{}")
+                .call_model_for(&run, CreditStage::Review, &prompt(), "{}")
                 .unwrap();
             let argv = calls(&fixture)[1]["argv"].clone();
             assert!(!argv.to_string().contains("--model"), "{argv}");
@@ -12342,14 +12436,20 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             let run = run_for_calls(&fixture, true);
             let (_, model) = fixture
                 .supervisor
-                .call_model_with(&run, &prompt(), "{}", Some("claude-sonnet-4-6"))
+                .call_model_with(
+                    &run,
+                    CreditStage::Review,
+                    &prompt(),
+                    "{}",
+                    Some("claude-sonnet-4-6"),
+                )
                 .unwrap();
             assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
             assert!(calls(&fixture).is_empty());
             // A model the proxy has no tariff for is a refusal: claude -p gets it.
             let (_, model) = fixture
                 .supervisor
-                .call_model_with(&run, &prompt(), "{}", Some("opus"))
+                .call_model_with(&run, CreditStage::Review, &prompt(), "{}", Some("opus"))
                 .unwrap();
             assert_eq!(model.as_deref(), Some("stub-review-model"));
             let argv = calls(&fixture)[0]["argv"].to_string();

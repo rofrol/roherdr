@@ -39,6 +39,7 @@ use super::auto_review::{
 use super::decision::{self, CreditCall, CreditCaller, Prompt, MAX_CALLS};
 use super::git;
 use super::review_tools::RepoTools;
+use super::CreditStage;
 use crate::workers::todo_titles;
 
 /// The golden set's directory in the repository.
@@ -276,6 +277,7 @@ impl Reviewer for CreditReviewer {
         let caller = CreditCaller {
             run_id: booked_to,
             item,
+            stage: CreditStage::Review,
             credit_model: None,
         };
         match decision::credit_call(&caller, prompt, input, model, tools) {

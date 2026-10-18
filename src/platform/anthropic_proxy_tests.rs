@@ -13,9 +13,10 @@ impl OfflineFixture {
             .execute_batch(
                 "CREATE TABLE anthropic_requests (
             id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
-            model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
-            cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
-            owner_pid INTEGER, owner_start INTEGER, reserved REAL);",
+            stage TEXT, model TEXT NOT NULL, input INTEGER, output INTEGER,
+            cache_read INTEGER, cache_write INTEGER, cost REAL,
+            pending INTEGER NOT NULL, owner_pid INTEGER, owner_start INTEGER,
+            reserved REAL);",
             )
             .unwrap();
         Self {
@@ -95,7 +96,7 @@ fn thinking_types_reach_fake_upstream_and_billed_thinking_counts_as_output() {
         serde_json::json!({"type":"between_tools", "budget_tokens":2048}),
     ] {
         let mut f = OfflineFixture::new(200.0);
-        let token = f.proxy.register("thinking", "item").unwrap();
+        let token = f.proxy.register("thinking", "item", "review").unwrap();
         let request = thinking_request(&token, thinking.clone(), 4096);
         let mut output = Vec::new();
         f.proxy
@@ -128,7 +129,7 @@ fn thinking_types_reach_fake_upstream_and_billed_thinking_counts_as_output() {
 #[test]
 fn multi_turn_agent_content_reaches_fake_upstream_unchanged() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("conversation", "item").unwrap();
+    let token = f.proxy.register("conversation", "item", "review").unwrap();
     let messages = serde_json::json!([
         {"role":"user", "content":[{"type":"text", "text":"Inspect the image and read the file"},
             {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"synthetic-image"}}]},
@@ -173,7 +174,10 @@ fn full_size_agent_conversation_reaches_upstream_with_both_http_framings() {
     for chunked in [false, true] {
         for streaming in [false, true] {
             let mut f = OfflineFixture::new(200.0);
-            let token = f.proxy.register("long-conversation", "item").unwrap();
+            let token = f
+                .proxy
+                .register("long-conversation", "item", "review")
+                .unwrap();
             let mut messages =
                 vec![serde_json::json!({"role":"user", "content":"Inspect the project"})];
             for turn in 0..32 {
@@ -332,7 +336,7 @@ fn thinking_output_reservation_denies_budget_beyond_remaining_credit() {
         serde_json::json!({"type":"between_tools", "budget_tokens":2048}),
     ] {
         let mut f = OfflineFixture::new(1.0);
-        let token = f.proxy.register("thinking", "item").unwrap();
+        let token = f.proxy.register("thinking", "item", "review").unwrap();
         f.proxy.ledger.execute(
             "INSERT INTO anthropic_requests(run,item,model,cost,pending) VALUES ('prior','item',?1,0.99,0)",
             [MODEL],
@@ -360,7 +364,7 @@ fn thinking_output_reservation_denies_budget_beyond_remaining_credit() {
 #[test]
 fn absent_thinking_is_not_rewritten_to_disabled() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("thinking", "item").unwrap();
+    let token = f.proxy.register("thinking", "item", "review").unwrap();
     f.proxy
         .serve(
             Fixture::request(&token, false).as_slice(),
@@ -392,7 +396,7 @@ fn thinking_object_shape_is_left_to_the_api() {
         serde_json::json!({"type":"enabled", "budget_tokens":2048, "extra":true}),
     ] {
         let mut f = OfflineFixture::new(200.0);
-        let token = f.proxy.register("thinking", "item").unwrap();
+        let token = f.proxy.register("thinking", "item", "review").unwrap();
         let request = thinking_request(&token, thinking.clone(), 4096);
         f.proxy
             .serve(request.as_slice(), &mut Vec::new(), |_, req, out| {
@@ -456,6 +460,7 @@ fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
         ledger.clone(),
         "todo-run",
         "todo-item",
+        "worker",
         |key, _, out| {
             assert_eq!(key, "sk-ant-fake-offline-key");
             out.write_all(&Fixture::response())
@@ -482,14 +487,14 @@ fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
     assert_eq!(accounting.pending(), 0);
     f.proxy.cap = accounting.spent_usd;
     assert!(f.proxy.available(0.0).is_err());
-    assert!(f.proxy.register("second", "item").is_err());
+    assert!(f.proxy.register("second", "item", "review").is_err());
     drop(listener);
 }
 
 #[test]
 fn selected_model_is_the_only_allowlisted_model_and_tariffs_fail_closed() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("model", "item").unwrap();
+    let token = f.proxy.register("model", "item", "review").unwrap();
     f.proxy.model = "claude-sonnet-4-6".into();
     let old = Fixture::request(&token, false);
     assert!(f
@@ -526,7 +531,7 @@ fn selected_model_is_the_only_allowlisted_model_and_tariffs_fail_closed() {
 #[test]
 fn refusals_are_distinct_and_do_not_echo_secrets_or_upstream_bodies() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("refusals", "item").unwrap();
+    let token = f.proxy.register("refusals", "item", "review").unwrap();
     let good = String::from_utf8(Fixture::request(&token, false)).unwrap();
     for (raw, status, reason) in [
         (
@@ -604,7 +609,10 @@ fn refusals_are_distinct_and_do_not_echo_secrets_or_upstream_bodies() {
 #[test]
 fn invalid_upstream_json_returns_502_before_success_and_preserves_pending_accounting() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("invalid-response", "item").unwrap();
+    let token = f
+        .proxy
+        .register("invalid-response", "item", "review")
+        .unwrap();
     let mut output = Vec::new();
     assert!(f
         .proxy
@@ -630,7 +638,7 @@ fn upstream_stream_limit_errors_keep_status_and_documented_error_text() {
         ("overloaded_error", 502),
     ] {
         let mut f = OfflineFixture::new(200.0);
-        let token = f.proxy.register("stream-error", "item").unwrap();
+        let token = f.proxy.register("stream-error", "item", "review").unwrap();
         let mut output = Vec::new();
         let raw = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":\"secret-upstream-diagnostics\"}}}}\n\n");
         assert!(f
@@ -764,7 +772,7 @@ fn field_diagnostics_never_copy_prompts_or_credentials() {
 #[test]
 fn pi_message_and_count_tokens_routes_preserve_only_allowed_beta_headers() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("pi-shape", "item").unwrap();
+    let token = f.proxy.register("pi-shape", "item", "review").unwrap();
     for path in [
         "/v1/messages?beta=true",
         "/v1/messages/count_tokens",
@@ -818,7 +826,7 @@ fn cycle_requires_explicit_operator_identifier_and_cannot_escape_state_directory
 #[test]
 fn anthropic_proxy_rewrites_auth_and_accounts_run_item_and_cache() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run-a", "item-a").unwrap();
+    let token = f.proxy.register("run-a", "item-a", "review").unwrap();
     let mut output = Vec::new();
     f.proxy
         .serve(
@@ -871,7 +879,7 @@ fn anthropic_proxy_rewrites_auth_and_accounts_run_item_and_cache() {
 #[test]
 fn anthropic_proxy_streams_fragments_and_uses_final_usage() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("stream", "item").unwrap();
+    let token = f.proxy.register("stream", "item", "review").unwrap();
     let sse = format!("event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{MODEL}\",\"usage\":{{\"input_tokens\":12,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":30}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n");
     let mut output = Vec::new();
     f.proxy
@@ -899,7 +907,7 @@ fn anthropic_proxy_streams_fragments_and_uses_final_usage() {
 #[test]
 fn anthropic_proxy_refuses_routes_models_auth_and_paid_server_tools() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("r", "i").unwrap();
+    let token = f.proxy.register("r", "i", "review").unwrap();
     let good = String::from_utf8(Fixture::request(&token, false)).unwrap();
     for bad in [
         good.replace("POST /v1/messages", "CONNECT api.anthropic.com:443"),
@@ -932,9 +940,9 @@ fn anthropic_proxy_refuses_routes_models_auth_and_paid_server_tools() {
 #[test]
 fn anthropic_proxy_cap_kill_and_uncertain_usage_fail_closed_durably() {
     let mut f = Fixture::new(0.0);
-    assert!(f.proxy.register("r", "i").is_err());
+    assert!(f.proxy.register("r", "i", "review").is_err());
     f.proxy.cap = 200.0;
-    let token = f.proxy.register("r", "i").unwrap();
+    let token = f.proxy.register("r", "i", "review").unwrap();
     f.proxy.cap = 0.0001;
     assert!(f
         .proxy
@@ -953,23 +961,26 @@ fn anthropic_proxy_cap_kill_and_uncertain_usage_fail_closed_durably() {
             |_, _, out| out.write_all(b"{\"error\":true}")
         )
         .is_err());
-    assert!(f.proxy.register("new", "item").is_err());
+    assert!(f.proxy.register("new", "item", "review").is_err());
     let config = crate::config::WorkersConfig {
         anthropic_api_key_file: f.dir.join("key").display().to_string(),
         ..Default::default()
     };
     let mut reopened = AnthropicProxy::open(&config, &f.dir.join("ledger.sqlite")).unwrap();
-    assert!(reopened.register("new", "item").is_err());
+    assert!(reopened.register("new", "item", "review").is_err());
     let mut other = Fixture::new(200.0);
     other.proxy.kill();
-    assert!(other.proxy.register("r", "i").is_err());
+    assert!(other.proxy.register("r", "i", "review").is_err());
 }
 
 #[test]
 fn anthropic_proxy_unavailable_counter_and_incomplete_stream_refuse_more_spend() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
-    let other = f.proxy.register("other-run", "other-item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
+    let other = f
+        .proxy
+        .register("other-run", "other-item", "review")
+        .unwrap();
     assert_ne!(token, other);
     f.proxy
         .ledger
@@ -984,7 +995,10 @@ fn anthropic_proxy_unavailable_counter_and_incomplete_stream_refuse_more_spend()
         )
         .is_err());
     let mut streaming = Fixture::new(200.0);
-    let token = streaming.proxy.register("stream", "item").unwrap();
+    let token = streaming
+        .proxy
+        .register("stream", "item", "review")
+        .unwrap();
     assert!(streaming
         .proxy
         .serve(
@@ -993,7 +1007,7 @@ fn anthropic_proxy_unavailable_counter_and_incomplete_stream_refuse_more_spend()
             |_, _, out| out.write_all(b"event: ping\ndata: {\"type\":\"ping\"}\n\n")
         )
         .is_err());
-    assert!(streaming.proxy.register("next", "item").is_err());
+    assert!(streaming.proxy.register("next", "item", "review").is_err());
     // A stream that ends without settling is marked abandoned, not left looking
     // like a request that is still in flight.
     let pending: i64 = streaming
@@ -1009,7 +1023,7 @@ fn anthropic_proxy_unavailable_counter_and_incomplete_stream_refuse_more_spend()
 #[test]
 fn anthropic_proxy_completed_spend_survives_restart_and_shared_keys_are_refused() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("r", "i").unwrap();
+    let token = f.proxy.register("r", "i", "review").unwrap();
     f.proxy
         .serve(
             Fixture::request(&token, false).as_slice(),
@@ -1023,7 +1037,7 @@ fn anthropic_proxy_completed_spend_survives_restart_and_shared_keys_are_refused(
         ..Default::default()
     };
     let mut reopened = AnthropicProxy::open(&config, &f.dir.join("ledger.sqlite")).unwrap();
-    assert!(reopened.register("r2", "i").is_err());
+    assert!(reopened.register("r2", "i", "review").is_err());
     assert_eq!(
         crate::config::WorkersConfig::default().anthropic_api_cap_usd,
         200.0
@@ -1085,7 +1099,13 @@ fn installed_pi_anthropic_messages_request_shape_offline() {
     };
     let ledger = f.dir.join("capture.sqlite");
     let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
-    let listener = LoopbackProxy::start_with(proxy, ledger, "capture", "item", |_, req, out| {
+    let listener = LoopbackProxy::start_with(
+        proxy,
+        ledger,
+        "capture",
+        "item",
+        "review",
+        |_, req, out| {
         // Prints only the selected route and protocol feature headers, not
         // credentials, prompts, tool schemas or other request body contents.
         eprintln!("pi anthropic-messages: POST {} anthropic-beta={:?}", req.path, req.beta);
@@ -1232,7 +1252,7 @@ fn installed_pi_anthropic_messages_request_shape_offline() {
 fn anthropic_proxy_real_socket_permissions_and_offline_http() {
     // This transport smoke test needs sockets; the other tests need none.
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("socket-run", "item").unwrap();
+    let token = f.proxy.register("socket-run", "item", "review").unwrap();
     let path = f.dir.join("socket");
     let listener = bind_socket(&path).expect("run socket test outside a socket-denying sandbox");
     assert_eq!(
@@ -1262,7 +1282,7 @@ fn documented_http_rejections_release_reservations_and_expose_only_error_fields(
     for status in [400, 401, 402, 403, 404, 429, 500, 502, 529] {
         for streaming in [false, true] {
             let mut f = OfflineFixture::new(200.0);
-            let token = f.proxy.register("fake-run", "item").unwrap();
+            let token = f.proxy.register("fake-run", "item", "review").unwrap();
             let raw_request = String::from_utf8(Fixture::request(&token, streaming))
                 .unwrap()
                 .replace("/v1/messages HTTP", "/v1/messages?beta=true HTTP")
@@ -1320,7 +1340,7 @@ fn documented_http_rejections_release_reservations_and_expose_only_error_fields(
 #[test]
 fn uncertain_transport_keeps_latch_until_owner_releases_the_entry() {
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     assert!(f
         .proxy
         .serve(
@@ -1362,7 +1382,7 @@ fn uncertain_transport_keeps_latch_until_owner_releases_the_entry() {
 #[test]
 fn offline_transport_loss_stays_closed_and_owner_release_is_selective() {
     let mut f = OfflineFixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     assert!(f
         .proxy
         .serve(
@@ -1390,7 +1410,7 @@ fn offline_transport_loss_stays_closed_and_owner_release_is_selective() {
 fn http_rejection_without_valid_error_json_still_releases_reservation() {
     for body in [String::new(), "not JSON".into(), "x".repeat(65537)] {
         let mut f = OfflineFixture::new(200.0);
-        let token = f.proxy.register("run", "item").unwrap();
+        let token = f.proxy.register("run", "item", "review").unwrap();
         let raw = format!("HTTP/1.1 503 Error\r\n\r\n{body}");
         let mut output = Vec::new();
         assert!(f
@@ -1477,8 +1497,8 @@ fn insert_pending(f: &Fixture, owner: (Option<i64>, Option<i64>), reserved: f64)
     f.proxy
         .ledger
         .execute(
-            "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start,reserved) \
-             VALUES ('other','item',?1,?2,?3,?4,?5)",
+            "INSERT INTO anthropic_requests(run,item,stage,model,pending,owner_pid,owner_start,reserved) \
+             VALUES ('other','item','review',?1,?2,?3,?4,?5)",
             params![MODEL, IN_FLIGHT, owner.0, owner.1, reserved],
         )
         .unwrap();
@@ -1490,8 +1510,8 @@ fn insert_pending_unreserved(f: &Fixture, owner: (Option<i64>, Option<i64>)) {
     f.proxy
         .ledger
         .execute(
-            "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start) \
-             VALUES ('other','item',?1,?2,?3,?4)",
+            "INSERT INTO anthropic_requests(run,item,stage,model,pending,owner_pid,owner_start) \
+             VALUES ('other','item','review',?1,?2,?3,?4)",
             params![MODEL, IN_FLIGHT, owner.0, owner.1],
         )
         .unwrap();
@@ -1516,7 +1536,7 @@ fn refusal(error: &io::Error) -> Option<(u16, &'static str)> {
 fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
     let mut f = Fixture::new(200.0);
     let ledger = f.dir.join("ledger.sqlite");
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     let sse = settled_stream();
     let mut streaming = None;
     f.proxy
@@ -1758,7 +1778,7 @@ fn a_crashed_row_keeps_reserving_until_its_owner_is_gone_then_closes_admission()
 fn settling_or_releasing_a_row_frees_its_reservation() {
     let mut f = Fixture::new(200.0);
     let ledger = f.dir.join("ledger.sqlite");
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     let mut during = None;
     f.proxy
         .serve(
@@ -1831,7 +1851,7 @@ fn two_admissions_racing_for_the_last_reservation_gap_admit_exactly_one() {
                 let barrier = &barrier;
                 scope.spawn(move || {
                     barrier.wait();
-                    proxy.reserve("run", "item", 6.0)
+                    proxy.reserve("run", "item", CreditStage::Review, 6.0)
                 })
             });
             handles
@@ -1881,7 +1901,7 @@ fn two_admissions_racing_for_the_last_reservation_gap_admit_exactly_one() {
 fn an_admission_refusal_body_names_the_reason() {
     // The cap: a request whose worst-case reservation crosses it.
     let mut f = Fixture::new(0.001);
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     let mut output = Vec::new();
     assert!(f
         .proxy
@@ -1900,7 +1920,7 @@ fn an_admission_refusal_body_names_the_reason() {
 
     // An abandoned row.
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     insert_pending(&f, (Some(0), Some(0)), 1.0);
     let mut output = Vec::new();
     assert!(f
@@ -1920,7 +1940,7 @@ fn an_admission_refusal_body_names_the_reason() {
 
     // A request in flight whose worst case the ledger does not record.
     let mut f = Fixture::new(200.0);
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     insert_pending_unreserved(&f, this_owner());
     let mut output = Vec::new();
     assert!(f
@@ -2198,7 +2218,7 @@ fn a_row_whose_reservation_the_ledger_does_not_record_admits_nothing_until_it_se
     assert_eq!(credit_status(&ledger).unwrap()["unreserved"], 0);
     // A request written after the migration still records its own reservation
     // and clears it on settlement.
-    let token = proxy.register("run", "item").unwrap();
+    let token = proxy.register("run", "item", "review").unwrap();
     let mut during = None;
     proxy
         .serve(
@@ -2265,7 +2285,7 @@ fn an_abandonment_the_ledger_cannot_record_is_kept_closed_in_memory() {
              BEGIN SELECT RAISE(ABORT,'ledger refuses the write'); END;",
         )
         .unwrap();
-    let token = f.proxy.register("run", "item").unwrap();
+    let token = f.proxy.register("run", "item", "review").unwrap();
     assert!(f
         .proxy
         .serve(
@@ -2369,4 +2389,248 @@ fn one_snapshot_counts_a_request_that_settles_between_the_reads() {
             abandoned: 0,
         }
     );
+}
+
+/// The stage column's newest value in one ledger, as its row recorded it.
+fn newest_stage(path: &Path) -> Option<String> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    db.query_row(
+        "SELECT stage FROM anthropic_requests ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn registration_refuses_a_stage_this_build_cannot_name() {
+    let mut f = OfflineFixture::new(200.0);
+    // A caller that cannot name its stage is a coding error, refused before
+    // any grant or row exists: `unknown` would look like an older build's row.
+    for stage in ["", "escalation", "Draft", " review"] {
+        let error = f.proxy.register("run", "item", stage).unwrap_err();
+        assert_eq!(
+            refusal(&error),
+            Some((403, "credit stage not named")),
+            "{stage:?}"
+        );
+    }
+    assert!(f.proxy.grants.is_empty());
+    assert!(f.proxy.register("run", "item", "review").is_ok());
+}
+
+#[test]
+fn every_stage_a_caller_states_is_recorded_with_its_row() {
+    let mut f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    for stage in CreditStage::ALL {
+        let token = f.proxy.register("run", "item", stage.as_str()).unwrap();
+        f.proxy
+            .serve(
+                Fixture::request(&token, false).as_slice(),
+                &mut Vec::new(),
+                |_, _, out| out.write_all(&Fixture::response()),
+            )
+            .unwrap();
+        assert_eq!(newest_stage(&ledger).as_deref(), Some(stage.as_str()));
+    }
+    let stages: Vec<String> = credit_status(&ledger).unwrap()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["stage"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        stages,
+        ["draft", "worker", "review", "answer"].map(str::to_owned)
+    );
+}
+
+#[test]
+fn a_ledger_from_before_the_stage_column_reads_unknown_and_migrates_once() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("pre-stage.sqlite");
+    let db = Connection::open(&ledger).unwrap();
+    // The schema before the stage column: owners and reservations, no stage.
+    db.execute_batch(
+        "CREATE TABLE anthropic_requests (
+          id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
+          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
+          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
+          owner_pid INTEGER, owner_start INTEGER, reserved REAL);
+         PRAGMA user_version = 2;",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO anthropic_requests(run,item,model,input,cost,pending) \
+         VALUES ('prior','item',?1,1,0.25,?2)",
+        params![MODEL, SETTLED],
+    )
+    .unwrap();
+    drop(db);
+    // Before the migration the row is read as it is: its settled spend counts,
+    // and the stage it never recorded reads as unknown, never as a guess.
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["stage"], "unknown");
+    assert_eq!(status["by_stage"][4]["stage"], "unknown");
+    assert_eq!(status["by_stage"][4]["spent_usd"].as_f64(), Some(0.25));
+    let config = crate::config::WorkersConfig {
+        anthropic_api_key_file: f.dir.join("key").display().to_string(),
+        anthropic_api_cap_usd: 200.0,
+        ..Default::default()
+    };
+    let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
+    let version: i64 = proxy
+        .ledger
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    // A row written now carries the stage its caller stated.
+    proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,stage,model,input,cost,pending) \
+             VALUES ('now','item','review',?1,1,0.5,?2)",
+            params![MODEL, SETTLED],
+        )
+        .unwrap();
+    drop(proxy);
+    // A second open does not migrate again: the old row keeps reading as
+    // unknown and the new one keeps its stage.
+    let reopened = AnthropicProxy::open(&config, &ledger).unwrap();
+    let version: i64 = reopened
+        .ledger
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    let rows: Vec<Option<String>> = reopened
+        .ledger
+        .prepare("SELECT stage FROM anthropic_requests ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, [None, Some("review".to_owned())]);
+    drop(reopened);
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["stage"], "unknown");
+    assert_eq!(status["entries"][1]["stage"], "review");
+    assert_eq!(status["spent_usd"].as_f64(), Some(0.75));
+}
+
+#[test]
+fn credit_status_sums_spend_per_item_and_stage() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let insert = |run: &str,
+                  item: &str,
+                  stage: Option<&str>,
+                  cost: Option<f64>,
+                  pending: i64,
+                  input: Option<i64>,
+                  owner: (Option<i64>, Option<i64>),
+                  reserved: Option<f64>| {
+        f.proxy
+            .ledger
+            .execute(
+                "INSERT INTO anthropic_requests(run,item,stage,model,input,cost,pending,\
+                 owner_pid,owner_start,reserved) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![run, item, stage, MODEL, input, cost, pending, owner.0, owner.1, reserved],
+            )
+            .unwrap();
+    };
+    // Settled draft and review calls of one item, a settled row an older build
+    // wrote (no stage) for another, an answer call still streaming from this
+    // process and a review row whose stream ended without settling.
+    insert(
+        "run-1",
+        "item-a",
+        Some("draft"),
+        Some(1.5),
+        SETTLED,
+        Some(10),
+        (None, None),
+        None,
+    );
+    insert(
+        "run-1",
+        "item-a",
+        Some("review"),
+        Some(0.5),
+        SETTLED,
+        Some(10),
+        (None, None),
+        None,
+    );
+    insert(
+        "run-1",
+        "item-b",
+        None,
+        Some(0.25),
+        SETTLED,
+        Some(10),
+        (None, None),
+        None,
+    );
+    insert(
+        "run-2",
+        "item-b",
+        Some("answer"),
+        None,
+        IN_FLIGHT,
+        None,
+        this_owner(),
+        Some(0.4),
+    );
+    insert(
+        "run-2",
+        "item-b",
+        Some("review"),
+        None,
+        ABANDONED,
+        None,
+        this_owner(),
+        Some(0.4),
+    );
+
+    let status = credit_status(&ledger).unwrap();
+    let sums = |key: &str, name: &str| -> Vec<(String, f64, usize, usize)> {
+        status[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|sum| {
+                (
+                    sum[name].as_str().unwrap().to_owned(),
+                    sum["spent_usd"].as_f64().unwrap(),
+                    sum["in_flight"].as_u64().unwrap() as usize,
+                    sum["abandoned"].as_u64().unwrap() as usize,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        sums("by_item", "item"),
+        [
+            ("item-a".to_owned(), 2.0, 0, 0),
+            ("item-b".to_owned(), 0.25, 1, 1)
+        ]
+    );
+    assert_eq!(
+        sums("by_stage", "stage"),
+        [
+            ("draft".to_owned(), 1.5, 0, 0),
+            ("worker".to_owned(), 0.0, 0, 0),
+            ("review".to_owned(), 0.5, 0, 1),
+            ("answer".to_owned(), 0.0, 1, 0),
+            ("unknown".to_owned(), 0.25, 0, 0),
+        ]
+    );
+    // The totals the earlier change prints stay the same figures.
+    assert_eq!(status["spent_usd"].as_f64(), Some(2.25));
+    assert_eq!(status["pending"], 2);
+    assert_eq!(status["in_flight"], 1);
+    assert_eq!(status["abandoned"], 1);
+    assert_eq!(status["entries"][2]["stage"], "unknown");
 }

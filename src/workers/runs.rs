@@ -108,6 +108,52 @@ const NO_DEADLINE: Duration = Duration::MAX;
 const TODO_FILE: &str = "TODO.md";
 const DECISIONS_FILE: &str = "DECISIONS.md";
 
+/// The stage of a run's work that made a credit call. The caller that opens
+/// the credit proxy for a call states it, and the ledger records it with the
+/// row, so spend can be measured per stage (the queue-mode A/B, a review
+/// fan-out) instead of being inferred from what the run was doing. A row an
+/// older build wrote carries no stage and reads as `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// A credit call is Unix only: elsewhere no stage is ever constructed or read.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) enum CreditStage {
+    /// The server drafts the run's task, subject, paths and checks.
+    Draft,
+    /// The run's worker spends through the proxy it was started with.
+    Worker,
+    /// The server reviews the run's evidence (or `todo review-eval` replays
+    /// a review through the same call).
+    Review,
+    /// The server answers a question its worker asked.
+    Answer,
+}
+
+// A credit call is Unix only: elsewhere the names are never read.
+#[cfg_attr(not(unix), allow(dead_code))]
+impl CreditStage {
+    /// Every stage the ledger writes, in the order `herdr credits status`
+    /// sums them. `unknown` is not one of them: it is what a row written
+    /// before the stage column reads as.
+    pub(crate) const ALL: [Self; 4] = [Self::Draft, Self::Worker, Self::Review, Self::Answer];
+
+    /// The name the ledger stores for this stage.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Worker => "worker",
+            Self::Review => "review",
+            Self::Answer => "answer",
+        }
+    }
+
+    /// The stage `name` denotes, or `None` for one this build cannot name: a
+    /// call whose stage its caller cannot state is refused at registration
+    /// rather than recorded as `unknown`.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|stage| stage.as_str() == name)
+    }
+}
+
 /// A run as the store holds it: what `todo.status` shows, and what it does
 /// not (the checks' argv, the owner).
 #[derive(Debug, Clone, PartialEq)]
