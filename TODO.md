@@ -3647,6 +3647,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   visible work, `--notify always|failure` when an alert is wanted, and a report
   of the job id and tab title before blocking on `herdr-job wait`.
 
+- [ ] A `just linux-lint` recipe compiles the Linux code, registered as a [t-eiwlivhf]
+  check the verify can add (follow-up of t-bbwge2bc, whose worker could not touch
+  `justfile`): `docs/next/linux-compile-check.md` records the exact command
+  (`cargo zigbuild --locked --all-targets --target aarch64-unknown-linux-gnu.2.34`,
+  which needs zig and cargo-zigbuild) and why CI's `check (ubuntu-latest)` does
+  compile Linux code while a macOS checkout never does. Add the recipe to the
+  `justfile` as its own target (never to `check:`, so a machine without zig and
+  cargo-zigbuild keeps a working default check) with a clear error when the tool
+  is missing, register it in `.herdr/checks.toml` as `linux-lint`, and add it to
+  the path checks in `src/workers/runs.rs` beside `windows-lint` so a change under
+  `src/` is verified for Linux too — the `just_check_runs_only_recipes_the_verify_adds_by_path`
+  test compares the path checks with `just check`'s leaves and must stay green.
+  Check the recipe once on this machine (accepting the toolchain it needs) and
+  record the measured time; the macOS `libsystem_override.sh` `mktemp` note in
+  AGENTS.md applies to `zigbuild` here as well if it bites.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
