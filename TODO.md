@@ -11,32 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Plan the retirement of herdr's TODO driver (the user, 2026-10-16, [t-54d2offk]
-  d-ytigfuq7: "also retire herdr's TODO driver: its queues move to this
-  supervisor"): `todo run`, queue mode and `todo next --continue` give way
-  to agentic-workflow-bend-claude's supervisor, one repository at a time,
-  with no window where both drive a repository; the supervisor runs its
-  agents through `herdr worker run`. First a decision record with its own
-  consult round, before any code; starts only after the supervisor runs
-  real repositories through `herdr worker run`.
-  Decided with the models 2026-10-16 (round `20261016-122723-d650`): the
-  decision record comes forward now, while the workers build t-kxejzkf7
-  and t-xhaho72w (docs only, no double-driver window; sol, MiMo, Wonder);
-  the retirement itself stays behind the conditions below. The record
-  inventories the driver's contract (usage gate, one folder slot, verify,
-  cherry-pick, install, push, handoff) as the supervisor's acceptance
-  tests (Wonder). Before herdr itself moves: t-xhaho72w landed with a
-  token-mismatched `worker run` and a stale holder's landing refused; the
-  supervisor drove at least two real repositories end to end, including a
-  holder killed mid-run with a takeover and no second driver, and a
-  handoff whose notification was lost recovered from durable state (MiMo,
-  DeepSeek); herdr's TODO dispatch stopped and its active worker accounted
-  for, then ownership moved atomically. The supervisor's first repository
-  is a small leaf repository with a cheap verify and a trivial revert, not
-  herdr and not the supervisor itself (MiMo, DeepSeek, Wonder; sol and
-  Argon preferred the supervisor's own repository); its coordinator
-  chooses which. Herdr moves last.
-
 - [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
   user's question 2026-10-12, "loss of memory between items and shallower
   review: how do others counter it?"; round 20261012-155246-e730, see

@@ -2176,3 +2176,117 @@ rounds `20261018-155145-677a` (design; sol, MiMo, Argon) and
   existing `todo-*` agent (the tenure is the identity), and returning at once
   from a blocked start without delivering the prompt (the wait reports where
   the user answers and then sends it once).
+
+## The TODO driver retires repository by repository; a Bend supervisor takes over (t-54d2offk, 2026-10-18)
+
+The user's decision `d-ytigfuq7` and this item: `herdr todo run` and its queue
+leave herdr one repository at a time, with no window in which two drivers own
+a repository, while a deterministic supervisor
+(`agentic-workflow-bend-claude`, Bend with proven laws and records in
+PostgreSQL) takes the queue. Written with rounds `20261016-122723-d650` and
+`20261018-165751-a6e2` (sol, MiMo, Argon).
+
+The driver is orchestration around primitives; the primitives stay and lose
+only the caller:
+
+- the server's usage gate, reached through `herdr worker run` (gated, blocking,
+  one turn, sandboxed to the worktree, refused for a provider it cannot read);
+- the coordination tenure and its token, the only fencing token that both a
+  driver and an orchestrator must present;
+- the verify, extracted as `herdr worker verify` from `todo run`'s step
+  (exactly one commit with the approved message, only the approved paths, a
+  clean tree, no process left, generated files regenerating to the committed
+  bytes, and the checks from `.herdr/checks.toml` as argv, with `tests` and
+  `windows-lint` added for a Rust diff) — a Rust primitive the supervisor
+  calls rather than reimplements;
+- the install (`just clean-install`, under its lock and its build identity),
+  and the fast-forward push as a separate, approved step;
+- `herdr todo edit` (`scripts/todo_edit.py`), which the close needs;
+- `herdr coordinator open`, because a human-watched interactive coordinator
+  tab is not the supervisor's job.
+
+The supervisor owns admission, worktrees and branches, the check, the merge
+into an integration branch, its records, packets, budget and the
+cancel/reset/retry/approve/reject wall.
+
+Before any repository moves, each of these is a demonstration, not a promise;
+the first two are the user's precondition:
+
+1. A worker's holder killed mid-run: a takeover with no second worker and no
+   second driver, and a worker the records say runs whose process is gone is
+   resolved instead of re-admitted.
+2. A lost handoff notification recovered from durable state at the next
+   reconcile event (server start, handoff, turn end), never by a sweep or a
+   timer.
+3. Exactly one admission per item and one commit with the approved message and
+   paths per submission; a second admission is a failure that stops the run.
+4. The verify's checks, all of `.herdr/checks.toml`, pass on the exact merged
+   tree — never on the worker's branch alone, and with `n > 1` never on a
+   stale base (the check-and-advance step is serialized).
+5. The free-disk floor holds with the supervisor's worktrees: `n` cold Rust
+   `target/` directories, or a shared target the record names, are measured
+   before `n > 1` is used in a Rust repository.
+6. The base commit is checked, and the merged worktree and branch are deleted,
+   as the driver does.
+7. A blocked worker or a worker question is either answered by an explicit
+   coordinator step or ends the task `blocked`; nothing waits silently.
+8. The usage gate refuses a high or unknown provider, and `--ignore-usage`
+   only on the user's word.
+9. The tenure is held continuously while the supervisor owns a repository, so
+   a stray `herdr todo run` is refused by the tenure check, and it is released
+   exactly when ownership ends.
+10. A close renders `TODO.md` and `DECISIONS.md` from the record; a push is
+    fast-forward only and carries the close in the same approved step.
+11. The review the approval rests on is the driver's today: the deterministic
+    context pack, the 200 KB input limit as an explicit refusal (never silent
+    truncation) and the golden set replayed blind. The user decided
+    (`d-elct27i5`) the context pack comes before any queue-mode trial, and the
+    supervisor's own chaining is that trial.
+
+PostgreSQL is the operational source of truth while the supervisor owns a
+repository (`TODO.md` is generated from it), and a `herdr todo import` reads
+`TODO.md`'s "Next, in order" once at a recorded git SHA when ownership moves,
+so the two never sync both ways. Proposed items stay unapproved, and a close
+proposes the next item without admitting it. A second list edited by hand
+during the supervisor's ownership is the split-brain trap the round named.
+
+The handover keeps the tenure as its fence. Forward, all of it under the old
+holder's tenure except the last step:
+stop queue mode; drain the active run and confirm no worker process and no
+held run lock; commit the pending `TODO.md` edits and record the integration
+checkout's `HEAD` as the import cursor; then the tenure moves atomically (the
+supervisor claims it, or `coordinator handoff` gives it to the supervisor), and
+only under the new tenure does the supervisor admit the first task. Rollback is
+the same in reverse, and the supervisor's records keep the task states it
+stopped with. A repository has one owner at every instant; a refused claim is
+reported, never retried.
+
+Forbidden, because each destroys something:
+
+- advancing the integration branch on a tree the check did not see (parallel
+  merges included);
+- executing a worker's code through `SUPERVISOR_CHECK` before the path
+  verification has refused a diff that touches check definitions, build
+  scripts or `.herdr/`, and with the operator's secrets and the tenure token
+  in that environment;
+- an install while any task is active, or from a tree that is not the checked
+  commit;
+- a push that is not fast-forward, or one that carries a commit without its
+  close;
+- reusing a worktree or a branch name for a retry or a takeover before the
+  prior run's processes are reaped;
+- automatic approval of the next item (`--auto-review`) before a new decision
+  with evidence.
+
+The supervisor's first repository is a small leaf repository with a cheap
+check and a trivial revert (its own decision makes it rormpc); the supervisor's
+own repository follows; herdr moves last, with the two chaos tests above
+demonstrated. For a moved repository, `herdr todo run` refuses to start and
+names the supervisor; one release after the last repository moves, `todo run`,
+queue mode and `todo next` are removed with this record. The retire steps
+themselves become items when the pilot lands, each approved by the user.
+
+Reject and roll back the pilot on: a second worker for a task; a tenure still held after the run; an unresolved
+worker at the end; a ref moving outside the integration branch; the check
+failing on the merged commit; zero or two admissions for an item; a cost over
+the budget; and any step that cannot say what it did from its records.
