@@ -34,6 +34,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   stays open is only the key: the admission stores the recorded path, not the
   repository's git identity.
 
+- [ ] A preflight refusal is retryable, not only abortable (the user, [t-wevbvnt2]
+  2026-10-18, relayed by todo-rormpc: "at the same disk threshold herdr
+  offers only abort — there is no retry for the preflight, so resending is
+  the only way — add it to herdr's TODO as an option to review with the
+  models / as next"). The user asked for it as the next item, and for the
+  design to be reviewed with the models before it is built.
+  The incident: rormpc's run r-iigptjsv was blocked at preflight on disk
+  space (event 220484, kind `blocked`, error "preflight: 0.4 GiB free on
+  <the repository checkout>, less than 15 GiB", actions
+  `["abort"]`), so the coordinator could only abort it and redispatch: that
+  loses the run id and the attempt history, although the condition was
+  transient (28 GiB free minutes later). The same shape covers a busy folder
+  slot, a dirty slot and a base branch that moved.
+  Design questions for the consult round (record its outcome here):
+  which preflight failures are retryable (disk above/below the guard, folder
+  slot busy, dirty slot, base branch moved) and which are not (a dirty tree
+  needs a human); whether `retry` re-runs the preflight or resumes at the
+  step the run reached; whether the `blocked` event offers `retry` beside
+  `abort` (`actions_for`, src/workers/runs.rs:1495-1523, today
+  `TodoEventKind::Blocked => vec![TodoAction::Abort]`), and how a retry after
+  a disk refusal behaves when the guard still refuses (a refused retry is
+  recorded, never retried on a timer).
+
 - [ ] A run held by the usage gate shows as a red attention card with no [t-3c2zqh76]
   question behind it (report r-103, from game-grounder2's coordinator at the
   user's request, 2026-10-17; follow-up of t-6mjgooqu): runs r-lczmn3ta
@@ -4020,6 +4043,41 @@ Items agents add. Not approved until the user moves them up.
   saved the diff, reset the slot by hand and started a new run. Let
   `retry` (or a resume action) record the leftover diff with the attempt
   and reset the slot, so a known-bad attempt can be replaced in one step.
+
+- [ ] A reattached worker whose agent exits stays `working` and never records [t-vc7ljwok]
+  its exit (report r-105 from todo-rormpc, 2026-10-18; worker w458, run
+  r-z4prcxfk at step `attention`). After the 0.9.3 install handed the server
+  off, the worker was reattached at 04:40:40; its agent exited while the
+  broker stayed alive, and nothing in herdr noticed the end:
+  `workers.w458` keeps `state=working, exited=0, lost=0, pid=96496` (that pid
+  is gone), the broker 96453 is a session leader with no children, sampled in
+  `pthread_join` with its `broker-send` thread waiting on a condvar and its
+  `broker-input` thread waiting on the server connection, and the spool
+  `w458.spool` has had no write since 04:19:43 and holds no `x` (exit)
+  record. So the exit was never published, `worker interrupt`, `stop` and
+  `kill` return OK without changing the record (the pid is gone), the run has
+  no pending event, and its admission stays held. `src/workers/live.rs`
+  (`run_broker`) records an exit only on `Message::Exit` or on a closed
+  broker connection; a broker that is alive but childless is not handled.
+  Reproduce from `w458.jsonl` plus the spool first, then find why the
+  broker's exit publication did not complete (a `child.wait()` that did not
+  return, a flusher thread that ended early, or a spool write path that lost
+  the last record), and make the broker's end observable rather than depend
+  on one thread finishing. No timer: the fix is an event the server reads.
+
+- [ ] `todo abort <run>` ends a run that has no pending event to answer [t-6l2zokpu]
+  (report r-105 from todo-rormpc, 2026-10-18, from the same incident): abort
+  is reachable only as an action on an event (`actions_for`,
+  `src/workers/runs.rs:1495-1523`, and `resume --event <id> --action abort`),
+  so a run whose worker is wedged (see the item above) cannot be aborted:
+  `runs.pending_event` is null, `todo resume` has no event id to take, and
+  `todo cancel-pending` refuses with "pending start not found or already
+  dispatched; use todo resume to abort its worker". The coordinator then has
+  to work around herdr in the store, which no rule allows. Add a run action
+  that takes only the run id: it stops the worker, marks it stopped or lost,
+  frees the admission, records the abort with the reason its caller gives,
+  leaves the branch as it is (as `--action abort` does) and ends the run
+  `aborted`, without needing a pending event.
 
 ## Needs a decision
 
