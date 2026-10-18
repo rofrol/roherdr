@@ -20378,6 +20378,20 @@
             }
           ]
         },
+        "TodoPreflightCause": {
+          "description": "The prerequisite that refused an attempt before its worker started.",
+          "enum": [
+            "disk_space",
+            "base_moved",
+            "slot_busy",
+            "slot_dirty",
+            "checks",
+            "base_missing",
+            "prerequisites",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "TodoQueueBlockedItem": {
           "description": "An item the queue no longer starts.",
           "properties": {
@@ -20789,6 +20803,17 @@
             },
             "kind": {
               "$ref": "#/schemas/success_response/$defs/TodoEventKind"
+            },
+            "preflight_cause": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoPreflightCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Present only for a preflight refusal; unknown causes are not retryable."
             },
             "questions": {
               "description": "With `question`: the worker's pending questions.",

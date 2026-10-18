@@ -591,11 +591,29 @@ pub struct TodoRunInfo {
     pub model: Option<String>,
 }
 
+/// The prerequisite that refused an attempt before its worker started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoPreflightCause {
+    DiskSpace,
+    BaseMoved,
+    SlotBusy,
+    SlotDirty,
+    Checks,
+    BaseMissing,
+    Prerequisites,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoRunEvent {
     /// Named by `todo.resume --event` and `todo.wait --after`.
     pub event_id: i64,
     pub kind: TodoEventKind,
+    /// Present only for a preflight refusal; unknown causes are not retryable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_cause: Option<TodoPreflightCause>,
     /// What `todo.resume` takes for it; empty once the run ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<TodoAction>,

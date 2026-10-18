@@ -66,11 +66,11 @@ use super::verify::{tail, CheckCommand};
 use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
     TodoAction, TodoDraftRunParams, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun,
-    TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep,
-    TodoWaitParams, WorkerAgent, WorkerAgentChoice, WorkerAnswerParams, WorkerAttentionReason,
-    WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState,
-    WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerification, WorkerVerifyParams,
-    WorkerWaitUntil,
+    TodoPreflightCause, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus,
+    TodoStep, TodoWaitParams, WorkerAgent, WorkerAgentChoice, WorkerAnswerParams,
+    WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion,
+    WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerification,
+    WorkerVerifyParams, WorkerWaitUntil,
 };
 
 pub(super) mod activity;
@@ -1114,13 +1114,16 @@ fn read_checks(repo: &Path) -> Result<ChecksFile, String> {
 
 /// Preflight's free disk check: at least `min_free_gib` (or
 /// [`DEFAULT_MIN_FREE_GIB`]) free on the file system `repo` is on.
-fn check_free_disk(repo: &Path, preflight: &PreflightConfig) -> Result<(), String> {
+fn check_free_disk(repo: &Path, preflight: &PreflightConfig) -> Result<(), PreflightRefusal> {
     let min_free = min_free_gib(preflight);
     let free = free_gib(repo)?;
     if free < min_free {
-        return Err(format!(
-            "{free:.1} GiB free on {}, less than {min_free} GiB",
-            repo.display()
+        return Err(PreflightRefusal::new(
+            TodoPreflightCause::DiskSpace,
+            format!(
+                "{free:.1} GiB free on {}, less than {min_free} GiB",
+                repo.display()
+            ),
         ));
     }
     Ok(())
@@ -1321,6 +1324,9 @@ fn checks_note(run: &Run) -> String {
 
 /// The next attempt's task: the previous attempt's with its review.
 fn next_task(task: &str, attempt: u32, review: &str) -> String {
+    if review.trim().is_empty() {
+        return task.trim_end().to_owned();
+    }
     format!(
         "{}\n\nReview of attempt {attempt}:\n{}",
         task.trim_end(),
@@ -1517,9 +1523,27 @@ fn step_name(step: TodoStep) -> String {
         .unwrap_or_default()
 }
 
-/// What `todo.resume` takes for an event of `kind` while it is pending (or,
-/// for `blocked`, while it is the blocked run's last event): every one of
-/// them also takes `abort`.
+/// What `todo.resume` takes while an event is pending (or the blocked
+/// run's last event). Only typed transient preflight causes enable retry;
+/// legacy events and blocks elsewhere remain abort-only.
+fn event_actions(event: &TodoRunEvent, attempt: u32) -> Vec<TodoAction> {
+    if event.kind == TodoEventKind::Blocked
+        && attempt < MAX_ATTEMPTS
+        && matches!(
+            event.preflight_cause,
+            Some(
+                TodoPreflightCause::DiskSpace
+                    | TodoPreflightCause::BaseMoved
+                    | TodoPreflightCause::SlotBusy
+            )
+        )
+    {
+        vec![TodoAction::Retry, TodoAction::Abort]
+    } else {
+        actions_for(event.kind)
+    }
+}
+
 fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
     match kind {
         TodoEventKind::Question => vec![TodoAction::Answer, TodoAction::Abort],
@@ -1567,6 +1591,7 @@ fn new_event(kind: TodoEventKind) -> TodoRunEvent {
     TodoRunEvent {
         event_id: 0,
         kind,
+        preflight_cause: None,
         actions: Vec::new(),
         questions: Vec::new(),
         diff_stat: None,
@@ -1589,7 +1614,7 @@ fn event_of(seq: i64, body: &Value, run: &TodoRunInfo) -> TodoRunEvent {
     let open = (run.status == TodoRunStatus::Waiting && run.pending_event == Some(seq))
         || (run.status == TodoRunStatus::Blocked && event.kind == TodoEventKind::Blocked);
     event.actions = if open {
-        actions_for(event.kind)
+        event_actions(&event, run.attempt)
     } else {
         Vec::new()
     };
@@ -1645,6 +1670,51 @@ pub(super) fn deepseek_usage_for_test() -> crate::api::schema::ProviderUsage {
         topped_up: Some("13.41".into()),
     }];
     deepseek
+}
+
+/// Only `DiskSpace`, `BaseMoved`, and `SlotBusy` are retryable; propagated
+/// refusals (including unreadable free-space readings, failed slot git status,
+/// and operation planning errors) deliberately become abort-only `Prerequisites`.
+#[derive(Debug)]
+struct PreflightRefusal {
+    cause: TodoPreflightCause,
+    error: WorkerError,
+}
+
+impl PreflightRefusal {
+    fn new(cause: TodoPreflightCause, why: String) -> Self {
+        Self {
+            cause,
+            error: WorkerError::Preflight(format!("preflight: {why}")),
+        }
+    }
+}
+
+impl std::fmt::Display for PreflightRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl From<String> for PreflightRefusal {
+    fn from(why: String) -> Self {
+        Self::new(TodoPreflightCause::Prerequisites, why)
+    }
+}
+
+impl From<WorkerError> for PreflightRefusal {
+    fn from(error: WorkerError) -> Self {
+        Self {
+            cause: TodoPreflightCause::Prerequisites,
+            error,
+        }
+    }
+}
+
+impl From<PreflightRefusal> for WorkerError {
+    fn from(refusal: PreflightRefusal) -> Self {
+        refusal.error
+    }
 }
 
 /// What preflight found.
@@ -2484,8 +2554,8 @@ impl WorkerSupervisor {
         repo: &Path,
         draft: bool,
         pinned: Option<&str>,
-    ) -> Result<Preflighted, WorkerError> {
-        let refuse = |why: String| WorkerError::Preflight(format!("preflight: {why}"));
+    ) -> Result<Preflighted, PreflightRefusal> {
+        let refuse = |why: String| PreflightRefusal::new(TodoPreflightCause::Prerequisites, why);
         super::check_item_id(&params.item)?;
         if !draft {
             if params.task.trim().is_empty() {
@@ -2495,12 +2565,19 @@ impl WorkerSupervisor {
             check_paths(&params.paths).map_err(refuse)?;
         }
         let landing = super::target_branch::checked_out(Path::new(&params.cwd)).map_err(refuse)?;
+        if let Some(pinned) = pinned {
+            super::target_branch::commit_of(&landing.worktree, pinned)
+                .map_err(|why| PreflightRefusal::new(TodoPreflightCause::BaseMissing, why))?;
+        }
         if let Some(pinned) = pinned.filter(|pinned| *pinned != landing.branch) {
-            return Err(refuse(format!(
-                "{} is on {}, not the run's target branch {pinned}; the run does not retarget",
-                landing.worktree.display(),
-                landing.branch
-            )));
+            return Err(PreflightRefusal::new(
+                TodoPreflightCause::BaseMoved,
+                format!(
+                    "{} is on {}, not the run's target branch {pinned}; the run does not retarget",
+                    landing.worktree.display(),
+                    landing.branch
+                ),
+            ));
         }
         // `repository` keys the slot and the grants; the files are read in
         // the landing worktree.
@@ -2524,13 +2601,16 @@ impl WorkerSupervisor {
             )));
         }
         if !repo.join(CHECKS_FILE).is_file() {
-            return Err(refuse(format!(
-                "{} has no {CHECKS_FILE}: register the repository's checks there first, each \
+            return Err(PreflightRefusal::new(
+                TodoPreflightCause::Checks,
+                format!(
+                    "{} has no {CHECKS_FILE}: register the repository's checks there first, each \
                  name with its argv under [checks] (for example `lint = [\"shellcheck\", \
                  \"install.sh\"]`), for its owner to review; herdr runs only registered checks \
                  and never makes them up",
-                repo.display()
-            )));
+                    repo.display()
+                ),
+            ));
         }
         if !todo_titles::read_titles(repo).contains_key(&params.item) {
             return Err(refuse(format!(
@@ -2539,11 +2619,13 @@ impl WorkerSupervisor {
                 repo.join("TODO.md").display()
             )));
         }
-        let checks = read_checks(repo).map_err(refuse)?;
+        let checks = read_checks(repo)
+            .map_err(|why| PreflightRefusal::new(TodoPreflightCause::Checks, why))?;
         let registered = if draft {
             Vec::new()
         } else {
-            registered_checks(&checks, &params.checks).map_err(refuse)?
+            registered_checks(&checks, &params.checks)
+                .map_err(|why| PreflightRefusal::new(TodoPreflightCause::Checks, why))?
         };
         if let Some(install) = &checks.install {
             if install
@@ -2563,10 +2645,11 @@ impl WorkerSupervisor {
                 )));
             }
         }
-        check_free_disk(repo, &checks.preflight).map_err(refuse)?;
-        self.check_slot_free(repository).map_err(refuse)?;
+        check_free_disk(repo, &checks.preflight)?;
+        self.check_slot_free(repository)?;
         let target_branch = landing.branch.clone();
-        let base = super::target_branch::commit_of(repo, &target_branch).map_err(refuse)?;
+        let base = super::target_branch::commit_of(repo, &target_branch)
+            .map_err(|why| PreflightRefusal::new(TodoPreflightCause::BaseMissing, why))?;
         let push = super::target_branch::push_of(repo, &target_branch);
         let path_checks = path_checks_of(&checks, &registered);
         let prepare = self.plan_operations(repository, &base)?;
@@ -2582,9 +2665,55 @@ impl WorkerSupervisor {
         })
     }
 
+    /// Re-observe prerequisites for this attempt, never reuse a previous
+    /// attempt's base, check definitions, or prepare plan.
+    fn refresh_preflight(&self, run: &mut Run, draft: bool) -> Result<(), PreflightRefusal> {
+        let params = TodoRunParams {
+            cwd: run.landing_dir().display().to_string(),
+            item: run.info.item.clone(),
+            task: run.info.task.clone(),
+            message: run.info.message.clone(),
+            paths: run.info.paths.clone(),
+            checks: run.info.checks.clone(),
+            owner_pane_id: run.owner_pane.clone(),
+            owner_session_id: run.owner_session.clone(),
+            workspace_id: run.workspace.clone(),
+            env: lock(&RUN_ENV).get(&run.info.run_id).cloned(),
+            ignore_usage: run.finish.ignore_usage,
+            agent: run.finish.agent,
+            model: run.finish.model.clone(),
+            auto_review: run.finish.auto_review,
+            auto_answer: run.finish.auto_answer,
+        };
+        let ready = self.preflight(
+            &params,
+            Path::new(&run.info.repo),
+            draft,
+            Some(run.target_branch()),
+        )?;
+        run.info.base = Some(ready.base.clone());
+        run.current.base = Some(ready.base);
+        run.info.landing_worktree = Some(ready.landing_worktree.display().to_string());
+        run.info.push = Some(ready.push);
+        run.checks = ready.checks;
+        run.finish.install = ready.install;
+        run.finish.path_checks = ready.path_checks;
+        run.info.grants = ready
+            .prepare
+            .iter()
+            .map(super::capabilities::PreparePlan::run_grant)
+            .collect();
+        if run.finish.prepare != ready.prepare {
+            run.finish.prepared = false;
+        }
+        run.finish.prepare = ready.prepare;
+        run.info.error = None;
+        Ok(())
+    }
+
     /// The folder slot is free: no worker of this server runs in it, and
     /// it has nothing uncommitted. A slot not created yet is free.
-    fn check_slot_free(&self, repo: &Path) -> Result<(), String> {
+    fn check_slot_free(&self, repo: &Path) -> Result<(), PreflightRefusal> {
         let Ok(real) = slot_dir(repo)?.canonicalize() else {
             return Ok(());
         };
@@ -2603,18 +2732,24 @@ impl WorkerSupervisor {
                 .collect()
         };
         if !busy.is_empty() {
-            return Err(format!(
-                "folder slot {} is busy: {} runs there; stop it first",
-                real.display(),
-                busy.join(", ")
+            return Err(PreflightRefusal::new(
+                TodoPreflightCause::SlotBusy,
+                format!(
+                    "folder slot {} is busy: {} runs there; stop it first",
+                    real.display(),
+                    busy.join(", ")
+                ),
             ));
         }
         let status = git(&real, &["status", "--porcelain"])?;
         if !status.trim().is_empty() {
-            return Err(format!(
-                "folder slot {} has uncommitted changes:\n{}",
-                real.display(),
-                status.trim_end()
+            return Err(PreflightRefusal::new(
+                TodoPreflightCause::SlotDirty,
+                format!(
+                    "folder slot {} has uncommitted changes:\n{}",
+                    real.display(),
+                    status.trim_end()
+                ),
             ));
         }
         Ok(())
@@ -2864,12 +2999,20 @@ impl WorkerSupervisor {
             .as_ref()
             .map_or(TodoEventKind::Unknown, |event| event.kind);
         // The commit the event showed: what an approval binds.
+        let preflight_retry = kind == TodoEventKind::Blocked
+            && answered
+                .as_ref()
+                .is_some_and(|event| event.preflight_cause.is_some());
+        let actions = answered
+            .as_ref()
+            .map(|event| event_actions(event, run.info.attempt))
+            .unwrap_or_default();
         let reviewed = answered.and_then(|event| event.commits.last().cloned());
-        if !actions_for(kind).contains(&params.action) {
+        if !actions.contains(&params.action) {
             return Err(WorkerError::Invalid(format!(
                 "event {} takes {}",
                 params.event,
-                actions_for(kind)
+                actions
                     .iter()
                     .filter_map(|action| serde_json::to_value(action).ok())
                     .filter_map(|action| action.as_str().map(str::to_owned))
@@ -2975,6 +3118,15 @@ impl WorkerSupervisor {
                         "a retry after retry_conflict starts the attempt from the base with \
                          the review it has; it takes no task text"
                             .into(),
+                    ));
+                }
+            }
+            TodoAction::Retry if preflight_retry => {
+                // No worker or review exists for a refused preflight. The
+                // next attempt re-observes every prerequisite before admission.
+                if params.task.is_some() {
+                    return Err(WorkerError::Invalid(
+                        "a preflight retry takes no task text".into(),
                     ));
                 }
             }
@@ -3641,10 +3793,15 @@ impl WorkerSupervisor {
 
     /// Ends the run as blocked with why; nothing more happens to it.
     fn block_run(&self, run: &mut Run, why: String) {
+        self.block_run_cause(run, why, None);
+    }
+
+    fn block_run_cause(&self, run: &mut Run, why: String, cause: Option<TodoPreflightCause>) {
         warn!(run_id = %run.info.run_id, why, "todo run blocked");
         run.info.status = TodoRunStatus::Blocked;
         run.info.error = Some(why.clone());
         let mut event = new_event(TodoEventKind::Blocked);
+        event.preflight_cause = cause;
         event.error = Some(why);
         if let Err(error) = self.record_run_event(run, &event) {
             warn!(run_id = %run.info.run_id, error, "cannot record the blocked todo run");
@@ -3679,6 +3836,30 @@ impl WorkerSupervisor {
     /// branch from the base, with a command id derived from the run: a
     /// driver after a crash gets the same worker back instead of a second.
     fn step_start(&self, run: &mut Run) -> Result<(), String> {
+        let command_id = format!("{}:{}:start", run.info.run_id, run.info.attempt);
+        let recovering_worker = self
+            .run_store()
+            .map_err(|error| error.to_string())?
+            .receipt(&command_id)
+            .map_err(|error| error.to_string())?
+            .is_some_and(|receipt| receipt.worker_id.is_some());
+        // A durable start receipt must be recovered, not refused because its
+        // own worker now occupies the slot.
+        if !recovering_worker {
+            let needs_draft = run.finish.draft && run.info.task.trim().is_empty();
+            if let Err(refusal) = self.refresh_preflight(run, needs_draft) {
+                self.block_run_cause(run, refusal.to_string(), Some(refusal.cause));
+                return Ok(());
+            }
+            if needs_draft {
+                run.info.step = TodoStep::Draft;
+                self.run_step(
+                    run,
+                    json!({"type": "run_preflighted", "step": run.info.step}),
+                )?;
+                return Ok(());
+            }
+        }
         self.step_prepare(run)?;
         self.release_slot(run)?;
         // A later attempt's branch starts from the previous attempt's
@@ -3712,13 +3893,6 @@ impl WorkerSupervisor {
             }
             None => None,
         };
-        let command_id = format!("{}:{}:start", run.info.run_id, run.info.attempt);
-        let recovering_worker = self
-            .run_store()
-            .map_err(|error| error.to_string())?
-            .receipt(&command_id)
-            .map_err(|error| error.to_string())?
-            .is_some_and(|receipt| receipt.worker_id.is_some());
         // A credit run the credit path refuses falls back to pi once; the
         // usage gate below then reads the ChatGPT plan.
         if run.finish.anthropic_credits && run.info.worker_id.is_none() && !recovering_worker {
@@ -3760,6 +3934,30 @@ impl WorkerSupervisor {
                     return Ok(());
                 }
                 Err(error) => return Err(error.to_string()),
+            }
+        }
+        if !recovering_worker {
+            // Preparation and the live usage read can outlast the base we
+            // just observed. Do not spawn against a silently stale plan.
+            match super::target_branch::commit_of(&run.landing_dir(), run.target_branch()) {
+                Ok(base) if run.info.base.as_deref() == Some(base.as_str()) => {}
+                Ok(_) => {
+                    self.block_run_cause(
+                        run,
+                        "preflight: the base ref moved before worker start; retry to re-observe it"
+                            .into(),
+                        Some(TodoPreflightCause::BaseMoved),
+                    );
+                    return Ok(());
+                }
+                Err(why) => {
+                    self.block_run_cause(
+                        run,
+                        format!("preflight: {why}"),
+                        Some(TodoPreflightCause::BaseMissing),
+                    );
+                    return Ok(());
+                }
             }
         }
         let branch = run
@@ -4009,12 +4207,13 @@ impl WorkerSupervisor {
         // The attempt's commit, which the next attempt starts from: its
         // branch's tip when it has commits since the base.
         let repo = PathBuf::from(&run.info.repo);
-        let branch = run.info.branch.clone().ok_or("the run has no branch")?;
         let base = run.info.base.clone().ok_or("the run has no base")?;
-        let tip = branch_evidence(&repo, &base, &format!("refs/heads/{branch}"))
-            .1
-            .last()
-            .cloned();
+        let tip = run.info.branch.as_ref().and_then(|branch| {
+            branch_evidence(&repo, &base, &format!("refs/heads/{branch}"))
+                .1
+                .last()
+                .cloned()
+        });
         run.current.commit = tip.clone();
         self.run_step(
             run,
@@ -4022,14 +4221,20 @@ impl WorkerSupervisor {
                 "type": "run_attempt_ended",
                 "attempt": run.info.attempt,
                 "commit": tip,
+                "decision": run.current.review_decision,
+                "error": run.info.error,
+                "preflight_retry": run.info.worker_id.is_none(),
             }),
         )?;
         let previous = run.info.worker_id.take();
         let review = run.current.review_text.clone().unwrap_or_default();
-        run.info.task = next_task(&run.info.task, run.info.attempt, &review);
+        if run.current.review_text.is_some() {
+            run.info.task = next_task(&run.info.task, run.info.attempt, &review);
+        }
         run.current = Attempt {
             base: Some(base),
-            from_attempt: Some(run.info.attempt),
+            // A refused preflight has no worker branch or work to describe.
+            from_attempt: (previous.is_some() || tip.is_some()).then_some(run.info.attempt),
             from_commit: tip,
             ..Attempt::default()
         };
@@ -4621,6 +4826,43 @@ pub(crate) fn usage_reading_published() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocked_actions_use_only_the_typed_preflight_cause() {
+        use TodoPreflightCause::*;
+        let mut event = new_event(TodoEventKind::Blocked);
+        // Message text, including a retryable-sounding error, is not authority.
+        event.error = Some("preflight: folder slot is busy; disk is full".into());
+        assert_eq!(event_actions(&event, 1), [TodoAction::Abort]);
+        for cause in [DiskSpace, BaseMoved, SlotBusy] {
+            event.preflight_cause = Some(cause);
+            assert_eq!(
+                event_actions(&event, 1),
+                [TodoAction::Retry, TodoAction::Abort]
+            );
+            assert_eq!(event_actions(&event, MAX_ATTEMPTS), [TodoAction::Abort]);
+        }
+        for cause in [SlotDirty, Checks, BaseMissing, Prerequisites, Unknown] {
+            event.preflight_cause = Some(cause);
+            assert_eq!(event_actions(&event, 1), [TodoAction::Abort]);
+        }
+        // Published JSON remains readable with old and future producers.
+        let mut json = serde_json::to_value(&event).unwrap();
+        json.as_object_mut().unwrap().remove("preflight_cause");
+        assert_eq!(
+            serde_json::from_value::<TodoRunEvent>(json.clone())
+                .unwrap()
+                .preflight_cause,
+            None
+        );
+        json["preflight_cause"] = json!("a_future_check");
+        assert_eq!(
+            serde_json::from_value::<TodoRunEvent>(json)
+                .unwrap()
+                .preflight_cause,
+            Some(Unknown)
+        );
+    }
 
     #[test]
     fn each_path_check_is_due_only_for_its_own_paths() {

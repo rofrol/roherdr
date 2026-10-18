@@ -6798,6 +6798,202 @@ mod todo_runs {
     }
 
     #[test]
+    fn a_blocked_preflight_retry_reobserves_disk_in_the_same_run_without_a_task() {
+        let fixture = todo_repo("todo-preflight-retry");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("usage unavailable".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, "result ok", "ok"))
+            .unwrap();
+        let free = fixture.repo.parent().unwrap().join("free-gib-for-test");
+        // The deterministic disk reading changes after admission, before dispatch.
+        std::fs::write(&free, "-1").unwrap();
+        fixture.supervisor.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (first, _) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(
+            first.preflight_cause,
+            Some(crate::api::schema::TodoPreflightCause::DiskSpace)
+        );
+        assert_eq!(first.actions, [TodoAction::Retry, TodoAction::Abort]);
+        assert!(first.error.as_deref().unwrap().contains("-1.0 GiB"));
+        std::fs::write(&free, "-2").unwrap();
+        resume(
+            &fixture,
+            &pending.run_id,
+            first.event_id,
+            TodoAction::Retry,
+            None,
+        )
+        .unwrap();
+        let (second, run) = wait(&fixture, &pending.run_id, Some(first.event_id));
+        assert_eq!(run.run_id, pending.run_id);
+        assert_eq!(run.attempt, 2);
+        assert_eq!(second.kind, TodoEventKind::Blocked);
+        assert!(second.event_id > first.event_id);
+        assert_eq!(second.preflight_cause, first.preflight_cause);
+        assert!(second.error.as_deref().unwrap().contains("-2.0 GiB"));
+        assert!(
+            fixture.supervisor.list().is_empty(),
+            "preflight must precede worker spawn"
+        );
+        let ended = run_events(&fixture, &run.run_id, "run_attempt_ended");
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0]["attempt"], 1);
+        assert_eq!(ended[0]["decision"], "retry");
+        assert_eq!(ended[0]["error"], first.error.as_deref().unwrap());
+        let stored = fixture.supervisor.load_run(&run.run_id).unwrap();
+        assert_eq!(
+            stored.info.task, "result ok",
+            "a preflight has no review to append"
+        );
+        let blocked = run_events(&fixture, &run.run_id, "run_event");
+        assert!(blocked
+            .iter()
+            .any(|event| event["event"]["error"] == first.error.as_deref().unwrap()));
+        let history = store_of(&fixture.supervisor)
+            .run_event_types(&run.run_id)
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .find(|(_, kind)| kind == "run_event")
+                .unwrap()
+                .0,
+            first.event_id
+        );
+        assert_eq!(
+            blocked[0]["event"]["error"],
+            first.error.as_deref().unwrap()
+        );
+        abort(&fixture, &run.run_id, second.event_id);
+        let aborted = fixture.supervisor.load_run(&run.run_id).unwrap();
+        assert_eq!(aborted.info.status, TodoRunStatus::Aborted);
+        assert_eq!(aborted.current.review_decision.as_deref(), Some("abort"));
+        let decisions = run_events(&fixture, &run.run_id, "run_resumed");
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0]["action"], "retry");
+        assert_eq!(decisions[0]["event"], first.event_id);
+        assert_eq!(decisions[1]["action"], "abort");
+        assert_eq!(decisions[1]["event"], second.event_id);
+    }
+
+    #[test]
+    fn a_blocked_preflight_retry_starts_its_worker_after_disk_recovers() {
+        let fixture = todo_repo("todo-preflight-retry-success");
+        let task = format!("commit a.txt {SUBJECT}");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("usage unavailable".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, &task, "ok"))
+            .unwrap();
+        let free = fixture.repo.parent().unwrap().join("free-gib-for-test");
+        std::fs::write(&free, "-1").unwrap();
+        fixture.supervisor.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (blocked, _) = wait(&fixture, &pending.run_id, None);
+        assert_eq!(blocked.kind, TodoEventKind::Blocked);
+        assert!(fixture.supervisor.list().is_empty());
+
+        let error = resume(
+            &fixture,
+            &pending.run_id,
+            blocked.event_id,
+            TodoAction::Retry,
+            Some("unneeded review"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("preflight retry takes no task"));
+        let unchanged = fixture.supervisor.load_run(&pending.run_id).unwrap();
+        assert_eq!(unchanged.info.attempt, 1);
+        assert_eq!(unchanged.info.status, TodoRunStatus::Blocked);
+
+        std::fs::write(&free, "1").unwrap();
+        resume(
+            &fixture,
+            &pending.run_id,
+            blocked.event_id,
+            TodoAction::Retry,
+            None,
+        )
+        .unwrap();
+        let (review, run) = wait(&fixture, &pending.run_id, Some(blocked.event_id));
+        assert_eq!(run.run_id, pending.run_id);
+        assert_eq!(run.attempt, 2);
+        assert_eq!(run.task, task);
+        assert!(!run.task.contains("Review of attempt"));
+        assert_eq!(review.kind, TodoEventKind::Review);
+        assert_eq!(fixture.supervisor.list().len(), 1);
+        let prompt = first_prompt(&fixture, run.worker_id.as_deref().unwrap());
+        assert!(prompt.starts_with(&task), "{prompt}");
+        assert!(!prompt.contains("Your branch"), "{prompt}");
+        assert!(!prompt.contains("Review of attempt"), "{prompt}");
+        let stored = fixture.supervisor.load_run(&run.run_id).unwrap();
+        assert_eq!(stored.current.from_attempt, None);
+        assert_eq!(stored.current.from_commit, None);
+        let ended = run_events(&fixture, &run.run_id, "run_attempt_ended");
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0]["attempt"], 1);
+        assert_eq!(ended[0]["decision"], "retry");
+        assert_eq!(ended[0]["error"], blocked.error.as_deref().unwrap());
+        let history = store_of(&fixture.supervisor)
+            .run_event_types(&run.run_id)
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .find(|(_, kind)| kind == "run_event")
+                .unwrap()
+                .0,
+            blocked.event_id
+        );
+        let events = run_events(&fixture, &run.run_id, "run_event");
+        assert_eq!(
+            events[0]["event"]["error"],
+            blocked.error.as_deref().unwrap()
+        );
+        abort(&fixture, &run.run_id, review.event_id);
+    }
+
+    #[test]
+    fn a_blocked_preflight_on_the_last_attempt_offers_only_abort() {
+        let fixture = todo_repo("todo-preflight-last-attempt");
+        fixture
+            .supervisor
+            .set_usage_for_test(Err("usage unavailable".into()));
+        let pending = fixture
+            .supervisor
+            .todo_run_wait(params(&fixture, "result ok", "ok"))
+            .unwrap();
+        let free = fixture.repo.parent().unwrap().join("free-gib-for-test");
+        std::fs::write(&free, "-1").unwrap();
+        fixture.supervisor.set_usage_for_test(fresh_usage(86, 10));
+        fixture.supervisor.pending_after_measurement();
+        let (mut blocked, _) = wait(&fixture, &pending.run_id, None);
+        for attempt in 2..=3 {
+            assert_eq!(blocked.actions, [TodoAction::Retry, TodoAction::Abort]);
+            resume(
+                &fixture,
+                &pending.run_id,
+                blocked.event_id,
+                TodoAction::Retry,
+                None,
+            )
+            .unwrap();
+            let (next, run) = wait(&fixture, &pending.run_id, Some(blocked.event_id));
+            assert_eq!(run.attempt, attempt);
+            assert_eq!(next.kind, TodoEventKind::Blocked);
+            blocked = next;
+        }
+        assert_eq!(blocked.actions, [TodoAction::Abort]);
+        abort(&fixture, &pending.run_id, blocked.event_id);
+    }
+
+    #[test]
     fn measurements_reopen_a_latch_but_dispatch_requires_its_own_read() {
         let fixture = todo_repo("todo-pending-usage-dispatch");
         fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
@@ -7976,6 +8172,18 @@ mod todo_runs {
         for attempt in 1..=3 {
             let (review, _) = wait(&fixture, &run.run_id, after);
             assert_eq!(review.kind, TodoEventKind::Review, "{attempt}: {review:#?}");
+            let missing_review = resume(
+                &fixture,
+                &run.run_id,
+                review.event_id,
+                TodoAction::Retry,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(missing_review.code(), "invalid_request");
+            assert!(missing_review
+                .to_string()
+                .contains("retry needs the review"));
             resume(
                 &fixture,
                 &run.run_id,

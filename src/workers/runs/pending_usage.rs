@@ -107,6 +107,7 @@ pub(in crate::workers) fn detail(
 
 impl WorkerSupervisor {
     pub(in crate::workers) fn dispatch_pending_usage(&self, run: &mut Run) -> Result<(), String> {
+        let mut preflight_cause = None;
         match self.usage_gate(
             &run.info.repo,
             run.finish.agent.unwrap_or_default(),
@@ -118,54 +119,11 @@ impl WorkerSupervisor {
             }),
         ) {
             Ok(_) => {
-                // The worktree the run recorded: its preflight again checks
-                // that it still has the run's branch checked out.
-                let params = crate::api::schema::TodoRunParams {
-                    cwd: run.landing_dir().display().to_string(),
-                    item: run.info.item.clone(),
-                    task: run.info.task.clone(),
-                    message: run.info.message.clone(),
-                    paths: run.info.paths.clone(),
-                    checks: run.info.checks.clone(),
-                    owner_pane_id: run.owner_pane.clone(),
-                    owner_session_id: run.owner_session.clone(),
-                    workspace_id: run.workspace.clone(),
-                    env: lock(&RUN_ENV).get(&run.info.run_id).cloned(),
-                    ignore_usage: run.finish.ignore_usage,
-                    agent: run.finish.agent,
-                    model: run.finish.model.clone(),
-                    auto_review: run.finish.auto_review,
-                    auto_answer: run.finish.auto_answer,
-                };
                 // A gate that closed after drafting must not draft a second task.
                 let needs_draft = run.finish.draft && run.info.step == TodoStep::Preflight;
                 run.finish.pending_usage = false;
-                // The branch the run resolved at its start: never retargeted.
-                let pinned = run.target_branch().to_owned();
-                match self.preflight(
-                    &params,
-                    std::path::Path::new(&run.info.repo),
-                    needs_draft,
-                    Some(&pinned),
-                ) {
-                    Ok(ready) => {
-                        run.info.base = Some(ready.base.clone());
-                        run.current.base = Some(ready.base);
-                        run.info.landing_worktree =
-                            Some(ready.landing_worktree.display().to_string());
-                        run.info.push = Some(ready.push);
-                        run.checks = ready.checks;
-                        run.finish.install = ready.install;
-                        run.finish.path_checks = ready.path_checks;
-                        run.info.grants = ready
-                            .prepare
-                            .iter()
-                            .map(crate::workers::capabilities::PreparePlan::run_grant)
-                            .collect();
-                        if run.finish.prepare != ready.prepare {
-                            run.finish.prepared = false;
-                        }
-                        run.finish.prepare = ready.prepare;
+                match self.refresh_preflight(run, needs_draft) {
+                    Ok(()) => {
                         run.info.status = TodoRunStatus::Running;
                         run.info.step = if needs_draft {
                             TodoStep::Draft
@@ -175,6 +133,7 @@ impl WorkerSupervisor {
                         run.info.error = None;
                     }
                     Err(error) => {
+                        preflight_cause = Some(error.cause);
                         run.info.status = TodoRunStatus::Blocked;
                         run.info.error = Some(error.to_string());
                     }
@@ -220,6 +179,7 @@ impl WorkerSupervisor {
                 let event = if run.info.status == TodoRunStatus::Blocked {
                     let mut event = new_event(TodoEventKind::Blocked);
                     event.error = run.info.error.clone();
+                    event.preflight_cause = preflight_cause;
                     json!({"type": "run_event", "kind": event.kind, "event": event})
                 } else {
                     json!({"type": "run_usage_measurement"})
