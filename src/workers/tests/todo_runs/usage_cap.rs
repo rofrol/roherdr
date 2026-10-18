@@ -1,5 +1,5 @@
-//! The usage gate's cap on the workers of one provider, across all
-//! repositories, and its high latch kept per provider account.
+//! The usage gate's cap on the workers of one provider in one repository
+//! (the coordinator's scope), and its high latch kept per provider account.
 
 use super::*;
 use crate::workers::runs::usage_gate::Holder;
@@ -14,10 +14,10 @@ fn cap(fixture: &Fixture, max_workers: u32) {
         });
 }
 
-/// The holders of Claude's slots, sorted.
-fn held(supervisor: &WorkerSupervisor) -> Vec<String> {
+/// The holders of Claude's slots in `repo`, sorted.
+fn held(supervisor: &WorkerSupervisor, repo: &str) -> Vec<String> {
     let mut held = store_of(supervisor)
-        .held_admissions("claude")
+        .held_admissions("claude", repo)
         .unwrap()
         .into_iter()
         .map(|admission| admission.holder)
@@ -26,19 +26,13 @@ fn held(supervisor: &WorkerSupervisor) -> Vec<String> {
     held
 }
 
-/// A worker the gate admitted as `holder`, started in `dir`; it stays
-/// running after its turn until stopped.
-fn admitted_worker(fixture: &Fixture, dir: &Path, holder: &str) -> String {
+/// A worker the gate admitted as `holder` in `repo`, started in `dir`; it
+/// stays running after its turn until stopped.
+fn admitted_worker(fixture: &Fixture, dir: &Path, repo: &str, holder: &str) -> String {
     let holder = gate_holder(holder);
     fixture
         .supervisor
-        .usage_gate(
-            &dir.display().to_string(),
-            WorkerAgent::Claude,
-            None,
-            false,
-            Some(&holder),
-        )
+        .usage_gate(repo, WorkerAgent::Claude, None, false, Some(&holder))
         .unwrap();
     let worker = fixture
         .supervisor
@@ -58,11 +52,11 @@ fn stop(fixture: &Fixture, worker_id: &str) {
 }
 
 #[test]
-fn concurrent_starts_across_two_repositories_admit_exactly_the_cap() {
+fn concurrent_starts_in_one_repository_admit_exactly_the_cap() {
     for max_workers in [1, 2, 3] {
         let fixture = Fixture::new(&format!("usage-cap-concurrent-{max_workers}"));
         cap(&fixture, max_workers);
-        let repos = ["/repo-a".to_owned(), "/repo-b".to_owned()];
+        let repos = ["/repo-a".to_owned(), "/repo-a".to_owned()];
         let starts = max_workers as usize + 1;
         // Every start reads usage below the threshold and goes through the
         // gate at once: the barrier releases them together.
@@ -97,16 +91,22 @@ fn concurrent_starts_across_two_repositories_admit_exactly_the_cap() {
         assert_eq!(refused.code(), "usage_gate", "{refused}");
         let message = refused.to_string();
         assert!(
-            message.contains(&format!("at most {max_workers} ([usage] gate_max_workers)")),
+            message.contains(&format!(
+                "at most {max_workers} per coordinator and provider ([usage] gate_max_workers)"
+            )),
             "{message}"
         );
+        assert!(message.contains("/repo-a"), "{message}");
         // The refusal names every admission that holds a slot.
         assert_eq!(
             message.matches("worker.run (not started yet,").count(),
             max_workers as usize,
             "{message}"
         );
-        assert_eq!(held(&fixture.supervisor).len(), max_workers as usize);
+        assert_eq!(
+            held(&fixture.supervisor, "/repo-a").len(),
+            max_workers as usize
+        );
         // The admissions record the cap; Pi's provider has slots of its own.
         let admission = results
             .iter()
@@ -126,6 +126,77 @@ fn concurrent_starts_across_two_repositories_admit_exactly_the_cap() {
     }
 }
 
+/// The cap's key is the repository's git identity, not a path: a linked
+/// worktree and a subdirectory of one clone share the main checkout's
+/// bucket, so one coordinator's worktrees cannot take extra slots.
+#[test]
+fn worktrees_and_subdirectories_of_one_clone_share_a_bucket() {
+    let fixture = todo_repo("usage-cap-git-identity");
+    cap(&fixture, 1);
+    let main = repository_of(&fixture.repo).unwrap();
+    let worktree = fixture.root.join("linked-worktree");
+    git_in(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &worktree.display().to_string(),
+            "HEAD",
+        ],
+    );
+    let subdirectory = fixture.repo.join("sub");
+    std::fs::create_dir_all(&subdirectory).unwrap();
+    assert_eq!(repository_of(&worktree).unwrap(), main);
+    assert_eq!(repository_of(&subdirectory).unwrap(), main);
+    let gate = |dir: &Path, holder: &str| {
+        fixture.supervisor.usage_gate(
+            &repository_of(dir).unwrap(),
+            WorkerAgent::Claude,
+            None,
+            false,
+            Some(&gate_holder(holder)),
+        )
+    };
+    gate(&fixture.repo, "main").unwrap();
+    for (dir, holder) in [(&worktree, "worktree"), (&subdirectory, "subdirectory")] {
+        let refused = gate(dir, holder).unwrap_err();
+        assert_eq!(refused.code(), "usage_gate", "{refused}");
+        assert!(refused.to_string().contains(&main), "{refused}");
+    }
+    assert_eq!(held(&fixture.supervisor, &main), ["worker.run:main"]);
+}
+
+/// The cap is the coordinator's repository: another repository's workers
+/// (the user's bug, 2026-10-18) do not block this one's approved item.
+#[test]
+fn another_repository_has_slots_of_its_own() {
+    let fixture = Fixture::new("usage-cap-per-repository");
+    cap(&fixture, 1);
+    let gate = |repo: &str, holder: &str| {
+        fixture.supervisor.usage_gate(
+            repo,
+            WorkerAgent::Claude,
+            None,
+            false,
+            Some(&gate_holder(holder)),
+        )
+    };
+    gate("/repo-a", "a1").unwrap();
+    // Repo A is full, and the refusal names only its own starts.
+    let refused = gate("/repo-a", "a2").unwrap_err();
+    assert_eq!(refused.code(), "usage_gate", "{refused}");
+    assert!(refused.to_string().contains("/repo-a"), "{refused}");
+    assert!(!refused.to_string().contains("/repo-b"), "{refused}");
+    // Repo B's coordinator has its own slot, and neither sees the other's.
+    gate("/repo-b", "b1").unwrap();
+    assert_eq!(held(&fixture.supervisor, "/repo-a"), ["worker.run:a1"]);
+    assert_eq!(held(&fixture.supervisor, "/repo-b"), ["worker.run:b1"]);
+    // The same repository counts a `worker.run` and a `todo run` against one
+    // cap.
+    gate("/repo-b", "b2").unwrap_err();
+}
+
 #[test]
 fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_cap() {
     let fixture = Fixture::new("usage-cap-idempotent");
@@ -143,7 +214,7 @@ fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_
     let again = gate("retried", false).unwrap();
     // The slots held by others: none.
     assert_eq!(again["cap"]["held"], json!([]));
-    assert_eq!(held(&fixture.supervisor), ["worker.run:retried"]);
+    assert_eq!(held(&fixture.supervisor, "/repo-a"), ["worker.run:retried"]);
     let refused = gate("other", false).unwrap_err();
     assert!(
         refused
@@ -154,16 +225,16 @@ fn the_same_holder_admitted_again_takes_one_slot_and_ignore_usage_overrides_the_
     // --ignore-usage admits past the cap, says so, and counts.
     let ignored = gate("other", true).unwrap();
     assert_eq!(ignored["cap"]["ignored"], true, "{ignored}");
-    assert_eq!(held(&fixture.supervisor).len(), 2);
+    assert_eq!(held(&fixture.supervisor, "/repo-a").len(), 2);
 }
 
 #[test]
 fn an_exit_frees_a_slot_and_wakes_the_start_waiting_on_the_cap() {
     let fixture = todo_repo("usage-cap-exit-wakes");
     cap(&fixture, 1);
-    let other = fixture.root.join("other");
-    std::fs::create_dir_all(&other).unwrap();
-    let blocker = admitted_worker(&fixture, &other, "blocker");
+    // The cap is the repository's: the blocker holds a slot of the same one.
+    let repo = repository_of(&fixture.repo).unwrap();
+    let blocker = admitted_worker(&fixture, &fixture.repo, &repo, "blocker");
     let pending = fixture
         .supervisor
         .todo_run_wait(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
@@ -184,7 +255,7 @@ fn an_exit_frees_a_slot_and_wakes_the_start_waiting_on_the_cap() {
         run_id: pending.run_id.clone(),
         attempt: 1,
     };
-    assert_eq!(held(&fixture.supervisor), [holder.key()]);
+    assert_eq!(held(&fixture.supervisor, &repo), [holder.key()]);
     // A retry's attempt is not refused for the slot its own run's worker
     // holds: that worker is the one it replaces.
     let retried = resume(
@@ -205,18 +276,19 @@ fn an_exit_frees_a_slot_and_wakes_the_start_waiting_on_the_cap() {
 fn a_duplicate_exit_frees_the_slot_once() {
     let fixture = Fixture::new("usage-cap-duplicate-exit");
     cap(&fixture, 2);
-    let first = admitted_worker(&fixture, &fixture.repo, "first");
-    let second = admitted_worker(&fixture, &fixture.repo, "second");
+    let repo = fixture.repo.display().to_string();
+    let first = admitted_worker(&fixture, &fixture.repo, &repo, "first");
+    let second = admitted_worker(&fixture, &fixture.repo, &repo, "second");
     stop(&fixture, &first);
     // The exit recorded again (a second report of the same end).
     let exited = json!({"type": "exited", "code": 0});
     fixture
         .supervisor
         .record(worker_number(&first).unwrap(), Direction::Herdr, &exited);
-    assert_eq!(held(&fixture.supervisor), ["worker.run:second"]);
+    assert_eq!(held(&fixture.supervisor, &repo), ["worker.run:second"]);
     let gate = |holder: &str| {
         fixture.supervisor.usage_gate(
-            &fixture.repo.display().to_string(),
+            &repo,
             WorkerAgent::Claude,
             None,
             false,
@@ -322,9 +394,9 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
     };
     // Running, and still running after the restart (its server still holds
     // it, as the old server of a live handoff does).
-    let live = admitted_worker(&fixture, &fixture.repo, "live");
+    let live = admitted_worker(&fixture, &fixture.repo, &repo, "live");
     // Exited before the restart.
-    let exited = admitted_worker(&fixture, &fixture.repo, "exited");
+    let exited = admitted_worker(&fixture, &fixture.repo, &repo, "exited");
     stop(&fixture, &exited);
     // Named before its spawn, by a server that ended before recording it.
     gate(&gate_holder("unknown"));
@@ -352,7 +424,7 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
         attempt: 1,
     });
     assert_eq!(
-        held(&fixture.supervisor),
+        held(&fixture.supervisor, &repo),
         [
             "worker.run:crashed",
             "worker.run:live",
@@ -365,7 +437,10 @@ fn a_restart_keeps_the_slots_of_live_workers_and_ends_those_no_server_makes() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    assert_eq!(held(&restarted), ["worker.run:live", "worker.run:starting"]);
+    assert_eq!(
+        held(&restarted, &repo),
+        ["worker.run:live", "worker.run:starting"]
+    );
     let released = store_of(&restarted)
         .connection()
         .query_row(

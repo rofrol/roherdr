@@ -21,8 +21,10 @@
 //! refuses every other.
 //!
 //! The gate also caps the workers of one provider admitted and not yet
-//! exited, across all repositories (`[usage] gate_max_workers`, default 2;
-//! the user, 2026-10-16), `todo run` attempts and `worker.run` runs alike
+//! exited **in one repository**, the scope of a coordinator (`[usage]
+//! gate_max_workers`, default 2; the user, 2026-10-16, narrowed to the
+//! coordinator's repository 2026-10-18), `todo run` attempts and `worker.run`
+//! runs alike
 //! (a headless item coordinator passes the usage check only, since its
 //! runs need the slots): under the provider's lock it counts the
 //! admissions the store still holds ([`crate::workers::store`]'s
@@ -223,17 +225,19 @@ pub(super) fn holder_label(admission: &crate::workers::store::Admission) -> Stri
 }
 
 /// The refusal for the cap: the provider, the cap and every admission that
-/// holds a slot.
+/// holds a slot in this repository.
 pub(super) fn cap_refusal_message(
     provider: GateProvider,
     max_workers: u32,
     held: &[crate::workers::store::Admission],
+    repo: &str,
 ) -> String {
     let holders = held.iter().map(holder_label).collect::<Vec<_>>().join("; ");
     format!(
-        "usage gate: no new worker while {count} {name} workers are admitted and not exited, at \
-         most {max_workers} ([usage] gate_max_workers), across all repositories: {holders}. A \
-         slot frees when one of them exits; --ignore-usage, on the user's word, overrides",
+        "usage gate: no new worker while {count} {name} workers are admitted and not exited in \
+         {repo}, at most {max_workers} per coordinator and provider ([usage] gate_max_workers): \
+         {holders}. A slot frees when one of them exits; --ignore-usage, on the user's word, \
+         overrides",
         count = held.len(),
         name = provider.label(),
     )

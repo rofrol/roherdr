@@ -599,7 +599,7 @@
           "key": "usage.gate_max_workers",
           "type": "integer",
           "default": "2",
-          "description": "The usage gate admits at most this many workers of one provider at a time, across all repositories (todo run attempts and worker run runs; an item coordinator takes no slot). A worker holds its slot from its admission until it exits; a start past the cap is refused, and herdr todo run waits for it until a worker exits. At least 1; invalid values give the defaults. Read at each gate check."
+          "description": "The usage gate admits at most this many workers of one provider at a time for one coordinator, which is one per repository (todo run attempts and worker run runs; an item coordinator takes no slot). A worker holds its slot from its admission until it exits; a start past the cap is refused, and herdr todo run waits for it until a worker exits. At least 1; invalid values give the defaults. Read at each gate check."
         }
       ]
     },

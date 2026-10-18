@@ -51,8 +51,8 @@ pub struct UsageConfig {
     /// A high usage latch reopens once every window is below this many
     /// percent (1-100, below `gate_close_percent`).
     pub gate_reopen_percent: u8,
-    /// The usage gate admits at most this many workers per provider at a
-    /// time, across all repositories (at least 1).
+    /// The usage gate admits at most this many workers of one provider at a
+    /// time for one coordinator, which is one per repository (at least 1).
     pub gate_max_workers: u32,
 }
 

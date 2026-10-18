@@ -21,8 +21,10 @@ stored closed gates without a state are conservatively treated as high.
 ## Concurrent workers
 
 The gate also admits at most `[usage] gate_max_workers` workers of one provider
-at a time (default 2, at least 1), counted across all repositories: `todo run`
-attempts and `worker run` runs alike. A headless item coordinator passes the
+at a time for one coordinator (default 2, at least 1). A repository has one
+coordinator, so the count is the repository's: another repository's workers
+never block this one's approved item. `todo run` attempts and `worker run` runs
+alike are counted. A headless item coordinator passes the
 usage check only and takes no slot, since its own runs need them. Under the provider's
 lock it counts the starts it admitted whose worker has not exited, and records
 the new admission before the worker is spawned, so two starts reading usage at

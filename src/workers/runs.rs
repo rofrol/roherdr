@@ -871,8 +871,9 @@ struct Admitting<'a> {
 }
 
 impl Admitting<'_> {
-    /// Under the provider's lock: counts the provider's admissions that
-    /// hold a slot (all repositories) and records the holder's in the same
+    /// Under the provider's lock: counts the provider's admissions in this
+    /// repository that hold a slot (the cap is per coordinator, and a
+    /// repository has one coordinator) and records the holder's in the same
     /// transaction, or returns the refusal naming them while the cap is
     /// reached and `--ignore-usage` is not given. The cap's part goes into
     /// `recorded`.
@@ -887,7 +888,7 @@ impl Admitting<'_> {
         let at = now_ms();
         let (others, full) = store
             .transaction(|tx| {
-                let held = tx.held_admissions(self.provider.id())?;
+                let held = tx.held_admissions(self.provider.id(), self.repo)?;
                 let holds = held.iter().any(|admission| admission.holder == key);
                 let others = held
                     .into_iter()
@@ -914,8 +915,9 @@ impl Admitting<'_> {
             self.holder,
             self.ignore_usage && full,
         );
-        Ok((full && !self.ignore_usage)
-            .then(|| usage_gate::cap_refusal_message(self.provider, self.max_workers, &others)))
+        Ok((full && !self.ignore_usage).then(|| {
+            usage_gate::cap_refusal_message(self.provider, self.max_workers, &others, self.repo)
+        }))
     }
 }
 

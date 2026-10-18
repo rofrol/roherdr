@@ -1699,3 +1699,34 @@ on` was sent from (`todo_queues.worktree`) and runs there; `todo next`
 coordinators work in the caller's worktree and a `--continue` chain keeps
 it (`todo_chains.worktree`); a woken pending start already used its
 recorded worktree. Records made before keep the main checkout.
+
+## The worker concurrency cap is per coordinator (repository), not global (report from todo-rormpc, 2026-10-18)
+
+The user, relayed by todo-rormpc: "How is that a limit of 2 parallel workers in
+all of herdr? It was supposed to be per coordinator." A repository's approved
+run was refused because two other repositories' DeepSeek workers held both
+provider slots, although its coordinator ran no worker of its own. Rounds
+20261018-033630-80a9 (MiMo, Gemini Argon) and 20261018-040748-7953 (GPT Sol,
+re-asked when its window returned) agree that the cap must never span
+repositories. Decided with the facts in the code:
+
+- Scope: the repository, which has exactly one coordinator (`coordinator start`
+  refuses a second), so it is the coordinator's scope and stays the same through
+  a tenure handoff. A run claimed outside a pane and a `worker.run` count in
+  their repository. Rejected for now: a new durable coordinator id that
+  `worker.run` callers must supply (Sol, MiMo) — a wider surface that would
+  split the count on a handoff unless live admissions move atomically.
+- Aggregation: still per provider within the repository (the historical choice,
+  d-t4luph5r). Rejected for now: one cap across providers (Sol, Argon), a policy
+  change that would let a busy Claude worker block the DeepSeek worker `--model`
+  just enabled; the open question t-t27j6eyk keeps the models' argument.
+- Release: unchanged. A worker's recorded exit or loss, a failed spawn or a
+  dead server frees the slot; a retry reuses its attempt's slot, since its
+  worker is the one it replaces.
+- `--ignore-usage` keeps overriding the cap and is recorded as `ignored`, as
+  before; whether it should (Sol, MiMo would split the two) is t-wbuang2d.
+
+No migration: an admission already stores its repository. A run refused by the
+old global cap starts by itself, because its driver re-reads the gate at the
+counted events (a worker exit, a usage measurement, a server start), and the
+update's install is a server start.

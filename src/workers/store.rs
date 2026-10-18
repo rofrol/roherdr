@@ -757,7 +757,8 @@ ALTER TABLE coordinators ADD COLUMN holder_start INTEGER;
 "#,
     r#"
 -- The usage gate's admissions, for its cap on the workers of one provider
--- (`[usage] gate_max_workers`, across all repositories): one row per start
+-- in one repository (`[usage] gate_max_workers`, per coordinator, which is
+-- one per repository): one row per start
 -- the gate admitted, written before the worker is spawned. `holder` is
 -- `run:<run id>:<attempt>` for a `todo.run` attempt (`run_id`, `attempt`)
 -- or `worker.run:<id>` for a `worker.run`; `worker_id` the worker it
@@ -1931,18 +1932,18 @@ fn admission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Admission> {
     })
 }
 
-/// The admissions of `provider` that hold a slot, oldest first: not ended,
-/// and, by what the rows they name show now, one whose worker has not
-/// exited or been lost (a worker the store does not hold yet is being
+/// The admissions of `provider` in `repo` that hold a slot, oldest first:
+/// not ended, and, by what the rows they name show now, one whose worker has
+/// not exited or been lost (a worker the store does not hold yet is being
 /// spawned), one of a run in progress whose worker is not started yet, at
 /// that attempt or a later one admitted for a retry, or a `worker.run` not
 /// yet bound to its worker.
-fn held_admissions(conn: &Connection, provider: &str) -> StoreResult<Vec<Admission>> {
+fn held_admissions(conn: &Connection, provider: &str, repo: &str) -> StoreResult<Vec<Admission>> {
     let mut statement = conn.prepare(&format!(
         "SELECT {ADMISSION_COLUMNS} FROM usage_admissions a
          LEFT JOIN workers w ON w.id = a.worker_id
          LEFT JOIN runs r ON r.id = a.run_id
-         WHERE a.provider = ?1 AND a.released_ms IS NULL
+         WHERE a.provider = ?1 AND a.repo = ?2 AND a.released_ms IS NULL
            AND CASE
                WHEN a.worker_id IS NOT NULL THEN w.id IS NULL OR (w.exited = 0 AND w.lost = 0)
                WHEN a.run_id IS NOT NULL THEN coalesce(r.status IN ('running', 'waiting')
@@ -1951,14 +1952,18 @@ fn held_admissions(conn: &Connection, provider: &str) -> StoreResult<Vec<Admissi
            END
          ORDER BY a.admitted_ms, a.holder"
     ))?;
-    let rows = statement.query_map([provider], admission_from_row)?;
+    let rows = statement.query_map([provider, repo], admission_from_row)?;
     rows.collect()
 }
 
 impl Tx<'_> {
     /// [`held_admissions`] in this transaction.
-    pub(super) fn held_admissions(&self, provider: &str) -> StoreResult<Vec<Admission>> {
-        held_admissions(self.tx, provider)
+    pub(super) fn held_admissions(
+        &self,
+        provider: &str,
+        repo: &str,
+    ) -> StoreResult<Vec<Admission>> {
+        held_admissions(self.tx, provider, repo)
     }
 
     /// Writes an admission, replacing an ended one of the same holder.
@@ -2823,11 +2828,15 @@ impl Store {
         Ok(())
     }
 
-    /// The admissions of `provider` that hold a slot of the usage gate's
-    /// cap now ([`held_admissions`]).
+    /// The admissions of `provider` in `repo` that hold a slot of the usage
+    /// gate's cap now ([`held_admissions`]).
     #[cfg(all(test, unix))]
-    pub(super) fn held_admissions(&self, provider: &str) -> StoreResult<Vec<Admission>> {
-        held_admissions(&lock(&self.conn), provider)
+    pub(super) fn held_admissions(
+        &self,
+        provider: &str,
+        repo: &str,
+    ) -> StoreResult<Vec<Admission>> {
+        held_admissions(&lock(&self.conn), provider, repo)
     }
 
     /// Names the worker an admission starts, before its spawn; an
