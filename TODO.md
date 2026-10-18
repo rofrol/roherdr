@@ -82,6 +82,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Ordered by the coordinator 2026-10-12: the rest of this item goes after
   [t-s6lkxb4v] and the deeper review item, which the user's queue-mode
   trial (d-amwperuu) waits on.
+  Slice 4 landed 2026-10-18 (run r-pmeow7gu, attempt 2, commit 489aaa195):
+  `herdr supervise annotate FINDING_ID --missing fact|rule --evidence TEXT
+  [--note TEXT]` records, in an append-only `supervision_annotations` table,
+  the finding's stored rule version (a new `supervision_findings.rule_version`
+  column, written at insert) with `supervise.fixtures` listing it under
+  `annotated` beside `retracted` and `delivered`; it changes no finding, its
+  delivery or acknowledgement and does not count toward
+  `predicate_review_due`, whose digest line now names the annotation count.
+  Review rounds `20261018-172917-f040` found the raised-at version was not
+  stored (fixed by the column) and that the request accepted `unknown` (now a
+  closed fact|rule type). Still open: points 4, 6-9 (data-first fixes from a
+  typed vocabulary, the replay-gated fix acceptance with a hold-out set, the
+  owner's approval of a code fix, predicate retirement).
 
 - [ ] The footer shows an in-flight credit request as failed (follow-up of [t-t2nwbl6y]
   [t-s6lkxb4v]; the user, 2026-10-12, a screenshot: "AN spend in red",
