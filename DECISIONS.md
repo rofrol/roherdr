@@ -1969,3 +1969,43 @@ request addressed to the user, never from `waiting` or a non-empty `error`.
 - Also kept: the client matches the gate request by the literal `herdr-usage-`
   prefix that `src/workers/runs/pending_usage.rs` defines; a rename there would
   silently drop the reason from the line (no test pins the two together).
+
+## The usage gate's slots survive a crash, a handoff and a dropped client (t-3v3cgqcf, 2026-10-18)
+
+Four follow-ups of t-6mjgooqu, approved by the user on 2026-10-17 (d-bh3o5tpg)
+as pilot-adjacent for agentic-workflow-bend-claude's rormpc pilot, which runs its
+agents through `herdr worker run` only. Requirements came from its pilot round
+`20261017-115913-e529`; full idempotency (a caller identity for `worker.run`,
+which needs a new method or capability) stayed out of this slice.
+
+- A worker marked `lost` keeps its slot while its recorded process lives, and
+  frees it when that process is gone: `held_admissions` now checks the worker's
+  process start token (read from its `started` event through a new
+  `events_by_worker_kind` index) instead of treating `lost` as ended. A journal
+  from a build without the token falls back to the process group, which keeps
+  the slot for a reused pid — a documented over-count that never frees a slot
+  under a worker that still runs.
+- A start whose worker row was never written no longer leaks: reconciliation
+  decides from the identity recorded with the row (the admitting server's pid and
+  start token), retires a bound-but-unrecorded row in one statement that cannot
+  race the worker insert, and keeps the row while its server can still be
+  spawning. A start whose admission a handoff retired is refused cleanly
+  (`BindOutcome::Ended`) instead of failing with a raw store error.
+- A live handoff reconciles: the manifest carries the source's identity (optional
+  and serde-defaulted, with the peer pid and its token as a fallback for an older
+  source), the import retires that source's unbound starts, and one reconcile runs
+  at the source's exit event, watching the recorded process — no timer anywhere.
+- The dropped-client case is tested: a `worker run` client that goes away leaves
+  `workers.exited = 1`, `lost = 0`, its exit code and a journal `exited` event,
+  and its slot free.
+- `worker.admissions` lists a repository's held admissions, including starts
+  admitted and not yet spawned (`worker list` cannot show those): a new advertised
+  method with new request/response types, keyed by the same `repo_identity` the
+  gate uses, so worktrees and subdirectories list one repository's rows.
+- Two review rounds (20261018-083824-a270 sol; 20261018-083902-4ee9 mimo and
+  argon, after the first brief was refused as secret-shaped and neutralised) found
+  the bound-but-unspawned leak, the unfenced exit callback, the legacy limits and
+  the missing index coverage; each was fixed with a test that fails without the
+  fix. The worker for this item ran on `deepseek/deepseek-flash`: by the user's
+  decision of 2026-10-18 (recorded in the ledger), worker runs keep out of the
+  ChatGPT plan's window, which the coordinator's consultations spend.

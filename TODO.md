@@ -11,27 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Usage gate cap follow-ups (from t-6mjgooqu, its worker, run [t-3v3cgqcf]
-  r-woxzlg7o): `worker.run` has no caller identity, so a retried call
-  admits again (deduplication needs a new method or capability, per the
-  endpoint contract); an admission made by a server before a live handoff
-  and not yet bound to a worker keeps its slot until a later server start
-  (reconcile at handoff too); a worker marked `lost` whose process still
-  runs frees its slot, so the cap can be exceeded after a crash (keep the
-  slot while the process lives). Touches the gate, so it waits for
-  approval.
-  Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
-  verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
-  pilot uses only `worker run`, one worker, no push).
-  From agentic-workflow-bend-claude's pilot round `20261017-115913-e529`
-  (2026-10-17): before the rormpc pilot, the lost-but-alive slot part plus a
-  test that a dropped `worker run` client gives a herdr-recorded worker
-  termination (4 of 5); full idempotency before more workers or
-  repositories. Also asked: an authoritative list of a repository's
-  admitted, not yet spawned workers (`worker list` has repo, item, state,
-  pid, exit_code, but not the `usage_admissions` rows); add it to the
-  admissions API here.
-
 - [ ] `worker run` reads the tenure token from a channel only it reads [t-bdbf4ocr]
   (asked by agentic-workflow-bend-claude's coordinator 2026-10-17 for its
   t-tokfdrun, which the user approved there): its supervisor passes the
