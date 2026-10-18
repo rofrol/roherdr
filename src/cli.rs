@@ -804,6 +804,20 @@ pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde
         .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
 }
 
+/// `send_request` bounded by a deadline on its answer, for a wait whose only
+/// bound is a person's answer (a startup dialog the user answers) rather than
+/// an event of the server's.
+pub(super) fn send_request_with_deadline(
+    request: &Request,
+    deadline: std::time::Duration,
+) -> std::io::Result<serde_json::Value> {
+    let client = target::api_client()?;
+    ensure_server_protocol_compatible(&client, &request.id)?;
+    client
+        .request_value_with_timeout(request, deadline)
+        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+}
+
 fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
     let status = target::server_status(client)
         .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;

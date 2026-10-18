@@ -454,6 +454,36 @@ fn coordinator_command() -> Command {
                 .arg(option("epoch", "N"))
                 .arg(option("snapshot", "SHA256")),
         )
+        .subcommand(
+            Command::new("open")
+                .about("Open a tab in a space and start its TODO coordinator there")
+                .override_usage(
+                    "herdr coordinator open <SPACE> [--repo DIR] [--agent AGENT] [--model MODEL] [--name NAME] [--prompt TEXT] [--dry-run] [-- AGENT_ARG...]",
+                )
+                .arg(
+                    Arg::new("space")
+                        .value_name("SPACE")
+                        .required(true)
+                        .help("Workspace label of the space the coordinator opens in"),
+                )
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(
+                    option("agent", "AGENT")
+                        .value_parser(["claude", "pi"])
+                        .help("Agent of the coordinator (default: claude)"),
+                )
+                .arg(option("model", "MODEL").help("A pi coordinator's provider/model"))
+                .arg(option("name", "NAME").help("Agent name (default: todo-<space>)"))
+                .arg(option("prompt", "TEXT").help("What the agent is asked to do"))
+                .arg(flag("dry-run").help("Resolve and print the plan without starting anything"))
+                .arg(
+                    Arg::new("agent_args")
+                        .value_name("AGENT_ARG")
+                        .num_args(0..)
+                        .last(true)
+                        .help("The agent's own arguments, replacing its defaults"),
+                ),
+        )
 }
 
 fn todo_command() -> Command {
