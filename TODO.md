@@ -11,29 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The usage gate's cap counts per recorded path, not per repository: `held_admissions(provider, repo)` [t-i2qzgc22]
-  compares `a.repo`, which is `std::path::absolute(&cwd)` (a run's landing checkout, a `worker run`'s
-  `--cwd`) and is never resolved through git, so a worktree, a subdirectory or a symlink alias is its own
-  bucket (`src/workers/store.rs:1935-1966`, `src/workers/runs.rs:871-920`; the per-repository change is in
-  the working tree, uncommitted, 2026-10-18). Resolve the key once, where the admission is created, to the
-  repository's identity — `git rev-parse --path-format=absolute --git-common-dir`, falling back to the real
-  path and then the absolute path for a directory that is not a git repository — and store that in the
-  existing `repo` column, so the worktrees and subdirectories of one clone share one bucket with no
-  migration and no dual matching (admissions are transient and drain when their workers exit). The refusal
-  keeps naming the bound, the key and that repository's holders, with the display path beside the key.
-  Tests: two worktrees and a subdirectory of one clone are one bucket, so the third admission is refused;
-  two repositories are two buckets; a retry attempt still shares its run's slot; a worker's exit frees its
-  slot; an admission whose server is gone holds none; a barriered race of `todo run` and `worker run`
-  admissions admits exactly the cap per repository; a directory that is not a git repository falls back to
-  its absolute path.
-  From consult round 20261018-040742-f605 (sol, mimo, argon; sol first had the working tree in front of it
-  and caught that the message said "per coordinator" while the key is a path). Decided by the user
-  2026-10-18 (d-lbaeqfpz): the git repository identity, not the recorded path.
-  Landed 2026-10-18 without this item: the cap counts per repository (47e827f50,
-  "fix: the worker concurrency cap counts per repository, not globally"); what
-  stays open is only the key: the admission stores the recorded path, not the
-  repository's git identity.
-
 - [ ] A preflight refusal is retryable, not only abortable (the user, [t-wevbvnt2]
   2026-10-18, relayed by todo-rormpc: "at the same disk threshold herdr
   offers only abort — there is no retry for the preflight, so resending is

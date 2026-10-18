@@ -1818,3 +1818,37 @@ r-j2phuths, attempt 2).
 - Its run was aborted at install because `just check` failed on its own
   killed-holder test (t-5p6nblgy); the commit reached master, was installed
   and pushed by the next run.
+
+## The usage cap's key is the repository's git identity (t-i2qzgc22, 2026-10-18)
+
+`held_admissions(provider, repo)` compared `usage_admissions.repo`, which held the
+absolute path of the directory that admitted (`std::path::absolute(&cwd)`), never
+resolved through git. So a linked worktree, a subdirectory or a symlink alias of
+one clone was its own bucket, and a supervisor's worktree workers were
+effectively uncapped. 47e827f50 had already narrowed the cap from global to per
+repository; the key is the rest of it.
+
+- The user decided (d-lbaeqfpz), and consult round 20261018-040742-f605 (sol,
+  mimo, argon) agreed: the key is the repository's git identity, resolved once
+  where the admission is created — `git rev-parse --path-format=absolute
+  --git-common-dir`, canonicalized, through `slot::common_dir`, so bare and
+  separate-git-dir repositories have identities too. A directory that is not a
+  repository falls back to its real path, then to its absolute path, each
+  prefixed `path:`, so a fallback key can never equal a git identity (a bare
+  repository's common directory is a plain path).
+- The key goes into the existing `repo` column: no migration and no dual
+  matching, because admissions are transient and drain when their workers exit.
+  A release goes by the holder, never by a recomputed key, so a directory that
+  becomes (or stops being) a repository after an admission still releases its
+  row. Renaming or moving a clone while its worker runs keys the next admission
+  differently; accepted, for the same reason.
+- The refusal names the bound, the key, the holder's display path and that
+  repository's holders.
+- Three review rounds on the diff (20261018-045814-8731, 20261018-050316-f664,
+  and the fixes they forced): test code compiles for Windows under
+  `--all-targets`, so a symlink helper is gated `#[cfg(unix)]`; the tests call
+  the production resolver instead of copying its chain; a test that depended on
+  file permissions (mode 000 is readable as root) was replaced with a malformed
+  `gitdir:`; bare, separate-git-dir and fallback layouts each have their own
+  test, and one shows a bare repository at a fallback path gets a distinct key.
+- Open, kept separate: a check-then-use race on the folder slot.
