@@ -56,6 +56,41 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `TodoEventKind::Blocked => vec![TodoAction::Abort]`), and how a retry after
   a disk refusal behaves when the guard still refuses (a refused retry is
   recorded, never retried on a timer).
+  Consult round 20261018-045149-d167 (sol, mimo, argon; deepseek skipped as the
+  caller's family) plus the code check. The design:
+  - The whole preflight runs again at the start of every attempt: the
+    prerequisites are one simultaneous condition at the moment the worker
+    spawns. Verified in the code: `dispatch_pending_usage` re-runs `preflight()`
+    (src/workers/runs/pending_usage.rs:111-175), but the path a `Retry` lands
+    on, `TodoStep::Start` -> `step_start` (src/workers/runs.rs:3656-3810), does
+    not, and `Retry` sets `step = Start` again (src/workers/runs.rs:4011-4020).
+    So adding `Retry` to `Blocked` alone would start a worker with 0.4 GiB free:
+    the preflight has to move (or be called) in the attempt-start path.
+  - `Blocked` is shared by causes a human must handle (a dirty folder slot, the
+    landing checks in src/workers/runs/finish.rs, a stop before landing at
+    src/workers/runs.rs:3541), so the retry decision needs a typed cause on the
+    event, never a match on the message text (mimo).
+  - A refused retry ends attempt 1 with its verdict and emits a new `blocked`
+    event on attempt 2 with the fresh reading; the coordinator sees the attempt
+    number and both readings (all three agreed; one event, one acknowledgement).
+  - `retry` today requires `--task` (src/workers/runs.rs:2956-2965: the review
+    the next attempt's task appends). A blocked preflight has no review, so the
+    retry of this event takes no task file.
+  - Retryable: disk below the guard (re-observed, whether or not it has freed
+    meanwhile), a `target/` sweep lock held by another build, and a base branch
+    that moved (the base is recomputed per attempt). Abort only: a dirty folder
+    slot (only a human keeps or repairs that work), a `--check` name that is not
+    registered or a broken checks file (a retry after an edit would run a
+    different contract under one run id), and a missing base ref. A busy slot is
+    retried only after its holder ended, never to race it.
+  - Smallest slice: the typed cause, `retry` offered for the disk and lock
+    causes, a retry that re-runs the whole preflight, a new event per attempt,
+    and no `--task` for it. Attempt branches carry the attempt number
+    (`branch_of`, src/workers/runs.rs:4013), so they cannot collide.
+  - Kept for later: record the resolved check definitions per attempt (a check
+    name does not pin its argv), an atomic reservation for the folder slot
+    against a check-then-use race, and a chained run whose parent's landing
+    worktree is gone while it was blocked.
 
 - [ ] A run held by the usage gate shows as a red attention card with no [t-3c2zqh76]
   question behind it (report r-103, from game-grounder2's coordinator at the
