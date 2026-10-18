@@ -11,24 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Tenure checks hold through the step they guard, and a failed exit [t-bbwge2bc]
-  watch does not strand a tenure (follow-up of t-xhaho72w, review round
-  `20261016-201054-ee83`, sol and DeepSeek): the landing fence and
-  `worker.run`'s token check read the tenure and then act, so a holder
-  that ends in between still lands or starts work under its successor;
-  serialize tenure changes with the guarded step or record the admitted
-  work against the tenure atomically. The process holder's exit callback
-  drops its watch before it ends the tenure, and a store error there (or
-  a Linux `poll` error) leaves the dead holder's tenure active until the
-  next server start; persist the pending end and acknowledge it only
-  once ended. A caller can name another holder's pid and rotate its
-  token (same-user trust, accepted only by the user). The Linux code was
-  never compiled: add a Linux compile check. Touches the trust boundary,
-  so it waits for approval.
-  Decided by the user 2026-10-17 (d-bh3o5tpg): approved, ahead of the
-  verify items, as pilot-adjacent (agentic-workflow-bend-claude's rormpc
-  pilot uses only `worker run`, one worker, no push).
-
 - [ ] `todo start` and per-session handoff notes move from roagent into [t-kl75fxva]
   herdr (the user, 2026-10-16, d-ytigfuq7; after the tenure item and
   roagent's proxy): `roagent todo start` (open a herdr tab with a

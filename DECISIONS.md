@@ -2040,3 +2040,43 @@ agentic-workflow-bend-claude's coordinator for its t-tokfdrun.
   empty), a missing/empty/malformed descriptor starts nothing, and a `worker.run`
   under a real tenure keeps the token out of the spawned worker's argv and its
   `HERDR_*` environment.
+
+## A tenure check holds through the step it guards (t-bbwge2bc, 2026-10-18)
+
+Review round `20261016-201054-ee83` (sol and DeepSeek) found that the landing
+fence and `worker.run`'s token check read a tenure and *then* acted, so a holder
+ending in between still landed or started work under its successor, and that a
+failed exit watch could leave a dead holder's tenure active until the next server
+start. The user approved the fix on 2026-10-17 (d-bh3o5tpg), ahead of the verify
+items and as pilot-adjacent.
+
+- A landing step is admitted in one transaction that checks the fence and records
+  the step (`tenure_steps`), and the guard it returns holds that tenure until the
+  step lands. While a step is in flight, `coordinator end` records a pending end
+  and `coordinator handoff`/a successor's claim is refused, so the step lands
+  under its own tenure, never under a successor's.
+- `worker.run` is guarded the same way at the last moment: a start step is
+  written in the same transaction as the re-check of the tenure and the token,
+  immediately before the spawn, so a tenure that ends, or a token rotated,
+  between the admission and the spawn starts nothing and releases its admission.
+- A pending end is keyed by `(coordinator_id, epoch)`, applied only against that
+  epoch and the active tenure, and its row is deleted in the same transaction, so
+  a stale request cannot end a successor's tenure.
+- A failed release of a step is loud, recorded and retried by the next reader (a
+  claim, `coordinator end`, a server start). A dead server's step is retired only
+  when both its pid and its process start token match, and the row records who
+  retired it; a step from a build without a start token is never retired on its
+  pid alone. The documented escape for a step abandoned by a live server is a
+  server restart (the install's live handoff).
+- `coordinator.acquire`/`start` look for landings that ran under no tenure by
+  repository, through a new partial index.
+- Review round `20261018-124332-5bd6` (sol, mimo, argon) before landing found the
+  half-guarded `worker.run`, the un-epoch-keyed pending ends and the leak of a
+  failed release; each was fixed with a latch-forced test.
+- Kept, and recorded here as a follow-up: the Linux compile check is documented
+  with its exact command (`cargo zigbuild --target aarch64-unknown-linux-gnu.2.34`)
+  in `docs/next/linux-compile-check.md`, but it is not in `just check` — putting a
+  zig/cargo-zigbuild recipe into every local check would make the default check
+  depend on that toolchain, so the recipe belongs in its own `just` target. The
+  Linux `poll`/macOS `kevent` error path still calls no `on_exit`; the reader-side
+  re-check of a holder's process covers its effect until then.
