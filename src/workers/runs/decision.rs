@@ -491,8 +491,9 @@ pub(in crate::workers) fn credit_call(
         let reply: Value = serde_json::from_str(&reply)
             .map_err(|error| format!("the credit proxy's answer is not JSON: {error}"))?;
         // The proxy settled the call in the ledger before it answered.
-        let (cost, _) = AnthropicProxy::accounting(&ledger, Some(caller.run_id))
-            .map_err(|error| error.to_string())?;
+        let cost = AnthropicProxy::accounting(&ledger, Some(caller.run_id))
+            .map_err(|error| error.to_string())?
+            .spent_usd;
         Ok((reply, cost))
     };
     let answered = match tools {

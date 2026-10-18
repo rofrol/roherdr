@@ -2040,7 +2040,7 @@ impl WorkerSupervisor {
             proxy.available(0.0).map_err(|_| {
                 WorkerError::Preflight("Anthropic credits at cap or accounting unavailable".into())
             })?;
-            let (spent, _) = AnthropicProxy::accounting(&ledger, None)?;
+            let spent = AnthropicProxy::accounting(&ledger, None)?.spent_usd;
             Ok(
                 json!({"provider": "anthropic_api", "spent_usd": spent, "cap_usd": config.anthropic_api_cap_usd, "decision": "admit"}),
             )
@@ -4178,8 +4178,8 @@ impl WorkerSupervisor {
                 Some(&run.info.run_id),
             );
             let body = match accounting {
-                Ok((cost, pending)) => {
-                    json!({"type": "run_credit_accounting", "worker": worker_id, "attempt": run.info.attempt, "run_spent_usd": cost, "pending": pending})
+                Ok(accounting) => {
+                    json!({"type": "run_credit_accounting", "worker": worker_id, "attempt": run.info.attempt, "run_spent_usd": accounting.spent_usd, "pending": accounting.pending(), "in_flight": accounting.in_flight, "abandoned": accounting.abandoned})
                 }
                 Err(_) => {
                     json!({"type": "run_credit_accounting", "worker": worker_id, "error": "accounting unavailable"})

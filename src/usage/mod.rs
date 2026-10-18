@@ -561,63 +561,140 @@ fn anthropic_credit_usage(config: &crate::config::WorkersConfig) -> ProviderUsag
     )
 }
 
+/// The credit widget's row: settled spend against the local cap, and what the
+/// ledger's pending rows mean for it. A request that is still streaming is not
+/// a failed one: it shows the spend normally and says how many are in flight.
+/// Only a row no live process accounts for (its stream ended without settling,
+/// its owner is gone, or it recorded none) closes the cycle, as does a ledger
+/// that cannot be read at all.
 #[cfg(unix)]
 fn credit_report(
     config: &crate::config::WorkersConfig,
-    accounting: std::io::Result<(f64, i64)>,
+    accounting: std::io::Result<crate::platform::anthropic_proxy::CreditAccounting>,
 ) -> ProviderUsage {
+    use crate::platform::anthropic_proxy::CreditAccounting;
     let mut usage = ProviderUsage::pending("anthropic_api", "Anthropic · API credits");
-    match accounting {
-        Ok((spent, pending)) => {
-            usage.status = if pending == 0 {
-                ProviderUsageStatus::Ok
-            } else {
-                ProviderUsageStatus::Error
-            };
-            usage.spend.push(crate::api::schema::UsageSpend {
-                currency: "USD".into(),
-                amount: format!("{spent:.8}"),
-                since: 0,
-                limit: Some(format!("{:.2}", config.anthropic_api_cap_usd)),
-                limit_enforcing: pending != 0 || spent >= config.anthropic_api_cap_usd,
-            });
-            usage.notes.push(format!(
-                "Credit cycle {}; Console is the billing authority",
-                config.anthropic_api_cycle
-            ));
-            if pending != 0 {
-                usage.message = Some("Incomplete accounting: spending is closed".into());
-            }
-        }
+    let CreditAccounting {
+        spent_usd,
+        in_flight,
+        abandoned,
+    } = match accounting {
+        Ok(accounting) => accounting,
         Err(_) => {
             usage.status = ProviderUsageStatus::Error;
             usage.message = Some("Credit accounting unavailable: spending is closed".into());
+            return usage;
         }
+    };
+    usage.status = if abandoned == 0 {
+        ProviderUsageStatus::Ok
+    } else {
+        ProviderUsageStatus::Error
+    };
+    usage.spend.push(crate::api::schema::UsageSpend {
+        currency: "USD".into(),
+        amount: format!("{spent_usd:.8}"),
+        since: 0,
+        limit: Some(format!("{:.2}", config.anthropic_api_cap_usd)),
+        limit_enforcing: abandoned != 0 || spent_usd >= config.anthropic_api_cap_usd,
+    });
+    usage.notes.push(format!(
+        "Credit cycle {}; Console is the billing authority",
+        config.anthropic_api_cycle
+    ));
+    if in_flight != 0 {
+        usage.notes.push(format!("{in_flight} in flight"));
+    }
+    if abandoned != 0 {
+        usage.message = Some("Incomplete accounting: spending is closed".into());
     }
     usage
 }
 
 #[cfg(all(test, unix))]
-#[test]
-fn credit_widget_uses_accounted_spend_and_cap_and_reports_uncertainty() {
-    let config = crate::config::WorkersConfig {
-        anthropic_api_cap_usd: 200.0,
-        anthropic_api_cycle: "test-cycle".into(),
-        ..Default::default()
-    };
-    let report = credit_report(&config, Ok((12.5, 0)));
-    assert_eq!(report.provider, "anthropic_api");
-    assert_eq!(report.spend[0].amount, "12.50000000");
-    assert_eq!(report.spend[0].limit.as_deref(), Some("200.00"));
-    assert!(!report.spend[0].limit_enforcing);
-    assert!(credit_report(&config, Ok((200.0, 0))).spend[0].limit_enforcing);
-    assert_eq!(
-        credit_report(&config, Ok((1.0, 1))).status,
-        ProviderUsageStatus::Error
-    );
-    let unknown = credit_report(&config, Err(std::io::Error::other("offline")));
-    assert_eq!(unknown.status, ProviderUsageStatus::Error);
-    assert!(unknown.spend.is_empty());
+mod credit_widget_tests {
+    use super::*;
+    use crate::platform::anthropic_proxy::CreditAccounting;
+
+    fn config() -> crate::config::WorkersConfig {
+        crate::config::WorkersConfig {
+            anthropic_api_cap_usd: 200.0,
+            anthropic_api_cycle: "test-cycle".into(),
+            ..Default::default()
+        }
+    }
+
+    fn report(spent_usd: f64, in_flight: usize, abandoned: usize) -> ProviderUsage {
+        credit_report(
+            &config(),
+            Ok(CreditAccounting {
+                spent_usd,
+                in_flight,
+                abandoned,
+            }),
+        )
+    }
+
+    /// A request that is still streaming is not a failed one: the spend shows
+    /// normally, the cap is not marked as enforced, and a note says how many
+    /// requests are in flight.
+    #[test]
+    fn credit_widget_uses_accounted_spend_and_cap_and_reports_uncertainty() {
+        let settled = report(12.5, 0, 0);
+        assert_eq!(settled.provider, "anthropic_api");
+        assert_eq!(settled.status, ProviderUsageStatus::Ok);
+        assert_eq!(settled.spend[0].amount, "12.50000000");
+        assert_eq!(settled.spend[0].limit.as_deref(), Some("200.00"));
+        assert!(!settled.spend[0].limit_enforcing);
+        assert!(settled.message.is_none());
+        assert!(!settled.notes.iter().any(|note| note.contains("in flight")));
+
+        let in_flight = report(12.5, 1, 0);
+        assert_eq!(in_flight.status, ProviderUsageStatus::Ok);
+        assert_eq!(in_flight.spend[0].amount, "12.50000000");
+        assert!(!in_flight.spend[0].limit_enforcing);
+        assert!(in_flight.message.is_none());
+        assert!(in_flight.notes.contains(&"1 in flight".to_owned()));
+
+        let cap = report(200.0, 0, 0);
+        assert_eq!(cap.status, ProviderUsageStatus::Ok);
+        assert!(cap.spend[0].limit_enforcing);
+        assert!(!cap.notes.iter().any(|note| note.contains("in flight")));
+    }
+
+    /// A pending row no live process accounts for is the cycle's spend being
+    /// unknown: the widget keeps the red, closed state, also with a request in
+    /// flight beside it.
+    #[test]
+    fn an_abandoned_row_closes_the_cycle_whatever_else_the_ledger_holds() {
+        for (in_flight, note) in [(0, None), (1, Some("1 in flight"))] {
+            let report = report(1.0, in_flight, 1);
+            assert_eq!(report.status, ProviderUsageStatus::Error);
+            assert_eq!(report.spend[0].amount, "1.00000000");
+            assert!(report.spend[0].limit_enforcing);
+            assert_eq!(
+                report.message.as_deref(),
+                Some("Incomplete accounting: spending is closed")
+            );
+            match note {
+                Some(note) => assert!(report.notes.contains(&note.to_owned())),
+                None => assert!(!report.notes.iter().any(|note| note.contains("in flight"))),
+            }
+        }
+    }
+
+    /// A ledger the reader cannot read is the red, closed state too, and no
+    /// spend row, so the footer never shows an amount it could not account for.
+    #[test]
+    fn an_unreadable_ledger_closes_the_cycle_without_showing_spend() {
+        let unknown = credit_report(&config(), Err(std::io::Error::other("offline")));
+        assert_eq!(unknown.status, ProviderUsageStatus::Error);
+        assert!(unknown.spend.is_empty());
+        assert_eq!(
+            unknown.message.as_deref(),
+            Some("Credit accounting unavailable: spending is closed")
+        );
+    }
 }
 
 /// The report as `usage.read` returns it: each window stamped with when it

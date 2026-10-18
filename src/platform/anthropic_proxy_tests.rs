@@ -14,7 +14,8 @@ impl OfflineFixture {
                 "CREATE TABLE anthropic_requests (
             id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
             model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
-            cache_write INTEGER, cost REAL, pending INTEGER NOT NULL);",
+            cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
+            owner_pid INTEGER, owner_start INTEGER);",
             )
             .unwrap();
         Self {
@@ -23,6 +24,7 @@ impl OfflineFixture {
                 cap,
                 model: MODEL.into(),
                 ledger,
+                ledger_path: std::path::PathBuf::new(),
                 grants: HashMap::new(),
                 killed: false,
             },
@@ -475,10 +477,10 @@ fn loopback_pi_key_auth_accounts_offline_and_refuses_missing_token() {
         );
     assert!(exchange(request.into_bytes()).starts_with("HTTP/1.1 200 OK"));
     assert!(exchange(Fixture::request("not-a-grant", false)).starts_with("HTTP/1.1 401"));
-    let (cost, pending) = AnthropicProxy::accounting(&ledger, Some("todo-run")).unwrap();
-    assert!((cost - 0.00034785).abs() < 1e-12);
-    assert_eq!(pending, 0);
-    f.proxy.cap = cost;
+    let accounting = AnthropicProxy::accounting(&ledger, Some("todo-run")).unwrap();
+    assert!((accounting.spent_usd - 0.00034785).abs() < 1e-12);
+    assert_eq!(accounting.pending(), 0);
+    f.proxy.cap = accounting.spent_usd;
     assert!(f.proxy.available(0.0).is_err());
     assert!(f.proxy.register("second", "item").is_err());
     drop(listener);
@@ -992,6 +994,16 @@ fn anthropic_proxy_unavailable_counter_and_incomplete_stream_refuse_more_spend()
         )
         .is_err());
     assert!(streaming.proxy.register("next", "item").is_err());
+    // A stream that ends without settling is marked abandoned, not left looking
+    // like a request that is still in flight.
+    let pending: i64 = streaming
+        .proxy
+        .ledger
+        .query_row("SELECT pending FROM anthropic_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(pending, ABANDONED);
 }
 
 #[test]
@@ -1324,12 +1336,15 @@ fn uncertain_transport_keeps_latch_until_owner_releases_the_entry() {
     let path = f.dir.join("ledger.sqlite");
     let status = credit_status(&path).unwrap();
     assert_eq!(status["pending"], 1);
-    assert_eq!(status["entries"][0]["state"], "pending");
+    assert_eq!(status["abandoned"], 1);
+    assert_eq!(status["in_flight"], 0);
+    assert_eq!(status["entries"][0]["state"], "abandoned");
     assert!(credit_release(&path, 999).is_err());
     credit_release(&path, 1).unwrap();
     assert!(credit_release(&path, 1).is_err());
     let status = credit_status(&path).unwrap();
     assert_eq!(status["pending"], 0);
+    assert_eq!(status["abandoned"], 0);
     assert_eq!(status["entries"][0]["state"], "released");
     f.proxy.available(0.0).unwrap();
     // Accounted costs must never be erased by owner release.
@@ -1429,4 +1444,361 @@ fn tool_use_round_trip_with_a_validated_tool_choice_reaches_upstream() {
             assert_eq!(context.offending_field.as_deref(), Some("tool_choice"));
         }
     }
+}
+
+/// A complete streamed message: a started message, its final usage and the stop.
+fn settled_stream() -> String {
+    format!("event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{MODEL}\",\"usage\":{{\"input_tokens\":12,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":30}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n")
+}
+
+/// The ledger row of one request: its pending state and its recorded owner.
+fn ledger_row(path: &Path) -> (i64, Option<i64>, Option<i64>) {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    db.query_row(
+        "SELECT pending,owner_pid,owner_start FROM anthropic_requests",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .unwrap()
+}
+
+fn insert_pending(f: &Fixture, owner: (Option<i64>, Option<i64>)) {
+    f.proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start) \
+             VALUES ('other','item',?1,?2,?3,?4)",
+            params![MODEL, IN_FLIGHT, owner.0, owner.1],
+        )
+        .unwrap();
+}
+
+/// The refusal a failed step answers with: its HTTP status and its check.
+fn refusal(error: &io::Error) -> Option<(u16, &'static str)> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<Refusal>())
+        .map(|refusal| (refusal.status, refusal.check))
+}
+
+#[test]
+fn a_request_in_flight_records_its_owner_and_reads_as_in_flight() {
+    let mut f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let token = f.proxy.register("run", "item").unwrap();
+    let sse = settled_stream();
+    let mut streaming = None;
+    f.proxy
+        .serve(
+            Fixture::request(&token, true).as_slice(),
+            &mut Vec::new(),
+            |_, _, out| {
+                // Admission wrote the row before any upstream byte: it names
+                // this process, and the reader sees a request in flight.
+                streaming = Some((
+                    ledger_row(&ledger),
+                    AnthropicProxy::accounting(&ledger, None).unwrap(),
+                    credit_status(&ledger).unwrap(),
+                ));
+                out.write_all(sse.as_bytes())
+            },
+        )
+        .unwrap();
+    let (row, accounting, status) = streaming.expect("the row exists while the request streams");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    assert_eq!(row, (IN_FLIGHT, Some(i64::from(pid)), Some(start as i64)));
+    assert_eq!(
+        accounting,
+        CreditAccounting {
+            spent_usd: 0.0,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    // The local inspection agrees, and a pending row is not spend.
+    assert_eq!(status["entries"][0]["state"], "in flight");
+    assert_eq!(status["in_flight"], 1);
+    assert_eq!(status["abandoned"], 0);
+    assert_eq!(status["spent_usd"], 0.0);
+    // The settled row keeps the owner but no longer counts as pending.
+    assert_eq!(
+        ledger_row(&ledger),
+        (SETTLED, Some(i64::from(pid)), Some(start as i64))
+    );
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert!(accounting.spent_usd > 0.0 && accounting.pending() == 0);
+}
+
+#[test]
+fn a_live_pending_row_still_admits_nothing() {
+    let mut f = Fixture::new(200.0);
+    let token = f.proxy.register("run", "item").unwrap();
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
+    // Fail-closed admission is the point and does not depend on the reader's
+    // picture: a live row admits no request either.
+    let error = f
+        .proxy
+        .available(0.0)
+        .expect_err("a pending row admits nothing");
+    assert_eq!(refusal(&error), Some((402, "pending unaccounted request")));
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, false).as_slice(),
+            &mut Vec::new(),
+            |_, _, _| panic!("a pending row must deny before upstream")
+        )
+        .is_err());
+}
+
+#[test]
+fn an_owner_that_is_gone_or_was_reused_is_never_proven_in_flight() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    assert!(!Owner { pid: 0, start: 0 }.is_live(&ledger, 1));
+    // The pid of a live process, reused by a later one: another start token.
+    assert!(!Owner {
+        pid,
+        start: start + 1,
+    }
+    .is_live(&ledger, 1));
+    assert!(Owner { pid, start }.is_live(&ledger, 1));
+
+    // A reader that cannot prove the owner live counts the row as abandoned,
+    // and one that can counts it as in flight: the split is the reader's.
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
+    let gone = AnthropicProxy::accounting_with(&ledger, None, |_, _| false).unwrap();
+    assert_eq!(
+        gone,
+        CreditAccounting {
+            spent_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    let running = AnthropicProxy::accounting_with(&ledger, None, |_, _| true).unwrap();
+    assert_eq!((running.in_flight, running.abandoned), (1, 0));
+}
+
+#[test]
+fn a_row_without_a_recorded_owner_is_abandoned() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    insert_pending(&f, (None, None));
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert_eq!(
+        accounting,
+        CreditAccounting {
+            spent_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    // A reader that would call any owner live still cannot prove this one.
+    let proven = AnthropicProxy::accounting_with(&ledger, None, |_, _| true).unwrap();
+    assert_eq!((proven.in_flight, proven.abandoned), (0, 1));
+    // The operator sees the split, and the owner can still release the row.
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["state"], "abandoned");
+    assert_eq!(status["abandoned"], 1);
+    credit_release(&ledger, 1).unwrap();
+    assert_eq!(credit_status(&ledger).unwrap()["pending"], 0);
+}
+
+#[test]
+fn a_ledger_from_before_the_owner_columns_reads_as_abandoned_and_migrates_once() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("old-ledger.sqlite");
+    let db = Connection::open(&ledger).unwrap();
+    db.execute_batch(
+        "CREATE TABLE anthropic_requests (
+          id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
+          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
+          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO anthropic_requests(run,item,model,cost,pending) VALUES ('prior','item',?1,0.5,1)",
+        params![MODEL],
+    )
+    .unwrap();
+    drop(db);
+    // Before the migration the reader cannot prove the row in flight either.
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert_eq!(
+        accounting,
+        CreditAccounting {
+            spent_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["state"], "abandoned");
+    // The row still carries the cost an older herdr wrote onto it, which the
+    // inspection must not count as spend: its total is the settled spend the
+    // accounting reader reports, a pending row has none.
+    assert_eq!(status["entries"][0]["cost_usd"], Value::Null);
+    assert_eq!(status["spent_usd"].as_f64(), Some(accounting.spent_usd));
+    let config = crate::config::WorkersConfig {
+        anthropic_api_key_file: f.dir.join("key").display().to_string(),
+        anthropic_api_cap_usd: 200.0,
+        ..Default::default()
+    };
+    // Opening the cycle's ledger migrates it: the old pending row gets the
+    // abandoned state, so nothing has to guess its owner.
+    let proxy = AnthropicProxy::open(&config, &ledger).unwrap();
+    assert_eq!(ledger_row(&ledger), (ABANDONED, None, None));
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap().abandoned,
+        1
+    );
+    // A later open of the migrated ledger never relabels a live row.
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start) \
+             VALUES ('now','item',?1,?2,?3,?4)",
+            params![MODEL, IN_FLIGHT, pid, start as i64],
+        )
+        .unwrap();
+    drop(proxy);
+    let reopened = AnthropicProxy::open(&config, &ledger).unwrap();
+    let rows: Vec<(i64, Option<i64>)> = reopened
+        .ledger
+        .prepare("SELECT pending,owner_pid FROM anthropic_requests ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (ABANDONED, None),
+            (IN_FLIGHT, Some(i64::from(std::process::id())))
+        ]
+    );
+    let accounting = AnthropicProxy::accounting(&ledger, None).unwrap();
+    assert_eq!((accounting.in_flight, accounting.abandoned), (1, 1));
+}
+
+#[test]
+fn an_abandonment_the_ledger_cannot_record_is_kept_closed_in_memory() {
+    let mut f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    // A ledger that refuses the abandonment write, as a locked or read-only
+    // ledger does: the request must still stop reading as in flight.
+    Connection::open(&ledger)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_abandonment BEFORE UPDATE OF pending \
+             ON anthropic_requests WHEN NEW.pending=2 \
+             BEGIN SELECT RAISE(ABORT,'ledger refuses the write'); END;",
+        )
+        .unwrap();
+    let token = f.proxy.register("run", "item").unwrap();
+    assert!(f
+        .proxy
+        .serve(
+            Fixture::request(&token, true).as_slice(),
+            &mut Vec::new(),
+            |_, _, out| {
+                out.write_all(b"data: ")?;
+                Err(io::Error::other("transport lost"))
+            }
+        )
+        .is_err());
+    // The write failed, so the ledger still holds the row in flight...
+    assert_eq!(ledger_row(&ledger).0, IN_FLIGHT);
+    // ...and neither reader in this process proves it in flight again.
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 0.0,
+            in_flight: 0,
+            abandoned: 1,
+        }
+    );
+    let status = credit_status(&ledger).unwrap();
+    assert_eq!(status["entries"][0]["state"], "abandoned");
+    assert_eq!(status["in_flight"], 0);
+    assert_eq!(status["abandoned"], 1);
+    // Fail-closed admission is unchanged: the row still admits nothing.
+    let error = f
+        .proxy
+        .available(0.0)
+        .expect_err("a pending row admits nothing");
+    assert_eq!(refusal(&error), Some((402, "pending unaccounted request")));
+}
+
+#[test]
+fn one_snapshot_counts_a_request_that_settles_between_the_reads() {
+    let f = Fixture::new(200.0);
+    let ledger = f.dir.join("ledger.sqlite");
+    let pid = std::process::id();
+    let start = crate::platform::process_start_token(pid).unwrap();
+    // One settled charge, and a request that streams when the reads start.
+    f.proxy
+        .ledger
+        .execute(
+            "INSERT INTO anthropic_requests(run,item,model,cost,pending) \
+             VALUES ('prior','item',?1,11.0,?2)",
+            params![MODEL, SETTLED],
+        )
+        .unwrap();
+    insert_pending(&f, (Some(i64::from(pid)), Some(start as i64)));
+    // A write-ahead log lets the second connection commit inside the reader's
+    // snapshot; in rollback-journal mode a writer waits for that read instead,
+    // so the interleaving cannot happen there in the first place.
+    let mode: String = f
+        .proxy
+        .ledger
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    let writer = Connection::open(&ledger).unwrap();
+    let accounting = AnthropicProxy::accounting_between(
+        &ledger,
+        None,
+        |entry, owner| owner.is_live(&ledger, entry),
+        move || {
+            // Between the two reads, the streaming request settles.
+            writer
+                .execute(
+                    "UPDATE anthropic_requests SET cost=5.0,pending=?1 WHERE id=2",
+                    params![SETTLED],
+                )
+                .unwrap();
+        },
+    )
+    .unwrap();
+    // Its charge is not in the settled total the snapshot read, so the request
+    // is still one of its pending rows: no figure lost it, and the cycle's
+    // spend is never understated while the accounting reads complete.
+    assert_eq!(
+        accounting,
+        CreditAccounting {
+            spent_usd: 11.0,
+            in_flight: 1,
+            abandoned: 0,
+        }
+    );
+    assert_eq!(accounting.pending(), 1);
+    // The settle landed: a later read is a coherent later snapshot.
+    assert_eq!(
+        AnthropicProxy::accounting(&ledger, None).unwrap(),
+        CreditAccounting {
+            spent_usd: 16.0,
+            in_flight: 0,
+            abandoned: 0,
+        }
+    );
 }

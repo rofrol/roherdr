@@ -11831,9 +11831,11 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 assert_eq!(model.as_deref(), Some("claude-sonnet-5-5"));
             }
             assert!(calls(&fixture).is_empty(), "claude -p was called");
-            let (spent, pending) =
-                AnthropicProxy::accounting(&ledger, Some(&run.info.run_id)).unwrap();
-            assert!(spent > 0.0 && pending == 0, "{spent} {pending}");
+            let accounting = AnthropicProxy::accounting(&ledger, Some(&run.info.run_id)).unwrap();
+            assert!(
+                accounting.spent_usd > 0.0 && accounting.pending() == 0,
+                "{accounting:?}"
+            );
             let recorded = run_events(&fixture, &run.info.run_id, "run_credit_call");
             assert_eq!(recorded.len(), 2, "{recorded:#?}");
             assert!(

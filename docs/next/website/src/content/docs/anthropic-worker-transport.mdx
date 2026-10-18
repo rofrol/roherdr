@@ -103,14 +103,20 @@ and allowlist change, not a guessed default.
 
 Admission serializes through the ledger and reserves a conservative input/output
 upper bound before any upstream request. A durable pending row precedes network
-access. Missing or malformed usage, transport failure, interruption, a client
-that disconnects, or an unavailable counter fails closed. A pending request
-survives restart and refuses further spend, even with a higher cap. A definite
-HTTP 4xx or 5xx rejection before any message response bytes releases its
-reservation at zero cost, including when its error JSON is absent or malformed.
-A broken transport, malformed 200 response, or SSE error remains uncertain and
-keeps the latch. Completed cost also survives restart; there is no timer-based
-or automatic billing-cycle reset. Do not delete the ledger to work around a refusal.
+access, recording the writing process's pid and start token. Missing or
+malformed usage, transport failure, interruption, a client that disconnects, or
+an unavailable counter fails closed, and the request's row is marked abandoned:
+it never reads as a request still in flight, even while the server keeps
+running. If the ledger cannot record that mark (a locked or read-only ledger),
+the server logs the failed write and keeps the row abandoned in its own memory,
+so a finished request still never reads as in flight while that process runs. A
+pending request survives restart and refuses further spend, even with a higher
+cap. A definite HTTP 4xx or 5xx rejection before any message response
+bytes releases its reservation at zero cost, including when its error JSON is
+absent or malformed. A broken transport, malformed 200 response, or SSE error
+remains uncertain and keeps the latch. Completed cost also survives restart;
+there is no timer-based or automatic billing-cycle reset. Do not delete the
+ledger to work around a refusal.
 
 ## Refusal-check audit for long conversations
 
@@ -162,9 +168,18 @@ The following checks remain intentional:
 ## Owner reconciliation
 
 Run `herdr credits status` on the server host as its owner. It reads the local
-configured cycle's ledger without reading the API key and prints total recorded
-USD, pending count, and entries (id, run, item, model, cost and state). States
-are `pending`, `accounted`, or `released`; released entries remain in the ledger.
+configured cycle's ledger without reading the API key and prints USD, the
+pending count split into `in_flight` and `abandoned`, and entries (id, run, item,
+model, cost and state). Its USD is settled spend only, the same figure the usage
+widget and the run journal call spend: a pending row has no cost until its owner
+settles or releases it, so a cost left on a pending row is not added to it and
+reads as no cost at all. States are `in flight`, `abandoned`, `accounted`, or
+`released`; released entries remain in the ledger. A pending row
+records the pid and start token of the process that wrote it, so it reads as
+`in flight` only while that very process still runs; a row whose process is
+gone, whose pid a later process reused, that ended without settling, or that was
+written before the ledger recorded owners reads as `abandoned`. Admission stays
+closed for either state: only release or a settled charge opens spending again.
 This is a local owner command, not an advertised remote client method.
 
 Before running `herdr credits release <entry>`, stop the affected worker and

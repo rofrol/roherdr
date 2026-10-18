@@ -645,10 +645,10 @@ impl Reader {
                     &proxy.ledger,
                     Some(&proxy.run),
                 ) {
-                    Ok((cost, 0)) => {
-                        event["total_cost_usd"] = json!(cost);
+                    Ok(accounting) if accounting.pending() == 0 => {
+                        event["total_cost_usd"] = json!(accounting.spent_usd);
                         event["credit_accounting"] =
-                            json!({"spent_usd": cost, "worker": proxy.run});
+                            json!({"spent_usd": accounting.spent_usd, "worker": proxy.run});
                     }
                     _ => {
                         event["is_error"] = json!(true);

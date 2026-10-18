@@ -1,12 +1,13 @@
 //! Capped API transport for explicit credit-backed pi workers. Existing
 //! subscription workers are never silently switched to paid API access.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::time::Duration;
 
 use rusqlite::{params, Connection};
 use serde_json::Value;
@@ -22,6 +23,22 @@ const BODY_MAX: usize = 32 * 1024 * 1024;
 // argument/text event, including JSON escaping, rather than the old 1 MB line.
 const LINE_MAX: usize = 6 * BODY_MAX + 8192;
 const RESPONSE_MAX: usize = LINE_MAX;
+
+/// A ledger row whose charge is accounted.
+const SETTLED: i64 = 0;
+/// A row whose request is streaming from the process that wrote it.
+const IN_FLIGHT: i64 = 1;
+/// A row whose stream ended without settling. Only the owner's `herdr credits
+/// release` clears it, so spending stays closed until then.
+const ABANDONED: i64 = 2;
+/// The ledger schema herdr writes: the pending states above, and the owner
+/// columns of a row. `PRAGMA user_version` tells whether an older ledger was
+/// migrated to it.
+const SCHEMA_VERSION: i64 = 1;
+/// How long a ledger connection waits for another connection's lock. SQLite's
+/// own busy handler polls for the lock: a designed backoff for a transient
+/// writer, never a retry of a write that was lost.
+const LEDGER_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct Refusal {
@@ -118,12 +135,85 @@ fn report_refusal(
     }
 }
 
+/// The process that owns a pending row. Its start token tells it apart from a
+/// later process that reused its pid, as the coordinator tenures' holders are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Owner {
+    pid: u32,
+    start: u64,
+}
+
+impl Owner {
+    /// This process, or `None` where the platform cannot read when it started:
+    /// a row written without an owner could never be proven in flight.
+    fn this_process() -> Option<Self> {
+        let pid = std::process::id();
+        crate::platform::process_start_token(pid).map(|start| Self { pid, start })
+    }
+
+    /// Whether this owner still runs and its row is not remembered abandoned
+    /// here. A process the host cannot inspect counts as gone: no row is ever
+    /// proven in flight by a pid alone.
+    fn is_live(self, ledger: &Path, entry: i64) -> bool {
+        !abandoned_in_memory(ledger, entry)
+            && crate::platform::process_exists(self.pid)
+            && crate::platform::process_start_token(self.pid) == Some(self.start)
+    }
+}
+
+/// Pending rows whose abandonment this process could not write to their ledger,
+/// per ledger. The owner process keeps running, so the ledger alone would read
+/// them as still in flight; this process remembers them as abandoned instead,
+/// and a later process finds their owner gone.
+static ABANDONED_IN_MEMORY: LazyLock<Mutex<HashSet<(PathBuf, i64)>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// The registry, recovered rather than dropped when a panic poisoned its lock:
+/// an abandoned row must stay abandoned for every later reader here.
+fn abandoned_in_memory_rows() -> MutexGuard<'static, HashSet<(PathBuf, i64)>> {
+    ABANDONED_IN_MEMORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn remember_abandoned(ledger: &Path, entry: i64) {
+    abandoned_in_memory_rows().insert((ledger.to_path_buf(), entry));
+}
+
+fn abandoned_in_memory(ledger: &Path, entry: i64) -> bool {
+    abandoned_in_memory_rows().contains(&(ledger.to_path_buf(), entry))
+}
+
+/// Durable spend of one credit cycle, with the pending rows split by whether a
+/// live process still accounts for them. Both kinds keep admission closed; only
+/// a live one describes a request that is still streaming.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct CreditAccounting {
+    /// Settled spend of the cycle, in USD: a pending row has no cost until its
+    /// owner settles or releases it.
+    pub(crate) spent_usd: f64,
+    /// Requests streaming in the process that wrote their row.
+    pub(crate) in_flight: usize,
+    /// Pending rows no live process accounts for; the cycle's spend is unknown.
+    pub(crate) abandoned: usize,
+}
+
+impl CreditAccounting {
+    /// Every row admission still refuses on, in flight and abandoned.
+    pub(crate) fn pending(&self) -> usize {
+        self.in_flight + self.abandoned
+    }
+}
+
 /// No Debug implementation: neither the key nor run tokens are printable.
 pub(crate) struct AnthropicProxy {
     key: String,
     cap: f64,
     model: String,
     ledger: Connection,
+    /// The ledger's path, the key under which this process remembers rows whose
+    /// abandonment it could not write.
+    ledger_path: PathBuf,
     grants: HashMap<String, (String, String)>,
     killed: bool,
 }
@@ -158,19 +248,13 @@ impl AnthropicProxy {
             return Err(refused());
         }
         let db = Connection::open(ledger).map_err(|_| refused())?;
-        db.execute_batch(
-            "PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS anthropic_requests (
-              id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
-              model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
-              cache_write INTEGER, cost REAL, pending INTEGER NOT NULL);",
-        )
-        .map_err(|_| refused())?;
+        open_ledger(&db)?;
         Ok(Self {
             key,
             cap: config.anthropic_api_cap_usd,
             model: config.anthropic_api_model.clone(),
             ledger: db,
+            ledger_path: ledger.to_path_buf(),
             grants: HashMap::new(),
             killed: false,
         })
@@ -228,10 +312,13 @@ impl AnthropicProxy {
     }
 
     pub(crate) fn available(&self, reserve: f64) -> io::Result<()> {
+        // A pending row admits nothing, whether its request is still in flight
+        // or was abandoned: only the owner's release settles one.
         let (cost, pending): (f64, i64) = self
             .ledger
             .query_row(
-                "SELECT COALESCE(SUM(cost),0), COALESCE(SUM(pending),0) FROM anthropic_requests",
+                "SELECT COALESCE(SUM(cost),0), COUNT(CASE WHEN pending!=0 THEN 1 END) \
+                 FROM anthropic_requests",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -313,17 +400,30 @@ impl AnthropicProxy {
             write!(output, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len())?;
             return output.write_all(&bytes);
         }
+        // A row whose owner could not be recorded would never be provable in
+        // flight, so the request is refused rather than written unowned.
+        let owner = Owner::this_process().ok_or_else(refused)?;
         self.ledger
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| refused())?;
-        let admission =
-            (|| {
-                self.available(request.reserve)?;
-                self.ledger.execute(
-                "INSERT INTO anthropic_requests(run,item,model,pending) VALUES (?1,?2,?3,1)",
-                params![run, item, self.model]).map_err(|_| refused())?;
-                self.ledger.execute_batch("COMMIT").map_err(|_| refused())
-            })();
+        let admission = (|| {
+            self.available(request.reserve)?;
+            self.ledger
+                .execute(
+                    "INSERT INTO anthropic_requests(run,item,model,pending,owner_pid,owner_start) \
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        run,
+                        item,
+                        self.model,
+                        IN_FLIGHT,
+                        owner.pid,
+                        owner.start as i64
+                    ],
+                )
+                .map_err(|_| refused())?;
+            self.ledger.execute_batch("COMMIT").map_err(|_| refused())
+        })();
         if let Err(error) = admission {
             let _ = self.ledger.execute_batch("ROLLBACK");
             return Err(error);
@@ -352,25 +452,118 @@ impl AnthropicProxy {
             if no_usage && !response.header && response.json.is_empty() && response.line.is_empty()
             {
                 release_entry(&self.ledger, id)?;
+            } else {
+                // The stream ended without settling: its row stays closed for
+                // admission and never reads as an in-flight request.
+                mark_abandoned(&self.ledger_path, &self.ledger, id)?;
             }
             return Err(error);
         }
-        let usage = response.finish().map_err(|e| with_upstream(e, 200))?;
-        self.ledger.execute(
-            "UPDATE anthropic_requests SET input=?1,output=?2,cache_read=?3,cache_write=?4,cost=?5,pending=0 WHERE id=?6",
-            params![usage.input as i64, usage.output as i64, usage.read as i64, usage.write as i64, usage.cost(&self.model), id])
-            .map_err(|_| refused())?;
+        let usage = match response.finish() {
+            Ok(usage) => usage,
+            Err(error) => {
+                mark_abandoned(&self.ledger_path, &self.ledger, id)?;
+                return Err(with_upstream(error, 200));
+            }
+        };
+        let settled = self.ledger.execute(
+            "UPDATE anthropic_requests SET input=?1,output=?2,cache_read=?3,cache_write=?4,cost=?5,pending=?6 WHERE id=?7",
+            params![usage.input as i64, usage.output as i64, usage.read as i64, usage.write as i64, usage.cost(&self.model), SETTLED, id]);
+        if settled.is_err() {
+            // A charge the ledger cannot record must never keep reading as live.
+            mark_abandoned(&self.ledger_path, &self.ledger, id)?;
+            return Err(refused());
+        }
         Ok(())
     }
 
-    /// Read durable accounting without loading the upstream key.
-    pub(crate) fn accounting(path: &Path, run: Option<&str>) -> io::Result<(f64, i64)> {
+    /// Read durable accounting without loading the upstream key. A pending row
+    /// is in flight only while its recorded owner process still runs; every
+    /// other pending row is abandoned, and both kinds keep spending closed.
+    pub(crate) fn accounting(path: &Path, run: Option<&str>) -> io::Result<CreditAccounting> {
+        Self::accounting_with(path, run, |entry, owner| owner.is_live(path, entry))
+    }
+
+    /// [`Self::accounting`] with the owner check injected: the offline tests
+    /// prove the split without starting a process to own a row.
+    fn accounting_with(
+        path: &Path,
+        run: Option<&str>,
+        is_live: impl Fn(i64, Owner) -> bool,
+    ) -> io::Result<CreditAccounting> {
+        Self::accounting_between(path, run, is_live, || {})
+    }
+
+    /// Both figures come from one SQLite read transaction: a request that
+    /// settles between the two reads is counted once, as settled spend if the
+    /// snapshot already saw it settled, otherwise as a pending row, but never
+    /// in neither. `between_reads` is the tests' seam for that interleaving.
+    fn accounting_between(
+        path: &Path,
+        run: Option<&str>,
+        is_live: impl Fn(i64, Owner) -> bool,
+        between_reads: impl FnOnce(),
+    ) -> io::Result<CreditAccounting> {
         let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|_| refused())?;
-        db.query_row(
-            "SELECT COALESCE(SUM(cost),0),COALESCE(SUM(pending),0) FROM anthropic_requests WHERE (?1 IS NULL OR run=?1)",
-            params![run], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).map_err(|_| refused())
+        db.busy_timeout(LEDGER_BUSY_TIMEOUT)
+            .map_err(|_| refused())?;
+        let snapshot = db.unchecked_transaction().map_err(|_| refused())?;
+        let mut accounting = CreditAccounting {
+            spent_usd: snapshot
+                .query_row(
+                    "SELECT COALESCE(SUM(cost),0) FROM anthropic_requests \
+                     WHERE (?1 IS NULL OR run=?1) AND pending=?2",
+                    params![run, SETTLED],
+                    |row| row.get(0),
+                )
+                .map_err(|_| refused())?,
+            ..Default::default()
+        };
+        between_reads();
+        let mut pending = snapshot
+            .prepare(&format!(
+                "SELECT id,pending,{owners} FROM anthropic_requests \
+                 WHERE (?1 IS NULL OR run=?1) AND pending!=?2",
+                owners = owner_columns(&snapshot)?
+            ))
+            .map_err(|_| refused())?;
+        let rows = pending
+            .query_map(params![run, SETTLED], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            })
+            .map_err(|_| refused())?;
+        for row in rows {
+            let (entry, state, pid, start) = row.map_err(|_| refused())?;
+            match (pid, start) {
+                // A request still streaming from the process that wrote the
+                // row is in flight.
+                (Some(pid), Some(start))
+                    if state == IN_FLIGHT
+                        && is_live(
+                            entry,
+                            Owner {
+                                pid: pid as u32,
+                                start: start as u64,
+                            },
+                        ) =>
+                {
+                    accounting.in_flight += 1
+                }
+                // Its stream ended without settling, or its owner is gone, or
+                // it recorded none (a row from before the owner columns): the
+                // reader cannot prove it in flight, so it counts as abandoned.
+                _ => accounting.abandoned += 1,
+            }
+        }
+        drop(pending);
+        snapshot.commit().map_err(|_| refused())?;
+        Ok(accounting)
     }
 
     /// Socket parent must already be user-only; never replace an existing path.
@@ -520,51 +713,199 @@ pub(crate) fn ledger_path(config: &crate::config::WorkersConfig) -> io::Result<s
     Ok(crate::config::state_dir().join(format!("anthropic-credits-{cycle}.sqlite")))
 }
 
-/// Owner-only local ledger inspection; never loads the API key.
+/// Create the ledger, and migrate one an older herdr wrote: its pending rows
+/// predate the owner columns, so no reader could ever prove them in flight, and
+/// they are marked abandoned. Runs once per ledger (`PRAGMA user_version`), so
+/// it never relabels a row a live request wrote.
+fn open_ledger(db: &Connection) -> io::Result<()> {
+    db.busy_timeout(LEDGER_BUSY_TIMEOUT)
+        .map_err(|_| refused())?;
+    db.execute_batch(
+        "PRAGMA synchronous=FULL;
+        CREATE TABLE IF NOT EXISTS anthropic_requests (
+          id INTEGER PRIMARY KEY, run TEXT NOT NULL, item TEXT NOT NULL,
+          model TEXT NOT NULL, input INTEGER, output INTEGER, cache_read INTEGER,
+          cache_write INTEGER, cost REAL, pending INTEGER NOT NULL,
+          owner_pid INTEGER, owner_start INTEGER);",
+    )
+    .map_err(|_| refused())?;
+    let version: i64 = db
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| refused())?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    // Another server may open the same cycle's ledger: serialize the migration
+    // and ask for each column again inside it.
+    db.execute_batch("BEGIN IMMEDIATE").map_err(|_| refused())?;
+    let migrated = (|| {
+        let columns = table_columns(db)?;
+        for column in ["owner_pid", "owner_start"] {
+            if !columns.iter().any(|name| name == column) {
+                db.execute_batch(&format!(
+                    "ALTER TABLE anthropic_requests ADD COLUMN {column} INTEGER"
+                ))
+                .map_err(|_| refused())?;
+            }
+        }
+        // A row pending from before the owner columns has no owner to prove in
+        // flight; the row's state says so instead of leaving it ambiguous.
+        db.execute(
+            "UPDATE anthropic_requests SET pending=?1 WHERE pending!=?2 AND owner_pid IS NULL",
+            params![ABANDONED, SETTLED],
+        )
+        .map_err(|_| refused())?;
+        db.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .map_err(|_| refused())
+    })();
+    match migrated {
+        Ok(()) => db.execute_batch("COMMIT").map_err(|_| refused()),
+        Err(error) => {
+            let _ = db.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn table_columns(db: &Connection) -> io::Result<Vec<String>> {
+    let mut columns = db
+        .prepare("PRAGMA table_info(anthropic_requests)")
+        .map_err(|_| refused())?;
+    let names = columns
+        .query_map([], |row| row.get(1))
+        .map_err(|_| refused())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| refused());
+    names
+}
+
+/// The owner columns' SQL for one ledger, or `NULL,NULL` for a ledger written
+/// before them: its pending rows record no owner, so no reader can prove them
+/// in flight.
+fn owner_columns(db: &Connection) -> io::Result<&'static str> {
+    let columns = table_columns(db)?;
+    let recorded = ["owner_pid", "owner_start"]
+        .iter()
+        .all(|name| columns.iter().any(|column| column == name));
+    Ok(if recorded {
+        "owner_pid,owner_start"
+    } else {
+        "NULL,NULL"
+    })
+}
+
+/// Owner-only local ledger inspection; never loads the API key. Its `spent_usd`
+/// is the settled spend [`AnthropicProxy::accounting`] reports: a pending row
+/// has no cost until its owner settles or releases it, so a cost left on a
+/// pending row is never added to the total.
 pub(crate) fn credit_status(path: &Path) -> io::Result<Value> {
     match std::fs::metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(serde_json::json!({"spent_usd":0.0,"pending":0,"entries":[]}));
+            return Ok(serde_json::json!(
+                {"spent_usd":0.0,"pending":0,"in_flight":0,"abandoned":0,"entries":[]}
+            ));
         }
         Err(error) => return Err(error),
         Ok(_) => {}
     }
     let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|_| refused())?;
+    db.busy_timeout(LEDGER_BUSY_TIMEOUT)
+        .map_err(|_| refused())?;
+    // A ledger from before the owner columns is inspected as it is; its pending
+    // rows have no owner, so they read as abandoned until a proxy migrates it.
+    let owners = owner_columns(&db)?;
     let mut query = db
-        .prepare("SELECT id,run,item,model,cost,pending,input FROM anthropic_requests ORDER BY id")
+        .prepare(&format!("SELECT id,run,item,model,cost,pending,input,{owners} FROM anthropic_requests ORDER BY id"))
         .map_err(|_| refused())?;
     let entries = query.query_map([], |row| {
+        let id: i64 = row.get(0)?;
         let pending: i64 = row.get(5)?;
         let input: Option<i64> = row.get(6)?;
-        Ok(serde_json::json!({"id":row.get::<_,i64>(0)?,"run":row.get::<_,String>(1)?,
+        let pid: Option<i64> = row.get(7)?;
+        let start: Option<i64> = row.get(8)?;
+        // A pending row reads "in flight" only while its owner still runs; the
+        // owner's release clears either kind.
+        let in_flight = pending == IN_FLIGHT
+            && pid.zip(start).is_some_and(|(pid, start)| {
+                Owner {
+                    pid: pid as u32,
+                    start: start as u64,
+                }
+                .is_live(path, id)
+            });
+        Ok(serde_json::json!({"id":id,"run":row.get::<_,String>(1)?,
             "item":row.get::<_,String>(2)?,"model":row.get::<_,String>(3)?,
-            "cost_usd":row.get::<_,Option<f64>>(4)?,
-            "state":if pending != 0 {"pending"} else if input.is_none() {"released"} else {"accounted"}}))
+            "cost_usd":if pending == SETTLED {row.get::<_,Option<f64>>(4)?} else {None},
+            "state":if in_flight {"in flight"} else if pending != SETTLED {"abandoned"} else if input.is_none() {"released"} else {"accounted"}}))
     }).map_err(|_| refused())?.collect::<Result<Vec<_>,_>>().map_err(|_| refused())?;
-    // Totals come from the same SQLite statement snapshot as the entries.
+    // Totals come from the same SQLite statement snapshot as the entries, and
+    // are the settled spend: a pending row's cost is not spend yet.
     let cost: f64 = entries
         .iter()
         .filter_map(|entry| entry["cost_usd"].as_f64())
         .sum();
-    let pending = entries
+    let in_flight = entries
         .iter()
-        .filter(|entry| entry["state"] == "pending")
+        .filter(|entry| entry["state"] == "in flight")
         .count();
-    Ok(serde_json::json!({"spent_usd":cost,"pending":pending,"entries":entries}))
+    let abandoned = entries
+        .iter()
+        .filter(|entry| entry["state"] == "abandoned")
+        .count();
+    Ok(
+        serde_json::json!({"spent_usd":cost,"pending":in_flight + abandoned,
+        "in_flight":in_flight,"abandoned":abandoned,"entries":entries}),
+    )
 }
 
 fn release_entry(db: &Connection, entry: i64) -> io::Result<()> {
+    // The owner attests the request consumed no tokens, whether its row is
+    // still in flight or was abandoned.
     let changed = db
         .execute(
-            "UPDATE anthropic_requests SET pending=0,cost=0 WHERE id=?1 AND pending=1",
-            params![entry],
+            "UPDATE anthropic_requests SET pending=?1,cost=0 WHERE id=?2 AND pending!=?1",
+            params![SETTLED, entry],
         )
         .map_err(|_| refused())?;
     if changed != 1 {
         return Err(io::Error::other("entry is missing or is not pending"));
     }
     Ok(())
+}
+
+/// A request that ended without settling keeps the ledger closed: the row never
+/// becomes settled spend, and no reader can prove it in flight.
+fn abandon_entry(db: &Connection, entry: i64) -> io::Result<()> {
+    let changed = db
+        .execute(
+            "UPDATE anthropic_requests SET pending=?1 WHERE id=?2 AND pending=?3",
+            params![ABANDONED, entry, IN_FLIGHT],
+        )
+        .map_err(|_| refused())?;
+    if changed != 1 {
+        return Err(io::Error::other("entry is missing or is not in flight"));
+    }
+    Ok(())
+}
+
+/// [`abandon_entry`] for a live request, whose failure must not leave a
+/// finished request reading as in flight while its process runs: the row is
+/// also remembered abandoned in this process, and the failed write is logged
+/// (the ledger's busy handler keeps a transient lock from failing at all).
+fn mark_abandoned(ledger: &Path, db: &Connection, entry: i64) -> io::Result<()> {
+    match abandon_entry(db, entry) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            remember_abandoned(ledger, entry);
+            tracing::warn!(
+                entry,
+                error = %error,
+                "credit ledger could not record an abandoned request; this process keeps it closed"
+            );
+            Err(error)
+        }
+    }
 }
 
 /// The owner attests the stopped request did not consume tokens. This must
