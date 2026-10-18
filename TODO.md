@@ -3963,6 +3963,17 @@ Items agents add. Not approved until the user moves them up.
   fails only on a real bridge defect. Second known flake in the same suite family (see the
   letta hook item above); if they share a cause, say so. No dependency, no product change
   expected.
+  A third case, 2026-10-18: t-x46qpegh's landing hit
+  `server::client_transport::tests::observer_write_timeout_resets_when_sending_makes_progress`
+  twice in a row (once in the verify, once in the install) with
+  `write_framed_bytes(...)` failing and both observer counts 0, while the test
+  passes alone at the same commit; the machine's load average was 10.7 with
+  Spotlight indexing at 30 %. So the same family has three members now (the
+  hook's one-second drop, this bridge test's sleeps, and the transport test's
+  write timeout), and the shared lesson is that a test must be driven by the
+  event it asserts and never by a duration: treat them as one item, fix the
+  three tests and the hook's report loss, and keep a stress run of each in
+  `just check` only if it is deterministic.
 
 ## Needs a decision
 
