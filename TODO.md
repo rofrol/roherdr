@@ -11,79 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
-  user's question 2026-10-12, "loss of memory between items and shallower
-  review: how do others counter it?"; round 20261012-155246-e730, see
-  [t-ic5rrxn3]). For `--draft` and `--auto-review`: a deterministic
-  context pack (the item, its linked decisions, its run history with
-  failure reasons, `git log` and ripgrep hits for the paths and symbols it
-  names); bounded read-only repository tools for the review call; a
-  checklist of about 20 lines distilled from caught bug classes, each with
-  its source; findings must cite file:line and how they were verified;
-  generated, schema and contract paths never cut by the 200 KB limit; a
-  golden set of the resident coordinator's past catches replayed blind
-  against the reviewer. Needs a decision before the queue-mode trial.
-  Decided by the user 2026-10-12 (d-elct27i5): yes, before the queue-mode
-  trial.
-  Note from [t-s6lkxb4v] slice 2 (2026-10-12): a credit run's review call
-  uses `[workers] anthropic_api_model` (or the run's pinned credit model);
-  all three models in round 20261012-155246-e730 want an Opus-class model
-  for the review, so this item sets the review's model separately.
-  Round 20261012-183707-2629 on arXiv 2610.07782 (sol, MiMo, DeepSeek
-  agreeing; decided by the coordinator for the later slices): the paper's
-  null (recalled traces did not help) transfers only partly, since our
-  items are sequential in one codebase; recall helps for what the code
-  does not show (why an approach was rejected, cross-item constraints,
-  obligations deferred to a later item), and is noise for code facts
-  that git log and ripgrep already give. Changes: (1) golden set without
-  leakage: the checklist is distilled from catches before a cut-off date
-  and frozen, the evaluation replays only catches after it, each from its
-  pre-fix snapshot; (2) the A/B runs each arm in its own worktree from the
-  same base, records every call (failures and retries too) for both arms
-  the same way, predeclares the primary metric and a tolerated regression
-  for severe misses, and ablates the context pack and the checklist
-  separately; a non-significant difference is not equivalence; (3) each
-  finding is tagged by origin (checklist line or free) to see checklist
-  anchoring; (4) a finding's file:line is checked mechanically against the
-  diff and the repository, not only required; (5) the decision rationale
-  is written into the run history when the decision is made.
-  Slice 1 landed (2026-10-12, run r-onxx7w3b): the context pack
-  (`src/workers/runs/context_pack.rs`, about 40 KB, records its cuts),
-  never-cut generated and contract paths with an escalated approve of a
-  cut diff, `.herdr/review-checklist.md` (8 sourced lines, a test checks
-  the sources), findings must carry file, line and `verified_by`,
-  `[review] model`. Next: slice 2 (read-only repository tools for the
-  review, a mechanical check of each cited file:line, findings tagged by
-  origin), then slice 3 (the golden set with a dated cut-off).
-  Slice 2 landed (2026-10-12, run r-fgkhfqpt, second attempt: the first
-  ended its turn while reading code, with no commit): bounded read-only
-  review tools (`src/workers/runs/review_tools.rs`: read_file, grep,
-  git_log on the commit's git objects, 12 calls and 120 KB per review),
-  a tool loop on the credit path (`tool_choice` admitted narrowly by the
-  proxy), the `claude -p` path stays without tools and records it, a
-  mechanical file:line check with `in_diff`, findings tagged `checklist`
-  or `free` with per-review counts. Next: slice 3, the golden set with a
-  dated cut-off (round 20261012-183707-2629 in this item).
-  In flight 2026-10-16: slice 3 run r-7zvq2hh2 (golden set, cut-off,
-  `herdr todo review-eval` with a fake reviewer in tests; no real model run).
-  Paused 2026-10-16 by the user (coordination stopped, lease released):
-  run r-7zvq2hh2 is left running unowned; the next `/todo` attaches with
-  `herdr todo status r-7zvq2hh2` and `herdr todo wait r-7zvq2hh2`, then
-  reviews its diff (`herdr todo review r-7zvq2hh2 --diff`). Its task:
-  build the golden set from the coordinator dumps of r-6s6uppz2,
-  r-qbxvgpgv, r-23475ciu and r-hfp2mqpx; no real model run without the user.
-  Slice 3 landed 2026-10-16 (run r-7zvq2hh2): the checklist names its
-  cut-off (`# Cut-off: 2026-10-12T18:46:06+02:00`), `.herdr/review-golden/`
-  holds 5 post-cut-off cases (r-6s6uppz2 a1, a2; r-hfp2mqpx a1, a2;
-  r-qbxvgpgv a1; r-23475ciu skipped as a process remark, see its README),
-  and `herdr todo review-eval` (`src/workers/runs/review_eval.rs`) replays
-  them blind through the review's own input (`assemble_input`) and call
-  path, scores by file and a 15-line window, runs the ablation arms and
-  reports severe regressions; tests use a fake reviewer only. Not yet run
-  against a real model: the first real run spends credits and waits for
-  the user. Its `--credits` path books to a synthetic run id and falls
-  back to `claude -p` when the proxy refuses it.
-
 - [ ] Supervision corrects itself deterministically (the user, 2026-10-12, [t-nwxujise]
   after f-114, a worker waiting on its own herdr-job reported as stopped:
   "why is this not in a correction loop?", "why did the supervisor not
@@ -4077,6 +4004,87 @@ user needs to decide or do.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
   Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
+
+- [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
+  user's question 2026-10-12, "loss of memory between items and shallower
+  review: how do others counter it?"; round 20261012-155246-e730, see
+  [t-ic5rrxn3]). For `--draft` and `--auto-review`: a deterministic
+  context pack (the item, its linked decisions, its run history with
+  failure reasons, `git log` and ripgrep hits for the paths and symbols it
+  names); bounded read-only repository tools for the review call; a
+  checklist of about 20 lines distilled from caught bug classes, each with
+  its source; findings must cite file:line and how they were verified;
+  generated, schema and contract paths never cut by the 200 KB limit; a
+  golden set of the resident coordinator's past catches replayed blind
+  against the reviewer. Needs a decision before the queue-mode trial.
+  Decided by the user 2026-10-12 (d-elct27i5): yes, before the queue-mode
+  trial.
+  Note from [t-s6lkxb4v] slice 2 (2026-10-12): a credit run's review call
+  uses `[workers] anthropic_api_model` (or the run's pinned credit model);
+  all three models in round 20261012-155246-e730 want an Opus-class model
+  for the review, so this item sets the review's model separately.
+  Round 20261012-183707-2629 on arXiv 2610.07782 (sol, MiMo, DeepSeek
+  agreeing; decided by the coordinator for the later slices): the paper's
+  null (recalled traces did not help) transfers only partly, since our
+  items are sequential in one codebase; recall helps for what the code
+  does not show (why an approach was rejected, cross-item constraints,
+  obligations deferred to a later item), and is noise for code facts
+  that git log and ripgrep already give. Changes: (1) golden set without
+  leakage: the checklist is distilled from catches before a cut-off date
+  and frozen, the evaluation replays only catches after it, each from its
+  pre-fix snapshot; (2) the A/B runs each arm in its own worktree from the
+  same base, records every call (failures and retries too) for both arms
+  the same way, predeclares the primary metric and a tolerated regression
+  for severe misses, and ablates the context pack and the checklist
+  separately; a non-significant difference is not equivalence; (3) each
+  finding is tagged by origin (checklist line or free) to see checklist
+  anchoring; (4) a finding's file:line is checked mechanically against the
+  diff and the repository, not only required; (5) the decision rationale
+  is written into the run history when the decision is made.
+  Slice 1 landed (2026-10-12, run r-onxx7w3b): the context pack
+  (`src/workers/runs/context_pack.rs`, about 40 KB, records its cuts),
+  never-cut generated and contract paths with an escalated approve of a
+  cut diff, `.herdr/review-checklist.md` (8 sourced lines, a test checks
+  the sources), findings must carry file, line and `verified_by`,
+  `[review] model`. Next: slice 2 (read-only repository tools for the
+  review, a mechanical check of each cited file:line, findings tagged by
+  origin), then slice 3 (the golden set with a dated cut-off).
+  Slice 2 landed (2026-10-12, run r-fgkhfqpt, second attempt: the first
+  ended its turn while reading code, with no commit): bounded read-only
+  review tools (`src/workers/runs/review_tools.rs`: read_file, grep,
+  git_log on the commit's git objects, 12 calls and 120 KB per review),
+  a tool loop on the credit path (`tool_choice` admitted narrowly by the
+  proxy), the `claude -p` path stays without tools and records it, a
+  mechanical file:line check with `in_diff`, findings tagged `checklist`
+  or `free` with per-review counts. Next: slice 3, the golden set with a
+  dated cut-off (round 20261012-183707-2629 in this item).
+  In flight 2026-10-16: slice 3 run r-7zvq2hh2 (golden set, cut-off,
+  `herdr todo review-eval` with a fake reviewer in tests; no real model run).
+  Paused 2026-10-16 by the user (coordination stopped, lease released):
+  run r-7zvq2hh2 is left running unowned; the next `/todo` attaches with
+  `herdr todo status r-7zvq2hh2` and `herdr todo wait r-7zvq2hh2`, then
+  reviews its diff (`herdr todo review r-7zvq2hh2 --diff`). Its task:
+  build the golden set from the coordinator dumps of r-6s6uppz2,
+  r-qbxvgpgv, r-23475ciu and r-hfp2mqpx; no real model run without the user.
+  Slice 3 landed 2026-10-16 (run r-7zvq2hh2): the checklist names its
+  cut-off (`# Cut-off: 2026-10-12T18:46:06+02:00`), `.herdr/review-golden/`
+  holds 5 post-cut-off cases (r-6s6uppz2 a1, a2; r-hfp2mqpx a1, a2;
+  r-qbxvgpgv a1; r-23475ciu skipped as a process remark, see its README),
+  and `herdr todo review-eval` (`src/workers/runs/review_eval.rs`) replays
+  them blind through the review's own input (`assemble_input`) and call
+  path, scores by file and a 15-line window, runs the ablation arms and
+  reports severe regressions; tests use a fake reviewer only. Not yet run
+  against a real model: the first real run spends credits and waits for
+  the user. Its `--credits` path books to a synthetic run id and falls
+  back to `claude -p` when the proxy refuses it.
+  Slices 1-3 landed (context pack, review tools, the golden set with a dated
+  cut-off and `herdr todo review-eval`); the only work left is the first real
+  model run, which spends plan usage or credits, and its item is now a gate in
+  the driver-retirement record (t-54d2offk: the review the supervisor's
+  approval rests on).
+  Question: who runs `herdr todo review-eval` against a real model, and on which budget?
+  Options: leave it unrun until the supervisor's review step needs it (Recommended) | run it now on the ChatGPT plan model | run it now on the Anthropic credit path (`--credits`)
+  Checked: slice 3's close, `docs/next` and `herdr todo review-eval --help`; no real run has been made (its tests use a fake reviewer).
 
 ### Decide
 
