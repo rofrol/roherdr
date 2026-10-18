@@ -266,6 +266,21 @@ pub fn live_pane_process_group(_shell_pid: u32, _pid: u32, _start_token: u64) ->
 }
 
 /// Unsupported platform stub.
+pub fn process_name(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Unsupported platform stub.
+pub fn process_argv0(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Unsupported platform stub.
+pub fn process_argv(_pid: u32) -> Option<Vec<String>> {
+    None
+}
+
+/// Unsupported platform stub.
 pub fn process_exists(_pid: u32) -> bool {
     false
 }

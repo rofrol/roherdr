@@ -646,6 +646,29 @@ show_tab = false
 
 When `herdr todo wait`, `herdr worker wait` or `herdr worker verify` ends in a protocol problem, it prints the matching `herdr report` command with the kind, the summary and the command filled in, on stderr: a `todo wait` that gave up after a server handoff (`todo-wait-gave-up`), a verify that could not run a check and so has no verdict (`verify-unavailable`), a worker the server lost (`worker-lost`), and herdr's worker policy asking about a headless worker's Bash command that names a path outside its directories, which the sandbox refuses (`worker-sandbox-refusal`).
 
+## Handoff notes
+
+```bash
+herdr handoff path
+herdr handoff claim [--break] <path>
+herdr handoff done <path>
+herdr handoff forget <path>
+herdr handoff show [--repo <dir>]
+herdr handoff take [--repo <dir>]
+```
+
+A handoff note is a session's own file, outside any repository, that a successor session takes over; `herdr handoff` creates, claims, lists and removes these notes. It is not `herdr agent handoff` (an agent session changing kind) and not `herdr coordinator handoff` (a coordination tenure moving to a successor). A note lives at `<state dir>/handoffs/sessions/<agent>/<session id>.md`, because a session may work in several repositories and session ids are unique only per agent. `herdr handoff path` prints this session's note path and creates its directory; the session writes the note there, whole (a temporary file renamed into place), so a claim never points at a half-written note.
+
+The session is the environment: `$PI_SESSION_ID` or `$CLAUDE_CODE_SESSION_ID`, accepted only as one plain file name. Inside a herdr pane the agent session the server has for that pane must agree with it, and a disagreement is refused with both named rather than resolved silently; a pane that is closed and a server that is stopped leave the environment as the identity. Notes are per host, under that host's state directory: a claim recorded on another host is treated as held and is never replaced from here.
+
+The note's first lines, which `show` and `take` read from its first ten lines, are `Status: pending`, `Owner: <agent> <session id>` and `Repositories: <worktree path>[, <worktree path>...]`.
+
+`claim` takes the note over: the claim file `<note>.claim` is created exclusively and whole (written to a temporary file and hard-linked into place, so a reader never sees a half-written claim), so exactly one session wins and the others are told who holds it (`claimed by <session>, pid <pid>[, herdr pane <id>][, gone]`) and exit 1. Claiming a note this session already holds succeeds and says so. Every mutation (`claim`, `--break`, `done`, `forget`) holds the note's claim guard, an operating system advisory lock on `<note>.claim.guard`: a contested mutation is refused, naming the guard, and is never retried. The kernel releases the lock with the process that holds it, so a mutation that crashes leaves no stale guard, and nothing is recovered by age, a timer or a retry; the guard file itself stays and is never removed. `--break` replaces only a claimant that is provably gone: its recorded process no longer runs (a pid reused by a later process has another start token), or it is this same process's earlier session. Nothing expires on a timer, and a claim that cannot be read is held until a person removes it.
+
+`done` removes the note and its claim, the claim last, so a command that stops in between leaves a claim rather than a note someone else could take; only the claiming session may run it (exit 1 otherwise). `forget` removes a note nobody will take, with its claim, whoever claims it.
+
+`show` lists every note with its path, then its status, its claim, its owner and its repositories, and exits 3 when there is none; `--repo <dir>` keeps those naming that directory's repository, by git common directory, so any of the repository's worktrees matches. `take` claims the repository's single pending, unclaimed note: one note is claimed (printing its repositories), several are listed newest first with their owners and repositories and exit 4, and none exits 3. It skips a note that a pending `herdr coordinator handoff` waits for, read from herdr's persisted handoff state and matched by the copy and the content hash it recorded there: that note is taken with the handoff, not by an unrelated session.
+
 ## Usage per workspace
 
 ```bash

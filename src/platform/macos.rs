@@ -546,6 +546,12 @@ pub fn foreground_process_group_id_for_tty_fd(fd: RawFd) -> Option<u32> {
     (pgid > 0).then_some(pgid as u32)
 }
 
+/// The program a process calls itself in `argv[0]`: a runtime whose title it
+/// changed (Node's `process.title = "pi"`) is named here, not by its executable.
+pub fn process_argv0(pid: u32) -> Option<String> {
+    process_argv0_name(pid)
+}
+
 /// Get the effective process name from `argv[0]` via `sysctl(KERN_PROCARGS2)`.
 ///
 /// This is the macOS equivalent of reading `/proc/{pid}/cmdline` on Linux.
@@ -1184,7 +1190,7 @@ fn comm_from_bsdinfo(info: &libc::proc_bsdinfo) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn process_argv(pid: u32) -> Option<Vec<String>> {
+pub fn process_argv(pid: u32) -> Option<Vec<String>> {
     let buf = kern_procargs2(pid)?;
     procargs2_argv(&buf)
 }
@@ -1426,6 +1432,11 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
             libc::kill(pid as libc::c_int, sig);
         }
     }
+}
+
+/// The name the os lists for the process: its executable's file name.
+pub fn process_name(pid: u32) -> Option<String> {
+    process_name_and_parent(pid).map(|(name, _)| name)
 }
 
 pub fn process_exists(pid: u32) -> bool {

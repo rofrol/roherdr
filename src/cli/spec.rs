@@ -46,6 +46,7 @@ pub(super) fn command() -> Command {
         .subcommand(coordinator_command())
         .subcommand(todo_command())
         .subcommand(decision_command())
+        .subcommand(handoff_command())
         .subcommand(history_command())
         .subcommand(report_command())
         .subcommand(reports_command())
@@ -594,6 +595,40 @@ fn decision_command() -> Command {
                 .arg(flag("json")),
         )
         .subcommand(id_command("get", "id", "Show one record").arg(flag("json")))
+}
+
+fn handoff_command() -> Command {
+    Command::new("handoff")
+        .about("Keep per-session handoff notes and their claims, outside any repository")
+        .subcommand(
+            Command::new("path").about("Print this session's note path, creating its directory"),
+        )
+        .subcommand(
+            Command::new("claim")
+                .about("Take a note over, or replace a claimant that is provably gone")
+                .arg(required("path", "PATH").value_hint(ValueHint::FilePath))
+                .arg(flag("break")),
+        )
+        .subcommand(
+            Command::new("done")
+                .about("Remove the note the claimant finished, with its claim")
+                .arg(required("path", "PATH").value_hint(ValueHint::FilePath)),
+        )
+        .subcommand(
+            Command::new("forget")
+                .about("Remove a note nobody will take, with its claim")
+                .arg(required("path", "PATH").value_hint(ValueHint::FilePath)),
+        )
+        .subcommand(
+            Command::new("show")
+                .about("List the notes with their status, claim, owner and repositories")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
+        .subcommand(
+            Command::new("take")
+                .about("Claim a repository's single pending note, or list the several")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
 }
 
 fn history_command() -> Command {

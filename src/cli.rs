@@ -28,6 +28,7 @@ mod completion;
 mod coordinator;
 mod credits;
 mod decision;
+mod handoff;
 mod history;
 mod integration;
 mod machine;
@@ -140,6 +141,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
         "todo" => todo::run_todo_command(&args[2..])?,
         "decision" => decision::run_decision_command(&args[2..])?,
+        "handoff" => handoff::run_handoff_command(&args[2..])?,
         "history" => history::run_history_command(&args[2..])?,
         "report" => report::run_report_command(&args[2..])?,
         "reports" => report::run_reports_command(&args[2..])?,

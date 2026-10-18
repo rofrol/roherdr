@@ -815,7 +815,12 @@ fn process_allows_remote_memory_read(state: char, comm: &str, running_inside_wsl
         && (!running_inside_wsl || crate::detect::identify_agent(comm).is_none())
 }
 
-fn process_argv(pid: u32) -> Option<Vec<String>> {
+/// The program a process calls itself in `argv[0]`.
+pub fn process_argv0(pid: u32) -> Option<String> {
+    process_argv(pid)?.into_iter().next()
+}
+
+pub fn process_argv(pid: u32) -> Option<Vec<String>> {
     let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     if bytes.is_empty() {
         return None;
@@ -950,6 +955,11 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
             libc::kill(pid as i32, sig);
         }
     }
+}
+
+/// The name the os lists for the process: its comm.
+pub fn process_name(pid: u32) -> Option<String> {
+    process_name_and_parent(pid).map(|(name, _)| name)
 }
 
 pub fn process_exists(pid: u32) -> bool {

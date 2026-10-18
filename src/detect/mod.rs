@@ -190,6 +190,21 @@ pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     parse_canonical_agent_label(&name).or_else(|| lookup_agent(&name))
 }
 
+/// The agent a process runs, from its arguments: an agent's own executable
+/// (`claude`, `pi`), or a generic runtime started with the agent's script
+/// (`node .../pi-coding-agent/dist/bundle/cli.js` is pi). `None` for arguments
+/// that name no agent.
+pub(crate) fn identify_agent_in_argv(argv: &[String]) -> Option<Agent> {
+    let executable = argv.first()?;
+    if let Some(agent) = identify_agent(executable) {
+        return Some(agent);
+    }
+    let runtime = normalized_agent_lookup_name(path_basename(executable));
+    wrapped_agent_name_from_runtime_argv(&runtime, Some(argv))
+        .as_deref()
+        .and_then(identify_agent)
+}
+
 pub(crate) fn parse_canonical_agent_label(label: &str) -> Option<Agent> {
     let agent = lookup_agent(label)?;
     (agent_label(agent) == label).then_some(agent)
@@ -959,6 +974,33 @@ fn is_python_runtime(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identify_agent_in_argv_reads_the_agent_a_runtime_runs() {
+        let argv = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            identify_agent_in_argv(&argv(&["/opt/node/bin/node", "pi", "--model", "x"])),
+            Some(Agent::Pi)
+        );
+        assert_eq!(
+            identify_agent_in_argv(&argv(&["node", "/usr/local/bin/claude"])),
+            Some(Agent::Claude)
+        );
+        assert_eq!(
+            identify_agent_in_argv(&argv(&["claude", "--resume", "s"])),
+            Some(Agent::Claude)
+        );
+        assert_eq!(identify_agent_in_argv(&argv(&["bash", "-c", "ls"])), None);
+        assert_eq!(
+            identify_agent_in_argv(&argv(&["/usr/local/bin/herdr", "handoff", "claim"])),
+            None
+        );
+    }
 
     fn foreground_process(
         pid: u32,

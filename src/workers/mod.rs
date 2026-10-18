@@ -776,7 +776,7 @@ fn task_name(prompt: &str) -> String {
 
 /// The directory of the workers' journals: in herdr's state directory,
 /// apart per named session.
-fn workers_dir() -> PathBuf {
+pub(crate) fn workers_dir() -> PathBuf {
     let state_dir = crate::config::state_dir();
     match crate::session::active_name() {
         Some(name) => state_dir.join("sessions").join(name).join("workers"),

@@ -174,6 +174,37 @@ thread_local! {
     static WRITE_FAILURES: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A note a pending coordinator handoff waits for: the copy herdr made of the
+/// agent's note when the tenure froze, and the sha256 of that note's content.
+/// The copy is not the agent's note, so the note is matched by content too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingNote {
+    pub(crate) copy: PathBuf,
+    pub(crate) sha256: String,
+}
+
+/// The notes pending coordinator handoffs wait for, from the persisted state
+/// in the workers' directory: the successor takes such a note after the
+/// tenure, so another session must not take it first (`herdr handoff take`
+/// skips it). A store that cannot be read has no pending handoff.
+pub(crate) fn pending_notes_in(workers_dir: &Path) -> Vec<PendingNote> {
+    let path = workers_dir.join("handoffs").join(STATE_FILE);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(state) = serde_json::from_str::<StateFile>(&text) else {
+        return Vec::new();
+    };
+    state
+        .pending
+        .into_iter()
+        .map(|handoff| PendingNote {
+            copy: handoff.note_path,
+            sha256: handoff.note_sha256,
+        })
+        .collect()
+}
+
 impl WorkerSupervisor {
     fn handoffs_dir(&self) -> Result<PathBuf, WorkerError> {
         let dir = self.shared.dir.join("handoffs");

@@ -2683,9 +2683,30 @@ pub fn processes_with_argv(_matches: &dyn Fn(&[String]) -> bool) -> Vec<u32> {
     Vec::new()
 }
 
-/// Not read on Windows; see [`processes_with_argv`].
-pub fn process_parent(_pid: u32) -> Option<u32> {
-    None
+/// The parent of a live process, from the system's process table. A claim is
+/// rare, so each question reads the table again.
+pub fn process_parent(pid: u32) -> Option<u32> {
+    snapshot_processes()
+        .into_iter()
+        .find(|entry| entry.pid == pid)
+        .map(|entry| entry.parent_pid)
+        .filter(|parent| *parent != 0)
+}
+
+/// The program a process calls itself in its command line.
+pub fn process_argv0(pid: u32) -> Option<String> {
+    snapshot_processes()
+        .into_iter()
+        .find(|entry| entry.pid == pid)
+        .and_then(|entry| entry.command().argv0.clone())
+}
+
+/// Another process's arguments, read from its command line.
+pub fn process_argv(pid: u32) -> Option<Vec<String>> {
+    snapshot_processes()
+        .into_iter()
+        .find(|entry| entry.pid == pid)
+        .and_then(|entry| entry.command().argv.clone())
 }
 
 pub fn signal_processes(pids: &[u32], signal: Signal) {
@@ -2711,6 +2732,16 @@ pub fn process_exists(pid: u32) -> bool {
     let mut exit_code = 0;
     let ok = unsafe { GetExitCodeProcess(process.0, &mut exit_code) } != 0;
     ok && exit_code == STILL_ACTIVE
+}
+
+/// The name the os lists for the process: its executable's file name.
+pub fn process_name(pid: u32) -> Option<String> {
+    let process = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let path = process_executable_path(process.0)?;
+    std::path::Path::new(&path)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(str::to_string)
 }
 
 static LAST_CLIPBOARD_WRITE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
