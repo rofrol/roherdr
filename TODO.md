@@ -3745,6 +3745,42 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   observation. Shown live: top up or spend, and the footer's DeepSeek
   number follows without a click.
 
+- [ ] The automatic review, answer and draft calls follow the run's agent and [t-kjh2t734]
+  model, not Claude's subscription (the user, 2026-10-17: "Claude's weekly
+  window 100% used - when will this be fixed, since I work on DeepSeek and
+  there are credits there?"). `--auto-review`, `--auto-answer` and `--draft`
+  each make one bounded, stateless `claude -p` call (structured JSON, no
+  tools) whose model is `[review] model` or Claude Code's default, so a pi
+  worker on DeepSeek proceeds while its reviews and drafts still need the
+  exhausted Claude window: after one retry each such call escalates, and a
+  draft fails before its worker starts. Only a `pi-anthropic` run's decision
+  calls use the credit proxy today. From round 20261018-025119-98db (MiMo,
+  Gemini Argon; Sol failed on its usage limit), both agree: the call follows
+  the run's agent and model unless an override names another backend. For a
+  pi run it is a bounded, stateless, tool-less `pi -p --mode json
+  --no-tools` call with the JSON schema in the prompt, parsed and validated
+  in Rust; one repair ask only after a successful call whose reply failed
+  validation (a process error, a missing key or a quota escalates at once,
+  never a blind resend), and never a retry on a timer. The credit proxy
+  stays for `pi-anthropic` runs and must not become the default for others
+  (it would burn the prepaid credits for triage). Record the deciding agent
+  and model in the decision event (today only `model`), and never approve a
+  decision whose call did not run: a call that cannot run escalates with its
+  reason and the item stays in review. Keep the input inside the model's
+  context (cap the diff bytes per model; a DeepSeek model's window is smaller
+  than the 200,000-byte diff) and escalate when it does not fit. A draft's
+  paths and checks are validated in Rust as today; a review's findings must
+  cite a file and line that the diff contains. Tests with a stub `pi`: a
+  valid event stream yields the decision, an invalid reply gets exactly one
+  repair ask and then escalates, a process error escalates with no retry and
+  no approval, a `--agent pi --model deepseek/deepseek-flash` run spawns no
+  `claude -p`, and the decision event names the agent and model. Depends on
+  the default-backend question [t-hr7yjmct] in "Needs a decision".
+  Check: the listed tests, `just check`; a real `--agent pi --model
+  deepseek/deepseek-flash` run with `--auto-review` whose review is recorded
+  as decided by pi on that model, with the subscription at whatever its
+  window shows.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4120,6 +4156,10 @@ user needs to decide or do.
   Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
   with a separate credential; still waits on the user creating it.
   Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
+
+- [ ] [t-hr7yjmct] Should a gated run's automatic review, answer and draft calls use the run's own agent and model by default?
+  Options: inherit the run's backend by default, with `[review] agent` as an override (Recommended by both models of round 20261018-025119-98db) | keep Claude as the default and add `[review] agent = inherit|claude|pi|credits` as an opt-in | always use the Anthropic API credits for decision calls
+  Checked: today's default is `claude -p` with `[review] model` unset (src/workers/runs/decision.rs:519, `call_cli`), one retry then escalation; a credit run's calls already go through the proxy; the user's Claude weekly window is at 100% while a DeepSeek pi worker runs.
 
 ### Decide
 
