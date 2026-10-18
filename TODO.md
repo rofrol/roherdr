@@ -11,27 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A run held by the usage gate shows as a red attention card with no [t-3c2zqh76]
-  question behind it (report r-103, from game-grounder2's coordinator at the
-  user's request, 2026-10-17; follow-up of t-6mjgooqu): runs r-lczmn3ta
-  (usage unknown) and r-gik2ysfm (worker cap 2 of 2) had status `waiting`,
-  `pending_event` null, `worker_id` null and the gate reason in `error`;
-  the sidebar showed "run r-gik2ysfm" as an attention dot the user cannot
-  click, and the user asked twice what it wants. Consult round
-  `20261017-005015-44aa` (5 of 5): attention comes only from a durable,
-  unresolved request to the user (a question or a user-addressed pending
-  event), never from `waiting` or a non-empty `error`; a gate wait gets a
-  structured blocker (`worker_slot`, `usage_measurement`, `usage_high`)
-  naming the event that releases it and its producer, shows in a queued
-  section, and a click opens run details (reason, releasing event, the
-  runs holding the slots), not a tab. Tests: attention equals a user
-  request; both observed shapes give no badge; a real question still does;
-  a slot exit or a measurement moves queued to started without a badge;
-  persisted older runs migrate without defaulting to "user". Optional,
-  needs its own decision: an "override once" with confirmation.
-  Write-up: ~/.local/state/roagent/herdr-card-report-20261017.md (local).
-  Decided by the user 2026-10-17 (d-fuchvyu3): approved, next.
-
 - [ ] Usage gate cap follow-ups (from t-6mjgooqu, its worker, run [t-3v3cgqcf]
   r-woxzlg7o): `worker.run` has no caller identity, so a retried call
   admits again (deduplication needs a new method or capability, per the

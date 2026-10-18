@@ -1930,3 +1930,42 @@ the next item and for the design to be reviewed with models first (round
   stub silently ignored, which hung the turn; it uses a supported command now and
   asserts the prompt and carry state, so a regression fails fast instead of
   timing out.
+
+## A run held by the usage gate is queued, never an attention card (t-3c2zqh76, 2026-10-18)
+
+Two `todo run` runs held by the usage gate (usage unreadable; worker cap 2 of 2)
+were `waiting` with no pending event and no worker, and their sidebar lines showed
+a red attention dot the user could not act on (report r-103; he asked twice what
+it wants). The user approved the item as d-fuchvyu3 after consult round
+20261017-005015-44aa (5 of 5): attention comes only from a durable, unresolved
+request addressed to the user, never from `waiting` or a non-empty `error`.
+
+- Attention on a run line now needs a request the user is meant to answer. The
+  usage gate's request is recognised by its identity (`request_id` is
+  `herdr-usage-<worker_id>`), not by a tool-name label, and is excluded from the
+  run line's attention: a gate-held run shows `queued · <reason>` in an idle
+  state, and the gate's cancelable question stays in the asking list as before.
+- `queued` is only a run waiting at `preflight`/`start` while the gate holds it; a
+  run waiting at `review` and the like says "waits for its coordinator".
+- A click on a queued run fetches the details once, through the advertised
+  `todo.status` method, for that user action only — never in the background, never
+  on a timer — and renders a point-in-time view: the step, the status and, apart,
+  the recorded error. The reply is correlated with the request's generation, so a
+  late answer cannot fill a reopened overlay.
+- The client snapshot could not grow: `ClientShellTodoRun` rides
+  `ClientShellSnapshot`, a published codec payload whose generation 1 is frozen.
+  `todo.status` therefore joins `CLIENT_SHELL_METHODS` as an additive method with
+  a digest assertion beside the frozen shape fixture, and no snapshot field was
+  added.
+- Review round 20261018-072838-03ae (sol, mimo, argon) before landing: the first
+  attempt keyed questions by worker and looked them up by run (which hid attention
+  for real questions), labelled the gate by tool name, mislabelled a
+  coordinator-wait as queued and printed a stale `error` as the current reason;
+  all four were fixed and the tests now use the producer's real gate shape.
+- Known limit, kept: the frozen snapshot carries no run → current-worker
+  identity, so an ordinary worker question still shows in the badge and the asking
+  list but not on its run's line; a typed blocker through a new advertised method
+  or a new codec generation is a separate item.
+- Also kept: the client matches the gate request by the literal `herdr-usage-`
+  prefix that `src/workers/runs/pending_usage.rs` defines; a rename there would
+  silently drop the reason from the line (no test pins the two together).
