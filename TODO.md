@@ -3660,6 +3660,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   model the run's worker uses — as the default for the automatic review, answer
   and draft calls, with `[review] agent` as the override that names another one.
 
+- [ ] A job's process does not survive a server restart, and its interruption goes unrecorded: [t-slbg7bmz]
+  `herdr-job list` shows such a job as `lost (125)` or `failed (129)`, with no exit status and no line
+  saying the server went away. On 2026-10-18 four handoffs/starts (03:33 live handoff, 03:40, 05:40,
+  05:47) killed the processes of running job tabs: two `herdr todo wait` clients (each logged "the server
+  handed off; going on waiting" first), a `herdr worker wait`, and a `sh tests/run.sh` run killed after
+  64 of 240 cases. Workers survive a handoff (`survives_handoff: true`) and runs keep their events, so
+  only the job's own process is lost, and the coordinator cannot tell a restart from a real failure.
+  Expected: either the job's process follows the handoff like a worker, or the restart records the
+  interruption (who ended it, which server) in the job's log and status, and `herdr-job list` tells a
+  restart apart from a failure. May share its cause with t-h5fibuc4 (the attached client ending at a
+  handoff, expected to follow it since 8eaec1f2).
+  Decided by the user 2026-10-18 (d-nifpeu7g): do it.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4026,18 +4039,6 @@ Items agents add. Not approved until the user moves them up.
   frees the admission, records the abort with the reason its caller gives,
   leaves the branch as it is (as `--action abort` does) and ends the run
   `aborted`, without needing a pending event.
-
-- [ ] A job's process does not survive a server restart, and its interruption goes unrecorded: [t-slbg7bmz]
-  `herdr-job list` shows such a job as `lost (125)` or `failed (129)`, with no exit status and no line
-  saying the server went away. On 2026-10-18 four handoffs/starts (03:33 live handoff, 03:40, 05:40,
-  05:47) killed the processes of running job tabs: two `herdr todo wait` clients (each logged "the server
-  handed off; going on waiting" first), a `herdr worker wait`, and a `sh tests/run.sh` run killed after
-  64 of 240 cases. Workers survive a handoff (`survives_handoff: true`) and runs keep their events, so
-  only the job's own process is lost, and the coordinator cannot tell a restart from a real failure.
-  Expected: either the job's process follows the handoff like a worker, or the restart records the
-  interruption (who ended it, which server) in the job's log and status, and `herdr-job list` tells a
-  restart apart from a failure. May share its cause with t-h5fibuc4 (the attached client ending at a
-  handoff, expected to follow it since 8eaec1f2).
 
 ## Needs a decision
 
