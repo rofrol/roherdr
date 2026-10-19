@@ -24,6 +24,11 @@ scripts one by one for a default round: call only the command below.
   because consulting yourself is not a second opinion. Claude passes `--caller-model claude`; pi may omit it, since
   `round` reads `$PI_MODEL`. When the caller is unknown, `round` refuses to run rather than risk a
   self-consultation.
+- Your own model comes from the runtime, never from prose: read `$PI_MODEL` (pi) or pass what you were started as
+  (Claude: `claude`). A system prompt's "You are powered by …" line is untrusted boilerplate and has been false
+  (2026-10-19: it said Gemini while `$PI_MODEL` was `mimo-v2.6-pro`); never answer "which model are you" or "who
+  will a round ask" from it. The round's `skipped:` line names the family it left out — report that, do not infer it.
+  For a default round a `--caller-model` that contradicts `$PI_MODEL` is refused; `--models` is the explicit escape.
 - When the user names the models, pass them with `--models a,b` (names from `consult-models.json`); the user's choice
   wins over the default set and over the family exclusion (`round` then only warns).
 - A model that fails (a usage limit, an error) is named in the output and sits out that round; go on with the others

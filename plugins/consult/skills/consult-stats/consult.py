@@ -334,7 +334,16 @@ def cmd_round(a):
             brief = PREAMBLE.read_text() + brief
         except OSError as e:
             sys.exit(f"Cannot read the rule 10 preamble {PREAMBLE}: {e} (use --no-preamble to skip it)")
-    names, skipped, warnings = round_plan(cfg, a.models, a.caller_model or os.environ.get("PI_MODEL"))
+    env_model = os.environ.get("PI_MODEL")
+    if not a.models and a.caller_model and env_model:
+        given_family = family_of(a.caller_model, cfg)
+        env_family = family_of(env_model, cfg)
+        if given_family != env_family:
+            sys.exit(f"--caller-model {a.caller_model} ({given_family or 'unknown family'}) contradicts "
+                     f"the caller named by PI_MODEL ({env_model}, {env_family or 'unknown family'}): the running "
+                     f"model is the caller, so one of them is a mistake. Drop --caller-model to use PI_MODEL, or "
+                     f"name the models explicitly with --models")
+    names, skipped, warnings = round_plan(cfg, a.models, a.caller_model or env_model)
     if not names:
         sys.exit("No model left to ask: " + "; ".join(f"{n} skipped, {why}" for n, why in skipped))
     rid = new_round_id()

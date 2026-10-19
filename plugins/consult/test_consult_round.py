@@ -111,6 +111,31 @@ class RoundTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("asked: sol, mimo", r.stdout)
 
+    def test_a_caller_model_that_contradicts_pi_model_fails_closed(self):
+        for env_model, given in (("openrouter/xiaomi/mimo-v2.6-pro", "gemini"),
+                                 ("mystery-7b", "gemini")):
+            with self.subTest(env_model=env_model):
+                r = self.run_round("--caller-model", given, env={"PI_MODEL": env_model})
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("contradicts", r.stderr)
+                self.assertIn("PI_MODEL", r.stderr)
+                self.assertNotIn("round:", r.stdout)
+
+    def test_a_caller_model_that_agrees_with_pi_model_runs(self):
+        r = self.run_round("--caller-model", "gpt-6.1-sol", env={"PI_MODEL": "openai-codex/gpt-6.1-sol"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: mimo, deepseek", r.stdout)
+
+    def test_explicit_models_bypass_the_caller_check(self):
+        r = self.run_round("--models", "sol", "--caller-model", "gemini", env={"PI_MODEL": "mimo-v2.6-pro"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: sol", r.stdout)
+
+    def test_an_empty_pi_model_is_no_pi_model(self):
+        r = self.run_round("--caller-model", "claude", env={"PI_MODEL": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skipped: none", r.stdout)
+
     def test_an_unknown_caller_fails_closed(self):
         for args in ((), ("--caller-model", "mystery-7b")):
             with self.subTest(args=args):
