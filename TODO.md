@@ -3464,6 +3464,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   record the measured time; the macOS `libsystem_override.sh` `mktemp` note in
   AGENTS.md applies to `zigbuild` here as well if it bites.
 
+- [ ] A message for a busy agent can be queued and is never silently lost (the [t-6etz4ezc]
+  game-grounder2 coordinator, relayed by the user 2026-10-19; reported for the
+  herdr TODO). `herdr agent prompt <pane> <text> --note` to an agent in a long
+  turn types nothing while it works, and a caller timeout abandons the text, so
+  it is lost with no request id to retry and nothing in the target's screen or
+  history. The help says so ("a prompt for an agent that is working is typed
+  only once its state changes to anything else; a caller timeout before that
+  returns timeout with nothing typed"), and an agent cannot sit blocked for an
+  unknown number of minutes inside its own turn. Verified here: there is no
+  durable store for an un-typed prompt — `agent prompt-status` reads the
+  terminal's in-memory prompt turns, so a timed-out prompt leaves no record.
+  Ask: `--async`/`--enqueue` on `herdr agent prompt` that stores the message in
+  herdr and returns `queued` with a request id at once, injected at the target's
+  next turn boundary and readable through `agent prompt-status` (state queued,
+  then delivered or undelivered); if the store already exists, a documented
+  command to read and claim it. Exactly-once and fail-closed: one injection, no
+  blind resend, and a message that cannot be delivered (the agent exits, changes
+  kind or hands over) is reported undelivered rather than dropped. The
+  reporter's workaround is a durable file plus a detached
+  `herdr-job run 'herdr agent wait --until idle && herdr agent prompt ...'`,
+  outside herdr's bookkeeping. Their priority: P2, rising to P1 because a
+  timeout loses the text.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
