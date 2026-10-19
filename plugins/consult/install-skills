@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Link the consult skills into the agents' skill directories, so they are updated with this checkout:
-# ~/.claude/skills (Claude Code) and ~/.pi/agent/skills (pi). Safe to re-run: existing links to these skills are
+# ~/.claude/skills (Claude Code), ~/.pi/agent/skills (pi) and ~/.codex/skills (codex). Safe to re-run: existing links
+# to these skills are
 # left alone, anything else under the same name is reported and kept.
 # All skills go into each directory together: the scripts find consult-stats as their sibling.
 # pi keeps the first skill of a name it finds and only warns, so a copy of one of these skills in another
@@ -8,7 +9,7 @@
 # Usage: install-skills [DIR...]
 set -euo pipefail
 src="$(cd "$(dirname "$(realpath "$0")")/skills" && pwd)"
-if [ $# -gt 0 ]; then dests=("$@"); else dests=("$HOME/.claude/skills" "$HOME/.pi/agent/skills"); fi
+if [ $# -gt 0 ]; then dests=("$@"); else dests=("$HOME/.claude/skills" "$HOME/.pi/agent/skills" "$HOME/.codex/skills"); fi
 pi_also_reads=("$HOME/.agents/skills")
 rc=0
 for dest in "${dests[@]}"; do

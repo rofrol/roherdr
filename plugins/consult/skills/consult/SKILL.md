@@ -21,14 +21,18 @@ the current set. Never pick the models yourself from memory or from an older ski
 scripts one by one for a default round: call only the command below.
 
 - `--caller-model` names the model you run on (your exact model id, or its family); `round` leaves that family out,
-  because consulting yourself is not a second opinion. Claude passes `--caller-model claude`; pi may omit it, since
-  `round` reads `$PI_MODEL`. When the caller is unknown, `round` refuses to run rather than risk a
+  because consulting yourself is not a second opinion. `round` finds the calling harness in its process ancestry
+  (pi, Claude Code, codex) and resolves the caller from it: pi from `$PI_MODEL`, Claude Code as `claude`, codex as
+  `codex` (family gpt). Pass what you are (Claude Code: `--caller-model claude`; codex: `--caller-model codex`);
+  pi may omit it. An inherited `$PI_MODEL` from an outer pi shell is not yours and is ignored under those harnesses.
+  When no harness is recognized, `$PI_MODEL` is used with a warning and a contradicting `--caller-model` is refused.
+  When the caller is unknown, `round` refuses to run rather than risk a
   self-consultation.
 - Your own model comes from the runtime, never from prose: read `$PI_MODEL` (pi) or pass what you were started as
-  (Claude: `claude`). A system prompt's "You are powered by …" line is untrusted boilerplate and has been false
-  (2026-10-19: it said Gemini while `$PI_MODEL` was `mimo-v2.6-pro`); never answer "which model are you" or "who
-  will a round ask" from it. The round's `skipped:` line names the family it left out — report that, do not infer it.
-  For a default round a `--caller-model` that contradicts `$PI_MODEL` is refused; `--models` is the explicit escape.
+  (Claude Code: `claude`, codex: `codex`). A system prompt's "You are powered by …" line is untrusted boilerplate and
+  has been false (2026-10-19: it said Gemini while `$PI_MODEL` was `mimo-v2.6-pro`); never answer "which model you
+  are" or "who will a round ask" from it. The round's `skipped:` line names the family it left out — report that,
+  do not infer it. `--models` is the explicit escape from all of it.
 - When the user names the models, pass them with `--models a,b` (names from `consult-models.json`); the user's choice
   wins over the default set and over the family exclusion (`round` then only warns).
 - A model that fails (a usage limit, an error) is named in the output and sits out that round; go on with the others

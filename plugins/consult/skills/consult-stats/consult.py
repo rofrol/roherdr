@@ -321,6 +321,61 @@ def model_command(spec):
     return cmd
 
 
+HARNESS_NAMES = ("pi", "claude", "codex")
+INTERPRETERS = re.compile(r"^(node|nodejs|bun|deno|python[0-9.]*)$")
+EXTENSION = re.compile(r"\.(js|mjs|cjs|py)$")
+
+
+def harness_of_argv(argv):
+    """The harness whose executable this argv runs (pi, claude, codex), or None: the basename of argv[0], or of the
+    script when an interpreter runs it. A shell is never the harness — `bash -c \"codex ...\"` only mentions codex —
+    and directory names do not count: a repo at .../claude/... is not Claude Code."""
+    tok = argv.split()
+    if not tok:
+        return None
+    exe = os.path.basename(tok[0])
+    if INTERPRETERS.match(exe):
+        if len(tok) < 2:
+            return None
+        script = tok[1]
+        name = EXTENSION.sub("", os.path.basename(script))
+        if name in HARNESS_NAMES:
+            return name
+        return "pi" if "pi-coding-agent" in script.split(os.sep) else None
+    name = EXTENSION.sub("", exe)
+    return name if name in HARNESS_NAMES else None
+
+
+def process_ancestry():
+    """The process table as {pid: (ppid, argv)} from one `ps` call; {} when `ps` fails, so no harness is claimed."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,args="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table = {}
+    for line in out.stdout.splitlines():
+        f = line.split(None, 2)
+        if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
+            table[int(f[0])] = (int(f[1]), f[2])
+    return table
+
+
+def harness_kind(table, start):
+    """(kind, argv) of the innermost known harness in `start`'s parent chain: the nearest ancestor whose executable
+    is pi, claude or codex (see harness_of_argv). An environment variable cannot answer this, because every harness
+    inherits the markers of its ancestors. (None, "") when the chain holds none or loops."""
+    seen = set()
+    pid = start
+    while pid in table and pid not in seen:
+        seen.add(pid)
+        ppid, argv = table[pid]
+        kind = harness_of_argv(argv)
+        if kind:
+            return kind, argv.strip()
+        pid = ppid
+    return None, ""
+
+
 def cmd_round(a):
     cfg = load_models()
     try:
@@ -335,15 +390,34 @@ def cmd_round(a):
         except OSError as e:
             sys.exit(f"Cannot read the rule 10 preamble {PREAMBLE}: {e} (use --no-preamble to skip it)")
     env_model = os.environ.get("PI_MODEL")
-    if not a.models and a.caller_model and env_model:
-        given_family = family_of(a.caller_model, cfg)
-        env_family = family_of(env_model, cfg)
-        if given_family != env_family:
-            sys.exit(f"--caller-model {a.caller_model} ({given_family or 'unknown family'}) contradicts "
-                     f"the caller named by PI_MODEL ({env_model}, {env_family or 'unknown family'}): the running "
-                     f"model is the caller, so one of them is a mistake. Drop --caller-model to use PI_MODEL, or "
-                     f"name the models explicitly with --models")
-    names, skipped, warnings = round_plan(cfg, a.models, a.caller_model or env_model)
+    if a.models:
+        caller = a.caller_model or env_model
+    else:
+        kind, argv = harness_kind(process_ancestry(), os.getppid())
+        if a.caller_model:
+            given_family = family_of(a.caller_model, cfg)
+            if kind in ("claude", "codex") and given_family != family_of(kind, cfg):
+                sys.exit(f"--caller-model {a.caller_model} ({given_family or 'unknown family'}) contradicts the "
+                         f"running harness {kind} ({argv}): pass the model this harness runs, or name the models "
+                         f"explicitly with --models")
+            if kind not in ("claude", "codex") and env_model:
+                env_family = family_of(env_model, cfg)
+                if given_family != env_family:
+                    sys.exit(f"--caller-model {a.caller_model} ({given_family or 'unknown family'}) contradicts "
+                             f"the caller named by PI_MODEL ({env_model}, {env_family or 'unknown family'}): the "
+                             f"running model is the caller, so one of them is a mistake. Drop --caller-model to use "
+                             f"PI_MODEL (or run with PI_MODEL unset when it is inherited from another harness), or "
+                             f"name the models explicitly with --models")
+        if kind in ("claude", "codex"):
+            caller = a.caller_model or kind
+        elif kind == "pi":
+            caller = env_model or a.caller_model
+        else:
+            caller = a.caller_model or env_model
+            if env_model and not a.caller_model:
+                print(f"warning: caller resolved from PI_MODEL ({env_model}); if this process is not pi, pass "
+                      f"--caller-model or run with PI_MODEL unset", file=sys.stderr)
+    names, skipped, warnings = round_plan(cfg, a.models, caller)
     if not names:
         sys.exit("No model left to ask: " + "; ".join(f"{n} skipped, {why}" for n, why in skipped))
     rid = new_round_id()

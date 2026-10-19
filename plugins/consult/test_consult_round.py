@@ -40,6 +40,13 @@ class RoundTests(unittest.TestCase):
         self.brief.write_text("Is this design sound?\n")
         self.env = {k: v for k, v in os.environ.items() if k not in ("PI_MODEL", "CONSULT_ROUND", "HERDR_SOCKET_PATH")}
         self.env.update(CONSULT_MODELS=str(self.config), CONSULT_LOG=str(d / "log.jsonl"), MARK_DIR=str(d))
+        # A stand-in `ps`: consult.py walks the process ancestry to find the calling harness, so the tests answer
+        # with a canned table (empty by default: no harness, the fallback rows) instead of the suite's own ancestry.
+        (d / "ps.txt").write_text("")
+        fake_ps = d / "ps"
+        fake_ps.write_text('#!/bin/sh\ncat "$MARK_DIR/ps.txt" 2>/dev/null\n')
+        fake_ps.chmod(0o755)
+        self.env["PATH"] = f"{d}:{self.env['PATH']}"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -135,6 +142,69 @@ class RoundTests(unittest.TestCase):
         r = self.run_round("--caller-model", "claude", env={"PI_MODEL": ""})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("skipped: none", r.stdout)
+
+    def write_ps(self, *lines):
+        """The ancestry table `ps` reports: each line `pid ppid argv`; the walk starts at this suite's own pid."""
+        (Path(self.tmp.name) / "ps.txt").write_text("".join(f"{l}\n" for l in lines))
+
+    def test_the_innermost_harness_names_the_caller(self):
+        self.write_ps(f"{os.getpid()} 100 bash", "100 1 node /usr/local/bin/claude")
+        r = self.run_round("--caller-model", "claude", env={"PI_MODEL": "openrouter/xiaomi/mimo-v2.6-pro"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: sol, mimo, deepseek", r.stdout)
+        self.assertIn("skipped: none", r.stdout)
+
+    def test_a_harness_without_a_declaration_still_names_the_caller(self):
+        self.write_ps(f"{os.getpid()} 100 bash", "100 1 codex exec")
+        r = self.run_round(env={"PI_MODEL": "openrouter/xiaomi/mimo-v2.6-pro"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skipped: sol (the caller's own family", r.stdout)
+        self.assertIn("asked: mimo, deepseek", r.stdout)
+
+    def test_a_declaration_that_contradicts_the_running_harness_fails_closed(self):
+        self.write_ps(f"{os.getpid()} 100 bash", "100 1 node /usr/local/bin/claude")
+        r = self.run_round("--caller-model", "sol")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("running harness", r.stderr)
+        self.assertNotIn("round:", r.stdout)
+
+    def test_a_pi_harness_keeps_the_runtime_refusal(self):
+        self.write_ps(f"{os.getpid()} 100 bash", "100 1 pi")
+        r = self.run_round("--caller-model", "gemini", env={"PI_MODEL": "openrouter/xiaomi/mimo-v2.6-pro"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("contradicts", r.stderr)
+        self.assertIn("PI_MODEL", r.stderr)
+
+    def test_an_unrecognized_ancestry_resolves_from_pi_model_with_a_warning(self):
+        r = self.run_round(env={"PI_MODEL": "deepseek-flash"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: sol, mimo", r.stdout)
+        self.assertIn("warning:", r.stderr)
+
+    def test_a_shell_command_mentioning_codex_is_not_the_harness(self):
+        self.write_ps(f"{os.getpid()} 100 bash -c codex exec", "100 1 pi")
+        r = self.run_round(env={"PI_MODEL": "deepseek-flash"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: sol, mimo", r.stdout)
+        self.assertIn("skipped: deepseek (the caller's own family", r.stdout)
+
+    def test_a_node_entry_point_names_the_harness(self):
+        self.write_ps(f"{os.getpid()} 100 bash", "100 1 node /opt/codex/bin/codex.js")
+        r = self.run_round(env={"PI_MODEL": "openrouter/xiaomi/mimo-v2.6-pro"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skipped: sol (the caller's own family", r.stdout)
+
+    def test_a_looping_ancestry_stops(self):
+        self.write_ps(f"{os.getpid()} {os.getpid()} bash")
+        r = self.run_round("--caller-model", "claude")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skipped: none", r.stdout)
+
+    def test_explicit_models_do_not_resolve_or_warn_about_a_caller(self):
+        r = self.run_round("--models", "sol", env={"PI_MODEL": "openrouter/xiaomi/mimo-v2.6-pro"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("asked: sol", r.stdout)
+        self.assertNotIn("warning:", r.stderr)
 
     def test_an_unknown_caller_fails_closed(self):
         for args in ((), ("--caller-model", "mystery-7b")):
