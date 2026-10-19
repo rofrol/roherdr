@@ -39,6 +39,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Still open: part (1) of the item, counterfactual tests — a test the commit
   adds or changes must fail on the run's base and pass on the commit, recorded
   per test (and, later, mutation testing of changed lines).
+  Attempt 1 (`c893c811e`, branch `todo/t-ufkea5zx-r-m7vbkx5o-1`) is a full
+  implementation, reviewed by round `20261019-040000` (sol, Argon) with fixes
+  required and not yet applied; attempt 2 did not start because preflight
+  refused at 11.7 GiB free (12 GiB now; `just sweep` frees nothing because the
+  three herdr build trees, `target/` 5.8 GiB plus the two worktree targets
+  12 and 13 GiB, are below its 25 GiB threshold and hand-deleting them would
+  break other sessions' warm builds). Fix list to apply on top of
+  `c893c811e`: (1) `report` must check `unavailable` before
+  `base_unbuildable`, so `--new-api` cannot mask an unproven test; (2)
+  discovery must cover `#[path = "..."] mod tests;`, `**/tests.rs`,
+  `**/tests/**/*.rs`, `crates/<name>/src/**` and `src/bin/**` (this repository's
+  own `src/client/shell/tests/space_tabs.rs` is missed today); (3) a file with
+  two same-named `#[cfg(test)]` modules must be `unavailable`, not spliced over
+  itself; (4) the scanner must iterate characters, not bytes, for a multi-byte
+  char literal; (5) do not enable `[counterfactual]` in `.herdr/checks.toml`
+  until the check has been exercised for real; (6) restore must survive a
+  SIGKILL: a recovery record next to the worktree's git directory, restored at
+  the next check, plus an exclusive lock for the mutation; (7) a test counts as
+  failed only when the runner names it and marks it failed, and the discovered
+  tests must also have run on the head.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
