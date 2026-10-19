@@ -266,6 +266,7 @@ mod tests {
             stop_reason: None,
             auto_review: false,
             auto_answer: false,
+            new_api: false,
             drafted: false,
             queued: false,
             grants: Vec::new(),

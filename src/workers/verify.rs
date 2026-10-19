@@ -18,6 +18,13 @@
 //! the request carries it: the herdr server may have been started without
 //! the user's shell profile (`ZIG` from `~/.zshenv`), and its environment
 //! would build with another toolchain than the user's.
+//!
+//! A repository that configures `[counterfactual]` in `.herdr/checks.toml`
+//! is checked one more way, after its checks ran on the commit: the tests the
+//! commit adds or changes are put on the commit's base and each one must fail
+//! there ([`counterfactual`]), because a test that passes without the commit
+//! proves nothing. It is one check beside the others, and everything it
+//! cannot do soundly is `unavailable`, never a pass.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,6 +34,8 @@ use super::runs::{declared_guarded_paths, CHECKS_FILE};
 use crate::api::schema::{
     WorkerCheckOutcome, WorkerGeneratedFile, WorkerVerdict, WorkerVerification, WorkerVerifyCheck,
 };
+
+mod counterfactual;
 
 /// How many of a command's last output lines the evidence keeps.
 const TAIL_LINES: usize = 40;
@@ -85,6 +94,11 @@ pub(super) struct Request<'a> {
     /// The worker's processes still running, found by the supervisor: its
     /// own, or a tool process working in `dir`. Empty when none remains.
     pub(super) processes: Vec<String>,
+    /// The commit adds an API its base cannot build against
+    /// (`herdr todo run --new-api`): the counterfactual check then accepts a
+    /// base that does not build with the commit's tests instead of failing.
+    /// It relaxes nothing else.
+    pub(super) new_api: bool,
 }
 
 /// The command check: a shell command (`worker.verify --cmd`), or a
@@ -249,6 +263,15 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
         restore(dir);
     }
 
+    // The commit's own tests must fail without it: a test that passes on
+    // the base proves nothing (see `counterfactual`). It runs after the
+    // commands, from the head, and puts the worktree back itself.
+    let counterfactual = match (&base_commit, &head) {
+        (Ok(base), Some(head)) => counterfactual::check(request, base, head, tree_clean),
+        _ => counterfactual::not_checked("the commit and its base are unknown"),
+    };
+    checks.push(counterfactual.check);
+
     let verdict = if checks
         .iter()
         .any(|check| check.outcome == WorkerCheckOutcome::Failed)
@@ -269,6 +292,7 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
         commits,
         checks,
         guarded_paths: guarded,
+        counterfactual: counterfactual.tests,
         verified_ms: now_ms,
     }
 }
@@ -574,6 +598,7 @@ fn skipped(name: &str, why: &str) -> WorkerVerifyCheck {
     check(name, WorkerCheckOutcome::Skipped, why.to_owned())
 }
 
+#[derive(Debug)]
 enum Git {
     /// Git could not run.
     Unavailable(String),
@@ -833,6 +858,7 @@ mod tests {
                 generated: &generated,
                 env: None,
                 processes: Vec::new(),
+                new_api: false,
             },
             7,
         )
@@ -876,6 +902,7 @@ mod tests {
                 generated: &[],
                 env: Some(&env),
                 processes: Vec::new(),
+                new_api: false,
             },
             7,
         );
@@ -1012,6 +1039,7 @@ mod tests {
                 generated: &[],
                 env: None,
                 processes: Vec::new(),
+                new_api: false,
             },
             7,
         )
@@ -1430,6 +1458,7 @@ mod tests {
                     generated: &[],
                     env: None,
                     processes: Vec::new(),
+                    new_api: false,
                 },
                 7,
             )
@@ -1479,6 +1508,7 @@ mod tests {
                 generated: &[],
                 env: None,
                 processes: vec!["the worker's process 42".into()],
+                new_api: false,
             },
             7,
         );

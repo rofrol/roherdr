@@ -2740,6 +2740,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             stop_reason: finish.stop_reason.clone(),
             auto_review: finish.auto_review,
             auto_answer: finish.auto_answer,
+            new_api: finish.new_api,
             drafted: finish.draft,
             queued: finish.queued,
             grants: finish.run_grants(),

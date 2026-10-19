@@ -296,6 +296,11 @@ pub(super) struct RunFinish {
     pub(super) usage_dispatch: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) ignore_usage: bool,
+    /// The run's commit adds an API its base cannot build against
+    /// (`todo.run`'s `new_api`): its verify accepts a base that does not build
+    /// with the commit's tests.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) new_api: bool,
     /// The agent CLI the run's workers run; Claude when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent: Option<WorkerAgent>,
@@ -635,6 +640,41 @@ struct ChecksFile {
     /// What the automatic review reads of this repository.
     #[serde(default)]
     review: ReviewFile,
+    /// How the verify proves that the tests a commit adds or changes fail
+    /// without it; a repository without the table is not affected.
+    #[serde(default)]
+    counterfactual: Option<CounterfactualConfig>,
+}
+
+/// The `[counterfactual]` table of `.herdr/checks.toml`: the language whose
+/// tests the verify scans, the files it takes whole from the commit, and the
+/// argv that builds the base and runs one test there (see
+/// `verify::counterfactual`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CounterfactualConfig {
+    /// The only language herdr scans is `rust`.
+    #[serde(default)]
+    pub(super) language: Option<String>,
+    /// The changed files whose whole content the check takes from the commit
+    /// (a test file is its own crate root).
+    #[serde(default)]
+    pub(super) test_globs: Vec<String>,
+    /// The argv that builds the base with the commit's test scopes.
+    #[serde(default)]
+    pub(super) build: Vec<String>,
+    /// The argv that runs one test there, with `{test}` replaced by its
+    /// module-qualified name.
+    #[serde(default)]
+    pub(super) run: Vec<String>,
+}
+
+/// The `[counterfactual]` table `.herdr/checks.toml`'s `text` declares:
+/// `Ok(None)` when it declares none. An error names why the text cannot be
+/// read as that file.
+pub(super) fn declared_counterfactual(text: &str) -> Result<Option<CounterfactualConfig>, String> {
+    let file: ChecksFile = toml::from_str(text).map_err(|error| error.to_string())?;
+    Ok(file.counterfactual)
 }
 
 /// The `[review]` table of `.herdr/checks.toml`.
@@ -2302,6 +2342,7 @@ impl WorkerSupervisor {
             model,
             auto_review: true,
             auto_answer: true,
+            new_api: false,
         };
         let choice = Self::choice_of(None, agent);
         self.start_run_as(params, true, None, false, choice)
@@ -2541,6 +2582,7 @@ impl WorkerSupervisor {
                 auto_answer: params.auto_answer,
                 drafted: draft,
                 queued: queue.is_some(),
+                new_api: params.new_api,
                 grants: preflighted
                     .prepare
                     .iter()
@@ -2573,6 +2615,7 @@ impl WorkerSupervisor {
                 pending_usage: pending_reason.is_some(),
                 usage_dispatch: wait_usage && !anthropic_credits,
                 ignore_usage: params.ignore_usage,
+                new_api: params.new_api,
                 agent_fallback: agent_fallback.clone(),
                 ..RunFinish::default()
             },
@@ -2602,6 +2645,7 @@ impl WorkerSupervisor {
             "workspace": params.workspace_id,
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
+            "new_api": params.new_api,
             "agent": agent.as_str(),
             "agent_label": run.finish.agent_label(),
             "agent_fallback": agent_fallback,
@@ -2891,6 +2935,7 @@ impl WorkerSupervisor {
             model: run.finish.model.clone(),
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
+            new_api: run.finish.new_api,
         };
         let ready = self.preflight(
             &params,
@@ -4700,7 +4745,7 @@ impl WorkerSupervisor {
                 (Some(check.name.as_str()), command)
             })
             .collect();
-        self.verify_with(&params, commands)
+        self.verify_with(&params, commands, run.finish.new_api)
             .map_err(|error| format!("verifying worker {worker_id}: {error}"))
     }
 

@@ -383,8 +383,51 @@ pub struct WorkerVerification {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guarded_paths: Vec<String>,
     pub checks: Vec<WorkerVerifyCheck>,
+    /// The tests the commit adds or changes and what each did on the base
+    /// with the commit's test scopes, when the repository opts in to the
+    /// `counterfactual` check of `.herdr/checks.toml`; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub counterfactual: Vec<WorkerCounterfactualTest>,
     /// Unix milliseconds when the verdict was reached.
     pub verified_ms: u64,
+}
+
+/// A test the commit adds or changes, as the `counterfactual` check ran it
+/// on the base with the commit's test scopes: it proves that the test needs
+/// the commit only when it failed there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerCounterfactualTest {
+    /// The module-qualified name, as the run's filter names it
+    /// (`cli::handoff::tests::take_refuses_none`).
+    pub test: String,
+    /// The file it is in, relative to the worktree's root.
+    pub path: String,
+    /// What it did on the base with the commit's test scopes.
+    pub base: WorkerCounterfactualOutcome,
+    /// Whether it failed there, which is what proves it needs the commit.
+    pub proven: bool,
+    /// The evidence: the last lines it printed on the base, or why it cannot
+    /// be told whether it ran.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// What a test the commit adds or changes did on the base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerCounterfactualOutcome {
+    /// It failed there: it proves that it needs the commit.
+    Failed,
+    /// It passed there, so it proves nothing.
+    Passed,
+    /// It could not be run there (no such test, no test ran, its file
+    /// could not be overlaid).
+    Unavailable,
+    /// The base did not build with the commit's test scopes; acceptable
+    /// only for a run started with `--new-api`.
+    BaseUnbuildable,
+    #[serde(other)]
+    Unknown,
 }
 
 /// `verified` only when every check passed; `failed` when any failed;

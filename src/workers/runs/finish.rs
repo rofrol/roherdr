@@ -929,6 +929,9 @@ impl WorkerSupervisor {
             workspace_id: run.workspace.clone(),
             env,
             ignore_usage: false,
+            // A chained run names its own API additions nowhere: it is not
+            // the run that landed the commit it starts from.
+            new_api: false,
             // Set below from `next.agent` or `[workers] default_agent`.
             agent: None,
             // The next run's own model, or none for its agent's default.

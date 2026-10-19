@@ -31,6 +31,30 @@ docs-contract = ["just", "docs-contract-test"]
 # The free disk below which preflight refuses a run (`just guard`'s limit).
 min_free_gib = 15
 
+[counterfactual]
+# The verify proves that the tests a commit adds or changes fail without it:
+# it puts their whole `#[cfg(test)]` module (or the whole file of
+# `test_globs`) on the commit's base in the worker's folder and runs each one
+# there, by its module-qualified name. A repository opts in by having this
+# table; `herdr todo run --new-api` accepts a base that does not build with
+# the commit's tests (it adds an API the base cannot compile against).
+language = "rust"
+# A whole file is taken from the commit: a test crate is its own root.
+test_globs = ["tests/**", "**/*_test.rs"]
+# Builds the base with the commit's test scopes; `--no-run` builds only.
+build = ["cargo", "nextest", "run", "--no-run", "--locked"]
+# Runs one test there; `--no-tests=fail` makes a filter that matches nothing
+# exit non-zero, which never counts as proof.
+run = [
+  "cargo",
+  "nextest",
+  "run",
+  "--locked",
+  "--no-tests=fail",
+  "-E",
+  "test(={test})",
+]
+
 [install]
 # After the cherry-pick, `herdr todo run` installs master with this argv, in
 # the shared checkout with the coordinator's environment: `just check`, the

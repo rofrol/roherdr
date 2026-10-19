@@ -6965,6 +6965,10 @@
                 "null"
               ]
             },
+            "new_api": {
+              "description": "The commit adds an API its base cannot build against: the verify's\ncounterfactual check then accepts a base that does not build with the\ncommit's tests instead of failing, and nothing else is relaxed. It\napplies when the repository configures `[counterfactual]` in\n`.herdr/checks.toml` at the commit's base.",
+              "type": "boolean"
+            },
             "owner_pane_id": {
               "description": "The coordinator's pane, which owns the run's workers (their\nquestions, obligations and coordination tenure) and resumes the run.",
               "type": [
@@ -21227,6 +21231,10 @@
                 "null"
               ]
             },
+            "new_api": {
+              "description": "The run's commit adds an API its base cannot build against\n(`todo.run`'s `new_api`): its verify accepts a base that does not\nbuild with the commit's tests.",
+              "type": "boolean"
+            },
             "next_item": {
               "description": "The item the close or note named to start next (`todo.resume`'s\n`next`).",
               "type": [
@@ -22100,6 +22108,69 @@
           "required": [
             "question",
             "options"
+          ],
+          "type": "object"
+        },
+        "WorkerCounterfactualOutcome": {
+          "description": "What a test the commit adds or changes did on the base.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "It failed there: it proves that it needs the commit.",
+              "type": "string"
+            },
+            {
+              "const": "passed",
+              "description": "It passed there, so it proves nothing.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "It could not be run there (no such test, no test ran, its file\ncould not be overlaid).",
+              "type": "string"
+            },
+            {
+              "const": "base_unbuildable",
+              "description": "The base did not build with the commit's test scopes; acceptable\nonly for a run started with `--new-api`.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerCounterfactualTest": {
+          "description": "A test the commit adds or changes, as the `counterfactual` check ran it\non the base with the commit's test scopes: it proves that the test needs\nthe commit only when it failed there.",
+          "properties": {
+            "base": {
+              "$ref": "#/schemas/success_response/$defs/WorkerCounterfactualOutcome",
+              "description": "What it did on the base with the commit's test scopes."
+            },
+            "detail": {
+              "description": "The evidence: the last lines it printed on the base, or why it cannot\nbe told whether it ran.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The file it is in, relative to the worktree's root.",
+              "type": "string"
+            },
+            "proven": {
+              "description": "Whether it failed there, which is what proves it needs the commit.",
+              "type": "boolean"
+            },
+            "test": {
+              "description": "The module-qualified name, as the run's filter names it\n(`cli::handoff::tests::take_refuses_none`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "test",
+            "path",
+            "base",
+            "proven"
           ],
           "type": "object"
         },
@@ -23584,6 +23655,13 @@
               "description": "The commits from `base` to the head, oldest first.",
               "items": {
                 "type": "string"
+              },
+              "type": "array"
+            },
+            "counterfactual": {
+              "description": "The tests the commit adds or changes and what each did on the base\nwith the commit's test scopes, when the repository opts in to the\n`counterfactual` check of `.herdr/checks.toml`; empty otherwise.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerCounterfactualTest"
               },
               "type": "array"
             },

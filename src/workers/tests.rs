@@ -6339,6 +6339,7 @@ mod todo_runs {
             model: None,
             auto_review: false,
             auto_answer: false,
+            new_api: false,
         }
     }
 

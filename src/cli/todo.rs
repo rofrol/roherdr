@@ -15,7 +15,7 @@ use super::worker::take_string_option;
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
                  [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi|pi-anthropic]
-                 [--model MODEL]
+                 [--model MODEL] [--new-api]
       --agent names the agent of the run's workers: claude (Claude Code on
       the subscription), pi (headless pi on the ChatGPT plan) or
       pi-anthropic (headless pi on the Anthropic API credits). Without it
@@ -94,6 +94,12 @@ const USAGE: &str = "usage:
       worker store refuses the write), todo wait and todo status show the run
       blocked with that error, and the server writes it again once the store
       takes a write.
+      With --new-api the run records that its commit adds an API the base
+      cannot build against: when the repository configures [counterfactual]
+      in .herdr/checks.toml, the verify's counterfactual check accepts a base
+      that does not build with the commit's tests (base_unbuildable) instead
+      of failing, and records it as not proven. It relaxes nothing else: a
+      test that passes on the base still fails the verify.
   herdr todo run <item-id> --draft [--ignore-usage] [--agent claude|pi|pi-anthropic]
                  [--model MODEL]
       The server drafts the task, SUBJECT, the GLOBs and the check NAMEs
@@ -804,6 +810,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if draft {
                 return parse_draft_run(&rest, ignore_usage).map(Some);
             }
+            let (new_api, rest) = take_switch(&rest, "--new-api")?;
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
             let (agent, rest) = take_string_option(&rest, "--agent")?;
@@ -866,6 +873,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 model,
                 auto_review,
                 auto_answer,
+                new_api,
             };
             if credits {
                 Method::TodoRunAnthropic(params)

@@ -5278,6 +5278,7 @@ fn worker_runs_reply() -> crate::api::schema::ResponseResult {
                             commits: vec!["abc1234".into()],
                             guarded_paths: Vec::new(),
                             checks: Vec::new(),
+                            counterfactual: Vec::new(),
                             verified_ms: 1_790_632_600_000,
                         }),
                         ..worker_run(
@@ -5475,6 +5476,7 @@ fn todo_review_reply() -> crate::api::schema::ResponseResult {
                     name: Some("ok".into()),
                     detail: String::new(),
                 }],
+                counterfactual: Vec::new(),
                 verified_ms: 1_790_633_000_000,
             }),
             decision: Some("approve".into()),

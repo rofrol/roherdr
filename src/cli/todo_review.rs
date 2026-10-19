@@ -297,6 +297,7 @@ mod tests {
                         detail: "all good".into(),
                     },
                 ],
+                counterfactual: Vec::new(),
                 verified_ms: 1,
             }),
             decision: Some("approve".into()),

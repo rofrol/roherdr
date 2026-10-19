@@ -82,6 +82,13 @@ pub struct TodoRunParams {
     /// reply's `auto_answer` says whether the server took it.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub auto_answer: bool,
+    /// The commit adds an API its base cannot build against: the verify's
+    /// counterfactual check then accepts a base that does not build with the
+    /// commit's tests instead of failing, and nothing else is relaxed. It
+    /// applies when the repository configures `[counterfactual]` in
+    /// `.herdr/checks.toml` at the commit's base.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub new_api: bool,
 }
 
 /// `todo.run` whose worker's task the server drafts itself: a bounded,
@@ -560,6 +567,11 @@ pub struct TodoRunInfo {
     /// (`todo.run`'s `auto_answer`).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub auto_answer: bool,
+    /// The run's commit adds an API its base cannot build against
+    /// (`todo.run`'s `new_api`): its verify accepts a base that does not
+    /// build with the commit's tests.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub new_api: bool,
     /// The server drafts the run's task, subject, paths and checks itself
     /// (`todo.draft_run`); they are empty until the draft is applied.
     #[serde(default, skip_serializing_if = "super::is_false")]

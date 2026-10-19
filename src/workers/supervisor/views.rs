@@ -179,15 +179,19 @@ impl WorkerSupervisor {
                 .map(|command| (None, verify::CheckCommand::Shell(command)))
                 .into_iter()
                 .collect(),
+            false,
         )
     }
 
     /// [`Self::verify`] with the command checks given apart, each with its
-    /// registered name: `params.command` is not read.
+    /// registered name: `params.command` is not read. `new_api` is the run's
+    /// finding that the commit adds an API its base cannot build against
+    /// (`todo.run`'s `new_api`), which the counterfactual check accepts.
     pub(in crate::workers) fn verify_with(
         &self,
         params: &WorkerVerifyParams,
         commands: Vec<(Option<&str>, verify::CheckCommand<'_>)>,
+        new_api: bool,
     ) -> Result<WorkerVerification, WorkerError> {
         let (number, status) = {
             let registry = lock(&self.shared.registry);
@@ -228,6 +232,7 @@ impl WorkerSupervisor {
                 generated: &params.generated,
                 env: params.env.as_ref(),
                 processes,
+                new_api,
             },
             now_ms(),
         );

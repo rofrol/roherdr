@@ -739,6 +739,7 @@ impl WorkerSupervisor {
             model: None,
             auto_review: true,
             auto_answer: true,
+            new_api: false,
         };
         let choice = Self::choice_of(None, None);
         #[cfg(test)]
