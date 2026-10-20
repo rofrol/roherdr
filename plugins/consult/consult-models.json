@@ -5,7 +5,7 @@
     "astra": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "astra"]},
     "luna": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "luna", "-e", "medium"]},
     "terra": {"family": "gpt", "command": ["gpt/ask_gpt.sh", "-m", "terra"]},
-    "mimo": {"family": "mimo", "command": ["openrouter/ask_openrouter.sh"]},
+    "mimo": {"family": "mimo", "command": ["mimo/ask_mimo_ams.py"]},
     "deepseek": {"family": "deepseek", "command": ["deepseek/ask_deepseek.py"]},
     "argon": {"family": "gemini", "command": ["openrouter/ask_openrouter.sh", "-m", "argon"]},
     "wonder": {"family": "meta", "command": ["openrouter/ask_openrouter.sh", "-m", "wonder"]},
