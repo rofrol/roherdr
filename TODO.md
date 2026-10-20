@@ -15,50 +15,38 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
   sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
   strong; ours is weak, so move acceptance onto checks, keep the model
-  review for intent and API shape). In `herdr todo run`'s verify:
-  (1) counterfactual tests: a test the commit adds or changes must fail
-  on the run's base and pass on the commit (a new test that already
-  passed on the base proves nothing), recorded per test; (2) tamper
-  guard: a commit that edits registered checks, `.herdr/checks.toml`,
-  frozen fixtures or the review checklist is flagged and cannot be
-  auto-approved. Later, by measurement: mutation testing of changed lines
-  only. Deterministic, no model.
-  Decided by the user 2026-10-12 (d-64mjmvju): yes, queue it.
-  First half landed 2026-10-18 (run r-atcxbo5o, attempt 2, commit 5183ec50b's
-  fix 3b4d7dbbf... see the landing): the verify reports a commit's guarded
-  paths (herdr's `.herdr/checks.toml`, `.herdr/review-checklist.md` and
-  `.herdr/review-golden/**`, plus the repository's own `[review]
-  guarded_paths` read at the base, a union) as an optional field and a
-  `guarded` check without changing the verdict; a discovery that cannot be
-  read is an `unavailable` check and refuses the approval; `herdr todo resume
-  --action approve` refuses such a commit unless it passes the new
-  `--accept-guarded-paths`, which the run records, and the automatic review
-  and queue mode escalate to a `review` event with the paths instead of
-  approving. Review round `20261018-214420-af1f` (sol) found the configured
-  list replacing the built-in guards and a fail-open discovery; both fixed.
-  Still open: part (1) of the item, counterfactual tests — a test the commit
-  adds or changes must fail on the run's base and pass on the commit, recorded
-  per test (and, later, mutation testing of changed lines).
-  Attempt 1 (`c893c811e`, branch `todo/t-ufkea5zx-r-m7vbkx5o-1`) is a full
-  implementation, reviewed by round `20261019-040000` (sol, Argon) with fixes
-  required and not yet applied; attempt 2 did not start because preflight
-  refused at 11.7 GiB free (12 GiB now; `just sweep` frees nothing because the
-  three herdr build trees, `target/` 5.8 GiB plus the two worktree targets
-  12 and 13 GiB, are below its 25 GiB threshold and hand-deleting them would
-  break other sessions' warm builds). Fix list to apply on top of
-  `c893c811e`: (1) `report` must check `unavailable` before
-  `base_unbuildable`, so `--new-api` cannot mask an unproven test; (2)
-  discovery must cover `#[path = "..."] mod tests;`, `**/tests.rs`,
-  `**/tests/**/*.rs`, `crates/<name>/src/**` and `src/bin/**` (this repository's
-  own `src/client/shell/tests/space_tabs.rs` is missed today); (3) a file with
-  two same-named `#[cfg(test)]` modules must be `unavailable`, not spliced over
-  itself; (4) the scanner must iterate characters, not bytes, for a multi-byte
-  char literal; (5) do not enable `[counterfactual]` in `.herdr/checks.toml`
-  until the check has been exercised for real; (6) restore must survive a
-  SIGKILL: a recovery record next to the worktree's git directory, restored at
-  the next check, plus an exclusive lock for the mutation; (7) a test counts as
-  failed only when the runner names it and marks it failed, and the discovered
-  tests must also have run on the head.
+  review for intent and API shape). Decided by the user 2026-10-12
+  (d-64mjmvju): yes, queue it.
+  The tamper guard landed 2026-10-18 (run r-atcxbo5o, attempt 2): the
+  verify reports a commit's guarded paths (herdr's `.herdr/checks.toml`,
+  `.herdr/review-checklist.md` and `.herdr/review-golden/**`, plus the
+  repository's own `[review] guarded_paths` read at the base, a union) as
+  an optional field and a `guarded` check without changing the verdict; a
+  discovery that cannot be read is an `unavailable` check and refuses the
+  approval; `herdr todo resume --action approve` refuses such a commit
+  unless it passes `--accept-guarded-paths`, which the run records, and
+  the automatic review and queue mode escalate to a `review` event with
+  the paths instead of approving.
+  The counterfactual tests landed 2026-10-20 (`abaf908ca`, attempt 1's
+  commit; hardened by `d9027c556` with the seven fixes of review round
+  `20261019-040000`): the verify proves that a test a commit adds or
+  changes fails without it, by putting its whole `#[cfg(test)]` module
+  (or the whole file, for `test_globs` and test module files such as
+  `tests/**/*.rs` and `**/tests/**`) on the run's base in the worker's
+  folder, building there and running each test by its module-qualified
+  name, then running it on the commit itself, where it must pass, named;
+  a run that names nothing, a test outside a `#[cfg(test)]` module the
+  check can take whole (a `#[path]` test module file), a file with two
+  same-named `#[cfg(test)]` modules and a macro-generated test are
+  `unavailable`, never a pass; `--new-api` accepts only a base that does
+  not build. The worktree is locked by a recovery record in its git
+  directory and put back after a kill by the next check.
+  Still open: the check is opt-in and this repository's
+  `.herdr/checks.toml` deliberately has no `[counterfactual]` table yet —
+  enable it only after the check has been exercised on a real run here
+  (and check that the module name it derives for a `#[path]` test module
+  file is exercised then). Later, by measurement: mutation testing of
+  changed lines only.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
