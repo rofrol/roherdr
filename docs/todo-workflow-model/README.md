@@ -6,7 +6,7 @@ the coordination tenure and its handoff, one item's run through
 coordinator's decision at an item boundary.
 
 **These proofs establish properties of this model only.** `TodoWorkflow.lean`
-was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult round `20261023-133232-9be6`) from `AGENTS.md`,
+was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328` and `20261023-135828-a549`) from `AGENTS.md`,
 `DECISIONS.md`, `.herdr/checks.toml`, the CLI help and the global `todo` and
 `handoff` skills. It is not extracted from the Rust code, and nothing checks
 that the code still matches it. The Rust code and its tests are the source of
@@ -27,20 +27,31 @@ else when every theorem holds. Lean is not part of `just check`.
 Over any sequence of events, not just one step:
 
 - Nothing lands (cherry-pick, install, TODO edit, push, done) without a
-  `verified` verdict (`landing_needs_verified`, `done_needs_verified`).
-- Every attempt number stays within 1..3 (`attempts_bounded`).
+  `verified` verdict (`landing_needs_verified`, `done_needs_verified`), and
+  landing is a trap: no step goes back to a worker or a verify
+  (`landing_is_trap`, `landing_stays`).
+- No run from preflight reaches a fourth attempt
+  (`attempts_bounded_from_preflight`).
+- A question a worker asks is never lost: it stays an open obligation, goes
+  to the user, or is answered and acknowledged (`question_never_lost`).
 
 For single steps:
 
-- Only the holder ends a tenure; a held, frozen or orphaned tenure refuses a
-  plain start; one successor per handoff; only the named successor acks, and
-  only after winning the note's claim; after the frozen pane is gone only a
-  start that wins the claim takes over.
-- A refused admission waits for the same run's attach; it never starts a
-  worker by itself.
-- The supervisor: every worker event wakes the owner and blocks its stop until
-  handled; an open question reaches the user when the owner goes away.
+- Only the holder ends a tenure; any tenure that is not free refuses a plain
+  start; the holder names one successor, never itself; the note's claim is
+  exclusive and only an allowed taker (not the frozen pane, and the named
+  successor when there is one) can win it, so a wrong claim cannot block the
+  handoff; only the named successor that won the claim acks; after the
+  frozen pane is gone only the claimant takes over.
+- A refused admission waits for the same run's attach.
+- The supervisor: obligations are numbered, and answers, escalations and
+  acknowledgements name the number; every worker event wakes the owner and
+  blocks its stop until acknowledged; an unanswered question cannot be
+  acknowledged away;
+  when the owner goes away every unanswered question reaches the user.
 - The coordinator dispatches only from its own pane holding an unfrozen tenure.
+
+Assumed, not proved: run and item identity, branch heads and ancestry.
 
 ## Where it maps to the code
 
@@ -98,12 +109,14 @@ flowchart TD
     TH -->|"coordinator end / pane gone"| TF
     TH -->|"coordinator ready --note"| TZ(["frozen, no successor"])
     TZ -->|"coordinator handoff --successor (once)"| TZS(["frozen, successor named"])
-    TZS -->|"successor wins the note claim + coordinator ack"| TH2(["held by the successor"])
+    TZS -->|"handoff claim: the first allowed taker wins"| TZC(["frozen, note claimed"])
+    TZC -->|"coordinator ack by the successor that claimed"| TH2(["held by the successor"])
     TZ -->|"--abort"| TH
     TZS -->|"--abort"| TH
-    TZ -->|"frozen pane gone"| TO(["orphaned note"])
+    TZ -->|"frozen pane gone"| TO(["orphaned note, successor kept"])
     TZS -->|"frozen pane gone"| TO
-    TO -->|"a start that wins the note claim"| TH3(["held by the taker"])
+    TZC -->|"frozen pane gone"| TO
+    TO -->|"start by the claimant (the successor, if named)"| TH3(["held by the taker"])
   end
   HO --> TZ
 
@@ -144,9 +157,10 @@ flowchart TD
   D --> P
 
   subgraph SV["Supervisor (deterministic, no timer, never kills) — Watch"]
-    WE["worker asks / ends a turn / exits"] -->|"obligation + wake the owner"| OB(["open obligation: owner may not stop"])
-    OB -->|"answer or ack after handling"| CL(["cleared"])
-    OB -->|"owner escalates, or owner gone with a question open"| UQ(["question in the user's ? list"])
+    WE["worker asks / ends a turn / exits"] -->|"numbered obligation + wake the owner"| OB(["open obligation seq: owner may not stop"])
+    OB -->|"question answered, then worker ack seq"| CL(["handled"])
+    OB -->|"ack of an unanswered question"| RF(["refused"])
+    OB -->|"owner escalates, or owner gone with it unanswered"| UQ(["question in the user's ? list"])
   end
   W -.-> WE
   OB -.->|"herdr worker wait --attention returns"| C0
