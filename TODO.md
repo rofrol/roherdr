@@ -4384,6 +4384,10 @@ Items agents add. Not approved until the user moves them up.
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
 
+- [ ] [t-wlwhayod] After the Bend demonstrations pass, is the Rust core with the Lean traces the reference Bend must pass, or does Bend take a repository over and differ where it likes?
+  Options: Rust core and traces stay the reference Bend must pass (Recommended) | Bend takes each repository over after its demonstration | stop after the safety fixes (the fence and landing items) and decide later
+  Checked: t-54d2offk (2026-10-18) retires herdr todo run repository by repository to Bend after demonstrations; no repository has moved; all four models raised this question (round 20261023-162900-79da).
+
 ### Decide
 
 ### Needs you to act or watch
