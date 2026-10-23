@@ -11,6 +11,28 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The letta, qodercli and qwen hooks silently drop a session report that takes over a second (found by the coordinator 2026-10-18 while landing [t-claehqkg]
+  t-nwxujise, whose install's `just check` failed on
+  `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`
+  with the capture file missing). Cause, reproduced: the hook runs
+  `subprocess.run(..., timeout=1)` inside a blanket `except Exception: pass`
+  (`src/integration/assets/letta/herdr-agent-session.sh:51`; the same in
+  `qodercli/herdr-agent-state.sh:34` and `qwen/herdr-agent-session.sh:43`), so
+  a `herdr` call slower than a second is killed and the report is lost with
+  exit 0 — the hook's intended silence is indistinguishable from a dropped
+  report. A fake herdr that sleeps 2 s and writes its args leaves no file,
+  while the same script with an instant fake writes it. The test flakes the
+  same way under load (`--stress-count 40` with 12 `yes` processes: 4 failed,
+  0 when alone). The fix is not a longer timeout: decide what the one second
+  protects (Letta's hook latency), make a dropped report observable, and make
+  the test deterministic (its fake herdr writes immediately; the test must not
+  measure the host's spawn latency). Touches the three integration assets and
+  their tests; no dependency, no protocol change.
+  Blocked an install again 2026-10-23 (run r-gj3emu6x, event 271195, log
+  `run-r-gj3emu6x-install.log`: the same test, capture file missing); the
+  coordinator retried the install once.
+  Decided by the user 2026-10-23 (d-k73immye): approved, as the next item.
+
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
@@ -4168,27 +4190,6 @@ Items agents add. Not approved until the user moves them up.
   <step>` line should carry it instead of a second indicator; and the change's
   real size (`pane_agent_status`'s signature, the snapshot/API projection and
   every consumer of a space's state, which are already covered by tests).
-
-- [ ] The letta, qodercli and qwen hooks silently drop a session report that takes over a second (found by the coordinator 2026-10-18 while landing [t-claehqkg]
-  t-nwxujise, whose install's `just check` failed on
-  `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`
-  with the capture file missing). Cause, reproduced: the hook runs
-  `subprocess.run(..., timeout=1)` inside a blanket `except Exception: pass`
-  (`src/integration/assets/letta/herdr-agent-session.sh:51`; the same in
-  `qodercli/herdr-agent-state.sh:34` and `qwen/herdr-agent-session.sh:43`), so
-  a `herdr` call slower than a second is killed and the report is lost with
-  exit 0 — the hook's intended silence is indistinguishable from a dropped
-  report. A fake herdr that sleeps 2 s and writes its args leaves no file,
-  while the same script with an instant fake writes it. The test flakes the
-  same way under load (`--stress-count 40` with 12 `yes` processes: 4 failed,
-  0 when alone). The fix is not a longer timeout: decide what the one second
-  protects (Letta's hook latency), make a dropped report observable, and make
-  the test deterministic (its fake herdr writes immediately; the test must not
-  measure the host's spawn latency). Touches the three integration assets and
-  their tests; no dependency, no protocol change.
-  Blocked an install again 2026-10-23 (run r-gj3emu6x, event 271195, log
-  `run-r-gj3emu6x-install.log`: the same test, capture file missing); the
-  coordinator retried the install once.
 
 - [ ] The remote-bridge test makes its own timing, and flakes under load (found by the coordinator [t-seqbqedo]
   2026-10-18, twice in one day: the `install`'s `just check` of t-t2nwbl6y failed on
