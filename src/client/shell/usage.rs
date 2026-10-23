@@ -50,6 +50,11 @@ pub(super) struct DailyUseLabels {
     /// The pace's hover text: the use and the elapsed share it compares,
     /// and the reset.
     pub(super) pace: String,
+    /// The pace's hover text when the even-pace target follows it.
+    pub(super) pace_with_target: String,
+    /// `01:04`: each window day's end, 24-hour steps from the window's
+    /// start, the last one the reset.
+    pub(super) day_ends: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -223,18 +228,33 @@ fn daily_use_labels(
             let reset = local_date_time(local(daily_use.resets_at))
                 .map(|time| format!("{time} {}", zone_label(local_offset_at(resets))))
                 .unwrap_or_else(|| "?".into());
-            let pace = pace_tooltip(
-                daily_use.pace_percent,
-                daily_use.used_percent,
-                &reset,
-                &provider.label,
-            );
+            let pace = |with_target| {
+                pace_tooltip(
+                    daily_use.pace_percent,
+                    daily_use.used_percent,
+                    with_target,
+                    &reset,
+                    &provider.label,
+                )
+            };
+            let day_ends = (1..=WINDOW_DAYS)
+                .map(|days| {
+                    clock(Some(
+                        daily_use
+                            .starts_at
+                            .saturating_add(days.saturating_mul(SECONDS_PER_DAY)),
+                    ))
+                    .unwrap_or_else(|| "?".into())
+                })
+                .collect();
             Some((
                 provider.provider.clone(),
                 DailyUseLabels {
                     initials,
                     days,
-                    pace,
+                    pace: pace(false),
+                    pace_with_target: pace(true),
+                    day_ends,
                 },
             ))
         })
@@ -293,9 +313,15 @@ fn day_tooltip(day: DayFacts<'_>) -> String {
     )
 }
 
-/// `-8 percentage points: 17% used vs 25% elapsed`, then the reset and
-/// where the numbers come from.
-fn pace_tooltip(pace: i32, used: Option<u8>, reset: &str, source: &str) -> String {
+/// `-8 percentage points: 17% used vs 25% elapsed`, with the target what
+/// it means, then the reset and where the numbers come from.
+fn pace_tooltip(
+    pace: i32,
+    used: Option<u8>,
+    with_target: bool,
+    reset: &str,
+    source: &str,
+) -> String {
     let compared = match used {
         Some(used) => format!(
             "{used}% used vs {}% elapsed",
@@ -303,9 +329,37 @@ fn pace_tooltip(pace: i32, used: Option<u8>, reset: &str, source: &str) -> Strin
         ),
         None => "against an even pace".into(),
     };
+    let target = if with_target {
+        "\ntarget: the 7-day window's even pace at its next day boundary,\n\
+         a plan, not a limit; the 5-hour window is a separate limit"
+    } else {
+        ""
+    };
     format!(
-        "{pace:+} percentage points: {compared}\nresets {reset}; source: {source} usage endpoint"
+        "{pace:+} percentage points: {compared}{target}\nresets {reset}; source: {source} usage endpoint"
     )
+}
+
+/// Days in the weekly window, and the length of one.
+const WINDOW_DAYS: u64 = 7;
+const SECONDS_PER_DAY: u64 = 86_400;
+
+/// The window days, 24-hour steps from `starts_at`, that end at the next
+/// boundary after `now_unix`: 1 in the first day, 7 in the last and after it.
+fn days_at_next_boundary(starts_at: u64, now_unix: u64) -> u64 {
+    (now_unix.saturating_sub(starts_at) / SECONDS_PER_DAY + 1).min(WINDOW_DAYS)
+}
+
+/// `+9.6pp to 01:04`, or `3.1pp over at 01:04`: the even pace at the end
+/// of `days` window days less `used` percent, to the tenth.
+fn target_label(used: u8, days: u64, clock: &str) -> String {
+    let target = 100.0 * days as f64 / WINDOW_DAYS as f64;
+    let tenths = ((target - f64::from(used)) * 10.0).round();
+    if tenths >= 0.0 {
+        format!("+{:.1}pp to {clock}", tenths / 10.0)
+    } else {
+        format!("{:.1}pp over at {clock}", -tenths / 10.0)
+    }
 }
 
 /// `34%`, `14.3%`: one decimal unless whole.
@@ -557,6 +611,7 @@ pub(super) fn render_usage_footer(
                     &provider.provider,
                     daily_use,
                     labels,
+                    now_unix,
                     palette,
                     hits,
                 );
@@ -570,9 +625,11 @@ pub(super) fn render_usage_footer(
 /// fixed scale where a full bar is twice the daily share: within the share
 /// in the normal colour, over it yellow, over twice it a full bar in bold
 /// red. Today is highlighted, an unknown day is `·`, a sampled day without
-/// use a space and a partial day dim; then the use against an even pace.
-/// Under them each day's weekday initial. Every day and the pace have a
-/// tooltip with the numbers.
+/// use a space and a partial day dim; then the use against an even pace and
+/// the even-pace target at the next window-day boundary, each shown whole
+/// or not at all. Under them each day's weekday initial. Both rows start at
+/// the area's left edge. Every day and the pace have a tooltip with the
+/// numbers.
 #[allow(clippy::too_many_arguments)] // The footer's render inputs, passed through.
 fn render_daily_use(
     buffer: &mut Buffer,
@@ -580,13 +637,14 @@ fn render_daily_use(
     provider_id: &str,
     daily_use: &UsageDailyUse,
     labels: Option<&DailyUseLabels>,
+    now_unix: u64,
     palette: &Palette,
     hits: &mut ShellHitMap,
 ) {
     let today_style = Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::BOLD);
-    let mut x = area.x.saturating_add(SHORT_WINDOW_COLUMN);
+    let mut x = area.x;
     for (index, day) in daily_use.days.iter().enumerate() {
         let current = daily_use.current_day.map(usize::from) == Some(index);
         let partial = day.is_some()
@@ -656,24 +714,40 @@ fn render_daily_use(
     }
     let pace = pace_label(daily_use.pace_percent);
     let pace_x = x.saturating_add(1);
-    put_segment(
-        buffer,
-        pace_x,
-        area.y,
-        area.right(),
-        &pace,
-        Style::default().fg(if daily_use.pace_percent > 0 {
-            palette.yellow
-        } else {
-            palette.overlay0
-        }),
-    );
-    if let Some(labels) = labels.filter(|_| pace_x < area.right()) {
-        let width = display_width(&pace).min(area.right() - pace_x);
+    if u32::from(pace_x) + u32::from(display_width(&pace)) > u32::from(area.right()) {
+        return;
+    }
+    let style = Style::default().fg(if daily_use.pace_percent > 0 {
+        palette.yellow
+    } else {
+        palette.overlay0
+    });
+    let mut end = put_segment(buffer, pace_x, area.y, area.right(), &pace, style);
+    let days = days_at_next_boundary(daily_use.starts_at, now_unix);
+    let target = daily_use
+        .used_percent
+        .zip(labels)
+        .and_then(|(used, labels)| {
+            let clock = labels
+                .day_ends
+                .get(usize::try_from(days).ok()?.checked_sub(1)?)?;
+            Some(format!(" · {}", target_label(used, days, clock)))
+        });
+    let target = target.filter(|target| {
+        u32::from(end) + u32::from(display_width(target)) <= u32::from(area.right())
+    });
+    if let Some(target) = &target {
+        end = put_segment(buffer, end, area.y, area.right(), target, style);
+    }
+    if let Some(labels) = labels {
         hits.tooltips.push(super::tooltip::TooltipTarget {
-            rect: Rect::new(pace_x, area.y, width, 1),
+            rect: Rect::new(pace_x, area.y, end - pace_x, 1),
             id: format!("usage:{provider_id}:pace"),
-            text: labels.pace.clone(),
+            text: if target.is_some() {
+                labels.pace_with_target.clone()
+            } else {
+                labels.pace.clone()
+            },
             bg: None,
             starts_at_target: false,
             multiline: true,
@@ -681,9 +755,9 @@ fn render_daily_use(
     }
 }
 
-/// `-8pp vs pace`: the latest use less an even pace, in percentage points.
+/// `-8pp`: the latest use less an even pace, in percentage points.
 fn pace_label(pace_percent: i32) -> String {
-    format!("{pace_percent:+}pp vs pace")
+    format!("{pace_percent:+}pp")
 }
 
 /// A day's use against the weekly allowance's even daily share.
@@ -1435,18 +1509,18 @@ mod tests {
             vec![
                 "─".repeat(26),
                 " AN   2% 47m   12% 6d".to_owned(),
-                "    ·▃▁ ·▂▁ +4pp vs pace".to_owned(),
-                "    MTWTFSS".to_owned(),
+                "·▃▁ ·▂▁ +4pp".to_owned(),
+                "MTWTFSS".to_owned(),
                 " OA  87% 47m  100% 6d".to_owned(),
             ]
         );
         let palette = Palette::catppuccin();
         // Today, Sunday, is highlighted in both rows.
-        assert_eq!(buffer[(10, 2)].fg, palette.accent);
-        assert_eq!(buffer[(10, 3)].fg, palette.accent);
-        assert_eq!(buffer[(9, 2)].fg, palette.overlay1);
+        assert_eq!(buffer[(6, 2)].fg, palette.accent);
+        assert_eq!(buffer[(6, 3)].fg, palette.accent);
+        assert_eq!(buffer[(5, 2)].fg, palette.overlay1);
         // An unknown day is dim, never a bar.
-        assert_eq!(buffer[(4, 2)].fg, palette.overlay0);
+        assert_eq!(buffer[(0, 2)].fg, palette.overlay0);
     }
 
     #[test]
@@ -1459,8 +1533,8 @@ mod tests {
         };
         // An hour west of UTC, the Monday 00:00 UTC day starts on Sunday evening.
         let rows = buffer_rows(&render_with_offset(&report, 26, |_| -3_600));
-        assert_eq!(rows[2], "    ▁▁▁▁▁▁▁ -3pp vs pace");
-        assert_eq!(rows[3], "    SMTWTFS");
+        assert_eq!(rows[2], "▁▁▁▁▁▁▁ -3pp");
+        assert_eq!(rows[3], "SMTWTFS");
     }
 
     #[test]
@@ -1525,11 +1599,11 @@ mod tests {
             &palette,
             &mut hits,
         );
-        assert_eq!(buffer_rows(&buffer)[2], "    ··▁▂··· +0pp vs pace");
+        assert_eq!(buffer_rows(&buffer)[2], "··▁▂··· +0pp");
         // Wednesday is dim; Thursday, today, counted from Wednesday, is not.
-        assert_eq!(buffer[(6, 2)].fg, palette.overlay0);
-        assert!(buffer[(6, 2)].modifier.contains(Modifier::DIM));
-        assert!(!buffer[(7, 2)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(2, 2)].fg, palette.overlay0);
+        assert!(buffer[(2, 2)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(3, 2)].modifier.contains(Modifier::DIM));
         let days = hits
             .tooltips
             .iter()
@@ -1537,7 +1611,7 @@ mod tests {
             .collect::<Vec<_>>();
         // Every day has its numbers on hover, one cell each.
         assert_eq!(days.len(), 7);
-        assert_eq!(days[2].rect, Rect::new(6, 2, 1, 1));
+        assert_eq!(days[2].rect, Rect::new(2, 2, 1, 1));
         assert_eq!(days[2].text, labels[0].1.days[2]);
         assert!(days.iter().all(|day| day.multiline));
         let pace = hits
@@ -1545,7 +1619,7 @@ mod tests {
             .iter()
             .find(|tooltip| tooltip.id == "usage:claude:pace")
             .unwrap();
-        assert_eq!(pace.rect, Rect::new(12, 2, 12, 1));
+        assert_eq!(pace.rect, Rect::new(8, 2, 4, 1));
         assert_eq!(pace.text, labels[0].1.pace);
     }
 
@@ -1590,18 +1664,18 @@ mod tests {
         };
         let buffer = render_with_offset(&report, 26, |_| 0);
         let palette = Palette::catppuccin();
-        assert_eq!(buffer_rows(&buffer)[2], "    ▃▆█▆··· -5pp vs pace");
-        assert_eq!(buffer[(4, 2)].fg, palette.overlay1);
-        assert_eq!(buffer[(5, 2)].fg, palette.yellow);
-        assert!(!buffer[(5, 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(6, 2)].fg, palette.red);
-        assert!(buffer[(6, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer_rows(&buffer)[2], "▃▆█▆··· -5pp");
+        assert_eq!(buffer[(0, 2)].fg, palette.overlay1);
+        assert_eq!(buffer[(1, 2)].fg, palette.yellow);
+        assert!(!buffer[(1, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(2, 2)].fg, palette.red);
+        assert!(buffer[(2, 2)].modifier.contains(Modifier::BOLD));
         // Today keeps the warning colour, in bold, and its initial the accent.
-        assert_eq!(buffer[(7, 2)].fg, palette.yellow);
-        assert!(buffer[(7, 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(7, 3)].fg, palette.accent);
-        assert!(buffer[(7, 3)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(5, 3)].fg, palette.overlay0);
+        assert_eq!(buffer[(3, 2)].fg, palette.yellow);
+        assert!(buffer[(3, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(3, 3)].fg, palette.accent);
+        assert!(buffer[(3, 3)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(1, 3)].fg, palette.overlay0);
     }
 
     #[test]
@@ -1677,14 +1751,139 @@ mod tests {
 
     #[test]
     fn the_pace_is_labelled_in_percentage_points() {
-        assert_eq!(pace_label(-8), "-8pp vs pace");
-        assert_eq!(pace_label(4), "+4pp vs pace");
-        assert_eq!(pace_label(0), "+0pp vs pace");
+        assert_eq!(pace_label(-8), "-8pp");
+        assert_eq!(pace_label(4), "+4pp");
+        assert_eq!(pace_label(0), "+0pp");
         // An older server sends no utilization.
         assert_eq!(
-            pace_tooltip(3, None, "Mon 26 Oct 00:00 UTC", "Claude"),
+            pace_tooltip(3, None, false, "Mon 26 Oct 00:00 UTC", "Claude"),
             "+3 percentage points: against an even pace\nresets Mon 26 Oct 00:00 UTC; source: Claude usage endpoint"
         );
+    }
+
+    /// A window that resets at 01:04 UTC, `used` percent spent, rendered
+    /// `now` seconds into it in UTC.
+    fn render_target(used: Option<u8>, pace: i32, now: u64, width: u16) -> (Buffer, ShellHitMap) {
+        let starts_at = MONDAY + 3_840;
+        let mut week = daily_use(vec![Some(1); 7], Some(1), pace);
+        week.starts_at = starts_at;
+        week.resets_at = starts_at + 7 * 86_400;
+        week.used_percent = used;
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(week);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        let area = Rect::new(0, 0, width, footer_height(&report));
+        let mut buffer = Buffer::empty(area);
+        let mut hits = ShellHitMap::default();
+        render_usage_footer(
+            &mut buffer,
+            area,
+            &report,
+            starts_at + now,
+            &daily_use_labels(Some(&report), |_| 0),
+            &Palette::catppuccin(),
+            &mut hits,
+        );
+        (buffer, hits)
+    }
+
+    fn pace_tooltip_of(hits: &ShellHitMap) -> &super::super::tooltip::TooltipTarget {
+        hits.tooltips
+            .iter()
+            .find(|tooltip| tooltip.id == "usage:claude:pace")
+            .unwrap()
+    }
+
+    #[test]
+    fn under_pace_the_row_shows_what_is_left_to_the_next_day_boundary() {
+        // A day and five hours in: the next boundary is two days in, where
+        // even pace is 28.6%; 19% used leaves 9.6 points.
+        let (buffer, hits) = render_target(Some(19), -7, 86_400 + 5 * 3_600, 32);
+        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp · +9.6pp to 01:04");
+        let palette = Palette::catppuccin();
+        assert_eq!(buffer[(8, 2)].fg, palette.overlay0);
+        assert_eq!(buffer[(29, 2)].fg, palette.overlay0);
+        let tooltip = pace_tooltip_of(&hits);
+        // Exactly the printed text.
+        assert_eq!(tooltip.rect, Rect::new(8, 2, 22, 1));
+        assert_eq!(
+            tooltip.text,
+            "-7 percentage points: 19% used vs 26% elapsed\n\
+             target: the 7-day window's even pace at its next day boundary,\n\
+             a plan, not a limit; the 5-hour window is a separate limit\n\
+             resets Mon 26 Oct 01:04 UTC; source: Claude usage endpoint"
+        );
+    }
+
+    #[test]
+    fn over_pace_the_row_shows_how_far_over_the_next_day_boundary_it_is() {
+        let (buffer, hits) = render_target(Some(31), 2, 86_400 + 20 * 3_600, 36);
+        assert_eq!(
+            buffer_rows(&buffer)[2],
+            "▁▁▁▁▁▁▁ +2pp · 2.4pp over at 01:04"
+        );
+        let palette = Palette::catppuccin();
+        assert_eq!(buffer[(8, 2)].fg, palette.yellow);
+        assert_eq!(buffer[(29, 2)].fg, palette.yellow);
+        assert_eq!(pace_tooltip_of(&hits).rect, Rect::new(8, 2, 26, 1));
+    }
+
+    #[test]
+    fn without_the_used_percent_the_row_shows_only_the_pace() {
+        let (buffer, hits) = render_target(None, -7, 86_400, 40);
+        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp");
+        let tooltip = pace_tooltip_of(&hits);
+        assert_eq!(tooltip.rect, Rect::new(8, 2, 4, 1));
+        assert!(!tooltip.text.contains("target"));
+    }
+
+    #[test]
+    fn a_narrow_row_drops_the_target_whole_and_then_the_pace() {
+        // One column short of the target: only the pace, and its tooltip.
+        let (buffer, hits) = render_target(Some(19), -7, 86_400, 31);
+        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp");
+        let tooltip = pace_tooltip_of(&hits);
+        assert_eq!(tooltip.rect, Rect::new(8, 2, 4, 1));
+        assert!(!tooltip.text.contains("target"));
+        // One column short of the pace: no text and no tooltip.
+        let (buffer, hits) = render_target(Some(19), -7, 86_400, 13);
+        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁");
+        assert!(hits
+            .tooltips
+            .iter()
+            .all(|tooltip| tooltip.id != "usage:claude:pace"));
+    }
+
+    #[test]
+    fn in_the_last_window_day_the_next_boundary_is_the_reset() {
+        let starts = MONDAY;
+        let day = 86_400;
+        assert_eq!(days_at_next_boundary(starts, starts - 10), 1);
+        assert_eq!(days_at_next_boundary(starts, starts), 1);
+        assert_eq!(days_at_next_boundary(starts, starts + day - 1), 1);
+        assert_eq!(days_at_next_boundary(starts, starts + day), 2);
+        assert_eq!(days_at_next_boundary(starts, starts + 6 * day + 5), 7);
+        assert_eq!(days_at_next_boundary(starts, starts + 9 * day), 7);
+        assert_eq!(target_label(80, 7, "01:04"), "+20.0pp to 01:04");
+        assert_eq!(target_label(19, 2, "01:04"), "+9.6pp to 01:04");
+        assert_eq!(target_label(100, 7, "01:04"), "+0.0pp to 01:04");
+        // The last day ends at the reset, in the zone of that instant.
+        let (buffer, _) = render_target(Some(80), -6, 6 * day + 3 * 3_600, 40);
+        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -6pp · +20.0pp to 01:04");
+        let mut week = daily_use(vec![None; 7], None, 0);
+        week.starts_at = MONDAY + 3_840;
+        week.resets_at = week.starts_at + 7 * day;
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(week);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        let labels = &daily_use_labels(Some(&report), |_| 3_600)[0].1;
+        assert_eq!(labels.day_ends, vec!["02:04"; 7]);
     }
 
     #[test]
