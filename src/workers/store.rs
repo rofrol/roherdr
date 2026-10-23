@@ -887,6 +887,15 @@ ALTER TABLE usage_admissions ADD COLUMN tenure_epoch INTEGER;
 ALTER TABLE todo_queues ADD COLUMN agent TEXT;
 ALTER TABLE todo_queues ADD COLUMN model TEXT;
 "#,
+    r#"
+-- Clients list a done run with a stop reason until the user acknowledges it
+-- (`finish.stop_acknowledged`). The runs stopped before that sent their
+-- notice under the old rule: they count as acknowledged, so only the stops
+-- recorded from now on show.
+UPDATE runs SET finish = json_set(finish, '$.stop_acknowledged', json('true'))
+    WHERE status = 'done' AND json_valid(finish)
+        AND json_extract(finish, '$.stop_reason') IS NOT NULL;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3360,6 +3369,23 @@ impl Store {
         runs.collect()
     }
 
+    /// The runs clients list, oldest first: those in progress, and the
+    /// done runs with a stop reason the user has not acknowledged
+    /// ([`Run::stop_shown`]).
+    pub(super) fn runs_shown(&self) -> StoreResult<Vec<Run>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&run_select(
+            "WHERE r.status IN ('running', 'waiting') \
+             OR (r.status = 'done' AND CASE WHEN json_valid(r.finish) THEN \
+                 json_extract(r.finish, '$.stop_reason') IS NOT NULL \
+                 AND coalesce(json_extract(r.finish, '$.stop_acknowledged'), 0) = 0 \
+                 ELSE 0 END) \
+             ORDER BY r.created_ms, r.rowid",
+        ))?;
+        let runs = statement.query_map([], run_from_row)?;
+        runs.collect()
+    }
+
     /// Whether `repo`'s usage gate is closed; an unknown repository's is
     /// open.
     pub(super) fn usage_gate_closed(&self, repo: &str) -> StoreResult<bool> {
@@ -4582,7 +4608,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 8
+                MIGRATIONS.len() - 9
             ))
             .unwrap();
         drop(store);
@@ -4659,7 +4685,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 39
+                MIGRATIONS.len() - 40
             ))
             .unwrap();
         drop(store);
@@ -4734,7 +4760,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 28
+                MIGRATIONS.len() - 29
             ))
             .unwrap();
         drop(store);
@@ -4795,6 +4821,81 @@ mod tests {
             "landed1"
         );
         assert_eq!(store.landing_of("c1").unwrap(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn runs_stopped_before_the_acknowledgement_are_not_shown_after_the_migration() {
+        let dir = scratch("stop-acknowledged");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        let insert = |store: &Store, id: &str, status: &str, finish: &str| {
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                         paths, check_name, check_argv, created_ms, updated_ms, finish)
+                     VALUES (?1, ?1, 't-abcd2345', 'done', ?2, 1, 'task', 'feat: x', '[]',
+                         'ok', '[]', 1, 1, ?3)",
+                    rusqlite::params![id, status, finish],
+                )
+                .unwrap();
+        };
+        let shown = |store: &Store| -> Vec<String> {
+            store
+                .runs_shown()
+                .unwrap()
+                .into_iter()
+                .map(|run| run.info.run_id)
+                .collect()
+        };
+        // A database from before the migration: a stop that sent its notice
+        // under the old rule, a done run without a stop reason, and one
+        // blocked with a reason it cannot have reached the close with.
+        insert(
+            &store,
+            "r-stopped1",
+            "done",
+            r#"{"stop_reason": "why", "stop_notified": true}"#,
+        );
+        insert(&store, "r-landed01", "done", r#"{"note": "n"}"#);
+        insert(&store, "r-blocked1", "blocked", r#"{"stop_reason": "why"}"#);
+        store
+            .connection()
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                [(MIGRATIONS.len() - 1).to_string()],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert!(shown(&store).is_empty());
+        let stopped = store.run("r-stopped1").unwrap().unwrap();
+        assert!(stopped.finish.stop_acknowledged);
+        assert_eq!(stopped.finish.stop_reason.as_deref(), Some("why"));
+        assert!(
+            !store
+                .run("r-landed01")
+                .unwrap()
+                .unwrap()
+                .finish
+                .stop_acknowledged
+        );
+        assert!(
+            !store
+                .run("r-blocked1")
+                .unwrap()
+                .unwrap()
+                .finish
+                .stop_acknowledged
+        );
+        // A stop recorded after the migration shows until acknowledged.
+        insert(&store, "r-stopped2", "done", r#"{"stop_reason": "why"}"#);
+        assert_eq!(shown(&store), ["r-stopped2"]);
+        drop(store);
+        // Opening again runs no migration twice.
+        let store = Store::open(&path).unwrap();
+        assert_eq!(shown(&store), ["r-stopped2"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

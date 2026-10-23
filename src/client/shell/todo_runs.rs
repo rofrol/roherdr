@@ -1,6 +1,8 @@
 //! Todo runs in progress as lines under their coordinator's space (`run
 //! r-x · install · just clean-install · 4m`; a click opens queued run
-//! details or the running step's log, read-only), and what a waiting agent waits on: its tab shows `waiting:
+//! details or the running step's log, read-only), a run that stopped with a
+//! reason until the user acknowledges it in its details (`run r-x · stopped
+//! · <reason>`), and what a waiting agent waits on: its tab shows `waiting:
 //! <job or run>` with the running job's turning half circle instead of the
 //! finished dot, and for a job a row `↳ job <name> · running · since 17:30 ·
 //! last output 17:33`.
@@ -27,6 +29,11 @@ pub(super) struct RunDetails {
     pub(super) generation: u64,
     pub(super) text: String,
     pub(super) scroll: u16,
+    /// The run stopped with a reason and the server advertises
+    /// `todo.ack_stop`: the details offer to acknowledge it.
+    pub(super) ack: bool,
+    /// The acknowledgement was sent and has no reply yet.
+    pub(super) acknowledging: bool,
 }
 
 const RUN_LINE_PREFIX: &str = "todo-run:";
@@ -83,6 +90,11 @@ pub(super) fn run_space<'a>(
         .map(|workspace| workspace.workspace_id.as_str())
 }
 
+/// What a stopped run's details say before anything else: the full reason.
+fn stopped_text(reason: &str) -> String {
+    format!("Stopped: no next item started\n\n{reason}")
+}
+
 /// The run's step as its line says it: `cherry-pick`, not `cherry_pick`.
 fn step_text(step: &str) -> String {
     if step.is_empty() {
@@ -92,7 +104,48 @@ fn step_text(step: &str) -> String {
     }
 }
 
-/// One line per todo run in progress of `workspace`, oldest first.
+/// A stopped run's reason on one line: its lines joined by spaces.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The line of a run that stopped with `reason`, until it is acknowledged.
+fn stopped_line(run: &ClientShellTodoRun, reason: &str) -> space_tabs::SpaceTabLine {
+    use crate::api::schema::AgentStatus;
+    let reason = one_line(reason);
+    space_tabs::SpaceTabLine {
+        tab_id: run_line_id(&run.run_id),
+        state: Some((AgentStatus::Done, AgentMark::None)),
+        label: format!("run {} · stopped · {reason}", run.run_id),
+        agent: None,
+        active: false,
+        jobs: Vec::new(),
+        plan: None,
+        squares: Vec::new(),
+        unfolded: false,
+        hidden_focus: None,
+        quiet: Vec::new(),
+        role: None,
+        exited_parent: None,
+        ask: None,
+        worker: None,
+        items: None,
+        background: None,
+        background_count: 0,
+        restart: None,
+        run: Some(RunLine {
+            run_id: run.run_id.clone(),
+            tooltip: format!(
+                "run {} · item {} · stopped, no next item started: {reason} · click: run details",
+                run.run_id, run.item
+            ),
+        }),
+        wait: None,
+    }
+}
+
+/// One line per todo run of `workspace`, oldest first: those in progress,
+/// and those stopped with a reason not acknowledged yet.
 pub(super) fn run_lines(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,
@@ -130,6 +183,9 @@ pub(super) fn run_lines_at(
         .iter()
         .filter(|run| run_space(snapshot, run) == Some(workspace.workspace_id.as_str()))
         .map(|run| {
+            if let Some(reason) = run.stop_reason.as_deref() {
+                return stopped_line(run, reason);
+            }
             let running = run.status == "running";
             let step = step_text(&run.step);
             let usage_reason = usage_reasons.get(run.run_id.as_str()).copied();
@@ -329,16 +385,30 @@ impl ClientShellState {
             run_id: run_id.clone(),
         });
         let supported = self.supports_endpoint_method(&method);
+        let stop_reason = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .todo_runs
+                .iter()
+                .find(|run| run.run_id == run_id)
+                .and_then(|run| run.stop_reason.clone())
+        });
+        let ack = stop_reason.is_some()
+            && self.supports_endpoint_method(&Method::TodoAckStop(TodoRunTarget {
+                run_id: run_id.clone(),
+            }));
+        let text = match (&stop_reason, supported) {
+            // The snapshot already has the reason; the status adds the rest.
+            (Some(reason), _) => stopped_text(reason),
+            (None, true) => "Loading run details…".into(),
+            (None, false) => "This server does not advertise todo.status.".into(),
+        };
         self.overlay = Some(ClientShellOverlay::RunDetails(RunDetails {
             run_id: run_id.clone(),
             generation,
-            text: if supported {
-                "Loading run details…"
-            } else {
-                "This server does not advertise todo.status."
-            }
-            .into(),
+            text,
             scroll: 0,
+            ack,
+            acknowledging: false,
         }));
         let busy = self
             .pending_requests
@@ -353,7 +423,10 @@ impl ClientShellState {
                 ))
         {
             if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
-                details.text = "Run details could not be requested.".into();
+                // A stopped run keeps the reason its snapshot gave.
+                if stop_reason.is_none() {
+                    details.text = "Run details could not be requested.".into();
+                }
             }
         }
     }
@@ -391,10 +464,15 @@ impl ClientShellState {
                 } else {
                     status
                 };
-                let mut text = format!(
-                    "Point-in-time run details\nStep: {}\nStatus: {status}\n\n{reason}",
-                    step_text(step),
-                );
+                let mut text = match run.stop_reason.as_deref() {
+                    Some(stop) if status == "done" => {
+                        format!("{}\n\nStep: {}", stopped_text(stop), step_text(step))
+                    }
+                    _ => format!(
+                        "Point-in-time run details\nStep: {}\nStatus: {status}\n\n{reason}",
+                        step_text(step),
+                    ),
+                };
                 if let Some(error) = run.error.as_deref().filter(|text| !text.is_empty()) {
                     text.push_str(&format!("\n\nRecorded error: {error}"));
                 }
@@ -403,6 +481,60 @@ impl ClientShellState {
             Ok(_) => "The server returned unexpected run details.".into(),
             Err(error) => error.message,
         };
+        (true, Vec::new())
+    }
+
+    /// Acknowledges the stop reason of the run whose details are open, when
+    /// they offer it: the server then stops listing the run, which removes
+    /// its line.
+    pub(super) fn acknowledge_run_stop(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_ref() else {
+            return;
+        };
+        if !details.ack || details.acknowledging {
+            return;
+        }
+        let run_id = details.run_id.clone();
+        outcome.repaint = true;
+        let method = Method::TodoAckStop(TodoRunTarget {
+            run_id: run_id.clone(),
+        });
+        let sent = self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::TodoAckStop {
+                run_id: run_id.clone(),
+            },
+            outcome,
+        );
+        if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
+            if sent {
+                details.acknowledging = true;
+            } else {
+                details.text =
+                    format!("{}\n\nThe acknowledgement could not be sent.", details.text);
+            }
+        }
+    }
+
+    pub(super) fn complete_todo_ack_stop(
+        &mut self,
+        run_id: String,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> (bool, Vec<ClientShellAction>) {
+        let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() else {
+            return (false, Vec::new());
+        };
+        if details.run_id != run_id {
+            return (false, Vec::new());
+        }
+        match result {
+            // The next snapshot no longer lists the run.
+            Ok(_) => self.overlay = None,
+            Err(error) => {
+                details.acknowledging = false;
+                details.text = format!("{}\n\nNot acknowledged: {}", details.text, error.message);
+            }
+        }
         (true, Vec::new())
     }
 
@@ -420,16 +552,15 @@ impl ClientShellState {
     }
 
     /// Asks the server for a popup that shows the run's step log and
-    /// follows it. Waiting runs instead fetch read-only details with
-    /// `todo.status`, even when they have no log. Running runs without a
+    /// follows it. Waiting and stopped runs instead open read-only details
+    /// fetched with `todo.status`, even when they have no log. Running runs without a
     /// log or without `todo.open_log` support open nothing.
     pub(super) fn open_run_log(&mut self, run_id: String, outcome: &mut ClientShellInput) {
         outcome.repaint = true;
         if self.snapshot.as_deref().is_some_and(|snapshot| {
-            snapshot
-                .todo_runs
-                .iter()
-                .any(|run| run.run_id == run_id && run.status == "waiting")
+            snapshot.todo_runs.iter().any(|run| {
+                run.run_id == run_id && (run.status == "waiting" || run.stop_reason.is_some())
+            })
         }) {
             self.open_run_details(run_id, outcome);
             return;
@@ -472,6 +603,7 @@ mod tests {
             step_started_ms: Some(1_000),
             step_command: Some("just clean-install TODO.md".into()),
             has_log: true,
+            stop_reason: None,
         }
     }
 

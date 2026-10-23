@@ -2147,6 +2147,11 @@ impl ClientShellState {
                 {
                     self.overlay = None
                 }
+                MouseEventKind::Down(MouseButton::Left)
+                    if super::contains(self.hits.overlay_primary, point) =>
+                {
+                    self.acknowledge_run_stop(outcome)
+                }
                 _ => {}
             }
             outcome.repaint = true;

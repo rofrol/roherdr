@@ -124,7 +124,8 @@ impl App {
         waits
     }
 
-    /// The todo runs in progress with their owners' panes by canonical id.
+    /// The todo runs in progress, and the stopped ones not acknowledged
+    /// yet, with their owners' panes by canonical id.
     pub(crate) fn client_shell_todo_runs(
         &self,
         runs: Vec<crate::workers::ActiveRun>,
@@ -145,6 +146,7 @@ impl App {
                 step_started_ms: run.step_started_ms,
                 step_command: run.step_command,
                 has_log: run.step_log.is_some(),
+                stop_reason: run.stop_reason,
             })
             .collect()
     }
@@ -270,6 +272,7 @@ mod tests {
             step_started_ms: Some(7),
             step_command: Some("just clean-install TODO.md".into()),
             step_log: Some("/state/run.log".into()),
+            stop_reason: None,
         }]);
         assert_eq!(runs[0].step, "cherry_pick");
         assert_eq!(runs[0].status, "running");

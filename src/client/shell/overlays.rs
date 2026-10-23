@@ -129,16 +129,38 @@ fn render_run_details(
         .wrap(Wrap { trim: false })
         .scroll((details.scroll, 0))
         .render(body, b);
+    let footer = inner.bottom().saturating_sub(1);
+    let mut primary = Rect::default();
+    let mut hint_x = inner.x;
+    if details.ack {
+        let label = if details.acknowledging {
+            " acknowledging… "
+        } else {
+            " ↵ acknowledge "
+        };
+        primary = Rect::new(inner.x, footer, display_width(label).min(inner.width), 1);
+        button(
+            b,
+            primary,
+            label,
+            Style::default()
+                .fg(contrast(p))
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        hint_x = primary.right().saturating_add(2);
+    }
     put_text(
         b,
-        inner.x,
-        inner.bottom().saturating_sub(1),
-        inner.width,
+        hint_x,
+        footer,
+        inner.right().saturating_sub(hint_x),
         "esc close · ↑/↓ scroll",
         base.fg(p.overlay0),
     );
     Some(OverlayRender {
         area: outer,
+        primary,
         ..OverlayRender::default()
     })
 }

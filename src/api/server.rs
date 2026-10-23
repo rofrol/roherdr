@@ -1337,6 +1337,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TodoWait(_) => "todo.wait",
         Method::TodoStatus(_) => "todo.status",
         Method::TodoOpenLog(_) => "todo.open_log",
+        Method::TodoAckStop(_) => "todo.ack_stop",
         Method::TodoRuns(_) => "todo.runs",
         Method::TodoReview(_) => "todo.review",
         Method::TodoNext(_) => "todo.next",

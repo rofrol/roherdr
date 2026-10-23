@@ -10540,6 +10540,68 @@ mod todo_runs {
     }
 
     #[test]
+    fn a_stopped_run_is_listed_for_clients_until_its_stop_is_acknowledged() {
+        let fixture = todo_repo("todo-stop-ack");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        let listed = |run_id: &str| {
+            fixture
+                .supervisor
+                .active_runs()
+                .into_iter()
+                .find(|listed| listed.run_id == run_id)
+        };
+        // In progress: listed without a stop reason.
+        assert_eq!(listed(&run.run_id).unwrap().stop_reason, None);
+        // Only a done run with a stop reason takes the acknowledgement.
+        let error = fixture.supervisor.todo_ack_stop(&run.run_id).unwrap_err();
+        assert_eq!(error.code(), "invalid_request", "{error}");
+        crate::workers::take_user_notices();
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("Half of it landed.".into()),
+                stop_reason: Some(STOP_REASON.into()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        // Done with its reason while the owner is there: listed with it,
+        // and no notice.
+        let stopped = listed(&run.run_id).expect("the stopped run is listed");
+        assert_eq!(stopped.stop_reason.as_deref(), Some(STOP_REASON));
+        assert_eq!(stopped.status, crate::api::schema::TodoRunStatus::Done);
+        assert_eq!(stopped.owner_pane.as_deref(), Some("p-coordinator"));
+        assert!(crate::workers::take_user_notices().is_empty());
+
+        // Acknowledged once, recorded once, even when sent again.
+        fixture.supervisor.todo_ack_stop(&run.run_id).unwrap();
+        fixture.supervisor.todo_ack_stop(&run.run_id).unwrap();
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_stop_acknowledged").len(),
+            1
+        );
+        assert!(listed(&run.run_id).is_none());
+        // The user has seen it: the owner going away later sends no notice,
+        // and neither does a restart.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert!(run_events(&fixture, &run.run_id, "run_stop_notified").is_empty());
+        assert!(!fixture
+            .supervisor
+            .owner_panes()
+            .contains(&"p-coordinator".to_owned()));
+    }
+
+    #[test]
     fn a_coordinator_handoff_carries_a_held_back_stop_notice_to_its_successor() {
         let fixture = todo_repo("todo-stop-handoff");
         with_finish(&fixture);

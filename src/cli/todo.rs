@@ -203,6 +203,10 @@ const USAGE: &str = "usage:
   herdr todo log [--follow] <run-id>
       Prints the log of the run's current step (step_log); --follow keeps
       printing what is appended until q, Esc or Ctrl-C. Read-only.
+  herdr todo ack-stop <run-id>
+      Acknowledges the stop reason of a run done with --stop-reason: the
+      sidebar no longer lists the run under its coordinator's space, and
+      no notification of it follows. Prints the run.
   herdr todo review <run-id> [--attempt N] [--diff] [--json]
       Prints in one view what you review of the run's attempt N (default:
       its current one): the task the worker got with the contract appended,
@@ -1042,6 +1046,9 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "status" => Method::TodoStatus(TodoRunTarget {
             run_id: one_run_id("status", rest)?,
         }),
+        "ack-stop" => Method::TodoAckStop(TodoRunTarget {
+            run_id: one_run_id("ack-stop", rest)?,
+        }),
         // The status names the step's log, which the CLI reads itself.
         "log" => {
             let (_, rest) = take_switch(rest, "--follow")?;
@@ -1707,6 +1714,17 @@ mod tests {
         assert!(parse(&args(&["log"])).is_err());
         assert_eq!(log_line("\u{1b}[1mok\r"), " [1mok ");
         assert_eq!(log_line("a\tb"), "a\tb");
+    }
+
+    #[test]
+    fn ack_stop_takes_one_run_id() {
+        let Ok(Some(Method::TodoAckStop(target))) = parse(&args(&["ack-stop", "r-abcd2345"]))
+        else {
+            panic!("ack-stop did not parse");
+        };
+        assert_eq!(target.run_id, "r-abcd2345");
+        assert!(parse(&args(&["ack-stop"])).is_err());
+        assert!(parse(&args(&["ack-stop", "r-a", "r-b"])).is_err());
     }
 
     #[test]

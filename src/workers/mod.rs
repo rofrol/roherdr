@@ -590,7 +590,8 @@ pub(crate) fn take_user_notices() -> Vec<UserNotice> {
 /// Every pending question of the server's supervisor; empty when no
 /// supervisor was opened (it is never opened just to answer this).
 /// The todo runs in progress with what their drivers publish of their
-/// steps, for the client snapshot; none before the supervisor opened.
+/// steps, and the stopped ones not acknowledged yet, for the client
+/// snapshot; none before the supervisor opened.
 pub(crate) fn active_runs() -> Vec<ActiveRun> {
     SUPERVISOR
         .get()

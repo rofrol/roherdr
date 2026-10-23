@@ -681,6 +681,9 @@ impl ClientShellState {
         if let PendingEndpointKind::TodoStatus { run_id, generation } = pending.kind {
             return self.complete_todo_status(run_id, generation, result);
         }
+        if let PendingEndpointKind::TodoAckStop { run_id } = pending.kind {
+            return self.complete_todo_ack_stop(run_id, result);
+        }
         if let PendingEndpointKind::TodoReview {
             endpoint_id,
             run_id,

@@ -260,6 +260,10 @@ pub(super) struct RunFinish {
     /// The stop reason was handed to the server's notifications.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) stop_notified: bool,
+    /// The user acknowledged the stop reason (`todo.ack_stop`): clients
+    /// no longer list the run, and no notice follows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) stop_acknowledged: bool,
     /// The server reviews the run's `review` events itself
     /// ([`auto_review`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -617,11 +621,21 @@ impl Run {
     }
 
     /// Whether the run is done with a stop reason the user was not notified
-    /// of yet: held back while its owner is there.
+    /// of yet: held back while its owner is there. An acknowledged stop
+    /// needs no notice: the user has seen it.
     pub(super) fn stop_notice_pending(&self) -> bool {
         self.info.status == TodoRunStatus::Done
             && self.finish.stop_reason.is_some()
             && !self.finish.stop_notified
+            && !self.finish.stop_acknowledged
+    }
+
+    /// Whether clients list the run under its coordinator's space as
+    /// stopped: done with a stop reason the user has not acknowledged.
+    pub(super) fn stop_shown(&self) -> bool {
+        self.info.status == TodoRunStatus::Done
+            && self.finish.stop_reason.is_some()
+            && !self.finish.stop_acknowledged
     }
 }
 

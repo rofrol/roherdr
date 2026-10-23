@@ -95,12 +95,30 @@ impl HeadlessServer {
             return false;
         }
 
-        if let api::schema::Method::WorkerAdmissions(params) = &request.method {
-            let message = match crate::workers::supervisor().admissions(&params.cwd) {
-                Ok(admissions) => crate::server::client_commands::success_message_with_result(
-                    boot_id,
-                    request_id,
-                    api::schema::ResponseResult::WorkerAdmissions { admissions },
+        // Worker store reads and writes the app does not hold: answered here,
+        // as the local JSON API server answers them.
+        let supervised = match &request.method {
+            api::schema::Method::WorkerAdmissions(params) => Some(
+                crate::workers::supervisor()
+                    .admissions(&params.cwd)
+                    .map(|admissions| api::schema::ResponseResult::WorkerAdmissions { admissions }),
+            ),
+            api::schema::Method::TodoStatus(target) => Some(
+                crate::workers::supervisor()
+                    .todo_status(&target.run_id)
+                    .map(|run| api::schema::ResponseResult::TodoRun { run }),
+            ),
+            api::schema::Method::TodoAckStop(target) => Some(
+                crate::workers::supervisor()
+                    .todo_ack_stop(&target.run_id)
+                    .map(|run| api::schema::ResponseResult::TodoRun { run }),
+            ),
+            _ => None,
+        };
+        if let Some(result) = supervised {
+            let message = match result {
+                Ok(result) => crate::server::client_commands::success_message_with_result(
+                    boot_id, request_id, result,
                 ),
                 Err(error) => crate::server::client_commands::error_message(
                     boot_id,

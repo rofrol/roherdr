@@ -20,8 +20,8 @@ use super::{
     RUN_ENV, TODO_FILE,
 };
 use crate::api::schema::{
-    HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunPush, TodoRunStatus,
-    TodoStep, WorkerAgentChoice,
+    HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunInfo, TodoRunParams, TodoRunPush,
+    TodoRunStatus, TodoStep, WorkerAgentChoice,
 };
 use crate::workers::todo_editor::{self, SCRIPT_NAME};
 use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
@@ -854,7 +854,10 @@ impl WorkerSupervisor {
         let Some(reason) = run.finish.stop_reason.clone() else {
             return;
         };
-        if run.info.status != TodoRunStatus::Done || run.finish.stop_notified {
+        if run.info.status != TodoRunStatus::Done
+            || run.finish.stop_notified
+            || run.finish.stop_acknowledged
+        {
             return;
         }
         if let Some(owner) = run.owner_pane.as_deref() {
@@ -883,6 +886,29 @@ impl WorkerSupervisor {
         if let Err(error) = noted {
             tracing::warn!(run_id, error, "cannot record the stop reason's notice");
         }
+    }
+
+    /// Records that the user acknowledged done run `run_id`'s stop reason
+    /// (`todo.ack_stop`): clients stop listing the run, and a notice held
+    /// back while its owner is there is never sent. Acknowledging again
+    /// changes nothing; a run without a stop reason is refused.
+    pub(crate) fn todo_ack_stop(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
+        let _settling = lock(&STOP_NOTICE);
+        let run = self.load_run(run_id)?;
+        if run.info.status != TodoRunStatus::Done || run.finish.stop_reason.is_none() {
+            return Err(WorkerError::Invalid(format!(
+                "todo run {run_id} is not done with a stop reason"
+            )));
+        }
+        if !run.finish.stop_acknowledged {
+            self.update_run(
+                run_id,
+                json!({"type": "run_stop_acknowledged"}),
+                |current| current.finish.stop_acknowledged = true,
+            )
+            .map_err(|error| WorkerError::Io(std::io::Error::other(error)))?;
+        }
+        self.todo_status(run_id)
     }
 
     /// Sends the stop notices [`Self::stop_notice`] held back while owner

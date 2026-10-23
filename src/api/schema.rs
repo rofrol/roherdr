@@ -202,6 +202,10 @@ pub enum Method {
     /// follows it (`herdr todo log --follow`).
     #[serde(rename = "todo.open_log")]
     TodoOpenLog(TodoRunTarget),
+    /// Acknowledges a done run's stop reason: clients stop listing the
+    /// run, and no notice of it follows.
+    #[serde(rename = "todo.ack_stop")]
+    TodoAckStop(TodoRunTarget),
     /// One attempt of a run as the coordinator reviews it: its task, the
     /// worker's last reply, questions and failed tool calls, the diff, the
     /// verify and the approval.

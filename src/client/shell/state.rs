@@ -1108,6 +1108,10 @@ pub(super) enum PendingEndpointKind {
         run_id: String,
         generation: u64,
     },
+    /// `todo.ack_stop` from a stopped run's details.
+    TodoAckStop {
+        run_id: String,
+    },
     ReloadConfig,
     UsageRead {
         endpoint_id: ClientEndpointId,

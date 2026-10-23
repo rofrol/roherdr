@@ -9277,6 +9277,23 @@
           "type": "object"
         },
         {
+          "description": "Acknowledges a done run's stop reason: clients stop listing the\nrun, and no notice of it follows.",
+          "properties": {
+            "method": {
+              "const": "todo.ack_stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "One attempt of a run as the coordinator reviews it: its task, the\nworker's last reply, questions and failed tool calls, the diff, the\nverify and the approval.",
           "properties": {
             "method": {

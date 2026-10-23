@@ -646,6 +646,7 @@ impl ClientShellState {
         if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
             match key.code {
                 KeyCode::Esc => self.overlay = None,
+                KeyCode::Enter => self.acknowledge_run_stop(outcome),
                 KeyCode::Up | KeyCode::Char('k') => {
                     details.scroll = details.scroll.saturating_sub(1)
                 }

@@ -543,6 +543,7 @@ impl ClientShellState {
                 | PendingEndpointKind::HistoryItem { .. }
                 | PendingEndpointKind::TodoReview { .. }
                 | PendingEndpointKind::TodoStatus { .. }
+                | PendingEndpointKind::TodoAckStop { .. }
                 | PendingEndpointKind::GitBranchList { .. }
                 | PendingEndpointKind::AgentKindList { .. }
                 | PendingEndpointKind::IntegrationList

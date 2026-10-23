@@ -52,6 +52,7 @@ fn running_install() -> ClientShellTodoRun {
         step_started_ms: Some(1000),
         step_command: Some("just clean-install".into()),
         has_log: true,
+        stop_reason: None,
     }
 }
 
@@ -388,6 +389,8 @@ fn details_keep_recorded_errors_separate_and_ignore_another_runs_reply() {
             generation: 7,
             text: "loading".into(),
             scroll: 0,
+            ack: false,
+            acknowledging: false,
         },
     ));
     let response = |run_id: &str| crate::api::schema::ResponseResult::TodoRun {
@@ -493,4 +496,112 @@ fn a_tab_waiting_on_a_run_turns_its_glyph_with_the_clock() {
     let next_frame = state.motion_epoch + std::time::Duration::from_millis(170);
     assert!(state.tick_motion(next_frame));
     assert!(waiting(&mut state).contains('◒'), "{}", waiting(&mut state));
+}
+
+fn stopped_run() -> ClientShellTodoRun {
+    ClientShellTodoRun {
+        step: "done".into(),
+        status: "done".into(),
+        step_started_ms: None,
+        step_command: None,
+        has_log: false,
+        stop_reason: Some("Waits for the user's choice\nof the next item.".into()),
+        ..running_install()
+    }
+}
+
+#[test]
+fn a_stopped_run_shows_its_reason_until_acknowledged_in_its_details() {
+    let mut projected = snapshot();
+    projected.todo_runs = vec![stopped_run()];
+    let line = super::super::todo_runs::run_lines_at(&projected, &projected.workspaces[0], 1_000)
+        .remove(0);
+    assert_eq!(
+        line.label,
+        "run r-abcd2345 · stopped · Waits for the user's choice of the next item."
+    );
+    assert_eq!(line.plan, None);
+    let mut state = state_with(projected.clone());
+    state.set_endpoint_methods(Some(vec!["todo.status".into(), "todo.ack_stop".into()]));
+    let outcome = click_run(&mut state);
+    let sent = methods(&outcome);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0], Method::TodoStatus(target) if target.run_id == "r-abcd2345"));
+    // The full reason, before the status replies.
+    assert!(details_text(&state).contains("Waits for the user's choice\nof the next item."));
+    let status_request = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let run = serde_json::from_value(serde_json::json!({
+        "run_id": "r-abcd2345", "repo": "/repo", "item": "t-aaaaaaaa",
+        "step": "done", "status": "done", "attempt": 1,
+        "task": "task", "message": "message", "paths": [], "checks": [],
+        "created_ms": 1000, "updated_ms": 1000,
+        "stop_reason": "Waits for the user's choice\nof the next item.",
+    }))
+    .unwrap();
+    let boot = state.snapshot.as_ref().unwrap().boot_id.clone();
+    let (repaint, _) = state.handle_endpoint_result(
+        &boot,
+        &status_request,
+        Ok(crate::api::schema::ResponseResult::TodoRun { run }),
+    );
+    assert!(repaint);
+    assert!(details_text(&state).contains("Waits for the user's choice\nof the next item."));
+    let text = sidebar_text(&mut state);
+    assert!(text.contains("acknowledge"), "{text}");
+
+    // The acknowledge button sends `todo.ack_stop`; its reply closes the
+    // details and the next snapshot no longer lists the run.
+    let button = state.hits.overlay_primary;
+    assert!(button.width > 0);
+    let outcome = left_click(&mut state, (button.x + 1, button.y));
+    let sent = methods(&outcome);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0], Method::TodoAckStop(target) if target.run_id == "r-abcd2345"));
+    let ack_request = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let (repaint, _) = state.handle_endpoint_result(
+        &boot,
+        &ack_request,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    assert!(repaint);
+    assert!(state.overlay.is_none());
+    projected.todo_runs.clear();
+    state.set_snapshot(Box::new(projected));
+    // The run's own line, not the word: the footer shows the build's commit
+    // subject, which may say "stopped".
+    let text = sidebar_text(&mut state);
+    assert!(!text.contains("run r-abcd2345"), "{text}");
+}
+
+#[test]
+fn a_server_without_ack_stop_shows_the_stopped_run_without_the_action() {
+    let mut projected = snapshot();
+    projected.todo_runs = vec![stopped_run()];
+    let mut state = state_with(projected);
+    state.set_endpoint_methods(Some(Vec::new()));
+    assert!(methods(&click_run(&mut state)).is_empty());
+    // The reason comes with the snapshot, so the details still show it.
+    assert!(details_text(&state).contains("Waits for the user's choice"));
+    let text = sidebar_text(&mut state);
+    assert!(!text.contains("acknowledge"), "{text}");
+    assert_eq!(state.hits.overlay_primary.width, 0);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+        crate::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+    )]);
+    assert!(methods(&outcome).is_empty());
+    assert!(state.overlay.is_some());
 }

@@ -49,6 +49,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoResume(_)
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
+            | Method::TodoAckStop(_)
             | Method::TodoRuns(_)
             | Method::TodoReview(_)
             | Method::TodoNext(_)
@@ -308,6 +309,11 @@ fn handle_immediate(
         Method::TodoStatus(target) => {
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_status(&target.run_id)?,
+            })
+        }
+        Method::TodoAckStop(target) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_ack_stop(&target.run_id)?,
             })
         }
         Method::TodoRuns(params) => {

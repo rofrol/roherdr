@@ -29,7 +29,8 @@ struct StepActivity {
 
 static STEPS: Mutex<BTreeMap<String, StepActivity>> = Mutex::new(BTreeMap::new());
 
-/// A run in progress as clients list it: under its coordinator's space.
+/// A run as clients list it under its coordinator's space: in progress, or
+/// done with a stop reason the user has not acknowledged yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveRun {
     pub(crate) run_id: String,
@@ -44,6 +45,9 @@ pub(crate) struct ActiveRun {
     pub(crate) step_started_ms: Option<u64>,
     pub(crate) step_command: Option<String>,
     pub(crate) step_log: Option<String>,
+    /// Why the done run's close started no next item, until the user
+    /// acknowledges it (`todo.ack_stop`).
+    pub(crate) stop_reason: Option<String>,
 }
 
 /// The command a run event says the step starts, as one line, with its
@@ -122,12 +126,16 @@ pub(super) fn shown(mut info: TodoRunInfo) -> TodoRunInfo {
     info
 }
 
-/// The runs in progress listed last, and the change generation they were
+/// The runs listed last, and the change generation they were
 /// read at: a client snapshot reads the store again only after a run's
 /// write announced a change.
 static LISTED: Mutex<Option<(u64, Vec<ActiveRun>)>> = Mutex::new(None);
 
 fn active_run(run: Run) -> ActiveRun {
+    let stop_reason = run
+        .stop_shown()
+        .then(|| run.finish.stop_reason.clone())
+        .flatten();
     let info = shown(super::decision::shown(run.info));
     ActiveRun {
         run_id: info.run_id,
@@ -141,12 +149,13 @@ fn active_run(run: Run) -> ActiveRun {
         step_started_ms: info.step_started_ms,
         step_command: info.step_command,
         step_log: info.step_log,
+        stop_reason,
     }
 }
 
 impl WorkerSupervisor {
-    /// The runs in progress, oldest first, read from the store once per
-    /// announced change.
+    /// The runs in progress and the stopped runs not acknowledged yet,
+    /// oldest first, read from the store once per announced change.
     pub(crate) fn active_runs(&self) -> Vec<ActiveRun> {
         let generation = *lock(&CHANGES.generation);
         if let Some((seen, runs)) = lock(&LISTED).as_ref() {
@@ -156,7 +165,7 @@ impl WorkerSupervisor {
         }
         let runs = match self
             .run_store()
-            .and_then(|store| store.runs_in_progress().map_err(super::store_error))
+            .and_then(|store| store.runs_shown().map_err(super::store_error))
         {
             Ok(runs) => runs
                 .into_iter()
