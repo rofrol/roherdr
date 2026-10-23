@@ -103,6 +103,74 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   always under AN, today highlighted, the pace as a number beside them
   (`+4% vs pace`).
 
+- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
+  "the coordinator/worker code, the whole control, could be extracted as a
+  new package; much less code than all of herdr; then various TUIs, GUIs
+  could connect to it; analyse with the models"). Facts: `src/workers/` is
+  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
+  platform layer at 60 places (process groups, sessions, start tokens), API
+  schema types and thread helpers; herdr reaches into it from API handlers,
+  the coordinator tab role, takeover tabs, the live handoff and the client
+  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
+  - the boundary is real but not yet clean: generic orchestration (store,
+    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
+    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
+    takeover, coordinator as a tab role, sidebar, Items popup, live
+    handoff); coordinator authority must not depend on tab identity;
+  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
+    to import nothing from herdr, linked into herdr's server (still the
+    only daemon and API host); platform needs behind ports the crate owns
+    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
+    herdr implementing them, fakes in tests; decide whether Windows is in
+    scope for those ports (MiMo);
+  - a separate daemon only when a second client must run without herdr
+    (a third long-lived process next to the server and the brokers would
+    multiply recovery paths now);
+  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
+    events with sequence numbers, replay and snapshots, capabilities (e.g.
+    takeover); version the envelope, not a two-day-old schema; a web client
+    needs an authenticated gateway, not the local socket;
+  - when: after the driver's first slice lands (churn), together with the
+    planned split of `src/workers/mod.rs` [t-ofobwsra].
+  Approved by the user 2026-10-08 ("add it to the TODO"): after the
+  driver's first slice [t-s3oaxcki].
+  User 2026-10-08: "one could even design the protocol and make an
+  implementation in Odin etc.": so the protocol is specified language-
+  neutrally (a written spec plus JSON schemas for commands, events and
+  receipts, and a conformance test suite any implementation runs against
+  a socket), not defined by the Rust types; the Rust crate is the reference
+  implementation, and a second one (Odin or another language) is possible
+  once the spec and the conformance tests exist.
+  Approved 2026-10-23 by the user (same rounds as t-ic5rrxn3's fence
+  addition): its orchestrator-core starts with a pure transition core,
+  step(state, event) -> (state, effects), effects as data run by a thin
+  shell; the Lean traces of the Lean model item join its conformance
+  suite. Move only the transitions the fence and landing items touch at
+  first; the full move of the about 35 imperative `info.step` assignments
+  waits for the question on Bend versus the Rust core ("Needs a
+  decision"). Keep its existing prerequisites (driver's first slice,
+  t-ofobwsra). Not queued as redundant: a separate characterization item
+  (folded into the fence and landing items as failing-first tests) and a
+  Bend decision document (t-54d2offk already decides the retirement).
+  Decided 2026-10-23 with the Lean model's session (round
+  20261023-163335-20b0, sol, DeepSeek, Argon; MiMo would keep the order
+  but write both fixes transition-shaped), after the user suspended Bend
+  (d-nazchk2s): a narrow slice of this item comes first and t-cmjqsat2
+  and t-ic5rrxn3 are implemented through it; not the whole move of the
+  about 35 `info.step` sites and not the crate yet (the driver's first
+  slice and t-ofobwsra do not gate this slice). Slice 1: a pure
+  `src/workers/runs/core.rs` (no I/O, async, tracing or store), `step(&
+  CoreState, &Input) -> Result<(CoreState, Vec<CoreEffect>), Rejection>`
+  with a fence (tenure epoch, pane generation) on every input; events are
+  the landing actions and the effect acknowledgements, effects are data
+  (cherry-pick, verify on the integrated tree, install, TODO edit, push,
+  restore branch, release slot, emit); `runs.rs` and `runs/finish.rs`
+  stay a thin shell that runs effects and feeds acknowledgements back;
+  state, cursor and effect intents persist in one store transaction; a
+  trace format v1 (JSON under `tests/fixtures/todo-traces/`) replayed by
+  one Rust test. Full answer, with the signatures and the trace example:
+  the Lean session's note, recorded in the task of slice 1.
+
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
   such a handoff regular"; the herdr coordinator's own session had cost
@@ -457,56 +525,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   push, slot release; export JSON traces of the main transitions. Exit:
   `lean docs/todo-workflow-model/TodoWorkflow.lean` passes and the
   committed traces are replayed by a Rust test under `just check`.
-
-- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
-  "the coordinator/worker code, the whole control, could be extracted as a
-  new package; much less code than all of herdr; then various TUIs, GUIs
-  could connect to it; analyse with the models"). Facts: `src/workers/` is
-  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
-  platform layer at 60 places (process groups, sessions, start tokens), API
-  schema types and thread helpers; herdr reaches into it from API handlers,
-  the coordinator tab role, takeover tabs, the live handoff and the client
-  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
-  - the boundary is real but not yet clean: generic orchestration (store,
-    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
-    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
-    takeover, coordinator as a tab role, sidebar, Items popup, live
-    handoff); coordinator authority must not depend on tab identity;
-  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
-    to import nothing from herdr, linked into herdr's server (still the
-    only daemon and API host); platform needs behind ports the crate owns
-    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
-    herdr implementing them, fakes in tests; decide whether Windows is in
-    scope for those ports (MiMo);
-  - a separate daemon only when a second client must run without herdr
-    (a third long-lived process next to the server and the brokers would
-    multiply recovery paths now);
-  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
-    events with sequence numbers, replay and snapshots, capabilities (e.g.
-    takeover); version the envelope, not a two-day-old schema; a web client
-    needs an authenticated gateway, not the local socket;
-  - when: after the driver's first slice lands (churn), together with the
-    planned split of `src/workers/mod.rs` [t-ofobwsra].
-  Approved by the user 2026-10-08 ("add it to the TODO"): after the
-  driver's first slice [t-s3oaxcki].
-  User 2026-10-08: "one could even design the protocol and make an
-  implementation in Odin etc.": so the protocol is specified language-
-  neutrally (a written spec plus JSON schemas for commands, events and
-  receipts, and a conformance test suite any implementation runs against
-  a socket), not defined by the Rust types; the Rust crate is the reference
-  implementation, and a second one (Odin or another language) is possible
-  once the spec and the conformance tests exist.
-  Approved 2026-10-23 by the user (same rounds as t-ic5rrxn3's fence
-  addition): its orchestrator-core starts with a pure transition core,
-  step(state, event) -> (state, effects), effects as data run by a thin
-  shell; the Lean traces of the Lean model item join its conformance
-  suite. Move only the transitions the fence and landing items touch at
-  first; the full move of the about 35 imperative `info.step` assignments
-  waits for the question on Bend versus the Rust core ("Needs a
-  decision"). Keep its existing prerequisites (driver's first slice,
-  t-ofobwsra). Not queued as redundant: a separate characterization item
-  (folded into the fence and landing items as failing-first tests) and a
-  Bend decision document (t-54d2offk already decides the retirement).
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
