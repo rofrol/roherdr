@@ -99,6 +99,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - The chart's shape is the user's (asked below): per-day use as bars,
     or the cumulative use against an even pace to `resets_at`; always
     under AN, or opened by a click on the AN row.
+  Decided by the user 2026-10-23 (d-xsfejmv4): per-day use as bars,
+  always under AN, today highlighted, the pace as a number beside them
+  (`+4% vs pace`).
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
