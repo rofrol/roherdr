@@ -1,0 +1,16 @@
+{"version":1,
+ "initial":{"step":"push","status":"running","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":"push","degraded":[],"picked":"p1"},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"push_rejected","diverged":true}},
+   "expect":{"state":{"step":"push","status":"blocked","attention":"push_diverged",
+                      "slot_held":true,"pending":null},
+             "effects":[{"kind":"emit","event":"blocked"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"retry_push"}},
+   "expect":{"rejection":"not_allowed"}},
+  {"input":{"id":"e3","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"abort"}},
+   "expect":{"state":{"step":"abort","status":"running","pending":"restore_branch"},
+             "effects":[{"kind":"restore_branch"}]}},
+  {"input":{"id":"e4","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"branch_restored"}},
+   "expect":{"state":{"step":"abort","status":"aborted","slot_held":false,"pushed":null},
+             "effects":[{"kind":"release_slot"},{"kind":"emit","event":"aborted"}]}}]}

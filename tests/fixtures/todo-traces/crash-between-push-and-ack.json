@@ -1,0 +1,14 @@
+{"version":1,
+ "initial":{"step":"push","status":"running","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":"push","degraded":[],"picked":"p1",
+            "cursor":"e5"},
+ "steps":[
+  {"observe":{"origin":{"state":"contains","sha":"p1"},"picked":"p1"},
+   "expect":{"reconcile":{"kind":"ack","event":{"kind":"push_acked","sha":"p1"}}}},
+  {"input":{"id":"reconcile-1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"push_acked","sha":"p1"}},
+   "expect":{"state":{"step":"cleanup","slot_held":false,"pushed":"p1"},
+             "effects":[{"kind":"release_slot"},{"kind":"cleanup"}]}},
+  {"input":{"id":"reconcile-2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"push_acked","sha":"p1"}},
+   "expect":{"rejection":"unexpected_ack"}},
+  {"observe":{"origin":{"state":"behind"}},
+   "expect":{"reconcile":{"kind":"rerun","effect":{"kind":"cleanup"}}}}]}

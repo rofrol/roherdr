@@ -78,6 +78,10 @@ mod auto_answer;
 mod auto_draft;
 mod auto_review;
 mod context_pack;
+// The shell routes the landing through the core in the next slice; until
+// then only its tests and the trace replay use it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod core;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;

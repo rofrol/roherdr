@@ -1,0 +1,17 @@
+{"version":1,
+ "initial":{"step":"install","status":"running","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":"install","degraded":[]},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"install_failed"}},
+   "expect":{"state":{"step":"install","status":"waiting","attention":"install_failed"},
+             "effects":[{"kind":"emit","event":"install_failed"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"skip_install"}},
+   "expect":{"state":{"step":"todo","status":"running","degraded":["install_skipped"]},
+             "effects":[{"kind":"todo_edit"}]}},
+  {"input":{"id":"e3","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"edited"}},
+   "expect":{"state":{"step":"push"},"effects":[{"kind":"push"}]}},
+  {"input":{"id":"e4","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"push_acked","sha":"t1"}},
+   "expect":{"effects":[{"kind":"release_slot"},{"kind":"cleanup"}]}},
+  {"input":{"id":"e5","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"cleaned_up"}},
+   "expect":{"state":{"status":"done","degraded":["install_skipped"]},
+             "effects":[{"kind":"emit","event":"done"}]}}]}
