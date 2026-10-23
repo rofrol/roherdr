@@ -47,6 +47,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `worker <name> (<id>):`, `coordinator <id>:`). Open: queue mode's agent
   choice (`todo queue on` has no agent option; its runs use
   `[workers] default_agent`), and the sidebar line for a stopped run.
+  In flight: slice 3 (`todo queue on --agent/--model`), run `r-2v5o4s25`.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
