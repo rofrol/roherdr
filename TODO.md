@@ -4186,6 +4186,9 @@ Items agents add. Not approved until the user moves them up.
   the test deterministic (its fake herdr writes immediately; the test must not
   measure the host's spawn latency). Touches the three integration assets and
   their tests; no dependency, no protocol change.
+  Blocked an install again 2026-10-23 (run r-gj3emu6x, event 271195, log
+  `run-r-gj3emu6x-install.log`: the same test, capture file missing); the
+  coordinator retried the install once.
 
 - [ ] The remote-bridge test makes its own timing, and flakes under load (found by the coordinator [t-seqbqedo]
   2026-10-18, twice in one day: the `install`'s `just check` of t-t2nwbl6y failed on
