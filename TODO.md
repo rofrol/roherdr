@@ -65,6 +65,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   kept under its parent's folded line after the focus returns
   (`kept_jobs` in `src/client/shell/state.rs`, persisted in the client
   preferences; unfolding unpins it).
+  Round 20261023-133601-1969 (sol, MiMo, DeepSeek, Argon), checked against
+  `remember_focused_group_tab` (`src/client/shell/tab_groups.rs`) and
+  `hidden_focus` (`src/client/shell/space_tabs.rs`). Agreed: no memory of
+  the last opened job after the focus leaves; folding never auto-unfolds
+  (the pre-2026-10-03 behaviour stays gone); the same rule for a focus
+  moved by click, keyboard or CLI (MiMo's claim that only clicks pin is
+  wrong: it runs on every focus move in a snapshot); the persisted
+  `kept_jobs` preference is read and ignored, and no longer written (old
+  files load). Tests: click a square then fold, focus back to the parent,
+  unfold and fold again, keyboard focus into a folded line, a focused job
+  that exits, legacy preferences. Open (asked the user, below): does a
+  fold hide the focused job's square too, and does a click on the parent
+  still reopen the last focused job (`last_group_tabs`)? All four warn
+  that hiding the focused job and keeping that reopen means a click opens
+  a job drawn nowhere.
 
 - [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
   2026-10-23: "when I hover the mouse over a space's name, the whole name
