@@ -1890,6 +1890,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   19 GiB?", the space was freed): check why it stayed (asked before the
   install of f2c56a2e, or the submit path did not clear it) and fix it;
   the line shows the newest open question.
+  Asked again by the user 2026-10-23: "roherdr lacks a state where a tab
+  waits with a question while something works in the background in herdr
+  jobs etc.; ask the models". Checked 2026-10-23: `tab_state` in
+  `src/client/shell/space_tabs.rs` picks one `AgentMark` in order
+  `AwaitsReply`, `Waits` (a todo wait), `WaitsOnJob`/`WaitsOnIdleJob`,
+  `BackgroundWork`, so an open question hides every background mark.
 
 - [ ] Wake a coordinator when an external reply arrives (the owner via the [t-22gwwmer]
   roguix-vps coordinator, 2026-10-11: "why is nothing happening here?
