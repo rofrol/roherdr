@@ -2817,6 +2817,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     stays "last request".
   - This is step 1 of [t-2k3ima2h]: the cap consumes the same fact, so
     this item lands before the cap's thresholds.
+  Asked again by the user 2026-10-23: "I cannot see how full my context
+  window is [the coordinator said its harness does not show it]; fix it;
+  ask the models". Measured the same day from the coordinator's own
+  transcript: 420,522 input tokens on its last request, so its window is
+  over 200k. Round 20261023-144933-e938 (sol, MiMo, DeepSeek, Argon),
+  decided by the coordinator, adding to the 2026-10-12 decisions:
+  - Tokens always (`ctx 420k`, "as of the last request"); a percentage
+    only with a window from a named source: first a fact Claude Code
+    records (check its transcript and state files; not known to exist),
+    then a user setting labelled user-set, then a repository table keyed
+    by the exact model id and variant (plan, 1M beta) with the vendor
+    source and date. An unknown model or variant shows no percentage; a
+    reading above the table's window proves the table wrong for that
+    session and withholds it.
+  - `herdr agent context <pane> --json`: tokens, window, percent, the
+    provenance of both, the request it is as of, and a status of
+    over, under or unknown; unknown never counts as under 70%.
+  - The 70% handoff becomes mechanical through the cap item
+    (t-2k3ima2h): herdr checks at the turn-end event and tells or stops
+    the coordinator, instead of the coordinator remembering to look.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
@@ -4256,6 +4276,24 @@ Items agents add. Not approved until the user moves them up.
   `Wait-Job -Timeout 1` leaves the job running and loses the report. A
   first PowerShell client of the server needs the Windows transport of
   `HERDR_SOCKET_PATH` (a Unix socket or a named pipe) settled first.
+
+- [ ] The Items list gives run outcomes their own glyphs, not the agent's [t-k6qmauth]
+  blocked `◉` (the user, 2026-10-23, a screenshot of Items with red `◉`
+  on "14 runs · last failed" and "1 run · last record incomplete": "do
+  blocked items have the same icon as tabs that show a menu of answers?
+  ask the models"). Checked: `src/client/shell/worker_items.rs` maps a
+  failed run, a degraded record, a failed verify and a history "blocked"
+  event to `AgentStatus::Blocked`, drawn like an agent waiting on the
+  user. Round 20261023-144755-250b (sol, MiMo, DeepSeek, Argon, all
+  agreeing on the split), decided by the coordinator: an item outcome
+  enum of its own; failed red `!` (as failed job squares; sol, MiMo,
+  Argon; DeepSeek wanted `✗`, too close to Symbols' blocked `×`); record
+  incomplete a dim `◌`, never red; the blocked glyph only while a run of
+  the item waits on the user now (a question or a review), and a past
+  "blocked" event shows in the history text only; the legend splits live
+  agent states from run outcomes; tests that Items never builds
+  `AgentStatus::Blocked` for history and that every style keeps them
+  apart.
 
 ## Needs a decision
 
