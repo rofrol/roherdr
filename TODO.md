@@ -103,6 +103,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   always under AN, today highlighted, the pace as a number beside them
   (`+4% vs pace`).
 
+- [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
+  of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
+  Claude Code records no window). Decided by the user 2026-10-23
+  (d-73qhdgqp): check the documentation; the worker looks the windows up in
+  Anthropic's model documentation and adds each current Claude model's
+  entry with the URL and the date checked, a 1M variant as its own
+  variant; a value it cannot cite stays out. This session measured over
+  497k input tokens on `claude-opus-5-5`, so a 200k entry for it would be
+  withheld as wrong.
+
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
   new package; much less code than all of herdr; then various TUIs, GUIs
