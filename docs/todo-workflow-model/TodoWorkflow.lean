@@ -1537,4 +1537,398 @@ example :
 #guard (Coordinator.mk (some "pane-1") (.held "pane-1") 40
           [.needsDecision "t-a" "which?", .next "t-b"]).decide == .dispatch "t-b"
 
+
+/-! ## Target design: a fresh coordinator session per item (not implemented yet)
+
+Decided by the user on 2026-10-23 after consult rounds
+`20261023-211512-5f06`, `20261023-211937-9803`, `20261023-212316-447d` and
+`20261023-212927-b9d8`: the long-lived coordinator re-sent a ~550k-token
+context about 36 times per item. In the target design herdr's queue starts a
+fresh coordinator session for the top item on a durable event (a run landed,
+the user answered, server start); the session reads only that item, records
+every open question and consult finding before it acts, and ends when its
+item has landed or waits on the user. A mid-item handoff stays as a backstop
+for a huge item. Workers are routed by item class, a non-trivial diff needs a
+short-context review before it lands, and a pre-task consult is skipped when
+the item's decided round is newer than the last commit on its target paths.
+
+`PerItem.Queue` replaces `Coordinator.decide`'s 70% handoff once it is
+implemented; the run, git, relay and supervision machines above stay. -/
+
+namespace PerItem
+
+abbrev ItemId := String
+abbrev NoteId := Nat
+
+/-- One coordinator session: the tenure epoch it was started under, its one
+item, and what it has learned but not yet recorded (open questions to the
+user and consult findings). -/
+structure Session where
+  epoch   : Nat
+  item    : ItemId
+  pending : List NoteId
+  deriving DecidableEq, Repr
+
+structure Queue where
+  epoch   : Nat              -- the tenure epoch; every session start advances it
+  session : Option Session
+  next    : List ItemId      -- "Next, in order"
+  parked  : List ItemId      -- waiting on the user ("Needs a decision")
+  landed  : List ItemId
+  records : List NoteId      -- durable records of questions and findings
+  deriving Repr
+
+inductive Cmd where
+  | wake                          -- a durable event: run landed, user answered, server start
+  | learn (e : Nat) (n : NoteId)  -- the session meets a question or a consult finding
+  | record (e : Nat)              -- it writes what it learned to durable records
+  | land (e : Nat)                -- its item's run landed through the driver; the session ends
+  | park (e : Nat)                -- its item waits on the user; the session ends
+  | handOff (e : Nat)             -- backstop for a huge item: a fresh session, same item
+  | crash                         -- the session's process is gone
+  deriving Repr
+
+/-- The epoch a session command carries; `wake` and `crash` come from herdr. -/
+def Cmd.epoch? : Cmd → Option Nat
+  | .learn e _ | .record e | .land e | .park e | .handOff e => some e
+  | .wake | .crash => none
+
+/-- The live session, if `e` is its epoch: a superseded session acts on nothing. -/
+def Queue.live (q : Queue) (e : Nat) : Option Session :=
+  match q.session with
+  | some s => if s.epoch = e then some s else none
+  | none => none
+
+/-- What every durable event does: a pure function of the durable state, so a
+lost wake only delays the next start and a repeated one starts nothing more. -/
+def Queue.reconcile (q : Queue) : Queue :=
+  match q.session, q.next with
+  | none, i :: _ => { q with epoch := q.epoch + 1, session := some ⟨q.epoch + 1, i, []⟩ }
+  | _, _ => q
+
+def Queue.step (q : Queue) : Cmd → Option Queue
+  | .wake => some q.reconcile
+  | .learn e n => (q.live e).map fun s =>
+      { q with session := some { s with pending := s.pending ++ [n] } }
+  | .record e => (q.live e).map fun s =>
+      { q with session := some { s with pending := [] }, records := q.records ++ s.pending }
+  | .land e => match q.live e with
+      | some s => if s.pending = [] then
+          some { q with session := none, next := q.next.filter (· ≠ s.item),
+                        landed := q.landed ++ [s.item] }
+        else none
+      | none => none
+  | .park e => match q.live e with
+      | some s => if s.pending = [] then
+          some { q with session := none, next := q.next.filter (· ≠ s.item),
+                        parked := q.parked ++ [s.item] }
+        else none
+      | none => none
+  | .handOff e => match q.live e with
+      | some s => if s.pending = [] then
+          some { q with epoch := q.epoch + 1, session := some ⟨q.epoch + 1, s.item, []⟩ }
+        else none
+      | none => none
+  | .crash => some { q with session := none }
+
+/-- Runs the commands in order; `none` at the first refused one. -/
+def Queue.exec (q : Queue) : List Cmd → Option Queue
+  | [] => some q
+  | c :: cs => (q.step c).bind (·.exec cs)
+
+/-- The live session, if any, holds the current epoch. -/
+def Queue.wf (q : Queue) : Prop := ∀ s, q.session = some s → s.epoch = q.epoch
+
+/-! ### Worker routing, review before landing, and when to consult -/
+
+inductive ItemClass where
+  | routine     -- a bounded feature or fix, tests, docs
+  | risky       -- concurrency, protocol or wire, persisted state, refactor-risk
+  | mechanical  -- renames, regenerated files, text-only edits
+  deriving DecidableEq, Repr
+
+inductive WorkerModel where
+  | sonnet | opus | haiku
+  deriving DecidableEq, Repr
+
+/-- Sonnet by default, Opus for risky items and after any failed verify,
+Haiku only for mechanical items while its trial is on. -/
+def route (cls : ItemClass) (failedVerifies : Nat) (haikuTrial : Bool) : WorkerModel :=
+  if failedVerifies > 0 then .opus
+  else match cls with
+    | .risky => .opus
+    | .mechanical => if haikuTrial then .haiku else .sonnet
+    | .routine => .sonnet
+
+/-- A commit lands only when verified, and a non-trivial diff only after the
+short-context review (diff, item, decisions excerpt) passed. -/
+def mayLand (v : Verdict) (trivialDiff reviewed : Bool) : Bool :=
+  match v with
+  | .verified => trivialDiff || reviewed
+  | _ => false
+
+/-- A pre-task consult is needed unless the item records a decided round newer
+than the last commit on its target paths and nothing new came up since. -/
+def needsPreConsult (decidedAt : Option Nat) (lastTargetCommit : Nat) (newFact : Bool) : Bool :=
+  newFact || match decidedAt with
+    | none => true
+    | some t => decide (t ≤ lastTargetCommit)
+
+section PerItemProofs
+
+/-- A command from a superseded (or absent) session changes nothing. -/
+theorem stale_refused (q : Queue) (c : Cmd) (e : Nat) (he : c.epoch? = some e)
+    (hs : ∀ s, q.session = some s → s.epoch ≠ e) : q.step c = none := by
+  have hl : q.live e = none := by
+    unfold Queue.live
+    cases h : q.session with
+    | none => rfl
+    | some s => simp [hs s h]
+  cases c <;> simp_all [Cmd.epoch?, Queue.step]
+
+/-- Reconciling twice is reconciling once: a repeated wake starts nothing more. -/
+theorem reconcile_idem (q : Queue) : q.reconcile.reconcile = q.reconcile := by
+  unfold Queue.reconcile
+  cases hs : q.session <;> cases hn : q.next <;> simp [hs, hn]
+
+/-- With no live session, a wake starts one exactly when an item is next. -/
+theorem reconcile_starts_iff (q : Queue) (h : q.session = none) :
+    q.reconcile.session.isSome ↔ q.next ≠ [] := by
+  unfold Queue.reconcile
+  cases q.next <;> simp [h]
+
+/-- A wake never replaces a live session. -/
+theorem reconcile_keeps_live (q : Queue) (s : Session) (h : q.session = some s) :
+    q.reconcile = q := by
+  simp [Queue.reconcile, h]
+
+/-- The item a wake starts is the top of "Next, in order". -/
+theorem reconcile_takes_top (q : Queue) (s : Session) (h : q.session = none)
+    (h' : q.reconcile.session = some s) : q.next.head? = some s.item := by
+  unfold Queue.reconcile at h'
+  cases hn : q.next <;> simp_all
+  subst h'; rfl
+
+/-- Landing, parking and the backstop handoff need everything learned recorded. -/
+theorem acts_need_recorded (q q' : Queue) (c : Cmd) (e : Nat)
+    (hc : c = .land e ∨ c = .park e ∨ c = .handOff e) (h : q.step c = some q') :
+    ∃ s, q.session = some s ∧ s.epoch = e ∧ s.pending = [] := by
+  rcases hc with rfl | rfl | rfl <;>
+  · simp only [Queue.step] at h
+    unfold Queue.live at h
+    cases hs : q.session with
+    | none => simp [hs] at h
+    | some s =>
+      by_cases he : s.epoch = e <;> by_cases hp : s.pending = [] <;> simp_all
+
+/-- A step keeps the live session on the current epoch. -/
+theorem step_wf (q q' : Queue) (c : Cmd) (hw : q.wf) (h : q.step c = some q') : q'.wf := by
+  intro s' hs'
+  cases c with
+  | wake =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    unfold Queue.reconcile at hs' ⊢
+    cases hs : q.session with
+    | some s => simp only [hs, Option.some.injEq] at hs' ⊢; subst hs'; exact hw s hs
+    | none =>
+      cases hn : q.next with
+      | nil => simp [hs, hn] at hs'
+      | cons i is => simp only [hs, hn, Option.some.injEq] at hs' ⊢; subst hs'; rfl
+  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; simp at hs'
+  | learn e n =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, hl, rfl⟩ := h
+    simp only [Option.some.injEq] at hs'; subst hs'
+    unfold Queue.live at hl
+    split at hl
+    · rename_i s0 hs0
+      split at hl
+      · cases hl; exact hw s hs0
+      · cases hl
+    · cases hl
+  | record e =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, hl, rfl⟩ := h
+    simp only [Option.some.injEq] at hs'; subst hs'
+    unfold Queue.live at hl
+    split at hl
+    · rename_i s0 hs0
+      split at hl
+      · cases hl; exact hw s hs0
+      · cases hl
+    · cases hl
+  | land e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp at hs'
+      · cases h
+    · cases h
+  | park e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp at hs'
+      · cases h
+    · cases h
+  | handOff e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp only [Option.some.injEq] at hs'; subst hs'; rfl
+      · cases h
+    · cases h
+
+/-- Over any commands, the live session holds the current epoch, so together
+with `stale_refused` a superseded session can never act. -/
+theorem exec_wf (cs : List Cmd) (q q' : Queue) (hw : q.wf) (h : q.exec cs = some q') :
+    q'.wf := by
+  induction cs generalizing q with
+  | nil => simp [Queue.exec] at h; subst h; exact hw
+  | cons c cs ih =>
+    simp only [Queue.exec, Option.bind_eq_some_iff] at h
+    obtain ⟨q1, h1, h2⟩ := h
+    exact ih q1 (step_wf q q1 c hw h1) h2
+
+/-- One step never drops a durable record. -/
+theorem step_records (q q' : Queue) (c : Cmd) (h : q.step c = some q') :
+    q.records <+: q'.records := by
+  cases c with
+  | wake =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    unfold Queue.reconcile
+    split <;> exact List.prefix_refl _
+  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; exact List.prefix_refl _
+  | learn e n =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, -, rfl⟩ := h; exact List.prefix_refl _
+  | record e =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, -, rfl⟩ := h; exact List.prefix_append _ _
+  | land e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; exact List.prefix_refl _
+      · cases h
+    · cases h
+  | park e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; exact List.prefix_refl _
+      · cases h
+    · cases h
+  | handOff e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; exact List.prefix_refl _
+      · cases h
+    · cases h
+
+/-- Durable records only grow, over any commands (a crash loses only what was
+never recorded, and nothing acted on it: `acts_need_recorded`). -/
+theorem records_only_grow (cs : List Cmd) (q q' : Queue) (h : q.exec cs = some q') :
+    q.records <+: q'.records := by
+  induction cs generalizing q with
+  | nil => simp [Queue.exec] at h; subst h; exact List.prefix_refl _
+  | cons c cs ih =>
+    simp only [Queue.exec, Option.bind_eq_some_iff] at h
+    obtain ⟨q1, h1, h2⟩ := h
+    exact (step_records q q1 c h1).trans (ih q1 h2)
+
+/-- One step never lowers the epoch. -/
+theorem step_epoch (q q' : Queue) (c : Cmd) (h : q.step c = some q') : q.epoch ≤ q'.epoch := by
+  cases c with
+  | wake =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    unfold Queue.reconcile
+    split <;> simp
+  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; simp
+  | learn e n =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, -, rfl⟩ := h; simp
+  | record e =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, -, rfl⟩ := h; simp
+  | land e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp
+      · cases h
+    · cases h
+  | park e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp
+      · cases h
+    · cases h
+  | handOff e =>
+    simp only [Queue.step] at h
+    split at h
+    · split at h
+      · cases h; simp
+      · cases h
+    · cases h
+
+/-- A landed item leaves "Next, in order", so no later wake starts it again. -/
+theorem landed_leaves_next (q q' : Queue) (e : Nat) (s : Session)
+    (hs : q.live e = some s) (h : q.step (.land e) = some q') :
+    s.item ∉ q'.next ∧ s.item ∈ q'.landed := by
+  simp only [Queue.step, hs] at h
+  split at h
+  · cases h; simp
+  · cases h
+
+/-- Risky items get Opus. -/
+theorem route_risky (n : Nat) (t : Bool) : route .risky n t = .opus := by
+  unfold route; split <;> rfl
+
+/-- Any failed verify moves the next attempt to Opus. -/
+theorem route_after_failure (c : ItemClass) (n : Nat) (t : Bool) (h : n > 0) :
+    route c n t = .opus := by
+  simp [route, h]
+
+/-- Haiku only for a first attempt at a mechanical item during its trial. -/
+theorem haiku_only_on_trial (c : ItemClass) (n : Nat) (t : Bool) (h : route c n t = .haiku) :
+    t = true ∧ c = .mechanical ∧ n = 0 := by
+  unfold route at h
+  by_cases hn : n > 0
+  · simp [hn] at h
+  · cases c <;> cases t <;> simp_all <;> omega
+
+/-- A non-trivial diff lands only verified and reviewed. -/
+theorem nontrivial_needs_review (v : Verdict) (r : Bool) (h : mayLand v false r = true) :
+    v = .verified ∧ r = true := by
+  cases v <;> simp_all [mayLand]
+
+/-- Nothing lands unverified, trivial or not. -/
+theorem mayLand_needs_verified (v : Verdict) (t r : Bool) (h : mayLand v t r = true) :
+    v = .verified := by
+  cases v <;> simp_all [mayLand]
+
+/-- The pre-task consult is skipped exactly when the decided round is newer
+than the last commit on the target paths and nothing new came up. -/
+theorem consult_skipped_iff (t c : Nat) :
+    needsPreConsult (some t) c false = false ↔ c < t := by
+  simp [needsPreConsult]
+
+end PerItemProofs
+
+-- Two items: the first one's session learns a finding, records it and lands;
+-- the next wake starts the second item in a fresh epoch.
+#guard ((Queue.mk 0 none ["t-a", "t-b"] [] [] []).exec
+          [.wake, .learn 1 7, .record 1, .land 1, .wake]).map
+          (fun q => (q.epoch, q.session, q.landed, q.records)) ==
+        some (2, some ⟨2, "t-b", []⟩, ["t-a"], [7])
+
+-- Landing with an unrecorded finding is refused; so is a superseded epoch.
+#guard ((Queue.mk 0 none ["t-a"] [] [] []).exec [.wake, .learn 1 7, .land 1]).isNone
+#guard ((Queue.mk 0 none ["t-a"] [] [] []).exec [.wake, .handOff 1, .learn 1 7]).isNone
+
+end PerItem
+
 end TodoWorkflow
