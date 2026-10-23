@@ -58,6 +58,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
   `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
 
+- [ ] A clicked job square is no longer pinned under its folded tab line [t-5r7ujawk]
+  (the user, 2026-10-23: "the herdr job square must no longer be pinned
+  when I click it and fold the jobs; ask the models"). Checked: since
+  40e377061 and 0ca34579e (2026-10-03) a job focused from its square is
+  kept under its parent's folded line after the focus returns
+  (`kept_jobs` in `src/client/shell/state.rs`, persisted in the client
+  preferences; unfolding unpins it).
+
 - [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
   2026-10-23: "when I hover the mouse over a space's name, the whole name
   should show too, as it does for a tab's name; ask the models"). Checked:
