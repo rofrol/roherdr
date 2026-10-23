@@ -148,19 +148,42 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   which explain where its cost goes but gate neither `herdr todo show` nor
   the worker routing.
 
-- [ ] The coordinator reads one TODO item, not TODO.md (the user, [t-ufyllobh]
-  2026-10-23: "implement the best solution"; design and numbers in
-  docs/todo-workflow-model/cost-baseline.md and README "Target design",
-  rounds 20261023-211512-5f06 .. 20261023-212927-b9d8). `herdr todo show
-  <id|next>` prints one item of "Next, in order" with the titles and
-  touched paths of the last 5 landed items; the todo skill reads it
-  instead of TODO.md before each item. Exit: a coordinator's context per
-  call drops by the ~75k tokens of TODO.md, measured with
-  `docs/todo-workflow-model/measure.py`.
-  Gate (round 20261023-215046-6830): none; measure.py's context per call shows
-  its effect. Measure it in a fresh coordinator session (a long-lived one
-  already holds TODO.md in its context) and check for extra lookup calls or
-  rework from the narrower read.
+- [ ] herdr's queue gives each item to a fresh coordinator session (the [t-ovgzbujq]
+  user, 2026-10-23: "if TODO.md is not dirty, the supervisor gives the
+  coordinator the first item, then a handoff, the supervisor gives the
+  next item, and so on; ask the models"; round 20261023-215510-0b94, all
+  four models; merges t-ufyllobh, t-lhm7fnmd and t-rfksf3tt; model:
+  `PerItem` in docs/todo-workflow-model/TodoWorkflow.lean and its two
+  diagrams). The queue (deterministic, no LLM) persists the item id, the
+  TODO.md blob it read and the session's generation before it starts a
+  fresh coordinator session whose prompt holds the item's text; the
+  session never reads TODO.md whole and edits only by id through
+  `scripts/todo_edit.py`; every question to the user and every consult
+  finding is committed into the item or DECISIONS.md before the session
+  acts on it or ends (no separate store). The next session starts only
+  on the positive event "the previous session's process exited and every
+  run of its item is terminal"; herdr checks the generation on run start,
+  answer and TODO write, so a superseded session acts on nothing (the
+  rest of t-ic5rrxn3's fence may follow). A question moves the item to
+  "Needs a decision" and the queue takes the next item. The threshold
+  handoff stays a backstop for a huge item. Exit: three consecutive items
+  land through fresh sessions with no handoff note, mean coordinator
+  context under 150k tokens per call (`measure.py`), and a session killed
+  mid-item leaves its run to finish before the next session starts.
+
+- [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
+  session (the user, 2026-10-23, same decision; round
+  20261023-215510-0b94). herdr keeps each item's content hash as of the
+  last accepted analysis; a change to any other item, a heading, the
+  order, or DECISIONS.md entries the items cite is dirty, while the
+  current session's own edits to its own item through `todo_edit.py`
+  (recorded against its generation) are not; a concurrent user edit of
+  the same item is a conflict, never absorbed. Dirty starts a read-only
+  analysis agent over the changed items (done, outdated, contradicting the
+  code or decisions, needing the user); herdr applies its verdicts and
+  records the analysed hashes in one step, between sessions, so its own
+  output never re-triggers it. Exit: the user's edit of another item holds
+  the next session until the analysis; a session's own notes do not.
 
 - [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
   decision as the item above). `todo run --agent claude --model` passes
@@ -552,7 +575,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   write.
   Re-scoped 2026-10-23 (the user: "implement the best solution"; round
   20261023-212927-b9d8, all four models): with a fresh coordinator session
-  per item (t-rfksf3tt), the threshold handoff is
+  per item (t-ovgzbujq), the threshold handoff is
   only a backstop for a huge item. Finish the atomic fence (still needed:
   stale sessions must not act); drop further threshold tuning.
 
@@ -582,25 +605,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   committed traces are replayed by a Rust test under `just check`.
   2026-10-23: `PerItem` (the target per-item design) was added to the
   model with its proofs; keep it in step with this item's changes.
-
-- [ ] Open questions and consult findings are durable records (the user, [t-lhm7fnmd]
-  2026-10-23, same decision; needs the fence of t-ic5rrxn3). A
-  coordinator records each question to the user and each consult finding
-  in herdr's store before it acts on it; a fresh session sees them. Exit:
-  a session killed with a pending question leaves it to the next session
-  and the user's `?` list.
-
-- [ ] A fresh coordinator session per item, started by herdr's queue (the [t-rfksf3tt]
-  user, 2026-10-23, same decision; `PerItem.Queue` in the Lean model). On
-  a durable event (run landed, user answered, server start) the queue
-  starts a coordinator session for the top item, epoch + 1; the session
-  lands, parks or hands off (backstop for a huge item) only with nothing
-  unrecorded; a non-trivial diff lands only after a short-context review
-  (diff, item, decisions excerpt) and an external diff consult only for
-  high-consequence diffs; no pre-task consult when the item's decided
-  round is newer than the last commit on its target paths. Exit: 3
-  consecutive items land with no handoff note, mean coordinator context
-  under 150k tokens, the Lean model and both diagrams still match.
 
 - [ ] Trial the per-item design and fill in the cost comparison (the user, [t-xvvzmzb4]
   2026-10-23: "save the table of estimates in the repo, then compare after
@@ -1265,7 +1269,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tracker plan). Edit only with scripts/todo_edit.py; one commit per
   section; every other item and heading unchanged in meaning.
   2026-10-23: the coordinator's own need (reading one item) is covered by
-  `herdr todo show` (t-ufyllobh); this item keeps the file's slimming.
+  the queue's item prompt (t-ovgzbujq); this item keeps the file's slimming.
 
 - [ ] Releases run through herdr's driver, portable and without allow rules [t-5bunzos6]
   (the user, 2026-10-12, on rormpc-tools' release script: "it must work
@@ -3315,7 +3319,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (The "reviewed" state above is [t-ktz7l3hl].)
   Decided 2026-10-23 (the user: "implement the best solution", rounds
   20261023-211512-5f06 .. 20261023-212927-b9d8): the queue starts a fresh
-  coordinator session per item; see t-ufyllobh and the items after it, and
+  coordinator session per item; see t-ovgzbujq and the items after it, and
   docs/todo-workflow-model/cost-baseline.md.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?

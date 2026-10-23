@@ -2621,8 +2621,19 @@ tagging (t-j2ayjqdl), the coordinator fence and landing. The threshold
 handoff became a backstop; the coordinator/worker comparison
 (t-2p6nfwpg) waits for the trial. Baseline, estimates and the script:
 docs/todo-workflow-model/cost-baseline.md; model: `PerItem` in
-TodoWorkflow.lean with two diagrams. Items: t-ufyllobh, t-iltryyob,
-t-rfksf3tt and the two around it.
+TodoWorkflow.lean with two diagrams.
+Then decided by the user the same day ("if TODO.md is not dirty, the
+supervisor gives the coordinator the first item, then a handoff, the
+supervisor gives the next item"; round 20261023-215510-0b94): the queue
+puts the item's text in a fresh session's prompt, so no `herdr todo show`
+step; questions and consult findings are committed into the item or
+DECISIONS.md (no separate store); the next session starts only after the
+previous one exited and its item's runs are terminal, with a generation
+checked on run start, answer and TODO write; "dirty" is per item, the
+session's own item edits excluded, and a read-only analysis runs before
+the next session. Items: t-2tvx7res (worker usage), t-ovgzbujq (the loop,
+merging t-ufyllobh, t-lhm7fnmd and t-rfksf3tt), t-ctxfxkwf (dirty and
+analysis), t-iltryyob (routing), t-xvvzmzb4 (the trial).
 
 ## The weekly chart row: pace and the even-pace target (t-2wcx22ue, 2026-10-23)
 
