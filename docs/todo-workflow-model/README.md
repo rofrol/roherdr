@@ -53,7 +53,8 @@ message why they are unaffected. Then update the commit and date above.
 To render the diagram as an image (not committed):
 
 ```sh
-npx -p @mermaid-js/mermaid-cli@11.4.2 mmdc -i diagram.mmd -o todo-workflow.svg -b white
+echo '{"htmlLabels":false,"flowchart":{"htmlLabels":false}}' > config.json
+npx -p @mermaid-js/mermaid-cli@11.4.2 mmdc -c config.json -i diagram.mmd -o todo-workflow.svg -b white
 ```
 
 with the block below saved as `diagram.mmd`.
@@ -64,7 +65,7 @@ with the block below saved as `diagram.mmd`.
 flowchart TD
   subgraph C["Coordinator (LLM in a herdr pane) — Coordinator.decide"]
     C0{"in a herdr pane?"} -->|no| C1["refuseOutsidePane: offer herdr coordinator open, stop"]
-    C0 -->|yes| C2{"context > 70%?"}
+    C0 -->|yes| C2{"context over 70%?"}
     C2 -->|yes| HO["handOff"]
     C2 -->|no| C3{"a Next item?"}
     C3 -->|yes| D["dispatch: herdr todo run item"]
