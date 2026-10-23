@@ -1,12 +1,15 @@
-//! The steps of a `herdr todo run` after its cherry-pick: the install, the
-//! TODO update, the push and the cleanup. Each records its intent before its
-//! side effect and its result after it, and asks the repository first
-//! whether a driver a crash cut off already did it: the installed build is
-//! the target branch's, the target branch has the TODO commit, the push
-//! destination has the target branch. Each step reads the branch the run stored
-//! ([`Run::target_branch`]) and stops when it no longer resolves. A failed
-//! install, TODO edit or push is an event the run waits on; nothing is
-//! forced, rebased or retried on its own.
+//! The effects of a `herdr todo run`'s landing after its verify: the
+//! install, the TODO update, the push and the cleanup, each run when the
+//! landing's core waits for it and ending with its acknowledgement
+//! ([`WorkerSupervisor::land`]), which moves the run on. Each records its
+//! intent before its side effect and its result after it, and asks the
+//! repository first whether a driver a crash cut off already did it: the
+//! installed build is the target branch's, the target branch has the TODO
+//! commit, the push destination has the target branch. Each reads the
+//! branch the run stored ([`Run::target_branch`]) and stops when it no
+//! longer resolves. A failed install, TODO edit or push is an event the run
+//! waits on, and a push origin refuses as not a fast-forward stops the run
+//! for the user; nothing is forced, rebased or retried on its own.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -15,9 +18,11 @@ use std::process::Stdio;
 
 use serde_json::json;
 
+use super::core::CoreEvent;
+use super::landing::{fast_forward, tree_with};
 use super::{
-    command_with, git, git_with, new_event, tail, todo_titles, Run, CHECKS_FILE, DECISIONS_FILE,
-    RUN_ENV, TODO_FILE,
+    command_with, git, git_with, new_event, tail, todo_titles, Intent, Run, CHECKS_FILE,
+    DECISIONS_FILE, RUN_ENV, TODO_FILE,
 };
 use crate::api::schema::{
     HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunInfo, TodoRunParams, TodoRunPush,
@@ -70,7 +75,7 @@ fn decision_section(decision: &str, fallback: &str) -> (String, String) {
 /// Whether the build id a `build_id` command printed is the target branch's commit:
 /// its first word is that sha or a prefix of it (a dirty build, `<sha>~<tree>`,
 /// is not).
-fn build_is(build: &str, target: &str) -> bool {
+pub(super) fn build_is(build: &str, target: &str) -> bool {
     let word = build.split_whitespace().next().unwrap_or_default();
     word.len() >= 7 && !word.contains('~') && target.starts_with(word)
 }
@@ -124,7 +129,7 @@ fn run_logged(
 }
 
 /// The first line the `build_id` command prints.
-fn installed_build(
+pub(super) fn installed_build(
     dir: &Path,
     argv: &[String],
     env: &HashMap<String, String>,
@@ -149,28 +154,6 @@ fn installed_build(
             String::from_utf8_lossy(&output.stderr).trim()
         )),
     }
-}
-
-/// The newest commit in `since..target` whose subject is `subject`.
-fn commit_with_subject(
-    repo: &Path,
-    since: &str,
-    target: &str,
-    subject: &str,
-) -> Result<Option<String>, String> {
-    Ok(git(
-        repo,
-        &[
-            "log",
-            "--format=%H %s",
-            &format!("{since}..refs/heads/{target}"),
-        ],
-    )?
-    .lines()
-    .find_map(|line| {
-        let (sha, line_subject) = line.split_once(' ')?;
-        (line_subject == subject).then(|| sha.to_owned())
-    }))
 }
 
 /// The branches some worktree of the repository has checked out.
@@ -210,34 +193,11 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
     .is_ok()
 }
 
-/// Writes `bytes` to `path` through a temporary file renamed over it.
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.herdr-todo.tmp"));
-    std::fs::write(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|error| {
-            let _ = std::fs::remove_file(&tmp);
-            format!("cannot write {}: {error}", path.display())
-        })
-}
-
 impl WorkerSupervisor {
-    /// Records a failure the coordinator decides on: the run waits on it.
-    fn wait_on_failure(
-        &self,
-        run: &mut Run,
-        kind: TodoEventKind,
-        why: String,
-    ) -> Result<(), String> {
-        run.info.status = TodoRunStatus::Waiting;
-        let mut event = new_event(kind);
-        event.error = Some(why);
-        self.record_run_event(run, &event)?;
-        Ok(())
+    /// Acknowledges an effect that failed with why, which the coordinator
+    /// decides on.
+    fn fail_effect(&self, run: &mut Run, event: CoreEvent, why: String) -> Result<(), String> {
+        self.land(run, event, Vec::new(), Some(why))
     }
 
     /// Runs the registered install in the repository's checkout with the
@@ -248,21 +208,16 @@ impl WorkerSupervisor {
     pub(super) fn step_install(&self, run: &mut Run) -> Result<(), String> {
         let repo = run.landing_dir();
         let Some(install) = run.finish.install.clone() else {
-            run.info.step = TodoStep::Todo;
-            self.run_step(
-                run,
-                json!({
-                    "type": "run_install_skipped",
-                    "reason": format!("{CHECKS_FILE} registers no [install]"),
-                    "step": run.info.step,
-                }),
-            )?;
-            return Ok(());
+            let note = json!({
+                "type": "run_install_skipped",
+                "reason": format!("{CHECKS_FILE} registers no [install]"),
+            });
+            return self.land(run, CoreEvent::Installed, vec![note], None);
         };
         let Some(env) = lock(&RUN_ENV).get(&run.info.run_id).cloned() else {
-            return self.wait_on_failure(
+            return self.fail_effect(
                 run,
-                TodoEventKind::InstallFailed,
+                CoreEvent::InstallFailed,
                 "this server has not got the caller's environment for the install (a restart, \
                  or a `herdr todo resume` that sent none); `herdr todo resume --action \
                  retry-install` from the coordinator's shell sends it and installs"
@@ -275,17 +230,8 @@ impl WorkerSupervisor {
             if let Ok(build) = installed_build(&repo, &install.build_id, &env) {
                 if build_is(&build, &target) {
                     run.info.installed_build = Some(build.clone());
-                    run.info.step = TodoStep::Todo;
-                    self.run_step(
-                        run,
-                        json!({
-                            "type": "run_installed",
-                            "build": build,
-                            "already": true,
-                            "step": run.info.step,
-                        }),
-                    )?;
-                    return Ok(());
+                    let note = json!({"type": "run_installed", "build": build, "already": true});
+                    return self.land(run, CoreEvent::Installed, vec![note], None);
                 }
             }
         }
@@ -293,7 +239,7 @@ impl WorkerSupervisor {
             .shared
             .dir
             .join(format!("run-{}-install.log", run.info.run_id));
-        self.run_step(
+        self.effect_intent(
             run,
             json!({
                 "type": "run_install_intent",
@@ -302,10 +248,13 @@ impl WorkerSupervisor {
                 "target_branch": branch,
                 "log": log.display().to_string(),
             }),
+            Intent::default(),
         )?;
         if let Err(why) = run_logged(&repo, &install.command, &env, &log) {
-            return self.wait_on_failure(run, TodoEventKind::InstallFailed, why);
+            return self.fail_effect(run, CoreEvent::InstallFailed, why);
         }
+        #[cfg(test)]
+        super::crashes_after(&run.info.repo, TodoStep::Install)?;
         let build = if install.build_id.is_empty() {
             "installed".to_owned()
         } else {
@@ -313,67 +262,46 @@ impl WorkerSupervisor {
                 .unwrap_or_else(|error| format!("unknown ({error})"))
         };
         run.info.installed_build = Some(build.clone());
-        run.info.step = TodoStep::Todo;
-        self.run_step(
-            run,
-            json!({
-                "type": "run_installed",
-                "build": build,
-                "already": false,
-                "step": run.info.step,
-            }),
-        )?;
-        Ok(())
+        let note = json!({"type": "run_installed", "build": build, "already": false});
+        self.land(run, CoreEvent::Installed, vec![note], None)
     }
 
     /// Appends the coordinator's note to the item in `TODO.md`, or removes
     /// the item and adds the closing decision to `DECISIONS.md` as a
     /// section, with herdr's own TODO editor ([`todo_editor`], the same in
-    /// every repository), and commits that by path. The
-    /// edit is made on copies of `HEAD`'s files first; a file with changes
+    /// every repository), and commits that as a commit of its own made like
+    /// the landed commit: the edited files on the target branch's head as a
+    /// tree (in a temporary index; nothing is written to the worktree
+    /// first), a commit of it carrying the run's `Herdr-Item` and
+    /// `Herdr-Run` trailers (`git commit-tree`), then the guarded
+    /// fast-forward of the branch onto it, which brings the files into the
+    /// worktree and refuses to touch local changes. A head that moved
+    /// meanwhile is edited again on the new head. A file with changes
     /// another session left uncommitted is not touched (a `todo_failed`
-    /// event). A commit the target branch already has with the step's message is not
-    /// made again. Without a note or decision the step is skipped.
+    /// event). The TODO commit the target branch already has (found by the
+    /// run's trailers, never by its subject) is not made again. Without a
+    /// note or decision the step is skipped.
     pub(super) fn step_todo(&self, run: &mut Run) -> Result<(), String> {
         let repo = run.landing_dir();
-        let item = run.info.item.clone();
-        let (message, files) = match (&run.finish.note, &run.finish.close) {
-            (None, None) => {
-                run.info.step = TodoStep::Push;
-                self.run_step(
-                    run,
-                    json!({
-                        "type": "run_todo_skipped",
-                        "reason": "the approval gave no TODO note or closing decision",
-                        "step": run.info.step,
-                    }),
-                )?;
-                return Ok(());
-            }
-            (Some(_), _) => (format!("docs(todo): note on {item}"), vec![TODO_FILE]),
-            (None, Some(_)) => (
-                format!("docs(todo): close {item}"),
-                vec![TODO_FILE, DECISIONS_FILE],
-            ),
+        let Some((message, files)) = self.todo_message(run) else {
+            let note = json!({
+                "type": "run_todo_skipped",
+                "reason": "the approval gave no TODO note or closing decision",
+            });
+            return self.land(run, CoreEvent::Edited, vec![note], None);
         };
-        let since = run
-            .info
-            .picked
-            .clone()
-            .or_else(|| run.info.base.clone())
-            .ok_or("the run has no base")?;
         let target = run.target_branch().to_owned();
         run.target_commit()?;
-        if let Some(commit) = commit_with_subject(&repo, &since, &target, &message)? {
+        if let Some(commit) = self.todo_commit_of(run)? {
             return self.todo_committed(run, commit, &message, true);
         }
         let on = git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .map(|branch| branch.trim().to_owned())
             .unwrap_or_default();
         if on != target {
-            return self.wait_on_failure(
+            return self.fail_effect(
                 run,
-                TodoEventKind::TodoFailed,
+                CoreEvent::TodoFailed,
                 format!(
                     "the landing worktree {} is not on {target}; nothing was edited",
                     repo.display()
@@ -384,55 +312,89 @@ impl WorkerSupervisor {
             .shared
             .dir
             .join(format!("run-{}-todo", run.info.run_id));
-        let edited = self.todo_edit(run, &repo, &scratch, &files);
-        let _ = std::fs::remove_dir_all(&scratch);
-        let edited = match edited {
-            Ok(edited) => edited,
-            Err(why) => return self.wait_on_failure(run, TodoEventKind::TodoFailed, why),
-        };
-        for (file, bytes) in &edited {
-            let status = git(&repo, &["status", "--porcelain", "--", file])?;
-            // The edit a crash left uncommitted is this step's own.
-            let ours = std::fs::read(repo.join(file)).is_ok_and(|now| &now == bytes);
-            if !status.trim().is_empty() && !ours {
-                return self.wait_on_failure(
-                    run,
-                    TodoEventKind::TodoFailed,
-                    format!(
-                        "{file} in {} has uncommitted changes:\n{}\ncommit or remove them, then \
-                         retry-todo; nothing was edited",
-                        repo.display(),
-                        status.trim_end()
-                    ),
+        let index = self
+            .shared
+            .dir
+            .join(format!("run-{}-todo.index", run.info.run_id));
+        // The head moves at most once between an edit and its fast-forward
+        // here in practice; a branch that keeps moving fails the step.
+        for _ in 0..3 {
+            // One source commit: the editor reads its files, the TODO commit
+            // takes it as its parent and the fast-forward expects it, so a
+            // commit another session makes meanwhile is never overwritten.
+            let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+            let edited = self.todo_edit(run, &repo, &head, &scratch, &files);
+            let _ = std::fs::remove_dir_all(&scratch);
+            let edited = match edited {
+                Ok(edited) => edited,
+                Err(why) => return self.fail_effect(run, CoreEvent::TodoFailed, why),
+            };
+            for (file, _) in &edited {
+                let status = git(&repo, &["status", "--porcelain", "--", file])?;
+                if !status.trim().is_empty() {
+                    return self.fail_effect(
+                        run,
+                        CoreEvent::TodoFailed,
+                        format!(
+                            "{file} in {} has uncommitted changes:\n{}\ncommit or remove them, \
+                             then retry-todo; nothing was edited",
+                            repo.display(),
+                            status.trim_end()
+                        ),
+                    );
+                }
+            }
+            #[cfg(test)]
+            super::run_hook(&run.info.repo, "todo_edited");
+            let commit = tree_with(&repo, &head, &edited, &index).and_then(|tree| {
+                let body = format!(
+                    "{message}\n\nHerdr-Item: {}\nHerdr-Run: {}\n",
+                    run.info.item,
+                    super::run_trailer(&run.info)
                 );
-            }
-        }
-        let target_commit = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
-        self.run_step(
-            run,
-            json!({
-                "type": "run_todo_intent",
-                "message": message,
-                "files": files,
-                "target": target_commit,
-            }),
-        )?;
-        for (file, bytes) in &edited {
-            if let Err(why) = write_atomically(&repo.join(file), bytes) {
-                return self.wait_on_failure(run, TodoEventKind::TodoFailed, why);
-            }
-        }
-        let mut args = vec!["commit", "-q", "-m", message.as_str(), "--"];
-        args.extend(files.iter().copied());
-        if let Err(why) = git(&repo, &args) {
-            return self.wait_on_failure(
+                git(&repo, &["commit-tree", &tree, "-p", &head, "-m", &body])
+                    .map(|commit| commit.trim().to_owned())
+            });
+            let commit = match commit {
+                Ok(commit) => commit,
+                Err(why) => {
+                    let why = format!("making the TODO commit: {why}; nothing was edited");
+                    return self.fail_effect(run, CoreEvent::TodoFailed, why);
+                }
+            };
+            self.effect_intent(
                 run,
-                TodoEventKind::TodoFailed,
-                format!("committing {}: {why}", files.join(" ")),
-            );
+                json!({
+                    "type": "run_todo_intent",
+                    "message": message,
+                    "files": files,
+                    "target": head,
+                    "commit": commit,
+                }),
+                Intent::default(),
+            )?;
+            #[cfg(test)]
+            super::crashes_at(&run.info.repo, "todo_written")?;
+            match fast_forward(&repo, &target, &head, &commit, &run.info.repo) {
+                Ok(Ok(())) => {}
+                Ok(Err(_moved)) => continue,
+                Err(why) => {
+                    let why = format!("{why}; nothing was edited");
+                    return self.fail_effect(run, CoreEvent::TodoFailed, why);
+                }
+            }
+            #[cfg(test)]
+            super::crashes_at(&run.info.repo, "todo_committed")?;
+            return self.todo_committed(run, commit, &message, false);
         }
-        let commit = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
-        self.todo_committed(run, commit, &message, false)
+        self.fail_effect(
+            run,
+            CoreEvent::TodoFailed,
+            format!(
+                "{target} kept moving while the TODO edit was made; nothing was edited: \
+                 retry-todo edits again, skip-todo goes on without it"
+            ),
+        )
     }
 
     fn todo_committed(
@@ -442,6 +404,19 @@ impl WorkerSupervisor {
         message: &str,
         already: bool,
     ) -> Result<(), String> {
+        let note = self.todo_committed_note(run, commit, message, already);
+        self.land(run, CoreEvent::Edited, vec![note], None)
+    }
+
+    /// Records the TODO step's commit with the run, and the event that says
+    /// so.
+    pub(super) fn todo_committed_note(
+        &self,
+        run: &mut Run,
+        commit: String,
+        message: &str,
+        already: bool,
+    ) -> serde_json::Value {
         // A close records the item's last text and the items added since
         // the claim with this event, in the item's history.
         let (item_text, follow_ups) = if run.finish.note.is_none() && run.finish.close.is_some() {
@@ -450,20 +425,14 @@ impl WorkerSupervisor {
             (None, Vec::new())
         };
         run.info.todo_commit = Some(commit.clone());
-        run.info.step = TodoStep::Push;
-        self.run_step(
-            run,
-            json!({
-                "type": "run_todo_committed",
-                "commit": commit,
-                "message": message,
-                "already": already,
-                "step": run.info.step,
-                "item_text": item_text,
-                "follow_ups": follow_ups,
-            }),
-        )?;
-        Ok(())
+        json!({
+            "type": "run_todo_committed",
+            "commit": commit,
+            "message": message,
+            "already": already,
+            "item_text": item_text,
+            "follow_ups": follow_ups,
+        })
     }
 
     /// The closed item's text before the close commit `commit`, and the
@@ -508,11 +477,12 @@ impl WorkerSupervisor {
     }
 
     /// The step's files as herdr's `todo_edit.py` leaves them, edited on
-    /// copies of `HEAD`'s files in `scratch`.
+    /// copies of `source`'s files in `scratch`.
     fn todo_edit(
         &self,
         run: &Run,
         repo: &Path,
+        source: &str,
         scratch: &Path,
         files: &[&str],
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
@@ -524,7 +494,7 @@ impl WorkerSupervisor {
             .map_err(|error| format!("cannot create {}: {error}", editor.display()))?;
         let script = todo_editor::write_script(&editor)?;
         for file in files {
-            let text = git(repo, &["show", &format!("HEAD:{file}")])
+            let text = git(repo, &["show", &format!("{source}:{file}")])
                 .map_err(|error| format!("{} has no {file}: {error}", run.target_branch()))?;
             std::fs::write(scratch.join(file), text)
                 .map_err(|error| format!("cannot write a copy of {file}: {error}"))?;
@@ -598,7 +568,7 @@ impl WorkerSupervisor {
     /// configuration ([`super::super::target_branch::push_of`]), or, for a
     /// run recorded before runs stored it, `origin`'s branch of the same
     /// name when the repository has `origin`.
-    fn push_plan(run: &Run, repo: &Path) -> TodoRunPush {
+    pub(super) fn push_plan(run: &Run, repo: &Path) -> TodoRunPush {
         if let Some(push) = &run.info.push {
             return push.clone();
         }
@@ -624,11 +594,12 @@ impl WorkerSupervisor {
     /// Pushes the target branch where the run's push destination names
     /// ([`Self::push_plan`]) with the caller's environment, with an
     /// explicit refspec and only as a fast-forward: it fetches that remote
-    /// branch first, and when it is not an ancestor of the local one the
-    /// push is refused (a `push_failed` event); it is never forced. A
-    /// remote that lacks the branch is refused too: herdr never creates a
-    /// branch on a remote (a fork's branch would leak upstream that way),
-    /// the first push is the user's. When the remote already has the
+    /// branch first, and when it is not an ancestor of the local one (origin
+    /// diverged) the push is refused and the run stops for the user (a
+    /// `blocked` event that takes only abort); it is never forced. A remote
+    /// that lacks the branch is refused as a `push_failed` event: herdr
+    /// never creates a branch on a remote (a fork's branch would leak
+    /// upstream that way), the first push is the user's. When the remote already has the
     /// commit (a push a crash did not record) nothing is pushed. A run
     /// whose branch git names no single destination for skips the step,
     /// saying why.
@@ -636,24 +607,23 @@ impl WorkerSupervisor {
         let repo = run.landing_dir();
         let plan = Self::push_plan(run, &repo);
         let (Some(remote_name), Some(dst_ref)) = (plan.remote.clone(), plan.dst_ref.clone()) else {
-            run.info.step = TodoStep::Cleanup;
-            self.run_step(
-                run,
-                json!({
-                    "type": "run_push_skipped",
-                    "reason": plan
-                        .skipped
-                        .clone()
-                        .unwrap_or_else(|| "the run names no push destination".into()),
-                    "step": run.info.step,
-                }),
-            )?;
-            return Ok(());
+            // Nothing to push: the landing goes on as after a push, with the
+            // branch's commit as the one that stays.
+            let note = json!({
+                "type": "run_push_skipped",
+                "reason": plan
+                    .skipped
+                    .clone()
+                    .unwrap_or_else(|| "the run names no push destination".into()),
+            });
+            let sha = run.target_commit()?;
+            return self.land(run, CoreEvent::PushAcked { sha }, vec![note], None);
         };
+        let refused = CoreEvent::PushRejected { diverged: false };
         let Some(env) = lock(&RUN_ENV).get(&run.info.run_id).cloned() else {
-            return self.wait_on_failure(
+            return self.fail_effect(
                 run,
-                TodoEventKind::PushFailed,
+                refused,
                 "this server has not got the caller's environment for the push (a restart, or \
                  a `herdr todo resume` that sent none); `herdr todo resume --action retry-push` \
                  from the coordinator's shell sends it and pushes"
@@ -676,17 +646,13 @@ impl WorkerSupervisor {
                 })
                 .filter(|sha| !sha.is_empty()),
             Err(why) => {
-                return self.wait_on_failure(
-                    run,
-                    TodoEventKind::PushFailed,
-                    format!("reading {theirs}: {why}"),
-                )
+                return self.fail_effect(run, refused, format!("reading {theirs}: {why}"));
             }
         };
         let Some(remote) = remote else {
-            return self.wait_on_failure(
+            return self.fail_effect(
                 run,
-                TodoEventKind::PushFailed,
+                refused,
                 format!(
                     "{remote_name} has no {dst_ref}: herdr never creates a branch on a remote \
                      (that is how a fork's branch would leak upstream); the first push is yours \
@@ -699,11 +665,20 @@ impl WorkerSupervisor {
             &["fetch", "--quiet", "--", &remote_name, &dst_ref],
             Some(&env),
         ) {
-            return self.wait_on_failure(
-                run,
-                TodoEventKind::PushFailed,
-                format!("fetching {theirs}: {why}"),
-            );
+            return self.fail_effect(run, refused, format!("fetching {theirs}: {why}"));
+        }
+        // A push a driver began and did not acknowledge: done once origin's
+        // branch contains the commit it sent.
+        let began = run
+            .landing
+            .as_ref()
+            .filter(|landing| landing.started)
+            .and_then(|landing| landing.intent.as_ref())
+            .and_then(|intent| intent.sends.clone());
+        if let Some(sent) = began {
+            if git(&repo, &["merge-base", "--is-ancestor", &sent, &remote]).is_ok() {
+                return self.pushed(run, sent, Some(remote), true);
+            }
         }
         if git(
             &repo,
@@ -719,20 +694,15 @@ impl WorkerSupervisor {
         )
         .is_err()
         {
-            return self.wait_on_failure(
-                run,
-                TodoEventKind::PushFailed,
-                format!(
-                    "{theirs} {remote} is not an ancestor of {branch} {target_commit}: the push \
-                     would not be a fast-forward, and it is never forced; bring {branch} up to \
-                     date with {theirs}, then retry-push"
-                ),
-            );
+            // Diverged: only the user can bring the two together, so the run
+            // stops for them (no wait, no retry-push, no abort of its own).
+            let why = self.diverged_why(run, &theirs, Some(&remote));
+            return self.fail_effect(run, CoreEvent::PushRejected { diverged: true }, why);
         }
         if let Err(why) = super::check_private_details(&repo, &remote, &target_commit, Some(&env)) {
-            return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
+            return self.fail_effect(run, refused, why);
         }
-        self.run_step(
+        self.effect_intent(
             run,
             json!({
                 "type": "run_push_intent",
@@ -742,17 +712,23 @@ impl WorkerSupervisor {
                 "dst_ref": dst_ref,
                 "origin": remote,
             }),
+            Intent {
+                sends: Some(target_commit.clone()),
+                ..Intent::default()
+            },
         )?;
         // Push exactly the inspected commit, not a ref another process could
         // advance between the privacy check and Git reading the push source;
         // without a `+`, the remote refuses anything but a fast-forward.
+        #[cfg(test)]
+        super::crashes_at(&run.info.repo, "push_begun")?;
         let refspec = format!("{target_commit}:{dst_ref}");
         if let Err(why) = git_with(
             &repo,
             &["push", "--quiet", "--", &remote_name, &refspec],
             Some(&env),
         ) {
-            return self.wait_on_failure(run, TodoEventKind::PushFailed, why);
+            return self.fail_effect(run, refused, why);
         }
         #[cfg(test)]
         super::crashes_after(&run.info.repo, TodoStep::Push)?;
@@ -767,18 +743,14 @@ impl WorkerSupervisor {
         already: bool,
     ) -> Result<(), String> {
         run.info.pushed = Some(target_commit.clone());
-        run.info.step = TodoStep::Cleanup;
-        self.run_step(
-            run,
-            json!({
-                "type": "run_pushed",
-                "target": target_commit,
-                "origin_before": before,
-                "already": already,
-                "step": run.info.step,
-            }),
-        )?;
-        Ok(())
+        let note = json!({
+            "type": "run_pushed",
+            "target": target_commit,
+            "origin_before": before,
+            "already": already,
+        });
+        let sha = target_commit;
+        self.land(run, CoreEvent::PushAcked { sha }, vec![note], None)
     }
 
     /// Deletes the run's attempt branches whose changes the target branch has, and
@@ -793,30 +765,16 @@ impl WorkerSupervisor {
             .collect();
         let swept = self.sweep_branches(run, &own)?;
         run.info.kept_branches = swept.kept.clone();
-        self.run_step(
-            run,
-            json!({
-                "type": "run_cleaned",
-                "deleted": swept.deleted,
-                "kept": swept.kept,
-                "unmerged": swept.unmerged,
-                "errors": swept.errors,
-            }),
-        )?;
-        run.info.step = TodoStep::Done;
-        run.info.status = TodoRunStatus::Done;
-        let mut event = new_event(TodoEventKind::Done);
-        event.commits = run
-            .info
-            .picked
-            .iter()
-            .chain(run.info.todo_commit.iter())
-            .cloned()
-            .collect();
-        self.record_run_event(run, &event)?;
-        let env = lock(&RUN_ENV).remove(&run.info.run_id);
-        self.follow_up(&run.info.run_id, env);
-        Ok(())
+        // The run is done once the cleanup is acknowledged: the `done` event
+        // follows in the same write, then what its close named after it.
+        let note = json!({
+            "type": "run_cleaned",
+            "deleted": swept.deleted,
+            "kept": swept.kept,
+            "unmerged": swept.unmerged,
+            "errors": swept.errors,
+        });
+        self.land(run, CoreEvent::CleanedUp, vec![note], None)
     }
 
     /// Settles what a done run's close or note named after it: starts the next

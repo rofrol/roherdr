@@ -2,15 +2,17 @@
 //! coordinator chooses intent (the task text, the commit subject, the paths,
 //! a registered check); the driver owns execution: preflight, starting a
 //! headless worker in the repository's folder slot, turning what needs the
-//! coordinator into run events, stopping the worker, verifying its commit
-//! with the registered check (typed argv, never a shell string),
-//! cherry-picking it onto the branch checked out where the run was started
-//! (read once at preflight with that worktree and stored with the run,
-//! [`target_branch`]), running the registered install, recording the
+//! coordinator into run events, stopping the worker, cherry-picking its
+//! commit onto the branch checked out where the run was started (read once
+//! at preflight with that worktree and stored with the run,
+//! [`target_branch`]), verifying that integrated tree with the registered
+//! check (typed argv, never a shell string), running the registered install, recording the
 //! coordinator's note or closing decision in `TODO.md` (with herdr's own
 //! `todo_edit.py`, committed by path), pushing that branch where git's push
 //! configuration sends it, only as a fast-forward, and deleting the run's
-//! merged branches.
+//! merged branches. From the cherry-pick on, the landing's pure transition
+//! core ([`core`]) decides each step and this module only runs the effect it
+//! waits for ([`landing`]).
 //!
 //! [`target_branch`]: super::target_branch
 //!
@@ -69,8 +71,8 @@ use crate::api::schema::{
     TodoPreflightCause, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus,
     TodoStep, TodoWaitParams, WorkerAgent, WorkerAgentChoice, WorkerAnswerParams,
     WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion,
-    WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerification,
-    WorkerVerifyParams, WorkerWaitUntil,
+    WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerification, WorkerVerifyParams,
+    WorkerWaitUntil,
 };
 
 pub(super) mod activity;
@@ -78,13 +80,11 @@ mod auto_answer;
 mod auto_draft;
 mod auto_review;
 mod context_pack;
-// The shell routes the landing through the core in the next slice; until
-// then only its tests and the trace replay use it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod core;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;
+mod landing;
 pub(super) mod pending_usage;
 mod prepare;
 pub(super) mod queue;
@@ -95,6 +95,7 @@ pub(super) mod usage_gate;
 
 #[cfg(all(test, unix))]
 pub(crate) use auto_answer::settle_inline;
+pub(super) use landing::degraded_of;
 
 /// A run's attempts: the first worker and two retries; a retry asked after
 /// the third blocks the run.
@@ -176,6 +177,59 @@ pub(super) struct Run {
     /// The current attempt's row of `attempts`, beside what [`TodoRunInfo`]
     /// shows of it (its number, worker, branch and task).
     pub(super) current: Attempt,
+    /// The landing as its transition core holds it (`runs.landing`); none
+    /// before the landing starts, and for a run recorded before the core
+    /// ([`Run::landing_state`] derives that one's from its step).
+    pub(super) landing: Option<Landing>,
+    /// A stored landing that does not parse: its text, written back as it
+    /// is, and the parse error. Such a run fails closed: it is blocked with
+    /// the error and nothing of its landing runs.
+    pub(super) landing_invalid: Option<(String, String)>,
+}
+
+/// A run's landing as the store keeps it: the core's state (with its
+/// cursor and the effect it waits for), whether that effect's side effect
+/// may have begun, and what the effect's intent recorded, which the shell
+/// writes right before the side effect. An effect a driver began and no
+/// acknowledgement followed is reconciled from git by the next driver that
+/// takes the run ([`WorkerSupervisor::reconcile_landing`]); one that never
+/// began runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Landing {
+    pub(super) core: core::CoreState,
+    #[serde(default)]
+    pub(super) started: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) intent: Option<Intent>,
+}
+
+/// What a begun effect's reconcile needs beside git: written with the
+/// effect's intent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Intent {
+    /// The verify: the folder slot's directory, switched to the
+    /// integration commit, and where it returns after the checks (its
+    /// branch, or the commit it was detached at).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) back: Option<String>,
+    #[serde(default)]
+    pub(super) back_is_branch: bool,
+    /// The push: the commit it sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sends: Option<String>,
+    /// The TODO edit: each file it writes and the blob id of the bytes it
+    /// writes there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) todo_files: Vec<(String, String)>,
+    /// The restore's reset: the head it moves the target branch from and
+    /// the commit it moves it to, for the worktree's two-tree switch a
+    /// driver that went away after the ref moved did not make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) restore_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) restore_to: Option<String>,
 }
 
 /// What a run keeps of an attempt beside its number, worker, branch and
@@ -225,6 +279,12 @@ pub(super) struct RunFinish {
     pub(super) todo_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pushed: Option<String>,
+    /// The target branch's commit right before this run's cherry-pick,
+    /// recorded with the pick's intent: where taking the run's commit off
+    /// the branch returns it ([`core::CoreEffect::RestoreBranch`]). None
+    /// while the run picked nothing itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) restore_to: Option<String>,
     /// The branch the preflight resolved ([`TodoRunInfo::target_branch`]),
     /// kept here so the store needs no new column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1033,6 +1093,60 @@ fn crashes_after(repo: &str, step: TodoStep) -> Result<(), String> {
     }
 }
 
+/// Test only: the driver of a run of this repository returns at a named
+/// point inside a landing effect (`verify_switched`, `landed`,
+/// `todo_written`), as a server that ended there would.
+#[cfg(test)]
+static CRASH_AT: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+
+#[cfg(all(test, unix))]
+pub(super) fn crash_at(repo: &str, point: &'static str) {
+    lock(&CRASH_AT).push((repo.to_owned(), point));
+}
+
+#[cfg(test)]
+fn crashes_at(repo: &str, point: &str) -> Result<(), String> {
+    let mut crashes = lock(&CRASH_AT);
+    match crashes
+        .iter()
+        .position(|(at, named)| at == repo && *named == point)
+    {
+        Some(index) => {
+            crashes.remove(index);
+            Err(CRASHED_HERE.to_owned())
+        }
+        None => Ok(()),
+    }
+}
+
+/// Test only: what a test does at a named point inside a landing effect of
+/// a run of this repository (`before_land`, `restore_planned`), once: the
+/// interleaving a concurrent session would make, forced at that point.
+#[cfg(test)]
+type TestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static HOOKS: Mutex<Vec<(String, &'static str, TestHook)>> = Mutex::new(Vec::new());
+
+#[cfg(all(test, unix))]
+pub(super) fn hook_at(repo: &str, point: &'static str, hook: impl FnOnce() + Send + 'static) {
+    lock(&HOOKS).push((repo.to_owned(), point, Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_hook(repo: &str, point: &str) {
+    let hook = {
+        let mut hooks = lock(&HOOKS);
+        hooks
+            .iter()
+            .position(|(at, named, _)| at == repo && *named == point)
+            .map(|index| hooks.remove(index).2)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 #[cfg(test)]
 fn crashes_before(repo: &str, step: TodoStep) -> bool {
     let mut crashes = lock(&CRASH_BEFORE);
@@ -1584,6 +1698,26 @@ fn carry_note(run: &Run, start: Option<&str>) -> Option<String> {
             branch_of(&run.info.item, &run.info.run_id, from)
         ),
     })
+}
+
+/// Why a skip-todo is refused: the TODO files in the run's landing
+/// worktree differ from `HEAD` (or cannot be read); none when they match.
+fn todo_files_dirty(run: &Run) -> Option<String> {
+    let repo = run.landing_dir();
+    let status = match git(
+        &repo,
+        &["status", "--porcelain", "--", TODO_FILE, DECISIONS_FILE],
+    ) {
+        Ok(status) if status.trim().is_empty() => return None,
+        Ok(status) => status,
+        Err(error) => error,
+    };
+    Some(format!(
+        "skip-todo would leave {TODO_FILE} and {DECISIONS_FILE} in {} as they are now, not as \
+         HEAD has them:\n{}\ncommit or restore them first, then skip-todo; nothing was skipped",
+        repo.display(),
+        status.trim_end()
+    ))
 }
 
 /// A `Herdr-Run` trailer's value: the run and the attempt.
@@ -2686,6 +2820,7 @@ impl WorkerSupervisor {
                 step_log: None,
                 agent: None,
                 model: None,
+                degraded: Vec::new(),
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -2717,6 +2852,8 @@ impl WorkerSupervisor {
                 base: Some(preflighted.base.clone()),
                 ..Attempt::default()
             },
+            landing: None,
+            landing_invalid: None,
         };
         let event = json!({
             "type": "run_created",
@@ -3295,12 +3432,15 @@ impl WorkerSupervisor {
 
     /// The coordinator's answer to the run's pending event: `answer` sends
     /// the worker the answer and keeps waiting on it, `approve` takes the
-    /// turn to the stop, verify and cherry-pick, `retry` starts the next
+    /// turn to the stop, then the landing (cherry-pick, verify on the
+    /// integrated tree, install, TODO edit, push), `retry` starts the next
     /// attempt with new task text (after the third, the run is blocked once
-    /// the worker stopped), `verify` runs the verify again, `force-stop`
-    /// SIGKILLs a worker still alive after its stop, `abort` takes the run
-    /// to its abort step, which stops the worker and ends the run
-    /// `aborted`. An event that is not the pending one (for a blocked run:
+    /// the worker stopped), `force-stop` SIGKILLs a worker still alive after
+    /// its stop, `abort` takes the run to its abort step, which stops the
+    /// worker and ends the run `aborted`. In the landing its core takes
+    /// `verify`, the retries and skips of the install, the TODO edit and the
+    /// push, and `abort` (which takes a commit not pushed yet off the
+    /// target branch first). An event that is not the pending one (for a blocked run:
     /// its `blocked` event, which takes only `abort`) is refused as stale.
     /// The environment it carries replaces the one the run's checks run
     /// with; none leaves them none.
@@ -3626,6 +3766,19 @@ impl WorkerSupervisor {
                 if let Some(error) = stale(&current) {
                     return Ok(Err(error));
                 }
+                // Only an abort ends such a run: it runs no landing effect
+                // and leaves its commits where they are.
+                if let Some((_, error)) = &current.landing_invalid {
+                    if params.action != TodoAction::Abort {
+                        return Ok(Err(WorkerError::Invalid(format!(
+                            "run {}'s stored landing state does not parse ({error}): herdr does \
+                             not guess where its landing stands, so it takes no action but an \
+                             abort, which leaves its commits as they are; repair or remove its \
+                             `landing` in the worker store first",
+                            current.info.run_id
+                        ))));
+                    }
+                }
                 // Another resume took the run over meanwhile.
                 if current.owner_pane != run.owner_pane {
                     return Ok(Err(Self::owned_elsewhere(&current)));
@@ -3656,6 +3809,56 @@ impl WorkerSupervisor {
                     current.owner_coordinator = caller_coordinator.clone();
                 }
                 let was_blocked = current.info.status == TodoRunStatus::Blocked;
+                // In the landing the core takes the coordinator's action and
+                // decides the run's next step; its state is read before the
+                // step below changes (a run recorded before the core has its
+                // state derived from that step).
+                let landing_event = if current.in_landing() {
+                    landing::landing_action(params.action)
+                } else {
+                    None
+                };
+                let leaves_landing = params.action == TodoAction::Retry && current.in_landing();
+                if landing_event.is_some() || leaves_landing {
+                    current.landing = current.landing_state();
+                }
+                if leaves_landing
+                    && current
+                        .landing
+                        .as_ref()
+                        .is_some_and(|landing| landing.core.picked.is_some())
+                {
+                    return Ok(Err(WorkerError::Invalid(format!(
+                        "run {}'s commit is still on {}: abort the run instead",
+                        current.info.run_id,
+                        current.target_branch()
+                    ))));
+                }
+                // A retry starts the landing anew: an effect that may have
+                // begun would be dropped unsettled, so it is refused; an
+                // abort settles that effect from git first.
+                if let Some(landing) = current.landing.as_ref().filter(|landing| {
+                    leaves_landing && (landing.started || landing.core.pending.is_some())
+                }) {
+                    return Ok(Err(WorkerError::Invalid(format!(
+                        "run {}'s landing has an effect that may have begun ({}): a retry would \
+                         drop it unsettled; abort the run instead, which settles it from git \
+                         first",
+                        current.info.run_id,
+                        serde_json::to_value(landing.core.pending)
+                            .ok()
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "its last effect".to_owned())
+                    ))));
+                }
+                // Skipping the TODO edit leaves the checkout's TODO files as
+                // they are: refused while they differ from HEAD, so that no
+                // edit (of herdr's or anyone's) is left behind unnoticed.
+                if landing_event.is_some() && params.action == TodoAction::SkipTodo {
+                    if let Some(why) = todo_files_dirty(&current) {
+                        return Ok(Err(WorkerError::Invalid(why)));
+                    }
+                }
                 current.info.status = TodoRunStatus::Running;
                 match params.action {
                     TodoAction::Answer => current.info.step = TodoStep::Attention,
@@ -3736,7 +3939,29 @@ impl WorkerSupervisor {
                     // The stop's wait goes on, at the run's step.
                     TodoAction::ForceStop | TodoAction::Abort | TodoAction::Unknown => {}
                 }
-                tx.run_event(&mut current, &event, false, now_ms())?;
+                // A retry after a verify failure, whose commit already left
+                // the branch, starts a new attempt: its landing starts anew
+                // once that attempt is approved.
+                if leaves_landing {
+                    current.landing = None;
+                    current.finish.restore_to = None;
+                }
+                let emitted = match landing_event {
+                    Some(_) => match landing::resume_landing(&mut current, params.action) {
+                        Ok(emitted) => emitted,
+                        Err(error) => return Ok(Err(error)),
+                    },
+                    None => None,
+                };
+                let at = now_ms();
+                tx.run_event(&mut current, &event, false, at)?;
+                // An abort after the push ends the run at once.
+                if let Some(kind) = emitted {
+                    let raised = self.emitted(&mut current, kind, None);
+                    let body = landing::event_body(&current, &raised);
+                    let pending = current.info.status == TodoRunStatus::Waiting;
+                    tx.run_event(&mut current, &body, pending, at)?;
+                }
                 Ok(Ok(current))
             })
             .map_err(store_error)?;
@@ -4037,6 +4262,20 @@ impl WorkerSupervisor {
                 }
             };
             escalations::settle(&run);
+            // A stored landing that does not parse fails closed: the run is
+            // blocked with the error and nothing of its landing runs.
+            if let Some((_, error)) = run.landing_invalid.clone() {
+                if run.info.status == TodoRunStatus::Running && run.info.step != TodoStep::Abort {
+                    self.block_run(
+                        &mut run,
+                        format!(
+                            "the run's stored landing state does not parse ({error}); nothing of \
+                             its landing runs, and nothing is derived from its step instead"
+                        ),
+                    );
+                    continue;
+                }
+            }
             if run.finish.pending_usage {
                 if let Err(why) = self.dispatch_pending_usage(&mut run) {
                     warn!(run_id, why, "cannot dispatch pending usage start");
@@ -4131,28 +4370,32 @@ impl WorkerSupervisor {
                 ) {
                     Ok(guard) => Some(guard),
                     Err(why) => {
-                        self.block_run(&mut run, format!("stopped before its {landing}: {why}"));
+                        self.halt(&mut run, format!("stopped before its {landing}: {why}"));
                         continue;
                     }
                 },
                 None => None,
             };
+            // From the approval's cherry-pick on, the landing's core decides
+            // each step and the driver runs the effect it waits for; before
+            // the core has it, an approved run at its cherry-pick (or, for a
+            // run recorded before the core, at its verify) starts it.
             let stepped = match run.info.step {
                 TodoStep::Draft => self.step_draft(&mut run),
                 TodoStep::Preflight | TodoStep::Start => self.step_start(&mut run),
                 TodoStep::Attention => self.step_attention(&mut run),
                 TodoStep::Stop => self.step_stop(&mut run),
                 TodoStep::Restart => self.step_restart(&mut run),
-                TodoStep::Verify => self.step_verify(&mut run),
-                TodoStep::CherryPick => self.step_cherry_pick(&mut run),
-                TodoStep::Install => self.step_install(&mut run),
-                TodoStep::Todo => self.step_todo(&mut run),
-                TodoStep::Push => self.step_push(&mut run),
-                TodoStep::Cleanup => self.step_cleanup(&mut run),
+                _ if run.in_landing() => self.step_landing(&mut run),
+                TodoStep::Verify | TodoStep::CherryPick => self.start_landing(&mut run),
                 TodoStep::Abort => self.step_abort(&mut run),
-                step @ (TodoStep::Review | TodoStep::Done | TodoStep::Unknown) => {
-                    Err(format!("a running run cannot be at step {step:?}"))
-                }
+                step @ (TodoStep::Install
+                | TodoStep::Todo
+                | TodoStep::Push
+                | TodoStep::Cleanup
+                | TodoStep::Review
+                | TodoStep::Done
+                | TodoStep::Unknown) => Err(format!("a running run cannot be at step {step:?}")),
             };
             // The step landed, or failed: its tenure may end from now on. The
             // guard releases the step and carries out an end it held back.
@@ -4167,7 +4410,7 @@ impl WorkerSupervisor {
                 }
                 // A step a handoff cut off is the new server's to run.
                 if !self.handed_off() {
-                    self.block_run(&mut run, why);
+                    self.halt(&mut run, why);
                 }
             }
             // A dispatch refusal waits for a measurement event, not an
@@ -4198,18 +4441,7 @@ impl WorkerSupervisor {
     /// event it waits on.
     fn record_run_event(&self, run: &mut Run, event: &TodoRunEvent) -> Result<i64, String> {
         let pending = run.info.status == TodoRunStatus::Waiting;
-        self.run_write(
-            run,
-            json!({
-                "type": "run_event",
-                "kind": event.kind,
-                "step": run.info.step,
-                "status": run.info.status,
-                "attempt": run.info.attempt,
-                "event": event,
-            }),
-            pending,
-        )
+        self.run_write(run, landing::event_body(run, event), pending)
     }
 
     /// Ends the run as blocked with why; nothing more happens to it.
@@ -4606,6 +4838,8 @@ impl WorkerSupervisor {
         if run.info.step == TodoStep::Abort {
             return Ok(());
         }
+        // The landing starts at its verify, on the integrated tree; the
+        // landing on the target branch follows it.
         run.info.step = TodoStep::Verify;
         self.run_step(
             run,
@@ -4682,75 +4916,16 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// Ends an aborted run: stops its worker when it still runs and waits
-    /// for its exit event ([`Self::stop_worker`]), then records the run
-    /// `aborted` with the coordinator's reason and what it leaves as it is:
-    /// its attempts' branches with their commits since the base, and a
-    /// commit already picked onto the target branch. Nothing is deleted or
-    /// reverted.
+    /// Ends a run aborted before its landing: stops its worker when it
+    /// still runs and waits for its exit event ([`Self::stop_worker`]),
+    /// then records the run `aborted` with the coordinator's reason and what
+    /// it leaves as it is: its attempts' branches with their commits since
+    /// the base ([`Self::abort_summary`]). Nothing is deleted. An abort in
+    /// the landing goes through its core, which takes a picked commit off
+    /// the target branch first.
     fn step_abort(&self, run: &mut Run) -> Result<(), String> {
         self.stop_worker(run)?;
-        let repo = PathBuf::from(&run.info.repo);
-        let mut branches: Vec<String> = (1..=run.info.attempt)
-            .map(|attempt| branch_of(&run.info.item, &run.info.run_id, attempt))
-            .chain(run.info.branch.clone())
-            .collect();
-        branches.dedup();
-        let mut left = Vec::new();
-        let mut commits = Vec::new();
-        for branch in branches {
-            let Ok(head) = git(
-                &repo,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{branch}^{{commit}}"),
-                ],
-            ) else {
-                continue;
-            };
-            let since_base = run.info.base.as_deref().and_then(|base| {
-                git(
-                    &repo,
-                    &["rev-list", "--reverse", &format!("{base}..{branch}")],
-                )
-                .ok()
-            });
-            let own: Vec<String> = since_base
-                .as_deref()
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_owned)
-                .collect();
-            left.push(format!(
-                "{branch} at {} ({} commit{} since the base)",
-                &head.trim()[..head.trim().len().min(12)],
-                own.len(),
-                if own.len() == 1 { "" } else { "s" }
-            ));
-            for commit in own {
-                if !commits.contains(&commit) {
-                    commits.push(commit);
-                }
-            }
-        }
-        let mut why = run
-            .info
-            .error
-            .clone()
-            .unwrap_or_else(|| "the coordinator aborted the run".to_owned());
-        if left.is_empty() {
-            why.push_str("; the run has no branch left");
-        } else {
-            why.push_str(&format!("; branches left as they are: {}", left.join(", ")));
-        }
-        if let Some(picked) = &run.info.picked {
-            why.push_str(&format!(
-                "; commit {picked} stays on {}",
-                run.target_branch()
-            ));
-        }
+        let (why, commits) = self.abort_summary(run);
         run.info.status = TodoRunStatus::Aborted;
         run.info.error = Some(why.clone());
         let mut event = new_event(TodoEventKind::Aborted);
@@ -4758,107 +4933,6 @@ impl WorkerSupervisor {
         event.commits = commits;
         self.record_run_event(run, &event)?;
         Ok(())
-    }
-
-    /// Verifies the attempt's commit with the registered check, run as its
-    /// argv. Verified goes on to the cherry-pick; anything else is a
-    /// `verify_failed` event asking for the next attempt's task. An
-    /// approval of the commit a verify already passed (the one the
-    /// automatic review ran before it reviewed) takes that verdict instead
-    /// of running the checks again; a commit that changed is verified anew.
-    fn step_verify(&self, run: &mut Run) -> Result<(), String> {
-        let worker_id = run
-            .info
-            .worker_id
-            .clone()
-            .ok_or("the run has no worker to verify")?;
-        let base = run.info.base.clone().ok_or("the run has no base")?;
-        for (check, reason) in self.path_checks_due(run, &worker_id, &base)? {
-            run.info.checks.push(check.name.clone());
-            run.checks.push(check.clone());
-            self.run_step(
-                run,
-                json!({
-                    "type": "run_check_added",
-                    "check": check,
-                    "reason": reason,
-                    "checks": run.info.checks,
-                }),
-            )?;
-        }
-        if let Some(verified) = self.verified_already(run, &worker_id) {
-            run.info.step = TodoStep::CherryPick;
-            self.run_step(
-                run,
-                json!({
-                    "type": "run_verified",
-                    "head": verified.head,
-                    "commits": verified.commits,
-                    "reused": true,
-                    "verified_ms": verified.verified_ms,
-                    "step": run.info.step,
-                }),
-            )?;
-            return Ok(());
-        }
-        self.run_step(
-            run,
-            json!({"type": "run_verify_intent", "worker_id": worker_id, "checks": run.info.checks}),
-        )?;
-        let verification = self.verify_attempt(run, &worker_id, &base)?;
-        run.current.verification = serde_json::to_string(&verification).ok();
-        if verification.verdict == WorkerVerdict::Verified {
-            run.info.step = TodoStep::CherryPick;
-            self.run_step(
-                run,
-                json!({
-                    "type": "run_verified",
-                    "head": verification.head,
-                    "commits": verification.commits,
-                    "step": run.info.step,
-                }),
-            )?;
-            return Ok(());
-        }
-        let mut event = new_event(TodoEventKind::VerifyFailed);
-        if let Ok(worker) = self.status(&worker_id) {
-            event.diff_stat = Self::evidence(run, &worker).0;
-        }
-        event.commits = verification.commits.clone();
-        event.verification = Some(verification);
-        run.info.status = TodoRunStatus::Waiting;
-        self.record_run_event(run, &event)?;
-        Ok(())
-    }
-
-    /// The attempt's verdict when it still holds for an approval: it is
-    /// `verified`, of the commit the approval names, which the worker's
-    /// branch is still at, with every check the run has now.
-    fn verified_already(&self, run: &Run, worker_id: &str) -> Option<WorkerVerification> {
-        if run.current.review_decision.as_deref() != Some(APPROVE) {
-            return None;
-        }
-        let verification: WorkerVerification =
-            serde_json::from_str(run.current.verification.as_deref()?).ok()?;
-        let head = verification.head.as_deref()?;
-        if verification.verdict != WorkerVerdict::Verified
-            || run.current.commit.as_deref() != Some(head)
-            || Some(verification.base.as_str()) != run.info.base.as_deref()
-        {
-            return None;
-        }
-        let checked = |name: &str| {
-            verification
-                .checks
-                .iter()
-                .any(|check| check.name.as_deref() == Some(name))
-        };
-        if !run.checks.iter().all(|check| checked(&check.name)) {
-            return None;
-        }
-        let worker = self.status(worker_id).ok()?;
-        let now = git(Path::new(&worker.cwd), &["rev-parse", "HEAD"]).ok()?;
-        (now.trim() == head).then_some(verification)
     }
 
     /// Runs the verify of the attempt's worker with the run's checks, each
@@ -4939,150 +5013,6 @@ impl WorkerSupervisor {
                 Some((check, reason))
             })
             .collect())
-    }
-
-    /// Picks the attempt's verified commit onto the run's target branch
-    /// ([`Run::target_branch`]) in the worktree the run recorded
-    /// ([`Run::landing_dir`]), with the `Herdr-Item` and `Herdr-Run`
-    /// trailers added to the landed commit's message, and records the
-    /// landing. The branch's tip must be the commit and base the approval
-    /// named: otherwise the run raises a new `review` instead of landing
-    /// another commit. Refused (blocked) when the target branch no longer
-    /// exists, that worktree is not on it, has uncommitted changes or a
-    /// cherry-pick in progress, or the branch no longer contains the base;
-    /// a conflict is aborted and blocks too. A commit the branch already
-    /// has (a pick a crash did not record) is not picked again, and its
-    /// trailers are added only while it is the branch's head.
-    fn step_cherry_pick(&self, run: &mut Run) -> Result<(), String> {
-        let repo = PathBuf::from(&run.info.repo);
-        let branch = run.info.branch.clone().ok_or("the run has no branch")?;
-        let base = run.info.base.clone().ok_or("the run has no base")?;
-        let commit = git(
-            &repo,
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("refs/heads/{branch}^{{commit}}"),
-            ],
-        )?
-        .trim()
-        .to_owned();
-        if run.current.review_decision.as_deref() == Some(APPROVE)
-            && (run.current.commit.as_deref() != Some(commit.as_str())
-                || run.current.base != run.info.base)
-        {
-            return self.review_again(run, &repo, &branch, &base, &commit);
-        }
-        let target = run.target_branch().to_owned();
-        run.target_commit()?;
-        // The recorded worktree, rechecked right before the pick: still on
-        // the target branch, clean, and the branch still has the base.
-        let repo = run.landing_dir();
-        super::target_branch::check_landing(&repo, &target, &base)
-            .map_err(|why| format!("{why}; commit {commit} was not picked"))?;
-        // The branch already has the commit itself (a pick made in the same
-        // second reproduces its sha), or its change: `git cherry` marks
-        // that `-`.
-        let parent = format!("{commit}^");
-        let applied = git(&repo, &["merge-base", "--is-ancestor", &commit, "HEAD"]).is_ok()
-            || git(&repo, &["cherry", "HEAD", &commit, &parent])?
-                .lines()
-                .any(|line| line.starts_with("- "));
-        if !applied
-            && super::home_repo::is_home_repository(&run.info.repo)
-            && run.finish.landing_approved.as_deref() != Some(commit.as_str())
-        {
-            return self.ask_landing_approval(run, &repo, &commit);
-        }
-        if !applied {
-            check_private_details(&repo, &base, &commit, None)?;
-            let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
-            self.run_step(
-                run,
-                json!({"type": "run_cherry_pick_intent", "commit": commit, "target": head}),
-            )?;
-            if let Err(error) = git(&repo, &["cherry-pick", &commit]) {
-                let aborted = git(&repo, &["cherry-pick", "--abort"]);
-                return Err(format!(
-                    "cherry-picking {commit} onto {target} failed{}: {error}",
-                    if aborted.is_ok() {
-                        " and was aborted"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-        }
-        // The commit on the branch carrying the change: the newest one since
-        // the base with the run's subject.
-        let mut picked = git(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?
-            .lines()
-            .find_map(|line| {
-                let (sha, subject) = line.split_once(' ')?;
-                (subject == run.info.message).then(|| sha.to_owned())
-            })
-            .ok_or_else(|| {
-                format!(
-                    "{target} has no commit {:?} after the pick",
-                    run.info.message
-                )
-            })?;
-        let trailer = run_trailer(&run.info);
-        let mut trailers = landing_trailers(&repo, &picked)
-            .is_some_and(|(_, run_id, attempt)| format!("{run_id}/{attempt}") == trailer);
-        let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
-        if !trailers && head == picked {
-            // Only the message changes (`--only` without paths leaves the
-            // index out); the worker's own commit stays subject-only.
-            git(
-                &repo,
-                &[
-                    "commit",
-                    "--quiet",
-                    "--amend",
-                    "--only",
-                    "--no-edit",
-                    "--no-verify",
-                    "--trailer",
-                    &format!("Herdr-Item: {}", run.info.item),
-                    "--trailer",
-                    &format!("Herdr-Run: {trailer}"),
-                ],
-            )
-            .map_err(|error| format!("adding the trailers to {picked}: {error}"))?;
-            picked = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
-            trailers = true;
-        }
-        run.info.picked = Some(picked.clone());
-        run.info.step = TodoStep::Install;
-        let at = now_ms();
-        let landing = TodoLanding {
-            landed_sha: picked.clone(),
-            run_id: run.info.run_id.clone(),
-            attempt: run.info.attempt,
-            item: run.info.item.clone(),
-            worker_commit: Some(commit.clone()),
-            worker_id: run.info.worker_id.clone(),
-            ts_ms: Some(at),
-            source: TodoLandingSource::Store,
-        };
-        let event = json!({
-            "type": "run_picked",
-            "commit": picked,
-            "worker_commit": commit,
-            "trailers": trailers,
-            "step": run.info.step,
-        });
-        let store = self.run_store().map_err(|error| error.to_string())?;
-        store
-            .transaction(|tx| {
-                let seq = tx.run_event(run, &event, false, at)?;
-                tx.landing(&landing)?;
-                Ok(seq)
-            })
-            .map_err(|error| format!("the worker store failed: {error}"))?;
-        announce();
-        Ok(())
     }
 
     /// Landing `commit` in the repository rooted at the home directory
@@ -5612,6 +5542,8 @@ mod tests {
             owner_coordinator: None,
             finish: RunFinish::default(),
             current: Attempt::default(),
+            landing: None,
+            landing_invalid: None,
         };
         assert_eq!(
             run.target_branch(),

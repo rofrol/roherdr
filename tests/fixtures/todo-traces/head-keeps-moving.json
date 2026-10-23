@@ -1,0 +1,16 @@
+{"version":1,
+ "initial":{"step":"cherry_pick","status":"running","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":"cherry_pick","integrated":"i3","reverifies":2,"degraded":[]},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"head_moved"}},
+   "expect":{"state":{"step":"verify","pending":"verify_integrated","integrated":null,"reverifies":3},
+             "effects":[{"kind":"verify_integrated"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"verified","integrated":"i4"}},
+   "expect":{"state":{"step":"cherry_pick","pending":"cherry_pick","integrated":"i4"},
+             "effects":[{"kind":"cherry_pick"}]}},
+  {"input":{"id":"e3","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"head_moved"}},
+   "expect":{"state":{"status":"blocked","attention":"head_kept_moving","pending":null,"integrated":null},
+             "effects":[{"kind":"emit","event":"blocked"}]}},
+  {"input":{"id":"e4","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"abort"}},
+   "expect":{"state":{"step":"abort","pending":"restore_branch"},
+             "effects":[{"kind":"restore_branch"}]}}]}

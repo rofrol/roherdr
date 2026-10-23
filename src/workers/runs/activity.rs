@@ -295,6 +295,7 @@ mod tests {
             step_log: None,
             agent: None,
             model: None,
+            degraded: Vec::new(),
         }
     }
 

@@ -633,6 +633,22 @@ pub struct TodoRunInfo {
     /// Claude's default or before a worker started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// What the landing went on without, in order: the coordinator's
+    /// `skip_install` and `skip_todo`. Empty when nothing was skipped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degraded: Vec<TodoDegraded>,
+}
+
+/// An outcome a run's landing went on without.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoDegraded {
+    /// The commit landed without the registered install (`skip_install`).
+    InstallSkipped,
+    /// The commit landed without the TODO edit (`skip_todo`).
+    TodoSkipped,
+    #[serde(other)]
+    Unknown,
 }
 
 /// The prerequisite that refused an attempt before its worker started.

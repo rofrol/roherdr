@@ -176,16 +176,23 @@ const USAGE: &str = "usage:
       (\"coordinator gone before the next run\") and is notified of, once; a
       coordinator handoff moves it to the successor's pane. It needs this
       pane.
-      approve stops the worker, verifies its commit with the checks,
-      cherry-picks it onto the run's branch with the trailers Herdr-Item: <item-id> and
-      Herdr-Run: <run-id>/<attempt> (only when the branch is still at the
-      commit the event showed; otherwise a new review event), runs the
+      approve stops the worker (only when its branch is still at the
+      commit the event showed; otherwise a new review event), verifies its
+      commit picked onto the run's branch's head, outside the branch, with
+      the checks (a failure is a verify_failed event; the branch is not
+      touched), lands that verified tree on the branch with the trailers
+      Herdr-Item: <item-id> and Herdr-Run: <run-id>/<attempt> only while the
+      branch's head is still the verified one (else it verifies again, at
+      most 3 times, then the run is blocked; a change already on the branch
+      in a commit without these trailers blocks it too), runs the
       [install] of .herdr/checks.toml,
       appends --note FILE's lines to the item in TODO.md (or, with --close
       FILE, removes the item and adds FILE as a section of DECISIONS.md)
-      with herdr's own TODO editor (todo edit) and commits that by path,
+      with herdr's own TODO editor (todo edit) and commits that with the
+      same trailers, fast-forwarding the branch onto it,
       pushes that branch to
-      origin only as a fast-forward, and deletes the run's merged branches;
+      origin only as a fast-forward (a diverged origin stops the run for
+      you: blocked, abort only), and deletes the run's merged branches;
       retry starts the next attempt with FILE's text as the review of this
       one: its branch starts from this attempt's commit (cherry-picked onto
       the base) and its task is this attempt's with the review appended (at
@@ -193,19 +200,26 @@ const USAGE: &str = "usage:
       applies, and its refusal leaves the run waiting on the same event); a
       commit that does not cherry-pick is a retry_conflict event, whose retry
       (no --task) starts that attempt from the base; answer sends the worker allow, deny or one
-      choice per question; verify runs the verify again; force-stop SIGKILLs
+      choice per question; verify picks the commit onto the branch's head
+      and verifies it again; force-stop SIGKILLs
       a worker still alive after its stop. After install_failed, todo_failed
       or push_failed: retry-install or skip-install, retry-todo or skip-todo,
-      retry-push. In the repository rooted at the home directory the
-      cherry-pick first waits on a landing_approval event with the whole
+      retry-push; a skip shows as degraded in todo status, and skip-todo is
+      refused while TODO.md or DECISIONS.md differ from HEAD. In the repository rooted at the home directory the
+      landing first waits on a landing_approval event with the whole
       patch and a backup and rollback note: its owner answers
       approve-landing from a pane that coordinates no repository (not the
       coordinator's), and only that commit lands and installs.
       abort answers any event the run waits on, or the blocked
       event of a blocked run: the run stops its worker when it still runs,
       waits for its exit and ends aborted, with --message TEXT as the reason;
-      its branches and commits (a commit already on its branch too) stay as they
-      are and the aborted event names them. Every resume sends this shell's environment again, which the
+      its attempts' branches and commits stay as they are and the aborted
+      event names them; a commit it landed and has not pushed is taken off
+      the target branch first (reset to where the branch was by a
+      compare-and-swap on its ref, or reverted when others committed on
+      top) unless origin itself already has it, and an effect a blocked run
+      left in flight is settled from git first; an origin it cannot read
+      blocks the run again instead. Every resume sends this shell's environment again, which the
       checks, the install and the push run with (the server never stores
       it); without it a check is unavailable and an install or push fails.
   herdr todo status <run-id>

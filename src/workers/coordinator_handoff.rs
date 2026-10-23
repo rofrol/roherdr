@@ -854,6 +854,9 @@ impl WorkerSupervisor {
         drop(registry);
         self.shared.changed.notify_all();
         super::notify_clients();
+        // The successor takes the runs over: a landing effect a driver
+        // began and left unacknowledged is reconciled from git now.
+        self.reconcile_runs_of(&[&current.coordinator_id, &tenure.coordinator_id]);
         Ok(Acked {
             tenure,
             old_pane: handoff.old_pane,

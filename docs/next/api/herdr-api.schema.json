@@ -20553,6 +20553,27 @@
           ],
           "type": "object"
         },
+        "TodoDegraded": {
+          "description": "An outcome a run's landing went on without.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "install_skipped",
+              "description": "The commit landed without the registered install (`skip_install`).",
+              "type": "string"
+            },
+            {
+              "const": "todo_skipped",
+              "description": "The commit landed without the TODO edit (`skip_todo`).",
+              "type": "string"
+            }
+          ]
+        },
         "TodoDraft": {
           "description": "A run's task as the server drafted it.",
           "properties": {
@@ -21367,6 +21388,13 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "degraded": {
+              "description": "What the landing went on without, in order: the coordinator's\n`skip_install` and `skip_todo`. Empty when nothing was skipped.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoDegraded"
+              },
+              "type": "array"
             },
             "drafted": {
               "description": "The server drafts the run's task, subject, paths and checks itself\n(`todo.draft_run`); they are empty until the draft is applied.",

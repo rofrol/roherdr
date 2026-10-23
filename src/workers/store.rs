@@ -16,7 +16,7 @@ use std::time::Duration;
 use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use super::runs::{Attempt, Run, RunCheck, RunFinish};
+use super::runs::{Attempt, Landing, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{
     CoordinatorOverride, CoordinatorWouldDeny, HistoryEvent, HistoryEventKind, TodoLanding,
@@ -896,7 +896,33 @@ UPDATE runs SET finish = json_set(finish, '$.stop_acknowledged', json('true'))
     WHERE status = 'done' AND json_valid(finish)
         AND json_extract(finish, '$.stop_reason') IS NOT NULL;
 "#,
+    r#"
+-- A run's landing as its transition core (`runs/core.rs`) holds it, as a
+-- JSON object: the core's state with its cursor and the effect it waits
+-- for, whether that effect's side effect may have begun and what its
+-- intent recorded. Written with the run's row and its event in one
+-- transaction. NULL before the run's landing starts, and for the runs
+-- recorded before: the driver derives their state from `step`.
+ALTER TABLE runs ADD COLUMN landing TEXT;
+-- A run at its abort step that still has to take its commit off the target
+-- branch keeps its repository's claim until that is done; one that only
+-- stops its worker lets it go, as before. A landing that is not valid JSON
+-- claims nothing here (`json_extract` would fail on it): the driver blocks
+-- that run.
+DROP INDEX runs_one_active_per_repo;
+CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
+    WHERE status IN ('running', 'waiting')
+        AND (step != 'abort'
+            OR CASE WHEN json_valid(landing)
+                THEN json_extract(landing, '$.core.pending') END IS NOT NULL);
+"#,
 ];
+
+/// The runs that claim their repository, as `runs_one_active_per_repo`
+/// names them, over `runs r`.
+const CLAIMING_RUN: &str = "r.status IN ('running', 'waiting') \
+     AND (r.step != 'abort' OR CASE WHEN json_valid(r.landing) \
+         THEN json_extract(r.landing, '$.core.pending') END IS NOT NULL)";
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
 
@@ -1922,10 +1948,7 @@ impl Tx<'_> {
     pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
         self.tx
             .query_row(
-                &run_select(
-                    "WHERE r.repo = ?1 AND r.status IN ('running', 'waiting') \
-                     AND r.step != 'abort'",
-                ),
+                &run_select(&format!("WHERE r.repo = ?1 AND {CLAIMING_RUN}")),
                 [repo],
                 run_from_row,
             )
@@ -2702,7 +2725,7 @@ impl Store {
 
 const RUN_COLUMNS: &str = "id, repo, item, step, status, attempt, base, worker_id, branch, task, \
 message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq, pending_event, \
-error, picked, created_ms, updated_ms, finish, workspace, owner_coordinator_id";
+error, picked, created_ms, updated_ms, finish, workspace, owner_coordinator_id, landing";
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
     let list = |index: usize| -> StoreResult<Vec<String>> {
@@ -2723,6 +2746,15 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         .get::<_, Option<String>>(22)?
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
+    // A landing that does not parse is kept as it is, with the error: the
+    // run fails closed instead of deriving its state from `step`.
+    let (landing, landing_invalid) = match row.get::<_, Option<String>>(25)? {
+        None => (None, None),
+        Some(text) => match serde_json::from_str::<Landing>(&text) {
+            Ok(landing) => (Some(landing), None),
+            Err(error) => (None, Some((text, error.to_string()))),
+        },
+    };
     Ok(Run {
         info: TodoRunInfo {
             run_id: row.get(0)?,
@@ -2769,6 +2801,10 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             step_log: None,
             agent: finish.ran_agent.clone(),
             model: finish.ran_model.clone(),
+            degraded: landing
+                .as_ref()
+                .map(|landing| super::runs::degraded_of(&landing.core))
+                .unwrap_or_default(),
         },
         checks,
         finish,
@@ -2776,7 +2812,9 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         owner_session: row.get(15)?,
         workspace: row.get(23)?,
         owner_coordinator: row.get(24)?,
-        current: attempt_from_row(row, 25)?,
+        landing,
+        landing_invalid,
+        current: attempt_from_row(row, 26)?,
     })
 }
 
@@ -3099,7 +3137,7 @@ impl Tx<'_> {
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
                  ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
-                 ?23, ?24, ?25) \
+                 ?23, ?24, ?25, ?26) \
                  ON CONFLICT (id) DO UPDATE SET {}",
                 RUN_COLUMNS
                     .split(", ")
@@ -3143,6 +3181,11 @@ impl Tx<'_> {
                 serde_json::to_string(&run.finish_with_results()).ok(),
                 run.workspace,
                 run.owner_coordinator,
+                match (&run.landing, &run.landing_invalid) {
+                    (Some(landing), _) => serde_json::to_string(landing).ok(),
+                    (None, Some((text, _))) => Some(text.clone()),
+                    (None, None) => None,
+                },
             ],
         )?;
         // The owner as stored, which a move may have changed meanwhile.
@@ -3557,10 +3600,7 @@ impl Store {
     pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
         lock(&self.conn)
             .query_row(
-                &run_select(
-                    "WHERE r.repo = ?1 AND r.status IN ('running', 'waiting') \
-                     AND r.step != 'abort'",
-                ),
+                &run_select(&format!("WHERE r.repo = ?1 AND {CLAIMING_RUN}")),
                 [repo],
                 run_from_row,
             )
@@ -4111,6 +4151,154 @@ mod tests {
     use super::*;
     use crate::workers::{import_journal, now_ms, question_from_request, replay_journal};
 
+    /// Takes the `runs` table back to before the landing column, for a test
+    /// that runs the migrations after it again.
+    const UNDO_RUN_LANDING: &str = "DROP INDEX runs_one_active_per_repo;
+         ALTER TABLE runs DROP COLUMN landing;
+         CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
+             WHERE status IN ('running', 'waiting') AND step != 'abort';";
+
+    #[test]
+    fn a_run_recorded_before_the_landing_column_derives_its_landing_from_its_step() {
+        let dir = scratch("landing-column");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        store
+            .connection()
+            .execute_batch(&format!(
+                "{UNDO_RUN_LANDING}
+                 INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                     paths, check_name, check_argv, picked, created_ms, updated_ms, finish)
+                 VALUES ('r-pushing1', '/repo', 't-abcd2345', 'push', 'running', 1, 'task',
+                     'feat: x', '[]', 'ok', '[]', 'p1', 1, 1, '{{}}');
+                 INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                     paths, check_name, check_argv, picked, created_ms, updated_ms, finish)
+                 VALUES ('r-install1', '/other', 't-abcd2345', 'install', 'waiting', 1, 'task',
+                     'feat: x', '[]', 'ok', '[]', 'p2', 1, 1, '{{}}');
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let pushing = store.run("r-pushing1").unwrap().unwrap();
+        assert_eq!(pushing.landing, None);
+        let derived = pushing.landing_state().unwrap();
+        assert_eq!(derived.core.step, TodoStep::Push);
+        assert_eq!(derived.core.status, TodoRunStatus::Running);
+        assert_eq!(
+            serde_json::to_value(derived.core.pending).unwrap(),
+            json!("push")
+        );
+        assert_eq!(derived.core.picked.as_deref(), Some("p1"));
+        assert!(derived.core.slot_held);
+        assert!(
+            derived.started,
+            "a running step recorded before the core may have begun: it is reconciled from \
+             git, not run again blindly"
+        );
+        let waiting = store.run("r-install1").unwrap().unwrap();
+        let derived = waiting.landing_state().unwrap();
+        assert_eq!(derived.core.pending, None);
+        assert!(!derived.started);
+        assert_eq!(
+            serde_json::to_value(derived.core.attention).unwrap(),
+            json!("install_failed")
+        );
+        // Once written, the run keeps the core's state in its column.
+        let mut written = pushing.clone();
+        written.landing = Some(written.landing_state().unwrap());
+        store
+            .transaction(|tx| tx.run_event(&mut written, &json!({"type": "t"}), false, 2))
+            .unwrap();
+        assert_eq!(
+            store.run("r-pushing1").unwrap().unwrap().landing,
+            written.landing
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_run_at_its_abort_claims_its_repository_only_while_it_restores_its_branch() {
+        let dir = scratch("abort-claim");
+        let store = Store::open(&dir.join(STORE_FILE)).unwrap();
+        let insert = |id: &str, landing: Option<&str>| {
+            store.connection().execute(
+                "INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                     paths, check_name, check_argv, created_ms, updated_ms, landing)
+                 VALUES (?1, '/repo', 't-abcd2345', 'abort', 'running', 1, 'task', 'feat: x',
+                     '[]', 'ok', '[]', 1, 1, ?2)",
+                rusqlite::params![id, landing],
+            )
+        };
+        // Stopping its worker only: the repository is free.
+        insert("r-stopping", None).unwrap();
+        assert!(store.active_run("/repo").unwrap().is_none());
+        let restoring = r#"{"core": {"step": "abort", "status": "running",
+            "fence": {"tenure_epoch": 0, "pane_generation": 0}, "slot_held": true,
+            "pending": "restore_branch"}, "started": false}"#;
+        insert("r-restore1", Some(restoring)).unwrap();
+        assert_eq!(
+            store.active_run("/repo").unwrap().unwrap().info.run_id,
+            "r-restore1"
+        );
+        assert!(insert("r-restore2", Some(restoring)).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_landing_that_does_not_parse_fails_closed_and_is_kept_as_it_is() {
+        let dir = scratch("landing-invalid");
+        let store = Store::open(&dir.join(STORE_FILE)).unwrap();
+        // Not JSON at all: the claim index and the active run's query must
+        // not fail on it, and it claims nothing at its abort step.
+        store
+            .connection()
+            .execute(
+                "INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                     paths, check_name, check_argv, created_ms, updated_ms, landing)
+                 VALUES ('r-garbled1', '/repo', 't-abcd2345', 'abort', 'running', 1, 'task',
+                     'feat: x', '[]', 'ok', '[]', 1, 1, '{not json')",
+                [],
+            )
+            .unwrap();
+        assert!(store.active_run("/repo").unwrap().is_none());
+        // JSON of another shape: not taken for a landing either.
+        store
+            .connection()
+            .execute(
+                "INSERT INTO runs (id, repo, item, step, status, attempt, task, message,
+                     paths, check_name, check_argv, picked, created_ms, updated_ms, landing)
+                 VALUES ('r-garbled2', '/other', 't-abcd2345', 'push', 'running', 1, 'task',
+                     'feat: x', '[]', 'ok', '[]', 'p1', 1, 1, '{\"core\": 1}')",
+                [],
+            )
+            .unwrap();
+        for id in ["r-garbled1", "r-garbled2"] {
+            let run = store.run(id).unwrap().unwrap();
+            assert_eq!(run.landing, None, "{id}");
+            assert!(run.landing_invalid.is_some(), "{id}");
+            // Nothing is derived from its step instead.
+            assert_eq!(run.landing_state(), None, "{id}");
+            assert!(!run.in_landing(), "{id}");
+        }
+        // Written back, it keeps its text: nothing is lost or replaced.
+        let mut run = store.run("r-garbled2").unwrap().unwrap();
+        store
+            .transaction(|tx| tx.run_event(&mut run, &json!({"type": "t"}), false, 2))
+            .unwrap();
+        let text: String = store
+            .connection()
+            .query_row(
+                "SELECT landing FROM runs WHERE id = 'r-garbled2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, r#"{"core": 1}"#);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "herdr-worker-store-{name}-{}-{}",
@@ -4601,7 +4789,8 @@ mod tests {
         store
             .connection()
             .execute_batch(&format!(
-                "DROP TABLE usage_admissions;
+                "{UNDO_RUN_LANDING}
+                 DROP TABLE usage_admissions;
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP TABLE supervision_annotations;
@@ -4620,7 +4809,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 9
+                MIGRATIONS.len() - 10
             ))
             .unwrap();
         drop(store);
@@ -4697,7 +4886,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 40
+                MIGRATIONS.len() - 41
             ))
             .unwrap();
         drop(store);
@@ -4735,7 +4924,8 @@ mod tests {
         store
             .connection()
             .execute_batch(&format!(
-                "INSERT INTO runs (id, repo, item, step, status, attempt, base, worker_id, branch,
+                "{UNDO_RUN_LANDING}
+                 INSERT INTO runs (id, repo, item, step, status, attempt, base, worker_id, branch,
                      task, message, paths, check_name, check_argv, created_ms, updated_ms)
                  VALUES ('{run}', '/repo', 't-abcd2345', 'done', 'done', 2, 'base0', 'w2',
                      'todo/t-abcd2345-{run}-2', 'review one', 'feat: x', '[]', 'ok', '[]', 1, 1);
@@ -4772,7 +4962,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 29
+                MIGRATIONS.len() - 30
             ))
             .unwrap();
         drop(store);
@@ -4874,10 +5064,11 @@ mod tests {
         insert(&store, "r-blocked1", "blocked", r#"{"stop_reason": "why"}"#);
         store
             .connection()
-            .execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-                [(MIGRATIONS.len() - 1).to_string()],
-            )
+            .execute_batch(&format!(
+                "{UNDO_RUN_LANDING}
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 2
+            ))
             .unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();

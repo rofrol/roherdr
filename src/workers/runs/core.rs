@@ -1,9 +1,12 @@
 //! The pure transition core of a todo run's landing.
 //!
 //! `step(state, input)` decides what a run does next from approve onwards:
-//! the cherry-pick onto the target branch, the verify on that integrated
-//! tree, the install, the TODO edit, the push, the cleanup, and the abort
-//! paths. It does no I/O, no async work, no logging and no store access:
+//! the verify of the integrated tree (the approved commit picked onto the
+//! target branch's head as a commit of its own, outside the target branch),
+//! the landing of that verified commit on the target branch only while its
+//! head is still the verified parent (a moved head is verified again), the
+//! install, the TODO edit, the push, the cleanup, and the abort paths. It
+//! does no I/O, no async work, no logging and no store access:
 //! the shell runs the returned effects and feeds their acknowledgements back
 //! as inputs, and persists the new state, the cursor and the pending effect
 //! intent together.
@@ -66,9 +69,11 @@ pub enum Degraded {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Attention {
-    /// The cherry-pick onto the target branch conflicted.
+    /// The approved commit does not pick onto the target branch's head, or
+    /// the landing on the target branch was refused.
     CherryPickConflict,
-    /// The verify on the integrated tree failed or could not run.
+    /// The verify on the integrated tree failed or could not run; the
+    /// target branch was not touched.
     VerifyFailed,
     InstallFailed,
     TodoFailed,
@@ -77,7 +82,19 @@ pub enum Attention {
     /// Origin's branch is not an ancestor of the target branch: only the
     /// user can resolve that, so the run stops (no wait, no retry-push).
     PushDiverged,
+    /// The target branch's head moved before every landing, verified again
+    /// [`MAX_REVERIFIES`] times: the run stops for the user.
+    HeadKeptMoving,
+    /// The shell could not run the pending effect or go on with it (a git
+    /// failure, the tenure moved): the run stops, only abort goes on. The
+    /// pending effect stays: it may have begun, so the abort settles it
+    /// from git first.
+    Halted,
 }
+
+/// How often one landing verifies again on a target branch's head that
+/// moved before the landing, before it stops for the user.
+pub const MAX_REVERIFIES: u32 = 3;
 
 /// The effect whose acknowledgement the core waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +124,12 @@ pub struct CoreState {
     pub degraded: Vec<Degraded>,
     #[serde(default)]
     pub attention: Option<Attention>,
-    /// The commit the cherry-pick made on the target branch.
+    /// The verified integration commit: the approved commit's change on the
+    /// target branch's head, its parent. The landing lands its tree on that
+    /// parent only.
+    #[serde(default)]
+    pub integrated: Option<String>,
+    /// The commit the landing put on the target branch.
     #[serde(default)]
     pub picked: Option<String>,
     /// The commit origin acknowledged; once set, an abort leaves it
@@ -117,6 +139,13 @@ pub struct CoreState {
     /// The id of the last input applied.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// An abort arrived while an effect was pending (after a halt): every
+    /// acknowledgement, or the effect's cancellation, leads to the abort.
+    #[serde(default)]
+    pub abort_requested: bool,
+    /// How often this landing verified again on a moved head.
+    #[serde(default)]
+    pub reverifies: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,12 +173,27 @@ pub enum CoreEvent {
     /// A newer tenure or pane takes the run over: the input's fence becomes
     /// the run's.
     Adopt,
+    /// The shell stops the landing where it stands: the pending effect
+    /// failed in a way no acknowledgement names, or may not run (the
+    /// tenure that claimed the run no longer holds the repository).
+    Halted,
+    /// The landing put the verified commit on the target branch as `sha`.
     Picked {
         sha: String,
     },
+    /// The landing was refused (the worktree is not on the branch or not
+    /// clean, the private details guard refused, git failed).
     PickFailed,
-    Verified,
+    /// The target branch's head is no longer the verified parent: nothing
+    /// landed, the commit is verified again on the new head.
+    HeadMoved,
+    /// The integration commit `integrated` passed the checks.
+    Verified {
+        integrated: String,
+    },
     VerifyFailed,
+    /// The approved commit does not pick onto the target branch's head.
+    IntegrationConflict,
     Installed,
     InstallFailed,
     Edited,
@@ -162,14 +206,19 @@ pub enum CoreEvent {
     },
     BranchRestored,
     CleanedUp,
+    /// While an abort is requested: the pending effect is observed as not
+    /// done (or was never begun) and is not run.
+    Cancelled,
 }
 
 impl CoreEvent {
     /// The effect this event acknowledges, if it is an acknowledgement.
     fn acknowledges(&self) -> Option<PendingEffect> {
         Some(match self {
-            Self::Picked { .. } | Self::PickFailed => PendingEffect::CherryPick,
-            Self::Verified | Self::VerifyFailed => PendingEffect::VerifyIntegrated,
+            Self::Picked { .. } | Self::PickFailed | Self::HeadMoved => PendingEffect::CherryPick,
+            Self::Verified { .. } | Self::VerifyFailed | Self::IntegrationConflict => {
+                PendingEffect::VerifyIntegrated
+            }
             Self::Installed | Self::InstallFailed => PendingEffect::Install,
             Self::Edited | Self::TodoFailed => PendingEffect::TodoEdit,
             Self::PushAcked { .. } | Self::PushRejected { .. } => PendingEffect::Push,
@@ -185,17 +234,21 @@ impl CoreEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoreEffect {
-    /// Cherry-pick the approved commit onto the target branch.
+    /// Land the verified integration commit's tree on the target branch,
+    /// only while its head is the verified parent (compare-and-swap).
     CherryPick,
-    /// Run the checks on the target branch with the picked commit.
+    /// Pick the approved commit onto the target branch's head as a commit
+    /// outside the branch and run the checks on it.
     VerifyIntegrated,
     Install,
     TodoEdit,
     /// Push the target branch to origin, only as a fast-forward.
     Push,
-    /// Reset the local target branch to where it was before the
-    /// cherry-pick.
+    /// Take the run's commits off the local target branch.
     RestoreBranch,
+    /// Before an abort: acknowledge the pending effect from what git shows,
+    /// or cancel it when git shows it not done; never run it.
+    SettlePending,
     /// Free the worker slot for the next run.
     ReleaseSlot,
     /// Delete the run's merged branches.
@@ -248,6 +301,16 @@ pub fn step(s: &CoreState, i: &Input) -> Result<(CoreState, Vec<CoreEffect>), Re
     if matches!(s.status, TodoRunStatus::Done | TodoRunStatus::Aborted) {
         return Err(Rejection::Terminal);
     }
+    if matches!(i.event, CoreEvent::Cancelled) {
+        if !s.abort_requested || s.status != TodoRunStatus::Running {
+            return Err(Rejection::NotAllowed);
+        }
+        if s.pending.is_none() {
+            return Err(Rejection::UnexpectedAck);
+        }
+        n.pending = None;
+        return Ok(acknowledged(n, &i.event));
+    }
     if let Some(acked) = i.event.acknowledges() {
         if s.pending != Some(acked) {
             return Err(Rejection::UnexpectedAck);
@@ -255,18 +318,69 @@ pub fn step(s: &CoreState, i: &Input) -> Result<(CoreState, Vec<CoreEffect>), Re
         n.pending = None;
         return Ok(acknowledged(n, &i.event));
     }
+    if matches!(i.event, CoreEvent::Halted) {
+        if !in_landing(n.step) {
+            return Err(Rejection::NotInLanding);
+        }
+        // The pending effect stays: it may have begun.
+        return Ok(stop(n, Attention::Halted));
+    }
     action(n, &i.event)
 }
 
+/// The steps of the landing, from the cherry-pick to the abort.
+pub fn in_landing(step: TodoStep) -> bool {
+    matches!(
+        step,
+        TodoStep::CherryPick
+            | TodoStep::Verify
+            | TodoStep::Install
+            | TodoStep::Todo
+            | TodoStep::Push
+            | TodoStep::Cleanup
+            | TodoStep::Abort
+    )
+}
+
 fn acknowledged(mut n: CoreState, event: &CoreEvent) -> (CoreState, Vec<CoreEffect>) {
+    if n.abort_requested {
+        // What the settled effect did is kept; then the abort goes on.
+        match event {
+            CoreEvent::Picked { sha } => n.picked = Some(sha.clone()),
+            CoreEvent::PushAcked { sha } => n.pushed = Some(sha.clone()),
+            _ => {}
+        }
+        // Settled: the abort goes on as one asked with nothing pending.
+        n.abort_requested = false;
+        if n.pushed.is_some() || matches!(event, CoreEvent::BranchRestored) {
+            return aborted(n);
+        }
+        return go(n, TodoStep::Abort, PendingEffect::RestoreBranch);
+    }
     match event {
+        CoreEvent::Verified { integrated } => {
+            n.integrated = Some(integrated.clone());
+            go(n, TodoStep::CherryPick, PendingEffect::CherryPick)
+        }
+        // Nothing touched the target branch: the coordinator decides.
+        CoreEvent::VerifyFailed => wait(n, Attention::VerifyFailed, TodoEventKind::VerifyFailed),
+        CoreEvent::IntegrationConflict => stop(n, Attention::CherryPickConflict),
         CoreEvent::Picked { sha } => {
             n.picked = Some(sha.clone());
-            go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated)
+            go(n, TodoStep::Install, PendingEffect::Install)
         }
         CoreEvent::PickFailed => stop(n, Attention::CherryPickConflict),
-        CoreEvent::Verified => go(n, TodoStep::Install, PendingEffect::Install),
-        CoreEvent::VerifyFailed => wait(n, Attention::VerifyFailed, TodoEventKind::VerifyFailed),
+        // Another commit arrived on the target branch since the verify: the
+        // verified tree is not the one that would land, so it is verified
+        // again on the new head, a bounded number of times.
+        CoreEvent::HeadMoved => {
+            n.integrated = None;
+            if n.reverifies >= MAX_REVERIFIES {
+                return stop(n, Attention::HeadKeptMoving);
+            }
+            n.reverifies += 1;
+            go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated)
+        }
         CoreEvent::Installed => go(n, TodoStep::Todo, PendingEffect::TodoEdit),
         CoreEvent::InstallFailed => wait(n, Attention::InstallFailed, TodoEventKind::InstallFailed),
         CoreEvent::Edited => go(n, TodoStep::Push, PendingEffect::Push),
@@ -300,22 +414,13 @@ fn acknowledged(mut n: CoreState, event: &CoreEvent) -> (CoreState, Vec<CoreEffe
 }
 
 fn action(mut n: CoreState, event: &CoreEvent) -> Result<(CoreState, Vec<CoreEffect>), Rejection> {
-    let landing = matches!(
-        n.step,
-        TodoStep::CherryPick
-            | TodoStep::Verify
-            | TodoStep::Install
-            | TodoStep::Todo
-            | TodoStep::Push
-            | TodoStep::Cleanup
-            | TodoStep::Abort
-    );
+    let landing = in_landing(n.step);
     if n.step == TodoStep::Review {
         if n.status != TodoRunStatus::Waiting {
             return Err(Rejection::NotAllowed);
         }
         return match event {
-            CoreEvent::Approve => Ok(go(n, TodoStep::CherryPick, PendingEffect::CherryPick)),
+            CoreEvent::Approve => Ok(go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated)),
             // Nothing landed yet: the target branch was never touched.
             CoreEvent::Abort => Ok(aborted(n)),
             _ => Err(Rejection::NotAllowed),
@@ -329,7 +434,17 @@ fn action(mut n: CoreState, event: &CoreEvent) -> Result<(CoreState, Vec<CoreEff
         n.pending = None;
         return Ok(aborted(n));
     }
-    if n.pending.is_some() {
+    if let Some(pending) = n.pending {
+        // A halted run's effect may have begun: the abort settles it from
+        // git first, then goes on as an abort.
+        if matches!(event, CoreEvent::Abort) && n.status == TodoRunStatus::Blocked {
+            n.abort_requested = true;
+            n.step = TodoStep::Abort;
+            n.status = TodoRunStatus::Running;
+            n.attention = None;
+            n.pending = Some(pending);
+            return Ok((n, vec![CoreEffect::SettlePending]));
+        }
         return Err(Rejection::EffectInFlight);
     }
     let attention = n.attention;
@@ -337,6 +452,8 @@ fn action(mut n: CoreState, event: &CoreEvent) -> Result<(CoreState, Vec<CoreEff
     match (event, n.step, attention) {
         (CoreEvent::Abort, _, _) => Ok(go(n, TodoStep::Abort, PendingEffect::RestoreBranch)),
         _ if blocked => Err(Rejection::NotAllowed),
+        // Nothing landed: the commit is picked onto the branch's head and
+        // verified again.
         (CoreEvent::Verify, TodoStep::Verify, Some(Attention::VerifyFailed)) => {
             Ok(go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated))
         }
@@ -424,11 +541,12 @@ fn aborted(mut n: CoreState) -> (CoreState, Vec<CoreEffect>) {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Origin {
-    /// Origin's branch is the local target branch's tip `sha`.
+    /// Origin's branch contains `sha`, the commit the push sent: it is that
+    /// commit or a descendant of it.
     Contains { sha: String },
-    /// Origin's branch is an ancestor of the local one, not at its tip.
+    /// Origin's branch is an ancestor of the commit the push sends.
     Behind,
-    /// Origin's branch is not an ancestor of the local one.
+    /// Origin's branch is neither.
     Diverged,
 }
 
@@ -436,7 +554,8 @@ pub enum Origin {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Observed {
-    /// A commit on the target branch with this run's trailers.
+    /// A commit on the target branch, since the verified parent, with this
+    /// run's trailers.
     #[serde(default)]
     pub picked: Option<String>,
     /// The installed build is the one the install would report.
@@ -479,6 +598,8 @@ pub fn reconcile(s: &CoreState, o: &Observed) -> Reconciled {
             Some(sha) => ack(CoreEvent::Picked { sha: sha.clone() }),
             None => rerun(pending),
         },
+        // The verify returns the folder slot to the attempt's branch, then
+        // runs again on the head the target branch has then.
         PendingEffect::VerifyIntegrated | PendingEffect::Cleanup => rerun(pending),
         PendingEffect::Install if o.installed => ack(CoreEvent::Installed),
         PendingEffect::Install => ack(CoreEvent::InstallFailed),
@@ -516,9 +637,18 @@ mod tests {
             pending,
             degraded: Vec::new(),
             attention: None,
+            integrated: None,
             picked: None,
             pushed: None,
             cursor: None,
+            abort_requested: false,
+            reverifies: 0,
+        }
+    }
+
+    fn verified(sha: &str) -> CoreEvent {
+        CoreEvent::Verified {
+            integrated: sha.into(),
         }
     }
 
@@ -545,11 +675,15 @@ mod tests {
     fn happy_landing_verifies_the_integrated_tree_and_frees_the_slot_after_the_push() {
         let s = state(TodoStep::Review, TodoRunStatus::Waiting, None);
         let (s, e) = apply(&s, "e1", CoreEvent::Approve);
-        assert_eq!(e, vec![CoreEffect::CherryPick]);
-        let (s, e) = apply(&s, "e2", CoreEvent::Picked { sha: "p1".into() });
         assert_eq!(e, vec![CoreEffect::VerifyIntegrated]);
         assert_eq!(s.step, TodoStep::Verify);
-        let (s, e) = apply(&s, "e3", CoreEvent::Verified);
+        let (s, e) = apply(&s, "e2", verified("i1"));
+        assert_eq!(e, vec![CoreEffect::CherryPick]);
+        assert_eq!(
+            (s.step, s.integrated.as_deref()),
+            (TodoStep::CherryPick, Some("i1"))
+        );
+        let (s, e) = apply(&s, "e3", CoreEvent::Picked { sha: "p1".into() });
         assert_eq!(e, vec![CoreEffect::Install]);
         let (s, e) = apply(&s, "e4", CoreEvent::Installed);
         assert_eq!(e, vec![CoreEffect::TodoEdit]);
@@ -690,9 +824,10 @@ mod tests {
             Some(PendingEffect::CherryPick),
         );
         let (s, _) = apply(&s, "e1", CoreEvent::Picked { sha: "p".into() });
-        let (s, _) = apply(&s, "e2", CoreEvent::VerifyFailed);
+        assert_eq!(s.step, TodoStep::Install);
+        let (s, _) = apply(&s, "e2b", CoreEvent::InstallFailed);
         assert_eq!(s.status, TodoRunStatus::Waiting);
-        assert_eq!(s.step, TodoStep::Verify);
+        assert_eq!(s.step, TodoStep::Install);
         let (s, e) = apply(&s, "e3", CoreEvent::Abort);
         assert_eq!(e, vec![CoreEffect::RestoreBranch]);
         assert_eq!(s.status, TodoRunStatus::Running);
@@ -712,6 +847,196 @@ mod tests {
     }
 
     #[test]
+    fn a_verify_failure_leaves_the_target_branch_untouched() {
+        let s = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        let (s, _) = apply(&s, "e1", CoreEvent::Approve);
+        let (s, e) = apply(&s, "e2", CoreEvent::VerifyFailed);
+        assert_eq!(e, vec![emit(TodoEventKind::VerifyFailed)]);
+        assert_eq!(
+            (s.step, s.status, s.attention),
+            (
+                TodoStep::Verify,
+                TodoRunStatus::Waiting,
+                Some(Attention::VerifyFailed)
+            )
+        );
+        assert_eq!((s.picked.as_deref(), s.integrated.as_deref()), (None, None));
+        assert!(s.slot_held);
+        // Verifying again picks the commit onto the branch's head again.
+        let (again, e) = apply(&s, "e4", CoreEvent::Verify);
+        assert_eq!(e, vec![CoreEffect::VerifyIntegrated]);
+        assert_eq!(again.step, TodoStep::Verify);
+        // Nothing is on the branch, so an abort only checks.
+        let (s, e) = apply(&s, "e5", CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::RestoreBranch]);
+        let (s, e) = apply(&s, "e6", CoreEvent::BranchRestored);
+        assert_eq!(
+            e,
+            vec![CoreEffect::ReleaseSlot, emit(TodoEventKind::Aborted)]
+        );
+        assert_eq!(s.status, TodoRunStatus::Aborted);
+    }
+
+    #[test]
+    fn a_halt_keeps_its_effect_and_the_abort_settles_it_first() {
+        let s = state(
+            TodoStep::Install,
+            TodoRunStatus::Running,
+            Some(PendingEffect::Install),
+        );
+        let (s, e) = apply(&s, "e1", CoreEvent::Halted);
+        assert_eq!(e, vec![emit(TodoEventKind::Blocked)]);
+        assert_eq!(
+            (s.status, s.pending, s.attention),
+            (
+                TodoRunStatus::Blocked,
+                Some(PendingEffect::Install),
+                Some(Attention::Halted)
+            )
+        );
+        assert_eq!(
+            step(&s, &input("e2", CoreEvent::RetryInstall)),
+            Err(Rejection::EffectInFlight)
+        );
+        assert_eq!(
+            step(&s, &input("e2", CoreEvent::Cancelled)),
+            Err(Rejection::NotAllowed)
+        );
+        let (s, e) = apply(&s, "e3", CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::SettlePending]);
+        assert!(s.abort_requested);
+        assert_eq!(
+            (s.step, s.status, s.pending),
+            (
+                TodoStep::Abort,
+                TodoRunStatus::Running,
+                Some(PendingEffect::Install)
+            )
+        );
+        // The install is observed as done: kept, and the abort goes on; the
+        // restore it starts is run, not settled.
+        let (s, e) = apply(&s, "e4", CoreEvent::Installed);
+        assert_eq!(e, vec![CoreEffect::RestoreBranch]);
+        assert!(!s.abort_requested);
+        assert_eq!(
+            step(&s, &input("e4b", CoreEvent::Cancelled)),
+            Err(Rejection::NotAllowed)
+        );
+        // A restore that cannot run halts again with its effect; the next
+        // abort settles it, then restores.
+        let (s, _) = apply(&s, "e5", CoreEvent::Halted);
+        assert_eq!(
+            (s.step, s.status, s.pending),
+            (
+                TodoStep::Abort,
+                TodoRunStatus::Blocked,
+                Some(PendingEffect::RestoreBranch)
+            )
+        );
+        let (s, e) = apply(&s, "e6", CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::SettlePending]);
+        let (s, e) = apply(&s, "e7", CoreEvent::Cancelled);
+        assert_eq!(e, vec![CoreEffect::RestoreBranch]);
+        let (s, e) = apply(&s, "e8", CoreEvent::BranchRestored);
+        assert_eq!(
+            e,
+            vec![CoreEffect::ReleaseSlot, emit(TodoEventKind::Aborted)]
+        );
+        assert_eq!(s.status, TodoRunStatus::Aborted);
+        let review = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        assert_eq!(
+            step(&review, &input("e1", CoreEvent::Halted)),
+            Err(Rejection::NotInLanding)
+        );
+    }
+
+    #[test]
+    fn a_head_that_keeps_moving_stops_the_landing_after_the_bounded_reverifies() {
+        let s = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        let (mut s, _) = apply(&s, "e1", CoreEvent::Approve);
+        let mut id = 1;
+        let mut next = || {
+            id += 1;
+            format!("e{id}")
+        };
+        for round in 1..=MAX_REVERIFIES {
+            (s, _) = apply(&s, &next(), verified("i"));
+            let (moved, e) = apply(&s, &next(), CoreEvent::HeadMoved);
+            assert_eq!(e, vec![CoreEffect::VerifyIntegrated], "round {round}");
+            assert_eq!(moved.reverifies, round);
+            s = moved;
+        }
+        (s, _) = apply(&s, &next(), verified("i"));
+        let (s, e) = apply(&s, &next(), CoreEvent::HeadMoved);
+        assert_eq!(e, vec![emit(TodoEventKind::Blocked)]);
+        assert_eq!(
+            (s.status, s.attention, s.pending, s.integrated.as_deref()),
+            (
+                TodoRunStatus::Blocked,
+                Some(Attention::HeadKeptMoving),
+                None,
+                None
+            )
+        );
+        // Only an abort goes on: nothing landed, nothing to restore.
+        let (s, e) = apply(&s, &next(), CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::RestoreBranch]);
+        assert_eq!(s.step, TodoStep::Abort);
+    }
+
+    #[test]
+    fn a_moved_head_is_verified_again_before_anything_lands() {
+        let s = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        let (s, _) = apply(&s, "e1", CoreEvent::Approve);
+        let (s, _) = apply(&s, "e2", verified("i1"));
+        let (s, e) = apply(&s, "e3", CoreEvent::HeadMoved);
+        assert_eq!(e, vec![CoreEffect::VerifyIntegrated]);
+        assert_eq!(
+            (s.step, s.integrated.as_deref(), s.picked.as_deref()),
+            (TodoStep::Verify, None, None)
+        );
+        let (s, e) = apply(&s, "e4", verified("i2"));
+        assert_eq!(e, vec![CoreEffect::CherryPick]);
+        assert_eq!(s.integrated.as_deref(), Some("i2"));
+        assert_eq!(
+            step(&s, &input("e5", CoreEvent::IntegrationConflict)),
+            Err(Rejection::UnexpectedAck)
+        );
+        let (s, _) = apply(&s, "e6", CoreEvent::HeadMoved);
+        let (s, e) = apply(&s, "e7", CoreEvent::IntegrationConflict);
+        assert_eq!(e, vec![emit(TodoEventKind::Blocked)]);
+        assert_eq!(
+            (s.status, s.attention, s.pending),
+            (
+                TodoRunStatus::Blocked,
+                Some(Attention::CherryPickConflict),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn a_halted_push_found_published_aborts_keeping_it() {
+        let s = state(
+            TodoStep::Push,
+            TodoRunStatus::Running,
+            Some(PendingEffect::Push),
+        );
+        let (s, _) = apply(&s, "e1", CoreEvent::Halted);
+        let (s, e) = apply(&s, "e2", CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::SettlePending]);
+        let (s, e) = apply(&s, "e3", CoreEvent::PushAcked { sha: "t".into() });
+        assert_eq!(
+            e,
+            vec![CoreEffect::ReleaseSlot, emit(TodoEventKind::Aborted)]
+        );
+        assert_eq!(
+            (s.status, s.pushed.as_deref()),
+            (TodoRunStatus::Aborted, Some("t"))
+        );
+    }
+
+    #[test]
     fn abort_after_an_acknowledged_push_keeps_the_published_commit() {
         let s = state(
             TodoStep::Push,
@@ -724,6 +1049,17 @@ mod tests {
         assert_eq!(s.status, TodoRunStatus::Aborted);
         assert_eq!(s.pushed.as_deref(), Some("t"));
         assert!(!e.contains(&CoreEffect::RestoreBranch));
+    }
+
+    #[test]
+    fn a_core_state_written_before_the_integrated_field_still_reads() {
+        let old: CoreState = serde_json::from_value(serde_json::json!({
+            "step": "push", "status": "running",
+            "fence": {"tenure_epoch": 0, "pane_generation": 0},
+            "slot_held": true, "pending": "push"
+        }))
+        .expect("an older state reads");
+        assert_eq!((old.integrated, old.abort_requested), (None, false));
     }
 
     #[test]
