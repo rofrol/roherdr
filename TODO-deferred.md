@@ -1218,3 +1218,36 @@ back to `TODO.md` when it becomes next.
     Dapr Agents, Vercel Workflow, Trigger.dev, LittleHorse, Hatchet,
     Absurd, vibe-kanban and mini-swe-agent (dropped from the first test:
     no durable resume).
+
+- [ ] Claude workers take `--model` (the user, 2026-10-23: queue mode with [t-b6of3yhr]
+  one implementing agent per item, then a cheaper model; round
+  20261023-221441-3128). `todo run`, `todo run --draft` and `todo queue
+  on` pass `--model` to Claude Code for a Claude worker (today it applies
+  to pi only and a Claude worker always runs Claude Code's default, Opus);
+  the run records the model that actually ran; the draft (`draft_task`)
+  and review (`review_run`) calls stay on Opus (decided by the user
+  2026-10-23). Exit: a run started with `--model sonnet` shows Sonnet in
+  its recorded usage (t-2tvx7res) and its events.
+  Parked 2026-10-23 (the user: "the queue-mode trial: not ten items with
+  Opus, then fifteen with Sonnet; only Opus"): no cheaper worker model
+  for now.
+
+- [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
+  decision as the item above). `todo run --agent claude --model` passes
+  the model to Claude Code and the run records the model that ran; an
+  item names its class (routine, risky, mechanical); Sonnet 5.5 by
+  default, Opus 5.5 for risky items (concurrency, protocol or wire,
+  persisted state, refactor-risk) and for every attempt after a failed
+  verify, Haiku 5.5 only for mechanical items while its trial is on
+  (`PerItem.route` in the Lean model). Exit: the run's events prove the
+  requested model ran; verify unchanged.
+  Gate (round 20261023-215046-6830): the per-run usage records of the item
+  above it land first, with a baseline window of Opus runs; compare runs
+  by item class, all attempts included, after `todo show` has its own
+  measurement window.
+  Queue mode, 2026-10-23: the `--model` plumbing moved to t-b6of3yhr; this
+  item routes by class, the class coming from `draft_task` (a field it
+  must fill), after the trial (t-ftnvhl7h).
+  Parked 2026-10-23 (the user: "the queue-mode trial: not ten items with
+  Opus, then fifteen with Sonnet; only Opus"): no cheaper worker model
+  for now.

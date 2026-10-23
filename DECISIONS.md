@@ -3109,4 +3109,8 @@ another model family). Order: worker usage records (t-2tvx7res), `--model`
 for Claude workers (t-b6of3yhr), the trial with an Opus agent then Sonnet
 (t-ftnvhl7h), the per-item dirty analysis (t-ctxfxkwf), routing by class
 (t-iltryyob). Given up: coordinator consult rounds (an item without a
-fresh decided round waits on the user instead).
+fresh decided round waits on the user instead). Then the same day the
+user: "not ten items with Opus, then fifteen with Sonnet; only Opus": the
+trial and the agent run on Opus only; `--model` for Claude workers
+(t-b6of3yhr) and routing by class (t-iltryyob) are parked in
+TODO-deferred.md.

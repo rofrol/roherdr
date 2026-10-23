@@ -133,17 +133,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `docs/todo-workflow-model/measure.py` reads these records instead of
   journal scans, and one item's worker cost reconciles with them.
 
-- [ ] Claude workers take `--model` (the user, 2026-10-23: queue mode with [t-b6of3yhr]
-  one implementing agent per item, then a cheaper model; round
-  20261023-221441-3128). `todo run`, `todo run --draft` and `todo queue
-  on` pass `--model` to Claude Code for a Claude worker (today it applies
-  to pi only and a Claude worker always runs Claude Code's default, Opus);
-  the run records the model that actually ran; the draft (`draft_task`)
-  and review (`review_run`) calls stay on Opus (decided by the user
-  2026-10-23). Exit: a run started with `--model sonnet` shows Sonnet in
-  its recorded usage (t-2tvx7res) and its events.
-
-- [ ] Trial queue mode with one agent per item, Opus then Sonnet, and fill [t-ftnvhl7h]
+- [ ] Trial queue mode with one Opus agent per item, and fill [t-ftnvhl7h]
   in the cost comparison (the user, 2026-10-23: "there will be only one
   agent, no workers", "save the table of estimates in the repo, then
   compare after the new cheaper model"; round 20261023-221441-3128;
@@ -151,9 +141,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   queue on`: the server starts `todo run --draft` for the top item, one
   implementing agent per item, `draft_task` and `review_run` on Opus, no
   coordinator LLM; the chat session only talks with the user and answers
-  escalations. First about 10 items with an Opus agent (the queue's own
-  baseline), then about 15 with `--model sonnet`, risky items (concurrency,
-  protocol or wire, persisted state, refactor-risk) staying on Opus.
+  escalations. Only Opus, for the agent and the calls (decided by the user
+  2026-10-23: "not ten items with Opus, then fifteen with Sonnet; only
+  Opus"), over about 20 items.
   Measure per landed item: cost from t-2tvx7res's records and
   `docs/todo-workflow-model/measure.py --since <cutover>`, attempts,
   review verdicts, rework (amended or reverted commits, follow-up items),
@@ -180,25 +170,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
   the item's run (its agent and its `draft_task` and `review_run` calls);
   the analysis runs before the queue starts the next run. Start it once
-  the trial's Opus part (t-ftnvhl7h) has shown where `draft_task` misses
+  the trial (t-ftnvhl7h) has shown where `draft_task` misses
   cross-item context, so an untested gate does not spoil the trial.
-
-- [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
-  decision as the item above). `todo run --agent claude --model` passes
-  the model to Claude Code and the run records the model that ran; an
-  item names its class (routine, risky, mechanical); Sonnet 5.5 by
-  default, Opus 5.5 for risky items (concurrency, protocol or wire,
-  persisted state, refactor-risk) and for every attempt after a failed
-  verify, Haiku 5.5 only for mechanical items while its trial is on
-  (`PerItem.route` in the Lean model). Exit: the run's events prove the
-  requested model ran; verify unchanged.
-  Gate (round 20261023-215046-6830): the per-run usage records of the item
-  above it land first, with a baseline window of Opus runs; compare runs
-  by item class, all attempts included, after `todo show` has its own
-  measurement window.
-  Queue mode, 2026-10-23: the `--model` plumbing moved to t-b6of3yhr; this
-  item routes by class, the class coming from `draft_task` (a field it
-  must fill), after the trial (t-ftnvhl7h).
 
 - [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
   (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
