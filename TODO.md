@@ -3936,6 +3936,14 @@ Items agents add. Not approved until the user moves them up.
   three tests and the hook's report loss, and keep a stress run of each in
   `just check` only if it is deterministic.
 
+- [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
+  (review round 20261023-091914-a008, MiMo): the check judges a test by its
+  last result per binary, so a test that passes only on a retry counts as
+  passing on the commit even under a profile that fails flaky tests, and the
+  run's non-zero exit is ignored once a line names the test. Either treat a
+  retried pass as unproven or read the exit code when the profile fails
+  flaky tests. Small, tests only in `src/workers/verify/counterfactual.rs`.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
