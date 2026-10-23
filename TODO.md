@@ -25,6 +25,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `-7pp · +9.6pp to 01:04` (over pace `+2pp · 3.1pp over at 01:04`), and
   no indent from the left for the chart's rows; the tooltip says it is
   the even-pace target, not a limit, and names the 5-hour window.
+  The user, 2026-10-23: "on this chart I care about the 7-day limit; I
+  usually do not exceed the short one". So the row and the tooltip are
+  about the 7-day window only; the tooltip does not dwell on the 5-hour
+  window (at most one short line naming it as a separate limit).
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
