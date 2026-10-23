@@ -2576,3 +2576,22 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   `[agents] context_window` still wins. The tab already shows `ctx 187k`
   without a percent when only the window is unknown and `ctx ?` only for
   unknown tokens (the lang-for-ai `?` was the status icon, t-exksqhhc).
+
+## The weekly chart's fixed scale, colours and tooltips (t-f5katvlq, 2026-10-23)
+
+- Follow-up of t-tpcxnvxd: the bars scaled to the week's largest day, so
+  one day of data drew a full bar. The user chose (after seeing variants
+  drawn in colour in a terminal tab): a full bar `█` in a warning colour
+  for a day over its share (d-mk2kl7ql), and a full bar at 2x the daily
+  share (d-npefh3mu); tooltips with the numbers. Rounds
+  20261023-195524-ffbd, 20261023-200429-d9be, 20261023-200843-9dc9.
+- Landed (run r-ulhwynwg): the daily share is exactly 100/7 % of the
+  weekly allowance; height maps 0..2x share (1x a half bar), any sampled
+  use at least `▁`, a sampled day without use a space, `·` no samples;
+  yellow above 1x, bold red full bar above 2x; today in the accent colour,
+  bold (a glyph colour, not the cell's background); the pace in
+  percentage points; multi-line tooltips per day and for the pace (% of
+  the weekly allowance, the multiple of the share, sample times, partial
+  days, the reset time and time zone, the source).
+- Not taken now: thresholds against the remaining allowance per
+  remaining day (MiMo, DeepSeek, Argon).
