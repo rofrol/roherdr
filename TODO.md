@@ -106,6 +106,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   synthetic integration first and lands it with a compare-and-swap (the
   review is the run's attempt-2 task). The Lean session (herdr-67's
   successor) is to be told that the landing order is verify, then pick.
+  2026-10-24: run r-xnft343u aborted after attempt 3 (14db1a1; round
+  20261024-004600-8c78: sol and DeepSeek abort, Argon land, MiMo timed
+  out): `step_todo` read `HEAD:TODO.md` before taking the commit's parent,
+  so another session's TODO edit could be overwritten (verified). Its
+  branches are kept; run r-3csypteo builds on attempt 3 with that fix, the
+  crash gap between `update-ref` and `read-tree` in `move_branch`, and
+  the abort loop when a restore cannot be planned (to be checked).
 
 - [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
   "increase the default sidebar width to 36"). Found in review of
