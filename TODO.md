@@ -99,6 +99,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the Lean session's note, recorded in the task of slice 1.
   In flight 2026-10-23: slice 1 of the transition core with the landing
   (t-cmjqsat2), run `r-qllfvm6w` (continues r-ulhwynwg).
+  Slice 1 landed 2026-10-23 (run r-qllfvm6w): the pure landing core
+  `src/workers/runs/core.rs` (fence guard, landing with verify on the
+  integrated tree, degraded skips, abort paths, `ReleaseSlot` only after
+  `PushAcked`, a diverged origin blocks for the user, reconcile from the
+  observed git state), trace format v1 with 7 fixtures under
+  `tests/fixtures/todo-traces/` replayed by `traces_replay`. Not wired yet:
+  nothing in production calls it. Deviations from the Lean session's plan,
+  accepted by the coordinator: `Cleanup` is its own effect acknowledged by
+  `cleaned_up` (after `push_acked` the effects are `release_slot` and
+  `cleanup`); an `adopt` event (a newer fence takes over), a `pick_failed`
+  acknowledgement (a conflict ends `blocked`), a `cursor` in the state. Next,
+  slice 2: route the shell's landing through `core::step` with the store
+  migration (state, cursor and effect intents in one transaction), the
+  verify-after-cherry-pick order, reconcile at startup and handoff from git,
+  the failing-first shell tests (diverged origin, abort after cherry-pick,
+  a crash between an effect and its acknowledgement), the cli-reference
+  docs; then `approve_landing` and the no-push case in the core.
 
 - [ ] Tag each coordinator turn by kind and record every worker's token usage (the user, 2026-10-23: "this phase tagging must be next in the TODO") [t-j2ayjqdl]
   So the delegation-only share of the coordinator-and-workers cost can be
