@@ -3582,6 +3582,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   outside herdr's bookkeeping. Their priority: P2, rising to P1 because a
   timeout loses the text.
 
+- [ ] One todo run shows once in its coordinator's space (the user, [t-ecdybwd4]
+  2026-10-23, a screenshot: "we have herdr jobs as squares under the
+  coordinator and at the same time other open tabs like 'A stopped
+  todo...' or 'run r-gj3emu6x...'. Some mess has built up. Ask the
+  models"). Seen 2026-10-23 for run r-gj3emu6x: the coordinator tab's
+  `↳ job wait r-gj3emu6x` row, the same job's ◐ square, the headless
+  worker's line (labelled from the task's title) and the run's line
+  `run r-gj3emu6x · attention`; plus a `!` square for a consult helper
+  job (`ask deepseek flash`, failed on DeepSeek's balance) left as a tab
+  under the coordinator, and `!5` on another session's tab for five such
+  failed helper jobs.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
