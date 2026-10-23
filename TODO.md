@@ -64,6 +64,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   claude-opus-5-5` (the reading was taken before the install of
   b82e0a467; check that a reading after it names the model, and fix the
   reader if not).
+  Correction 2026-10-23: the lang-for-ai `?` turned out to be the tab's
+  status icon (an answered question that stayed), recorded in t-exksqhhc;
+  the unknown window there is real but was not that `?`.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
@@ -3866,6 +3869,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-v54muzs4): `?` stays in the status
   cell, also while the agent works; background work shows as a mark after
   the name (e.g. `◐2`), as sol, MiMo and DeepSeek proposed.
+  Reported again 2026-10-23 by the lang-for-ai coordinator for the user
+  (the `?` status icon on its tab line "♛ ? Znak zapyta… Items ▸ ● 1 !1"):
+  when the user first asked about it, that coordinator had not run
+  `herdr agent awaiting-reply` in that turn, and its last question was an
+  AskUserQuestion menu that had already been answered; so the `?` may
+  stay after a question tool's answer. Check whether the awaiting/blocked
+  mark clears when the question is answered, with a test.
 
 - [ ] The Items list gives run outcomes their own glyphs, not the agent's [t-k6qmauth]
   blocked `◉` (the user, 2026-10-23, a screenshot of Items with red `◉`
