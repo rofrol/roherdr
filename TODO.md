@@ -117,6 +117,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a crash between an effect and its acknowledgement), the cli-reference
   docs; then `approve_landing` and the no-push case in the core.
 
+- [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
+  (the user, 2026-10-23: "yes, introduce the changes; after the turn
+  tagging? ask the models"; round 20261023-215046-6830, all four models: split
+  t-j2ayjqdl, this half gates the worker routing, turn kinds gate nothing).
+  Per worker run: run id, item id, the model that ran, input, cache-write,
+  cache-read and output tokens, cost, verify outcome, and whether it was a
+  first attempt or an escalation after a failed verify; pi workers
+  included (they ran with `--no-session` and recorded nothing); an exact
+  count of items per window for the trial's denominator. Exit:
+  `docs/todo-workflow-model/measure.py` reads these records instead of
+  journal scans, and one item's worker cost reconciles with them.
+
 - [ ] Tag each coordinator turn by kind and record every worker's token usage (the user, 2026-10-23: "this phase tagging must be next in the TODO") [t-j2ayjqdl]
   So the delegation-only share of the coordinator-and-workers cost can be
   separated from what a single agent would also pay (round
@@ -136,6 +148,38 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   commands it ran and the events it answered, never from model prose) is
   settled with the models before coding. Feeds the queue trial and the
   handoff threshold comparison in t-ic5rrxn3.
+  Split 2026-10-23 (round 20261023-215046-6830): the workers' usage moved to
+  the item before this one; this item keeps the coordinator's turn kinds,
+  which explain where its cost goes but gate neither `herdr todo show` nor
+  the worker routing.
+
+- [ ] The coordinator reads one TODO item, not TODO.md (the user, [t-ufyllobh]
+  2026-10-23: "implement the best solution"; design and numbers in
+  docs/todo-workflow-model/cost-baseline.md and README "Target design",
+  rounds 20261023-211512-5f06 .. 20261023-212927-b9d8). `herdr todo show
+  <id|next>` prints one item of "Next, in order" with the titles and
+  touched paths of the last 5 landed items; the todo skill reads it
+  instead of TODO.md before each item. Exit: a coordinator's context per
+  call drops by the ~75k tokens of TODO.md, measured with
+  `docs/todo-workflow-model/measure.py`.
+  Gate (round 20261023-215046-6830): none; measure.py's context per call shows
+  its effect. Measure it in a fresh coordinator session (a long-lived one
+  already holds TODO.md in its context) and check for extra lookup calls or
+  rework from the narrower read.
+
+- [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
+  decision as the item above). `todo run --agent claude --model` passes
+  the model to Claude Code and the run records the model that ran; an
+  item names its class (routine, risky, mechanical); Sonnet 5.5 by
+  default, Opus 5.5 for risky items (concurrency, protocol or wire,
+  persisted state, refactor-risk) and for every attempt after a failed
+  verify, Haiku 5.5 only for mechanical items while its trial is on
+  (`PerItem.route` in the Lean model). Exit: the run's events prove the
+  requested model ran; verify unchanged.
+  Gate (round 20261023-215046-6830): the per-run usage records of the item
+  above it land first, with a baseline window of Opus runs; compare runs
+  by item class, all attempts included, after `todo show` has its own
+  measurement window.
 
 - [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
   (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
@@ -150,26 +194,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   core. Through a todo run: the worker cherry-picks it onto its branch,
   rebases if needed and keeps it one commit; the driver verifies, installs
   and pushes. Tell herdr-67 when the installed herdr has it.
-
-- [ ] The coordinator reads one TODO item, not TODO.md (the user, [t-ufyllobh]
-  2026-10-23: "implement the best solution"; design and numbers in
-  docs/todo-workflow-model/cost-baseline.md and README "Target design",
-  rounds 20261023-211512-5f06 .. 20261023-212927-b9d8). `herdr todo show
-  <id|next>` prints one item of "Next, in order" with the titles and
-  touched paths of the last 5 landed items; the todo skill reads it
-  instead of TODO.md before each item. Exit: a coordinator's context per
-  call drops by the ~75k tokens of TODO.md, measured with
-  `docs/todo-workflow-model/measure.py`.
-
-- [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
-  decision as the item above). `todo run --agent claude --model` passes
-  the model to Claude Code and the run records the model that ran; an
-  item names its class (routine, risky, mechanical); Sonnet 5.5 by
-  default, Opus 5.5 for risky items (concurrency, protocol or wire,
-  persisted state, refactor-risk) and for every attempt after a failed
-  verify, Haiku 5.5 only for mechanical items while its trial is on
-  (`PerItem.route` in the Lean model). Exit: the run's events prove the
-  requested model ran; verify unchanged.
 
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
@@ -591,6 +615,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
   least 35% lower with no rise in rework, lost questions or the user's
   interventions; otherwise ask the user with the numbers.
+  Prerequisites (round 20261023-215046-6830): the exact item count and every
+  worker's usage, pi included; compare by item class, never raw averages
+  across the cutover.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
