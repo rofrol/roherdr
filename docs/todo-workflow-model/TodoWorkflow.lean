@@ -1547,7 +1547,10 @@ context about 36 times per item. In the target design herdr's queue starts a
 fresh coordinator session for the top item on a durable event (a run landed,
 the user answered, server start); the session reads only that item, records
 every open question and consult finding before it acts, and ends when its
-item has landed or waits on the user. A mid-item handoff stays as a backstop
+item has landed or waits on the user. The next session starts only once the
+previous one is gone, its run is terminal and TODO.md has no change outside a
+session's own item that the last analysis did not see (then a read-only
+analysis runs first). A mid-item handoff stays as a backstop
 for a huge item. Workers are routed by item class, a non-trivial diff needs a
 short-context review before it lands, and a pre-task consult is skipped when
 the item's decided round is newer than the last commit on its target paths.
@@ -1576,6 +1579,9 @@ structure Queue where
   parked  : List ItemId      -- waiting on the user ("Needs a decision")
   landed  : List ItemId
   records : List NoteId      -- durable records of questions and findings
+  busy    : Bool             -- a run of the current item is not terminal yet
+  dirty   : Bool             -- TODO.md changed outside a session's own item since the
+                             -- last accepted consistency analysis
   deriving Repr
 
 inductive Cmd where
@@ -1586,12 +1592,16 @@ inductive Cmd where
   | park (e : Nat)                -- its item waits on the user; the session ends
   | handOff (e : Nat)             -- backstop for a huge item: a fresh session, same item
   | crash                         -- the session's process is gone
+  | runStart (e : Nat)            -- the session starts its item's `herdr todo run`
+  | runTerminal                   -- herdr: that run is done, blocked or aborted
+  | foreignEdit                   -- the user or another session edits another item
+  | analysed                      -- herdr accepts a consistency analysis (between sessions)
   deriving Repr
 
 /-- The epoch a session command carries; `wake` and `crash` come from herdr. -/
 def Cmd.epoch? : Cmd → Option Nat
-  | .learn e _ | .record e | .land e | .park e | .handOff e => some e
-  | .wake | .crash => none
+  | .learn e _ | .record e | .land e | .park e | .handOff e | .runStart e => some e
+  | .wake | .crash | .runTerminal | .foreignEdit | .analysed => none
 
 /-- The live session, if `e` is its epoch: a superseded session acts on nothing. -/
 def Queue.live (q : Queue) (e : Nat) : Option Session :=
@@ -1600,10 +1610,14 @@ def Queue.live (q : Queue) (e : Nat) : Option Session :=
   | none => none
 
 /-- What every durable event does: a pure function of the durable state, so a
-lost wake only delays the next start and a repeated one starts nothing more. -/
+lost wake only delays the next start and a repeated one starts nothing more.
+A session starts only once the previous one is gone, its run is terminal and
+TODO.md has no change the last analysis did not see. -/
 def Queue.reconcile (q : Queue) : Queue :=
   match q.session, q.next with
-  | none, i :: _ => { q with epoch := q.epoch + 1, session := some ⟨q.epoch + 1, i, []⟩ }
+  | none, i :: _ =>
+    if q.busy || q.dirty then q
+    else { q with epoch := q.epoch + 1, session := some ⟨q.epoch + 1, i, []⟩ }
   | _, _ => q
 
 def Queue.step (q : Queue) : Cmd → Option Queue
@@ -1613,7 +1627,7 @@ def Queue.step (q : Queue) : Cmd → Option Queue
   | .record e => (q.live e).map fun s =>
       { q with session := some { s with pending := [] }, records := q.records ++ s.pending }
   | .land e => match q.live e with
-      | some s => if s.pending = [] then
+      | some s => if s.pending = [] ∧ q.busy = false then
           some { q with session := none, next := q.next.filter (· ≠ s.item),
                         landed := q.landed ++ [s.item] }
         else none
@@ -1630,6 +1644,10 @@ def Queue.step (q : Queue) : Cmd → Option Queue
         else none
       | none => none
   | .crash => some { q with session := none }
+  | .runStart e => (q.live e).map fun _ => { q with busy := true }
+  | .runTerminal => some { q with busy := false }
+  | .foreignEdit => some { q with dirty := true }
+  | .analysed => if q.session = none then some { q with dirty := false } else none
 
 /-- Runs the commands in order; `none` at the first refused one. -/
 def Queue.exec (q : Queue) : List Cmd → Option Queue
@@ -1676,6 +1694,32 @@ def needsPreConsult (decidedAt : Option Nat) (lastTargetCommit : Nat) (newFact :
 
 section PerItemProofs
 
+theorem live_some {q : Queue} {e : Nat} {s : Session} (h : q.live e = some s) :
+    q.session = some s ∧ s.epoch = e := by
+  unfold Queue.live at h
+  split at h
+  · rename_i s0 hs0
+    split at h
+    · rename_i he; cases h; exact ⟨hs0, he⟩
+    · cases h
+  · cases h
+
+/-- A wake either changes nothing or starts a session for the top item. -/
+theorem reconcile_cases (q : Queue) :
+    q.reconcile = q ∨ (q.session = none ∧ q.busy = false ∧ q.dirty = false ∧
+      ∃ i is, q.next = i :: is ∧
+        q.reconcile = { q with epoch := q.epoch + 1, session := some ⟨q.epoch + 1, i, []⟩ }) := by
+  unfold Queue.reconcile
+  split
+  · rename_i i is hs hn
+    split
+    · left; rfl
+    · rename_i hbd
+      right
+      simp only [Bool.or_eq_true, not_or, Bool.not_eq_true] at hbd
+      exact ⟨hs, hbd.1, hbd.2, i, is, hn, rfl⟩
+  · left; rfl
+
 /-- A command from a superseded (or absent) session changes nothing. -/
 theorem stale_refused (q : Queue) (c : Cmd) (e : Nat) (he : c.epoch? = some e)
     (hs : ∀ s, q.session = some s → s.epoch ≠ e) : q.step c = none := by
@@ -1688,14 +1732,28 @@ theorem stale_refused (q : Queue) (c : Cmd) (e : Nat) (he : c.epoch? = some e)
 
 /-- Reconciling twice is reconciling once: a repeated wake starts nothing more. -/
 theorem reconcile_idem (q : Queue) : q.reconcile.reconcile = q.reconcile := by
-  unfold Queue.reconcile
-  cases hs : q.session <;> cases hn : q.next <;> simp [hs, hn]
+  rcases reconcile_cases q with h1 | ⟨-, -, -, i, is, -, h1⟩
+  · rw [h1, h1]
+  · rw [h1]; simp [Queue.reconcile]
 
-/-- With no live session, a wake starts one exactly when an item is next. -/
+/-- With no live session, a wake starts one exactly when an item is next, the
+previous run is terminal and TODO.md has nothing unanalysed. -/
 theorem reconcile_starts_iff (q : Queue) (h : q.session = none) :
-    q.reconcile.session.isSome ↔ q.next ≠ [] := by
+    q.reconcile.session.isSome ↔ (q.next ≠ [] ∧ q.busy = false ∧ q.dirty = false) := by
   unfold Queue.reconcile
-  cases q.next <;> simp [h]
+  cases hn : q.next <;> cases hb : q.busy <;> cases hd : q.dirty <;> simp_all
+
+/-- No session starts while the previous item's run is not terminal. -/
+theorem no_start_while_busy (q : Queue) (h : q.busy = true) : q.reconcile = q := by
+  rcases reconcile_cases q with h1 | ⟨-, hb, -⟩
+  · exact h1
+  · simp [h] at hb
+
+/-- No session starts while TODO.md has a change the last analysis did not see. -/
+theorem no_start_while_dirty (q : Queue) (h : q.dirty = true) : q.reconcile = q := by
+  rcases reconcile_cases q with h1 | ⟨-, -, hd, -⟩
+  · exact h1
+  · simp [h] at hd
 
 /-- A wake never replaces a live session. -/
 theorem reconcile_keeps_live (q : Queue) (s : Session) (h : q.session = some s) :
@@ -1705,9 +1763,14 @@ theorem reconcile_keeps_live (q : Queue) (s : Session) (h : q.session = some s) 
 /-- The item a wake starts is the top of "Next, in order". -/
 theorem reconcile_takes_top (q : Queue) (s : Session) (h : q.session = none)
     (h' : q.reconcile.session = some s) : q.next.head? = some s.item := by
-  unfold Queue.reconcile at h'
-  cases hn : q.next <;> simp_all
-  subst h'; rfl
+  rcases reconcile_cases q with h1 | ⟨-, -, -, i, is, hn, h1⟩
+  · rw [h1, h] at h'; cases h'
+  · rw [h1] at h'; simp only [Option.some.injEq] at h'; subst h'; simp [hn]
+
+/-- The consistency analysis is accepted only between sessions. -/
+theorem analysed_between_sessions (q : Queue) (s : Session) (h : q.session = some s) :
+    q.step .analysed = none := by
+  simp [Queue.step, h]
 
 /-- Landing, parking and the backstop handoff need everything learned recorded. -/
 theorem acts_need_recorded (q q' : Queue) (c : Cmd) (e : Nat)
@@ -1715,69 +1778,98 @@ theorem acts_need_recorded (q q' : Queue) (c : Cmd) (e : Nat)
     ∃ s, q.session = some s ∧ s.epoch = e ∧ s.pending = [] := by
   rcases hc with rfl | rfl | rfl <;>
   · simp only [Queue.step] at h
-    unfold Queue.live at h
-    cases hs : q.session with
-    | none => simp [hs] at h
-    | some s =>
-      by_cases he : s.epoch = e <;> by_cases hp : s.pending = [] <;> simp_all
+    split at h
+    · rename_i s hl
+      obtain ⟨hs, he⟩ := live_some hl
+      split at h
+      · rename_i hp
+        exact ⟨s, hs, he, by first | exact hp | exact hp.1⟩
+      · cases h
+    · cases h
 
-/-- A step keeps the live session on the current epoch. -/
-theorem step_wf (q q' : Queue) (c : Cmd) (hw : q.wf) (h : q.step c = some q') : q'.wf := by
-  intro s' hs'
+/-- An item lands only after its run is terminal. -/
+theorem land_needs_terminal (q q' : Queue) (e : Nat) (h : q.step (.land e) = some q') :
+    q.busy = false := by
+  simp only [Queue.step] at h
+  split at h
+  · split at h
+    · rename_i hp; exact hp.2
+    · cases h
+  · cases h
+
+/-- What one step does to the session, epoch, records and the dirty flag. -/
+theorem step_facts (q q' : Queue) (c : Cmd) (hw : q.wf) (h : q.step c = some q') :
+    q'.wf ∧ q.records <+: q'.records ∧ q.epoch ≤ q'.epoch ∧
+      (c.epoch?.isSome → q'.dirty = q.dirty) := by
   cases c with
   | wake =>
     simp only [Queue.step, Option.some.injEq] at h; subst h
-    unfold Queue.reconcile at hs' ⊢
-    cases hs : q.session with
-    | some s => simp only [hs, Option.some.injEq] at hs' ⊢; subst hs'; exact hw s hs
-    | none =>
-      cases hn : q.next with
-      | nil => simp [hs, hn] at hs'
-      | cons i is => simp only [hs, hn, Option.some.injEq] at hs' ⊢; subst hs'; rfl
-  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; simp at hs'
+    rcases reconcile_cases q with h1 | ⟨-, -, -, i, is, -, h1⟩ <;> rw [h1]
+    · exact ⟨hw, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
+    · refine ⟨?_, List.prefix_refl _, by simp, fun _ => rfl⟩
+      intro s' hs'; simp only [Option.some.injEq] at hs'; subst hs'; rfl
+  | crash =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    exact ⟨fun _ hs => by simp at hs, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
+  | runTerminal =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    exact ⟨hw, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
+  | foreignEdit =>
+    simp only [Queue.step, Option.some.injEq] at h; subst h
+    exact ⟨hw, List.prefix_refl _, Nat.le_refl _, fun h => by simp [Cmd.epoch?] at h⟩
+  | analysed =>
+    simp only [Queue.step] at h
+    split at h
+    · cases h
+      exact ⟨hw, List.prefix_refl _, Nat.le_refl _, fun h => by simp [Cmd.epoch?] at h⟩
+    · cases h
   | learn e n =>
     simp only [Queue.step, Option.map_eq_some_iff] at h
     obtain ⟨s, hl, rfl⟩ := h
-    simp only [Option.some.injEq] at hs'; subst hs'
-    unfold Queue.live at hl
-    split at hl
-    · rename_i s0 hs0
-      split at hl
-      · cases hl; exact hw s hs0
-      · cases hl
-    · cases hl
+    obtain ⟨hs, -⟩ := live_some hl
+    refine ⟨?_, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
+    intro s' hs'; simp only [Option.some.injEq] at hs'; subst hs'; exact hw s hs
   | record e =>
     simp only [Queue.step, Option.map_eq_some_iff] at h
     obtain ⟨s, hl, rfl⟩ := h
-    simp only [Option.some.injEq] at hs'; subst hs'
-    unfold Queue.live at hl
-    split at hl
-    · rename_i s0 hs0
-      split at hl
-      · cases hl; exact hw s hs0
-      · cases hl
-    · cases hl
+    obtain ⟨hs, -⟩ := live_some hl
+    refine ⟨?_, List.prefix_append _ _, Nat.le_refl _, fun _ => rfl⟩
+    intro s' hs'; simp only [Option.some.injEq] at hs'; subst hs'; exact hw s hs
+  | runStart e =>
+    simp only [Queue.step, Option.map_eq_some_iff] at h
+    obtain ⟨s, -, rfl⟩ := h
+    exact ⟨hw, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
   | land e =>
     simp only [Queue.step] at h
     split at h
     · split at h
-      · cases h; simp at hs'
+      · cases h
+        exact ⟨fun _ hs => by simp at hs, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
       · cases h
     · cases h
   | park e =>
     simp only [Queue.step] at h
     split at h
     · split at h
-      · cases h; simp at hs'
+      · cases h
+        exact ⟨fun _ hs => by simp at hs, List.prefix_refl _, Nat.le_refl _, fun _ => rfl⟩
       · cases h
     · cases h
   | handOff e =>
     simp only [Queue.step] at h
     split at h
     · split at h
-      · cases h; simp only [Option.some.injEq] at hs'; subst hs'; rfl
+      · cases h
+        refine ⟨?_, List.prefix_refl _, by simp, fun _ => rfl⟩
+        intro s' hs'; simp only [Option.some.injEq] at hs'; subst hs'; rfl
       · cases h
     · cases h
+
+/-- A session's own commands never mark TODO.md dirty: its edits stay inside
+its own item, so they trigger no analysis. -/
+theorem own_commands_keep_clean (q q' : Queue) (c : Cmd) (e : Nat) (hw : q.wf)
+    (he : c.epoch? = some e) (h : q.step c = some q') : q'.dirty = q.dirty :=
+  (step_facts q q' c hw h).2.2.2 (by simp [he])
 
 /-- Over any commands, the live session holds the current epoch, so together
 with `stale_refused` a superseded session can never act. -/
@@ -1788,91 +1880,19 @@ theorem exec_wf (cs : List Cmd) (q q' : Queue) (hw : q.wf) (h : q.exec cs = some
   | cons c cs ih =>
     simp only [Queue.exec, Option.bind_eq_some_iff] at h
     obtain ⟨q1, h1, h2⟩ := h
-    exact ih q1 (step_wf q q1 c hw h1) h2
-
-/-- One step never drops a durable record. -/
-theorem step_records (q q' : Queue) (c : Cmd) (h : q.step c = some q') :
-    q.records <+: q'.records := by
-  cases c with
-  | wake =>
-    simp only [Queue.step, Option.some.injEq] at h; subst h
-    unfold Queue.reconcile
-    split <;> exact List.prefix_refl _
-  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; exact List.prefix_refl _
-  | learn e n =>
-    simp only [Queue.step, Option.map_eq_some_iff] at h
-    obtain ⟨s, -, rfl⟩ := h; exact List.prefix_refl _
-  | record e =>
-    simp only [Queue.step, Option.map_eq_some_iff] at h
-    obtain ⟨s, -, rfl⟩ := h; exact List.prefix_append _ _
-  | land e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; exact List.prefix_refl _
-      · cases h
-    · cases h
-  | park e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; exact List.prefix_refl _
-      · cases h
-    · cases h
-  | handOff e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; exact List.prefix_refl _
-      · cases h
-    · cases h
+    exact ih q1 (step_facts q q1 c hw h1).1 h2
 
 /-- Durable records only grow, over any commands (a crash loses only what was
 never recorded, and nothing acted on it: `acts_need_recorded`). -/
-theorem records_only_grow (cs : List Cmd) (q q' : Queue) (h : q.exec cs = some q') :
-    q.records <+: q'.records := by
+theorem records_only_grow (cs : List Cmd) (q q' : Queue) (hw : q.wf)
+    (h : q.exec cs = some q') : q.records <+: q'.records := by
   induction cs generalizing q with
   | nil => simp [Queue.exec] at h; subst h; exact List.prefix_refl _
   | cons c cs ih =>
     simp only [Queue.exec, Option.bind_eq_some_iff] at h
     obtain ⟨q1, h1, h2⟩ := h
-    exact (step_records q q1 c h1).trans (ih q1 h2)
-
-/-- One step never lowers the epoch. -/
-theorem step_epoch (q q' : Queue) (c : Cmd) (h : q.step c = some q') : q.epoch ≤ q'.epoch := by
-  cases c with
-  | wake =>
-    simp only [Queue.step, Option.some.injEq] at h; subst h
-    unfold Queue.reconcile
-    split <;> simp
-  | crash => simp only [Queue.step, Option.some.injEq] at h; subst h; simp
-  | learn e n =>
-    simp only [Queue.step, Option.map_eq_some_iff] at h
-    obtain ⟨s, -, rfl⟩ := h; simp
-  | record e =>
-    simp only [Queue.step, Option.map_eq_some_iff] at h
-    obtain ⟨s, -, rfl⟩ := h; simp
-  | land e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; simp
-      · cases h
-    · cases h
-  | park e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; simp
-      · cases h
-    · cases h
-  | handOff e =>
-    simp only [Queue.step] at h
-    split at h
-    · split at h
-      · cases h; simp
-      · cases h
-    · cases h
+    have f := step_facts q q1 c hw h1
+    exact f.2.1.trans (ih q1 f.1 h2)
 
 /-- A landed item leaves "Next, in order", so no later wake starts it again. -/
 theorem landed_leaves_next (q q' : Queue) (e : Nat) (s : Session)
@@ -1920,14 +1940,21 @@ end PerItemProofs
 
 -- Two items: the first one's session learns a finding, records it and lands;
 -- the next wake starts the second item in a fresh epoch.
-#guard ((Queue.mk 0 none ["t-a", "t-b"] [] [] []).exec
-          [.wake, .learn 1 7, .record 1, .land 1, .wake]).map
+#guard ((Queue.mk 0 none ["t-a", "t-b"] [] [] [] false false).exec
+          [.wake, .learn 1 7, .record 1, .runStart 1, .runTerminal, .land 1, .wake]).map
           (fun q => (q.epoch, q.session, q.landed, q.records)) ==
         some (2, some ⟨2, "t-b", []⟩, ["t-a"], [7])
 
 -- Landing with an unrecorded finding is refused; so is a superseded epoch.
-#guard ((Queue.mk 0 none ["t-a"] [] [] []).exec [.wake, .learn 1 7, .land 1]).isNone
-#guard ((Queue.mk 0 none ["t-a"] [] [] []).exec [.wake, .handOff 1, .learn 1 7]).isNone
+#guard ((Queue.mk 0 none ["t-a"] [] [] [] false false).exec [.wake, .learn 1 7, .land 1]).isNone
+#guard ((Queue.mk 0 none ["t-a"] [] [] [] false false).exec [.wake, .handOff 1, .learn 1 7]).isNone
+
+-- A crash with its run still going starts nothing until the run is terminal;
+-- the user's edit of another item holds the next start until the analysis.
+#guard ((Queue.mk 0 none ["t-a"] [] [] [] false false).exec
+          [.wake, .runStart 1, .crash, .wake]).map (·.session) == some none
+#guard ((Queue.mk 0 none ["t-a"] [] [] [] false false).exec
+          [.foreignEdit, .wake, .analysed, .wake]).map (·.epoch) == some 1
 
 end PerItem
 
