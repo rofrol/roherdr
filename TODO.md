@@ -25,6 +25,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ("todo run r-...", "agent ... asks"), so nothing reads as the
   supervisor; an agent blocked on the user's question keeps notifying once
   per block.
+  Checked 2026-10-23 against the code: `--next-agent` on `todo resume` is
+  done (`src/cli/todo.rs`); open are the stop notice (part 1), queue mode's
+  agent choice, the sidebar line for a stop and source names on the other
+  worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
+  `coordinator_handoff.rs`). In flight: slice 1 (the stop notice only when
+  the coordinator is gone, named `todo run <id>:`), run `r-4h4bbmbj`.
 
 - [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
   2026-10-09): a second worker kind with its own stream parser, tool policy
