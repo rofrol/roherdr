@@ -53,6 +53,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (migration on `todo_queues`), shown in `todo queue status` and passed to
   every run the queue starts and to its usage gate. Open: the sidebar line
   for a stopped run (its stop reason shown where the run shows).
+  In flight: slice 4 (a stopped run shows its reason in the coordinator's
+  space until acknowledged; also covers part of t-rht4pyff), run `r-ckvko5jj`.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
