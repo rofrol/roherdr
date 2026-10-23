@@ -234,7 +234,15 @@ pub(super) fn snapshot_with_completions(
                 restart_pending: agent.restart_pending,
                 last_request_input_tokens: agent
                     .context
+                    .as_ref()
                     .map(|context| context.last_request_input_tokens),
+                context_window: agent
+                    .context
+                    .and_then(|context| context.window)
+                    .map(|window| protocol::ClientShellContextWindow {
+                        tokens: window.tokens,
+                        source: crate::context_window::source_text(&window),
+                    }),
                 state_labels,
                 tokens,
                 focused,

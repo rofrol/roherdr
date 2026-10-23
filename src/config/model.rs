@@ -338,6 +338,7 @@ pub struct Config {
     pub workers: WorkersConfig,
     pub review: ReviewConfig,
     pub coordinator: CoordinatorConfig,
+    pub agents: AgentsConfig,
     pub supervision: SupervisionConfig,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
@@ -1004,6 +1005,17 @@ pub struct CoordinatorConfig {
     /// "off" lets it run unrecorded. Default: "shadow". A headless item
     /// coordinator always enforces.
     pub allowlist: CoordinatorAllowlistConfig,
+}
+
+/// `[agents]`: facts about the agents' models that herdr cannot read.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// Context windows in tokens, keyed by the exact model id the agent's
+    /// transcript records (e.g. `context_window = { "claude-opus-5-5" =
+    /// 1000000 }`). Labelled user-set; it comes before herdr's own table.
+    /// Default: empty.
+    pub context_window: std::collections::BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

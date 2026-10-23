@@ -610,9 +610,10 @@ fn agent_context(args: &[String], scope: NameScope) -> std::io::Result<i32> {
 }
 
 /// `herdr agent context`'s report of an agent (`agent.get`'s result): the input context of its
-/// last completed request and where it was read. The window and the percentage stay `null`
-/// and the status `unknown` until herdr knows the model's window; unknown is never under a
-/// threshold.
+/// last completed request and where it was read, the model's window and where it came from,
+/// the percentage of the window (unrounded) and a status of `over` (from 70%), `under` or
+/// `unknown`. Without a window the percentage is `null` and the status `unknown`, which never
+/// counts as under a threshold.
 fn context_report(agent: &serde_json::Value) -> serde_json::Value {
     let context = agent.get("context").filter(|context| context.is_object());
     let field = |key: &str| {
@@ -621,6 +622,16 @@ fn context_report(agent: &serde_json::Value) -> serde_json::Value {
             .cloned()
             .unwrap_or(serde_json::Value::Null)
     };
+    let tokens = context
+        .and_then(|context| context.get("last_request_input_tokens"))
+        .and_then(serde_json::Value::as_u64);
+    let window = context
+        .and_then(|context| context.get("window"))
+        .filter(|window| window.is_object());
+    let window_tokens = window
+        .and_then(|window| window.get("tokens"))
+        .and_then(serde_json::Value::as_u64);
+    let percent = tokens.and_then(|tokens| crate::context_window::percent(tokens, window_tokens));
     serde_json::json!({
         "pane_id": agent.get("pane_id").cloned().unwrap_or_default(),
         "agent": agent.get("agent").cloned().unwrap_or_default(),
@@ -630,14 +641,25 @@ fn context_report(agent: &serde_json::Value) -> serde_json::Value {
             "session_id": field("session_id"),
             "message_id": field("message_id"),
             "at": field("at"),
+            "model": field("model"),
         })),
         "provenance": context.map(|_| serde_json::json!({
             "source": "transcript",
             "sum": "input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
         })),
-        "window": serde_json::Value::Null,
-        "percent": serde_json::Value::Null,
-        "status": "unknown",
+        "window": window_tokens,
+        "window_provenance": window.map(|window| {
+            let mut provenance = serde_json::Map::new();
+            for key in ["provenance", "detail", "url", "checked"] {
+                if let Some(value) = window.get(key) {
+                    let key = if key == "provenance" { "source" } else { key };
+                    provenance.insert(key.into(), value.clone());
+                }
+            }
+            serde_json::Value::Object(provenance)
+        }),
+        "percent": percent,
+        "status": crate::context_window::status(percent),
     })
 }
 
@@ -648,10 +670,11 @@ fn context_text(report: &serde_json::Value) -> String {
             out.push_str(&format!("tokens: {tokens} ({CONTEXT_MEASURE})\n"));
             let as_of = &report["as_of"];
             out.push_str(&format!(
-                "as of: message {} at {}, session {}\n",
+                "as of: message {} at {}, session {}, model {}\n",
                 as_of["message_id"].as_str().unwrap_or("unknown"),
                 as_of["at"].as_str().unwrap_or("unknown"),
                 as_of["session_id"].as_str().unwrap_or("unknown"),
+                as_of["model"].as_str().unwrap_or("unknown"),
             ));
         }
         None => out.push_str(
@@ -659,7 +682,34 @@ fn context_text(report: &serde_json::Value) -> String {
              whose transcript herdr cannot read)\n",
         ),
     }
-    out.push_str("window: unknown\nstatus: unknown\n");
+    let provenance = &report["window_provenance"];
+    let source = || {
+        let detail = provenance["detail"].as_str().unwrap_or("no source");
+        match (provenance["url"].as_str(), provenance["checked"].as_str()) {
+            (Some(url), Some(checked)) => format!("{detail}, from {url}, checked {checked}"),
+            _ => detail.to_string(),
+        }
+    };
+    match report["window"].as_u64() {
+        Some(window) => out.push_str(&format!(
+            "window: {window} ({}: {})\n",
+            provenance["source"].as_str().unwrap_or("unknown"),
+            source()
+        )),
+        None if provenance.is_object() => out.push_str(&format!(
+            "window: unknown ({}: {})\n",
+            provenance["source"].as_str().unwrap_or("unknown"),
+            source()
+        )),
+        None => out.push_str("window: unknown\n"),
+    }
+    if let Some(percent) = report["percent"].as_f64() {
+        out.push_str(&format!("percent: {percent:.1}%\n"));
+    }
+    out.push_str(&format!(
+        "status: {}\n",
+        report["status"].as_str().unwrap_or("unknown")
+    ));
     out
 }
 
@@ -1549,7 +1599,7 @@ mod tests {
     };
 
     #[test]
-    fn agent_context_reports_the_last_request_and_no_window_yet() {
+    fn agent_context_reports_the_last_request_and_an_older_server_without_a_window() {
         let agent = serde_json::json!({
             "pane_id": "w1:p1",
             "agent": "claude",
@@ -1568,17 +1618,102 @@ mod tests {
                 "agent": "claude",
                 "tokens": 420_522,
                 "measure": "input of the last request, not cost or cumulative",
-                "as_of": {"session_id": "s1", "message_id": "msg_1", "at": "2026-10-23T12:00:00Z"},
+                "as_of": {
+                    "session_id": "s1",
+                    "message_id": "msg_1",
+                    "at": "2026-10-23T12:00:00Z",
+                    "model": null,
+                },
                 "provenance": {
                     "source": "transcript",
                     "sum": "input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
                 },
                 "window": null,
+                "window_provenance": null,
                 "percent": null,
                 "status": "unknown",
             })
         );
-        assert!(context_text(&report).starts_with("tokens: 420522 (input of the last request"));
+        let text = context_text(&report);
+        assert!(text.starts_with("tokens: 420522 (input of the last request"));
+        assert!(
+            text.ends_with("window: unknown\nstatus: unknown\n"),
+            "{text}"
+        );
+    }
+
+    fn with_window(tokens: u64, window: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "pane_id": "w1:p1",
+            "agent": "claude",
+            "context": {
+                "last_request_input_tokens": tokens,
+                "session_id": "s1",
+                "model": "claude-opus-5-5",
+                "window": window,
+            },
+        })
+    }
+
+    #[test]
+    fn agent_context_reports_the_window_its_source_the_percent_and_the_status() {
+        let report = context_report(&with_window(
+            420_000,
+            serde_json::json!({
+                "tokens": 1_000_000,
+                "provenance": "user",
+                "detail": "user-set: [agents] context_window \"claude-opus-5-5\" in herdr's config",
+            }),
+        ));
+        assert_eq!(report["window"], 1_000_000);
+        assert_eq!(report["window_provenance"]["source"], "user");
+        assert_eq!(report["as_of"]["model"], "claude-opus-5-5");
+        assert_eq!(report["percent"], 42.0);
+        assert_eq!(report["status"], "under");
+        let text = context_text(&report);
+        assert!(text.contains("window: 1000000 (user: user-set"), "{text}");
+        assert!(text.contains("percent: 42.0%"), "{text}");
+        assert!(text.ends_with("status: under\n"), "{text}");
+
+        let report = context_report(&with_window(
+            700_000,
+            serde_json::json!({
+                "tokens": 1_000_000,
+                "provenance": "table",
+                "detail": "herdr's table: claude-opus-5-5 (standard)",
+                "url": "https://vendor.example/models",
+                "checked": "2026-10-23",
+            }),
+        ));
+        assert_eq!(report["status"], "over");
+        assert_eq!(
+            report["window_provenance"]["url"],
+            "https://vendor.example/models"
+        );
+        assert!(context_text(&report).contains("from https://vendor.example/models, checked"));
+
+        // Unrounded in JSON.
+        let report = context_report(&with_window(
+            1,
+            serde_json::json!({"tokens": 3, "provenance": "user", "detail": "d"}),
+        ));
+        assert_eq!(report["percent"].as_f64(), Some(100.0 / 3.0));
+    }
+
+    #[test]
+    fn a_withheld_window_has_no_percent_and_an_unknown_status() {
+        let report = context_report(&with_window(
+            420_522,
+            serde_json::json!({
+                "provenance": "withheld",
+                "detail": "the request's input of 420522 tokens exceeds the window of 200000",
+            }),
+        ));
+        assert_eq!(report["window"], serde_json::Value::Null);
+        assert_eq!(report["window_provenance"]["source"], "withheld");
+        assert_eq!(report["percent"], serde_json::Value::Null);
+        assert_eq!(report["status"], "unknown");
+        assert!(context_text(&report).contains("window: unknown (withheld: the request's input"));
     }
 
     #[test]

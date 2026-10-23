@@ -209,6 +209,8 @@ pub struct App {
     pub(crate) launcher_watch: Option<agent_versions::LauncherWatch>,
     /// How far each agent session's transcript was read for its context size.
     pub(crate) agent_contexts: crate::agent_context::ContextStore,
+    /// The user's context windows by exact model id (`[agents] context_window`).
+    pub(crate) context_windows: std::collections::BTreeMap<String, u64>,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -712,6 +714,7 @@ impl App {
                     .persist_session
                     .then(crate::agent_context::ContextStore::default_dir),
             ),
+            context_windows: config.agents.context_window.clone(),
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_refresh_spawn_retry_pending: false,
@@ -1072,6 +1075,12 @@ impl App {
 
         if !invalid_section("usage") {
             self.apply_usage_config(&config.usage);
+        }
+
+        if !invalid_section("agents") && self.context_windows != config.agents.context_window {
+            self.context_windows = config.agents.context_window.clone();
+            // A changed setting is a named event: every reading's window is resolved again.
+            self.reconcile_agent_contexts();
         }
 
         if !invalid_section("update") {

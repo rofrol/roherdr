@@ -12417,14 +12417,73 @@
                 "null"
               ]
             },
+            "model": {
+              "description": "The model that served the request, as the transcript records it (Claude's\n`message.model`); never taken from prose.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "session_id": {
               "description": "The agent session the request belongs to.",
               "type": "string"
+            },
+            "window": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentContextWindow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The model's context window and where it came from. Absent from older servers."
             }
           },
           "required": [
             "last_request_input_tokens",
             "session_id"
+          ],
+          "type": "object"
+        },
+        "AgentContextWindow": {
+          "description": "The context window of the model that served an agent's last request, from a named source:\nfirst a fact the agent records, then the user's `[agents] context_window` setting, then\nherdr's table of vendor-documented windows.",
+          "properties": {
+            "checked": {
+              "description": "The day (YYYY-MM-DD) that document was checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "detail": {
+              "description": "What the provenance names: the setting, the table entry, or why there is no window.",
+              "type": "string"
+            },
+            "provenance": {
+              "description": "Where it came from: `agent` (a fact the agent records), `user` (the user's setting),\n`table` (herdr's table), `unknown` (no source knows the model or its variant) or\n`withheld` (the request's input exceeds the window a source named, which proves that\nwindow wrong for the session). Other values may be added.",
+              "type": "string"
+            },
+            "tokens": {
+              "description": "The window in tokens; absent when no source knows the model or the window was\nwithheld.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "url": {
+              "description": "The vendor document a table entry was taken from.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "provenance",
+            "detail"
           ],
           "type": "object"
         },

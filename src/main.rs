@@ -23,6 +23,7 @@ mod checksum;
 mod cli;
 mod client;
 mod config;
+mod context_window;
 mod copy_mode;
 mod detect;
 mod events;

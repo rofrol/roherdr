@@ -1,6 +1,7 @@
 //! Each agent's context size (`crate::agent_context`), reconciled with its transcript at the
 //! named events that call these: server start and live handoff, the agent's session start,
-//! its turn end and its change to idle or done. Never on a timer, never in render.
+//! its turn end, its change to idle or done, and a change of the user's context windows in
+//! a config reload. Never on a timer, never in render.
 
 use std::path::PathBuf;
 
@@ -70,6 +71,17 @@ impl App {
                 event,
                 crate::assignments::now_ms(),
             )
+        });
+        let reading = reading.map(|mut reading| {
+            // No agent records its window (Claude Code records the model and the usage, not
+            // the window), so the user's setting and the table are the sources.
+            reading.window = Some(crate::context_window::resolve(
+                &reading,
+                None,
+                &self.context_windows,
+                crate::context_window::TABLE,
+            ));
+            reading
         });
         let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) else {
             return false;
@@ -203,8 +215,33 @@ mod tests {
                 "session_id": "s1",
                 "message_id": "m1",
                 "at": "2099-01-01T00:00:00Z",
+                "model": "claude-opus-5-5",
+                "window": {
+                    "provenance": "unknown",
+                    "detail": "no source knows the window of claude-opus-5-5",
+                },
             })
         );
+
+        // The user's setting gives the window; a reload that changes it resolves it again.
+        let mut config = crate::config::Config::default();
+        config
+            .agents
+            .context_window
+            .insert("claude-opus-5-5".into(), 1_000_000);
+        app.apply_live_config(&config, &[], &[], false);
+        let window = agent(&mut app)["context"]["window"].clone();
+        assert_eq!(window["tokens"], 1_000_000);
+        assert_eq!(window["provenance"], "user");
+        // A window below the measured input is wrong for this session: withheld.
+        config
+            .agents
+            .context_window
+            .insert("claude-opus-5-5".into(), 200_000);
+        app.apply_live_config(&config, &[], &[], false);
+        let window = agent(&mut app)["context"]["window"].clone();
+        assert_eq!(window["tokens"], serde_json::Value::Null);
+        assert_eq!(window["provenance"], "withheld");
         assert_eq!(
             app.state.terminals[&terminal_id]
                 .agent_context

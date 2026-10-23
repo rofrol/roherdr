@@ -9,7 +9,8 @@
 //!
 //! A session start (`/clear`, a resume, a compaction, a new session in the pane) and a
 //! rewritten transcript make the reading unknown until that session's first completed
-//! request: unknown, never 0. Claude only for now.
+//! request: unknown, never 0. Claude only for now. The model's window is resolved apart, by
+//! `crate::context_window`.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -445,6 +446,13 @@ fn claude_reading(line: &[u8], session_id: &str, since_ms: u64) -> Option<AgentC
             .and_then(Value::as_str)
             .map(str::to_string),
         at,
+        model: message
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string),
+        // The server resolves it (`crate::context_window`); the cursor keeps the reading only.
+        window: None,
     })
 }
 
@@ -544,6 +552,9 @@ mod tests {
         assert_eq!(reading.session_id, "s1");
         assert_eq!(reading.message_id.as_deref(), Some("m2"));
         assert_eq!(reading.at.as_deref(), Some("2026-10-23T11:00:02Z"));
+        // The model is the transcript's, the runtime's own record of the request.
+        assert_eq!(reading.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(reading.window, None);
     }
 
     #[test]

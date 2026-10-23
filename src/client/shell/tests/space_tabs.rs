@@ -19,6 +19,7 @@ fn state_with_tabs_and_width(tabs: bool, sidebar_width: u16) -> ClientShellState
         limited: None,
         restart_pending: None,
         last_request_input_tokens: None,
+        context_window: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1354,9 +1355,88 @@ fn a_coordinators_tab_line_shows_its_context_size_or_that_it_is_unknown() {
 }
 
 #[test]
+fn a_known_window_adds_the_percentage_and_its_source_on_hover() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    projected.agents[0].last_request_input_tokens = Some(420_522);
+    projected.agents[0].context_window = Some(crate::protocol::ClientShellContextWindow {
+        tokens: Some(1_000_000),
+        source: "user-set: [agents] context_window \"m\" in herdr's config".into(),
+    });
+    state.set_snapshot(Box::new(projected));
+    let context = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let (line, _) = state.hits.space_tabs[0];
+        let row = frame_rows(&frame)[line.y as usize].clone();
+        let tooltip = state
+            .hits
+            .tooltips
+            .iter()
+            .find(|target| target.id.starts_with("tab-context:") && target.rect.y == line.y)
+            .map(|target| target.text.clone());
+        (row, tooltip)
+    };
+    let (row, tooltip) = context(&mut state);
+    assert!(row.contains("ctx 420k · 42%"), "{row}");
+    assert_eq!(
+        tooltip.as_deref(),
+        Some(
+            "Context: 420522 tokens, input of the last request, not cost or cumulative; \
+             window 1000000 tokens (user-set: [agents] context_window \"m\" in herdr's config)"
+        )
+    );
+
+    // A narrow line drops the percentage first.
+    state.sidebar_width = 26;
+    let (row, _) = context(&mut state);
+    assert!(row.contains("ctx 420k"), "{row}");
+    assert!(!row.contains('%'), "{row}");
+    state.sidebar_width = 40;
+
+    // A withheld or unknown window shows the tokens alone and says why on hover.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].context_window = Some(crate::protocol::ClientShellContextWindow {
+        tokens: None,
+        source: "no window: no source knows the window of m".into(),
+    });
+    state.set_snapshot(Box::new(projected));
+    let (row, tooltip) = context(&mut state);
+    assert!(row.contains("ctx 420k"), "{row}");
+    assert!(!row.contains('%'), "{row}");
+    assert!(
+        tooltip
+            .as_deref()
+            .is_some_and(|text| text.ends_with("; no window: no source knows the window of m")),
+        "{tooltip:?}"
+    );
+}
+
+#[test]
+fn the_percentage_is_cut_down_to_whole_percent() {
+    use super::super::space_tabs::{context_text, TabContext};
+    let text = |tokens, window| {
+        context_text(&TabContext {
+            tokens: Some(tokens),
+            window: Some(window),
+            window_source: Some("s".into()),
+        })
+    };
+    assert_eq!(text(420_522, 1_000_000), "ctx 420k · 42%");
+    assert_eq!(text(699_999, 1_000_000), "ctx 699k · 69%");
+    assert_eq!(text(1_000_000, 1_000_000), "ctx 1.0M · 100%");
+}
+
+#[test]
 fn the_context_size_is_cut_to_thousands_or_tenths_of_millions() {
     use super::super::space_tabs::{context_text, TabContext};
-    let text = |tokens| context_text(TabContext { tokens });
+    let text = |tokens| {
+        context_text(&TabContext {
+            tokens,
+            ..TabContext::default()
+        })
+    };
     assert_eq!(text(None), "ctx ?");
     assert_eq!(text(Some(0)), "ctx 0");
     assert_eq!(text(Some(999)), "ctx 999");
@@ -2774,6 +2854,7 @@ fn header_agent(
         limited: None,
         restart_pending: None,
         last_request_input_tokens: None,
+        context_window: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

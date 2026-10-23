@@ -613,6 +613,37 @@ pub struct AgentContext {
     /// When the transcript recorded that message (RFC 3339, as the agent wrote it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// The model that served the request, as the transcript records it (Claude's
+    /// `message.model`); never taken from prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The model's context window and where it came from. Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<AgentContextWindow>,
+}
+
+/// The context window of the model that served an agent's last request, from a named source:
+/// first a fact the agent records, then the user's `[agents] context_window` setting, then
+/// herdr's table of vendor-documented windows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentContextWindow {
+    /// The window in tokens; absent when no source knows the model or the window was
+    /// withheld.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// Where it came from: `agent` (a fact the agent records), `user` (the user's setting),
+    /// `table` (herdr's table), `unknown` (no source knows the model or its variant) or
+    /// `withheld` (the request's input exceeds the window a source named, which proves that
+    /// window wrong for the session). Other values may be added.
+    pub provenance: String,
+    /// What the provenance names: the setting, the table entry, or why there is no window.
+    pub detail: String,
+    /// The vendor document a table entry was taken from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The day (YYYY-MM-DD) that document was checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

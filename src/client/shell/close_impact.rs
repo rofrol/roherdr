@@ -207,6 +207,7 @@ mod tests {
             limited: None,
             restart_pending: None,
             last_request_input_tokens: None,
+            context_window: None,
             pane_id: pane_id.into(),
             workspace_id: "w1".into(),
             tab_id: tab_id.into(),

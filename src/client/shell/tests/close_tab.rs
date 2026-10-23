@@ -599,6 +599,7 @@ fn busy_agent(pane_id: &str, status: AgentStatus) -> ClientShellAgent {
         limited: None,
         restart_pending: None,
         last_request_input_tokens: None,
+        context_window: None,
         pane_id: pane_id.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

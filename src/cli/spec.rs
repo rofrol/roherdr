@@ -977,7 +977,7 @@ fn agent_command() -> Command {
                 .arg(global_name_flag())
                 .arg(json_flag())
                 .after_help(
-                    "Reads the agent's transcript as of its last completed request: for Claude, input + cache creation + cache read tokens, output excluded; not cost and not cumulative. Unknown after a session start (/clear, a resume, a compaction) until that session's first completed request. Claude only for now. The window, the percentage and an over or under status are not known yet: --json prints them as null and status unknown.",
+                    "Reads the agent's transcript as of its last completed request: for Claude, input + cache creation + cache read tokens, output excluded; not cost and not cumulative. Unknown after a session start (/clear, a resume, a compaction) until that session's first completed request. Claude only for now. The model's context window comes from a named source: the user's [agents] context_window setting (keyed by the exact model id the transcript records), then herdr's table of vendor-documented windows; Claude Code records no window. An unknown model or variant has no window, and an input above the window withholds it. With a window the percentage is input / window and the status over from 70%, else under; without one the percentage is null and the status unknown, which never counts as under.",
                 ),
         )
         .subcommand(

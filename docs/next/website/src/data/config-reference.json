@@ -1763,6 +1763,18 @@
       ]
     },
     {
+      "id": "agents",
+      "title": "Agents",
+      "keys": [
+        {
+          "key": "agents.context_window",
+          "type": "table",
+          "default": "{}",
+          "description": "Context windows in tokens, keyed by the exact model id the agent's transcript records, e.g. `context_window = { \"claude-opus-5-5\" = 1000000 }`. herdr agent context and a coordinator's tab line use it as the window labelled user-set (provenance `user`) to show how full the window was as of the last request (`ctx 420k · 42%`); it comes before herdr's own table of vendor-documented windows, since Claude Code records no window. A model id not listed, or an input above the listed window (which proves it wrong for that session), shows no percentage and the status unknown. Read at server start and config reload."
+        }
+      ]
+    },
+    {
       "id": "review",
       "title": "Automatic review",
       "keys": [

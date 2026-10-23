@@ -1488,6 +1488,20 @@ pub struct ClientShellAgent {
     /// `None` while unknown and from older servers. Always serialized, like `task`.
     #[serde(default)]
     pub last_request_input_tokens: Option<u64>,
+    /// The window of the model that served that request (see `AgentContext::window`); `None`
+    /// without a reading and from older servers. Always serialized, like `task`.
+    #[serde(default)]
+    pub context_window: Option<ClientShellContextWindow>,
+}
+
+/// An agent's context window as the client shows it. No field is skipped: skipping one
+/// breaks the bincode form of this type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellContextWindow {
+    /// The window in tokens; `None` while no source knows it or it was withheld.
+    pub tokens: Option<u64>,
+    /// Where it came from, or why there is none, in words.
+    pub source: String,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

@@ -6,6 +6,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
+    "agents",
     "coordinator",
     "experimental",
     "keys",
@@ -395,6 +396,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.coordinator = section,
+    );
+    load_live_section(
+        table,
+        "agents",
+        "agents config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.agents = section,
     );
     load_live_section(
         table,
@@ -943,6 +952,25 @@ resume_agents_on_restore = true
         assert!(loaded.config.session.resume_agents_on_restore);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn agents_context_window_maps_exact_model_ids_to_tokens() {
+        let loaded = load_live_config_from_str("").unwrap();
+        assert!(loaded.config.agents.context_window.is_empty());
+        let loaded = load_live_config_from_str(
+            "[agents]\ncontext_window = { \"claude-opus-5-5\" = 1000000 }\n",
+        )
+        .unwrap();
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(
+            loaded.config.agents.context_window.get("claude-opus-5-5"),
+            Some(&1_000_000)
+        );
+        let loaded =
+            load_live_config_from_str("[agents]\ncontext_window = { \"m\" = \"big\" }\n").unwrap();
+        assert_eq!(loaded.invalid_sections, ["agents"]);
+        assert!(loaded.config.agents.context_window.is_empty());
     }
 
     #[test]

@@ -1224,11 +1224,17 @@ fn tab_restart(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<S
 }
 
 /// The input context of a coordinator's last request, as its tab line shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct TabContext {
     /// `None` while unknown: a session without a completed request yet, or an
     /// agent whose transcript herdr cannot read. Never shown as 0.
     pub(super) tokens: Option<u64>,
+    /// The window of the model that served the request; `None` while no
+    /// source knows it or it was withheld.
+    pub(super) window: Option<u64>,
+    /// Where the window came from, or why there is none; `None` from a server
+    /// that sends no window.
+    pub(super) window_source: Option<String>,
 }
 
 /// What the context size measures, on hover.
@@ -1236,18 +1242,42 @@ pub(super) const CONTEXT_MEASURE: &str = "input of the last request, not cost or
 
 /// The tab's agent's context size: the first of its agents with a reading.
 fn tab_context(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> TabContext {
-    TabContext {
-        tokens: snapshot
-            .agents
-            .iter()
-            .filter(|agent| agent.tab_id == tab.tab_id)
-            .find_map(|agent| agent.last_request_input_tokens),
-    }
+    snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id)
+        .find_map(|agent| {
+            let tokens = agent.last_request_input_tokens?;
+            let window = agent.context_window.as_ref();
+            Some(TabContext {
+                tokens: Some(tokens),
+                window: window.and_then(|window| window.tokens),
+                window_source: window.map(|window| window.source.clone()),
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// How full the window was, in whole percent cut down; `None` without a
+/// window.
+fn context_percent(context: &TabContext) -> Option<u64> {
+    crate::context_window::percent(context.tokens?, context.window)
+        .map(|percent| percent.floor() as u64)
 }
 
 /// `ctx 420k`: the tokens cut to thousands, or to tenths of millions from a
-/// million on (`ctx 1.2M`); `ctx ?` while unknown.
-pub(super) fn context_text(context: TabContext) -> String {
+/// million on (`ctx 1.2M`), then `· 42%` with a known window; `ctx ?` while
+/// unknown.
+pub(super) fn context_text(context: &TabContext) -> String {
+    let tokens = context_tokens_text(context);
+    match context_percent(context) {
+        Some(percent) => format!("{tokens} · {percent}%"),
+        None => tokens,
+    }
+}
+
+/// `ctx 420k` without the percentage, for a narrow line.
+fn context_tokens_text(context: &TabContext) -> String {
     match context.tokens {
         None => "ctx ?".into(),
         Some(tokens @ 0..1_000) => format!("ctx {tokens}"),
@@ -1260,14 +1290,23 @@ pub(super) fn context_text(context: TabContext) -> String {
     }
 }
 
-/// The context size's tooltip, with the exact number.
-pub(super) fn context_tooltip(context: TabContext) -> String {
-    match context.tokens {
-        Some(tokens) => format!("Context: {tokens} tokens, {CONTEXT_MEASURE}"),
-        None => format!(
+/// The context size's tooltip, with the exact number and the window's
+/// source.
+pub(super) fn context_tooltip(context: &TabContext) -> String {
+    let Some(tokens) = context.tokens else {
+        return format!(
             "Context: unknown until this session's first completed request ({CONTEXT_MEASURE})"
-        ),
+        );
+    };
+    let mut text = format!("Context: {tokens} tokens, {CONTEXT_MEASURE}");
+    match (context.window, context.window_source.as_deref()) {
+        (Some(window), Some(source)) => {
+            text.push_str(&format!("; window {window} tokens ({source})"));
+        }
+        (None, Some(source)) => text.push_str(&format!("; {source}")),
+        _ => {}
     }
+    text
 }
 
 /// How many background tasks the tab's agents had running when their turns
@@ -1826,10 +1865,15 @@ pub(super) fn render_space_tab_lines(
         }
         // A coordinator's context size, dim and left of the above, while the
         // label keeps a few columns.
-        let context = line.context.map(|context| (context_text(context), context));
-        let context = context.filter(|(text, _)| {
-            area_width.saturating_sub(plan_width + was_width + bg_width)
-                >= super::render::display_width(text) + 1 + 6
+        // The percentage goes first when the line is narrow.
+        let context = line.context.as_ref().and_then(|context| {
+            [context_text(context), context_tokens_text(context)]
+                .into_iter()
+                .find(|text| {
+                    area_width.saturating_sub(plan_width + was_width + bg_width)
+                        >= super::render::display_width(text) + 1 + 6
+                })
+                .map(|text| (text, context))
         });
         let context_width = context
             .as_ref()
@@ -1848,7 +1892,7 @@ pub(super) fn render_space_tab_lines(
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect: Rect::new(context_x, y, context_width - 1, 1),
                 id: format!("tab-context:{}", line.tab_id),
-                text: context_tooltip(*context),
+                text: context_tooltip(context),
                 bg: None,
                 starts_at_target: false,
             });
