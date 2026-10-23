@@ -55,6 +55,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   for a stopped run (its stop reason shown where the run shows).
   In flight: slice 4 (a stopped run shows its reason in the coordinator's
   space until acknowledged; also covers part of t-rht4pyff), run `r-ckvko5jj`.
+  Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
+  `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
