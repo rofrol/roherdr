@@ -39,6 +39,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   queue mode's agent choice; the sidebar line for a stop; source names on the
   other worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
   `coordinator_handoff.rs`).
+  In flight: slice 2 (a handoff carries held stop notices; source names on
+  the other worker notices), run `r-bgbctzdi`.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
