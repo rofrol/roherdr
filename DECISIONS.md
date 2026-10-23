@@ -2595,3 +2595,31 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   days, the reset time and time zone, the source).
 - Not taken now: thresholds against the remaining allowance per
   remaining day (MiMo, DeepSeek, Argon).
+
+## A fresh coordinator session per item, and cheaper workers (2026-10-23)
+
+Decided by the user 2026-10-23 ("implement the best solution", after
+asking to compare the coordinator-and-workers cost with a supervisor that
+starts one agent per item, a cheaper-worker variant, consult policy and a
+handoff after every item; rounds 20261023-211512-5f06,
+20261023-211937-9803, 20261023-212316-447d and 20261023-212927-b9d8, sol,
+MiMo, DeepSeek and Argon). Measured: about $10 per item at list prices,
+~$4-5 coordinator (80% cache reads of a ~490k context re-sent 32-53 times
+per item) and ~$6 workers (2.2 runs of $2.73); the coordinator's cost is
+bound to its turns and context, not its model (Sonnet's cache-read price
+equals Opus's). Chosen: the coordinator reads one item (`herdr todo
+show`), herdr's queue starts a fresh coordinator session per item on
+durable events, workers routed by class (Sonnet default, Opus for risky
+items and after a failed verify, Haiku on trial), a short-context review
+for non-trivial diffs, external diff consults only for high-consequence
+diffs, no pre-task consult when the item's decided round is newer than
+the last commit on its target paths. Rejected: a separate supervisor that
+starts agents (the queue state machine owns starts, d-amwperuu's line),
+a Sonnet coordinator or medium effort as the main lever, pausing the
+whole queue. Not paused: the in-flight transition-core run, the turn
+tagging (t-j2ayjqdl), the coordinator fence and landing. The threshold
+handoff became a backstop; the coordinator/worker comparison
+(t-2p6nfwpg) waits for the trial. Baseline, estimates and the script:
+docs/todo-workflow-model/cost-baseline.md; model: `PerItem` in
+TodoWorkflow.lean with two diagrams. Items: t-ufyllobh, t-iltryyob,
+t-rfksf3tt and the two around it.

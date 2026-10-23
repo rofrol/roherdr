@@ -151,6 +151,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   rebases if needed and keeps it one commit; the driver verifies, installs
   and pushes. Tell herdr-67 when the installed herdr has it.
 
+- [ ] The coordinator reads one TODO item, not TODO.md (the user, [t-ufyllobh]
+  2026-10-23: "implement the best solution"; design and numbers in
+  docs/todo-workflow-model/cost-baseline.md and README "Target design",
+  rounds 20261023-211512-5f06 .. 20261023-212927-b9d8). `herdr todo show
+  <id|next>` prints one item of "Next, in order" with the titles and
+  touched paths of the last 5 landed items; the todo skill reads it
+  instead of TODO.md before each item. Exit: a coordinator's context per
+  call drops by the ~75k tokens of TODO.md, measured with
+  `docs/todo-workflow-model/measure.py`.
+
+- [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
+  decision as the item above). `todo run --agent claude --model` passes
+  the model to Claude Code and the run records the model that ran; an
+  item names its class (routine, risky, mechanical); Sonnet 5.5 by
+  default, Opus 5.5 for risky items (concurrency, protocol or wire,
+  persisted state, refactor-risk) and for every attempt after a failed
+  verify, Haiku 5.5 only for mechanical items while its trial is on
+  (`PerItem.route` in the Lean model). Exit: the run's events prove the
+  requested model ran; verify unchanged.
+
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
   such a handoff regular"; the herdr coordinator's own session had cost
@@ -511,6 +531,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   reused-pane coordinator acting during and after a handoff) fails on the
   current code and passes after, with no leaked tenure, run start or
   write.
+  Re-scoped 2026-10-23 (the user: "implement the best solution"; round
+  20261023-212927-b9d8, all four models): with a fresh coordinator session
+  per item (t-rfksf3tt), the threshold handoff is
+  only a backstop for a huge item. Finish the atomic fence (still needed:
+  stale sessions must not act); drop further threshold tuning.
 
 - [ ] Landing and abort in `herdr todo run` end in a known git state (the [t-cmjqsat2]
   user, 2026-10-23, from the Lean model review, rounds
@@ -536,6 +561,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   push, slot release; export JSON traces of the main transitions. Exit:
   `lean docs/todo-workflow-model/TodoWorkflow.lean` passes and the
   committed traces are replayed by a Rust test under `just check`.
+  2026-10-23: `PerItem` (the target per-item design) was added to the
+  model with its proofs; keep it in step with this item's changes.
+
+- [ ] Open questions and consult findings are durable records (the user, [t-lhm7fnmd]
+  2026-10-23, same decision; needs the fence of t-ic5rrxn3). A
+  coordinator records each question to the user and each consult finding
+  in herdr's store before it acts on it; a fresh session sees them. Exit:
+  a session killed with a pending question leaves it to the next session
+  and the user's `?` list.
+
+- [ ] A fresh coordinator session per item, started by herdr's queue (the [t-rfksf3tt]
+  user, 2026-10-23, same decision; `PerItem.Queue` in the Lean model). On
+  a durable event (run landed, user answered, server start) the queue
+  starts a coordinator session for the top item, epoch + 1; the session
+  lands, parks or hands off (backstop for a huge item) only with nothing
+  unrecorded; a non-trivial diff lands only after a short-context review
+  (diff, item, decisions excerpt) and an external diff consult only for
+  high-consequence diffs; no pre-task consult when the item's decided
+  round is newer than the last commit on its target paths. Exit: 3
+  consecutive items land with no handoff note, mean coordinator context
+  under 150k tokens, the Lean model and both diagrams still match.
+
+- [ ] Trial the per-item design and fill in the cost comparison (the user, [t-xvvzmzb4]
+  2026-10-23: "save the table of estimates in the repo, then compare after
+  the new cheaper model"). 20-40 items stratified by class; run
+  `docs/todo-workflow-model/measure.py --since <cutover>` and t-j2ayjqdl's
+  numbers; fill the "After the cheaper model" table in
+  docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
+  least 35% lower with no rise in rework, lost questions or the user's
+  interventions; otherwise ask the user with the numbers.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
@@ -1187,6 +1242,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   decided work remains (the README line of the naming item, the TODO
   tracker plan). Edit only with scripts/todo_edit.py; one commit per
   section; every other item and heading unchanged in meaning.
+  2026-10-23: the coordinator's own need (reading one item) is covered by
+  `herdr todo show` (t-ufyllobh); this item keeps the file's slimming.
 
 - [ ] Releases run through herdr's driver, portable and without allow rules [t-5bunzos6]
   (the user, 2026-10-12, on rormpc-tools' release script: "it must work
@@ -1496,6 +1553,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   to this item: the user's interventions (count, minutes the user reports
   if he does), review rounds, machinery fixes it triggered, wall-clock time
   from start to push. After 10 items: a summary and a question to the user.
+  Deferred 2026-10-23 (round 20261023-212927-b9d8): run it after the
+  per-item design's trial, not against today's ~$10/item pipeline.
 
 - [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
   (user, 2026-10-09: "the coordinator-worker model is meant to become a
@@ -3232,6 +3291,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     approved item, credits only, mandatory review, small spend cap; the
     ladder and automatic analysis come after the trial's numbers.
   (The "reviewed" state above is [t-ktz7l3hl].)
+  Decided 2026-10-23 (the user: "implement the best solution", rounds
+  20261023-211512-5f06 .. 20261023-212927-b9d8): the queue starts a fresh
+  coordinator session per item; see t-ufyllobh and the items after it, and
+  docs/todo-workflow-model/cost-baseline.md.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
