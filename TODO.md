@@ -118,6 +118,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   With the indent the under-pace row is 34 columns (fits at 36); the
   over-pace row `+2pp · 3.1pp over at 01:04` is 38 (does not fit: the
   target drops) — asked as a decision.
+  Decided by the user 2026-10-23 (d-flvke2bi): the over-pace form is
+  shortened to `+2pp · 3.1pp over 01:04` (35 columns with the indent).
 
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
