@@ -88,6 +88,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   their history. Placement: a usage view with spaces × windows; the
   sidebar at most one compact number. Open (asked the user, below):
   whether a percentage is shown at all.
+  Decided by the user 2026-10-23 (d-3l6deym2): a space shows its Claude
+  tokens and its share of all Claude tokens in herdr per window; the
+  account's 5 h and 7-day limit percentages with their reset times show
+  apart.
 
 - [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
   clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
