@@ -32,6 +32,63 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `coordinator_handoff.rs`). In flight: slice 1 (the stop notice only when
   the coordinator is gone, named `todo run <id>:`), run `r-4h4bbmbj`.
 
+- [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
+  (review round 20261023-091914-a008, MiMo): the check judges a test by its
+  last result per binary, so a test that passes only on a retry counts as
+  passing on the commit even under a profile that fails flaky tests, and the
+  run's non-zero exit is ignored once a line names the test. Either treat a
+  retried pass as unproven or read the exit code when the profile fails
+  flaky tests. Small, tests only in `src/workers/verify/counterfactual.rs`.
+  Approved by the user 2026-10-23 as the first step of t-ufkea5zx.
+
+- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
+  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
+  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
+  strong; ours is weak, so move acceptance onto checks, keep the model
+  review for intent and API shape). Decided by the user 2026-10-12
+  (d-64mjmvju): yes, queue it.
+  The tamper guard landed 2026-10-18 (run r-atcxbo5o, attempt 2): the
+  verify reports a commit's guarded paths (herdr's `.herdr/checks.toml`,
+  `.herdr/review-checklist.md` and `.herdr/review-golden/**`, plus the
+  repository's own `[review] guarded_paths` read at the base, a union) as
+  an optional field and a `guarded` check without changing the verdict; a
+  discovery that cannot be read is an `unavailable` check and refuses the
+  approval; `herdr todo resume --action approve` refuses such a commit
+  unless it passes `--accept-guarded-paths`, which the run records, and
+  the automatic review and queue mode escalate to a `review` event with
+  the paths instead of approving.
+  The counterfactual tests landed 2026-10-20 (`abaf908ca`, attempt 1's
+  commit; hardened by `d9027c556` with the seven fixes of review round
+  `20261019-040000`): the verify proves that a test a commit adds or
+  changes fails without it, by putting its whole `#[cfg(test)]` module
+  (or the whole file, for `test_globs` and test module files such as
+  `tests/**/*.rs` and `**/tests/**`) on the run's base in the worker's
+  folder, building there and running each test by its module-qualified
+  name, then running it on the commit itself, where it must pass, named;
+  a run that names nothing, a test outside a `#[cfg(test)]` module the
+  check can take whole (a `#[path]` test module file), a file with two
+  same-named `#[cfg(test)]` modules and a macro-generated test are
+  `unavailable`, never a pass; `--new-api` accepts only a base that does
+  not build. The worktree is locked by a recovery record in its git
+  directory and put back after a kill by the next check.
+  Still open: the check is opt-in and this repository's
+  `.herdr/checks.toml` deliberately has no `[counterfactual]` table yet —
+  enable it only after the check has been exercised on a real run here
+  (and check that the module name it derives for a `#[path]` test module
+  file is exercised then). Later, by measurement: mutation testing of
+  changed lines only.
+  Moved to "Needs a decision" by the coordinator 2026-10-23: the item's
+  open step contradicts itself. The verify reads `[counterfactual]` at the
+  commit's base, and `herdr worker verify` has no flag to run the check ad
+  hoc, so no real run here can exercise it before the table is on master.
+  Proposed t-rnazlej4 (a retried pass counts as passing) is a known gap in
+  the same check.
+  Question: how should the counterfactual check be enabled in this repository?
+  Options: fix t-rnazlej4 first, then a worker commit adds the table and the next runs exercise it (Recommended) | enable the table now and revert it if it blocks runs | keep it opt-in and drop the open step
+  Checked: `.herdr/checks.toml` (commented-out table), cli-reference.mdx "The table is read at the commit's base", `herdr worker verify --help` (no counterfactual flag).
+  Decided by the user 2026-10-23: fix t-rnazlej4 first, then a worker
+  commit adds the `[counterfactual]` table and the next runs exercise it.
+
 - [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
   2026-10-09): a second worker kind with its own stream parser, tool policy
   and sandbox equivalent and broker support, so a run can go to pi/sol while
@@ -3905,192 +3962,10 @@ Items agents add. Not approved until the user moves them up.
   three tests and the hook's report loss, and keep a stress run of each in
   `just check` only if it is deterministic.
 
-- [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
-  (review round 20261023-091914-a008, MiMo): the check judges a test by its
-  last result per binary, so a test that passes only on a retry counts as
-  passing on the commit even under a profile that fails flaky tests, and the
-  run's non-zero exit is ignored once a line names the test. Either treat a
-  retried pass as unproven or read the exit code when the profile fails
-  flaky tests. Small, tests only in `src/workers/verify/counterfactual.rs`.
-
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
-
-- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
-  baby-sitting the models through rules in AGENTS.md etc.; where are the
-  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
-  the coordinator, holding push and install rights, is the riskiest actor;
-  a boundary is hard only if the actor cannot remove it (a hook in `.git`
-  is not; a GitHub ruleset or a credential the agent lacks is). Their
-  five, in order: protect the fork's history (a ruleset against
-  force-push and deletion, which conflicts with the rebase-and-force-push
-  fork sync unless agents get a separate credential without bypass);
-  remove upstream write paths; install only through `just clean-install`
-  (a PreToolUse deny for anything else); restrict the coordinator's writes
-  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
-  commit messages (no co-author lines) and `unwrap()` in production code.
-  Guidance stays guidance for consult rounds, language and "do not touch
-  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
-  now; done the same day by the coordinator in this checkout's
-  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
-  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
-  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
-  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
-  open issues upstream, and PATH wrappers are bypassable), the fork
-  ruleset, the install and push allowlist for the coordinator, its write
-  scope, and the CI checks.
-  Promoted 2026-10-10 (the user: "choose with the models"; round
-  20261010-010542-7df5): the coordinator's write scope and install/push only
-  through allowed commands go into the allowlist slice of `t-s3oaxcki`;
-  GitHub branch protection and CI stay here as their own slice.
-  Moved to "Needs a decision" 2026-10-10 by the coordinator: the coordinator's
-  write scope and install/push paths are done in the allowlist (e08a6305).
-  Left: GitHub protection of the fork and CI. CI alone is not a hard boundary
-  (an agent can still push without it); it becomes one only with a ruleset that
-  requires its checks, and a ruleset against force-push conflicts with the
-  fork sync, which rebases onto upstream and force-pushes `master`.
-  Question: protect the fork's master on GitHub, and how does the fork sync push then?
-  Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
-  Decided 2026-10-10 with the models (round 20261010-142705-3267, all
-  three): a GitHub ruleset on rofrol/roherdr `master` requiring CI and
-  blocking deletion, force-push allowed only to a separate credential the
-  agents do not hold (the fork-sync procedure uses it). Needs the user:
-  create that credential (a fine-grained token or a second account) and
-  approve the ruleset change on GitHub (outward-facing); CI checks to
-  require are listed by the worker that prepares it.
-  Asked 2026-10-12: the user creates the credential later; the item waits.
-  Asked again 2026-10-12 (d-vo6tzvkm): the user confirmed the ruleset
-  with a separate credential; still waits on the user creating it.
-  Asked again 2026-10-16 (d-laneqppe): the credential is not created yet; the item keeps waiting.
-
-- [ ] Deeper stateless review and a context pack for queue mode (from the [t-73ysybkj]
-  user's question 2026-10-12, "loss of memory between items and shallower
-  review: how do others counter it?"; round 20261012-155246-e730, see
-  [t-ic5rrxn3]). For `--draft` and `--auto-review`: a deterministic
-  context pack (the item, its linked decisions, its run history with
-  failure reasons, `git log` and ripgrep hits for the paths and symbols it
-  names); bounded read-only repository tools for the review call; a
-  checklist of about 20 lines distilled from caught bug classes, each with
-  its source; findings must cite file:line and how they were verified;
-  generated, schema and contract paths never cut by the 200 KB limit; a
-  golden set of the resident coordinator's past catches replayed blind
-  against the reviewer. Needs a decision before the queue-mode trial.
-  Decided by the user 2026-10-12 (d-elct27i5): yes, before the queue-mode
-  trial.
-  Note from [t-s6lkxb4v] slice 2 (2026-10-12): a credit run's review call
-  uses `[workers] anthropic_api_model` (or the run's pinned credit model);
-  all three models in round 20261012-155246-e730 want an Opus-class model
-  for the review, so this item sets the review's model separately.
-  Round 20261012-183707-2629 on arXiv 2610.07782 (sol, MiMo, DeepSeek
-  agreeing; decided by the coordinator for the later slices): the paper's
-  null (recalled traces did not help) transfers only partly, since our
-  items are sequential in one codebase; recall helps for what the code
-  does not show (why an approach was rejected, cross-item constraints,
-  obligations deferred to a later item), and is noise for code facts
-  that git log and ripgrep already give. Changes: (1) golden set without
-  leakage: the checklist is distilled from catches before a cut-off date
-  and frozen, the evaluation replays only catches after it, each from its
-  pre-fix snapshot; (2) the A/B runs each arm in its own worktree from the
-  same base, records every call (failures and retries too) for both arms
-  the same way, predeclares the primary metric and a tolerated regression
-  for severe misses, and ablates the context pack and the checklist
-  separately; a non-significant difference is not equivalence; (3) each
-  finding is tagged by origin (checklist line or free) to see checklist
-  anchoring; (4) a finding's file:line is checked mechanically against the
-  diff and the repository, not only required; (5) the decision rationale
-  is written into the run history when the decision is made.
-  Slice 1 landed (2026-10-12, run r-onxx7w3b): the context pack
-  (`src/workers/runs/context_pack.rs`, about 40 KB, records its cuts),
-  never-cut generated and contract paths with an escalated approve of a
-  cut diff, `.herdr/review-checklist.md` (8 sourced lines, a test checks
-  the sources), findings must carry file, line and `verified_by`,
-  `[review] model`. Next: slice 2 (read-only repository tools for the
-  review, a mechanical check of each cited file:line, findings tagged by
-  origin), then slice 3 (the golden set with a dated cut-off).
-  Slice 2 landed (2026-10-12, run r-fgkhfqpt, second attempt: the first
-  ended its turn while reading code, with no commit): bounded read-only
-  review tools (`src/workers/runs/review_tools.rs`: read_file, grep,
-  git_log on the commit's git objects, 12 calls and 120 KB per review),
-  a tool loop on the credit path (`tool_choice` admitted narrowly by the
-  proxy), the `claude -p` path stays without tools and records it, a
-  mechanical file:line check with `in_diff`, findings tagged `checklist`
-  or `free` with per-review counts. Next: slice 3, the golden set with a
-  dated cut-off (round 20261012-183707-2629 in this item).
-  In flight 2026-10-16: slice 3 run r-7zvq2hh2 (golden set, cut-off,
-  `herdr todo review-eval` with a fake reviewer in tests; no real model run).
-  Paused 2026-10-16 by the user (coordination stopped, lease released):
-  run r-7zvq2hh2 is left running unowned; the next `/todo` attaches with
-  `herdr todo status r-7zvq2hh2` and `herdr todo wait r-7zvq2hh2`, then
-  reviews its diff (`herdr todo review r-7zvq2hh2 --diff`). Its task:
-  build the golden set from the coordinator dumps of r-6s6uppz2,
-  r-qbxvgpgv, r-23475ciu and r-hfp2mqpx; no real model run without the user.
-  Slice 3 landed 2026-10-16 (run r-7zvq2hh2): the checklist names its
-  cut-off (`# Cut-off: 2026-10-12T18:46:06+02:00`), `.herdr/review-golden/`
-  holds 5 post-cut-off cases (r-6s6uppz2 a1, a2; r-hfp2mqpx a1, a2;
-  r-qbxvgpgv a1; r-23475ciu skipped as a process remark, see its README),
-  and `herdr todo review-eval` (`src/workers/runs/review_eval.rs`) replays
-  them blind through the review's own input (`assemble_input`) and call
-  path, scores by file and a 15-line window, runs the ablation arms and
-  reports severe regressions; tests use a fake reviewer only. Not yet run
-  against a real model: the first real run spends credits and waits for
-  the user. Its `--credits` path books to a synthetic run id and falls
-  back to `claude -p` when the proxy refuses it.
-  Slices 1-3 landed (context pack, review tools, the golden set with a dated
-  cut-off and `herdr todo review-eval`); the only work left is the first real
-  model run, which spends plan usage or credits, and its item is now a gate in
-  the driver-retirement record (t-54d2offk: the review the supervisor's
-  approval rests on).
-  Question: who runs `herdr todo review-eval` against a real model, and on which budget?
-  Options: leave it unrun until the supervisor's review step needs it (Recommended) | run it now on the ChatGPT plan model | run it now on the Anthropic credit path (`--credits`)
-  Checked: slice 3's close, `docs/next` and `herdr todo review-eval --help`; no real run has been made (its tests use a fake reviewer).
-
-- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
-  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
-  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
-  strong; ours is weak, so move acceptance onto checks, keep the model
-  review for intent and API shape). Decided by the user 2026-10-12
-  (d-64mjmvju): yes, queue it.
-  The tamper guard landed 2026-10-18 (run r-atcxbo5o, attempt 2): the
-  verify reports a commit's guarded paths (herdr's `.herdr/checks.toml`,
-  `.herdr/review-checklist.md` and `.herdr/review-golden/**`, plus the
-  repository's own `[review] guarded_paths` read at the base, a union) as
-  an optional field and a `guarded` check without changing the verdict; a
-  discovery that cannot be read is an `unavailable` check and refuses the
-  approval; `herdr todo resume --action approve` refuses such a commit
-  unless it passes `--accept-guarded-paths`, which the run records, and
-  the automatic review and queue mode escalate to a `review` event with
-  the paths instead of approving.
-  The counterfactual tests landed 2026-10-20 (`abaf908ca`, attempt 1's
-  commit; hardened by `d9027c556` with the seven fixes of review round
-  `20261019-040000`): the verify proves that a test a commit adds or
-  changes fails without it, by putting its whole `#[cfg(test)]` module
-  (or the whole file, for `test_globs` and test module files such as
-  `tests/**/*.rs` and `**/tests/**`) on the run's base in the worker's
-  folder, building there and running each test by its module-qualified
-  name, then running it on the commit itself, where it must pass, named;
-  a run that names nothing, a test outside a `#[cfg(test)]` module the
-  check can take whole (a `#[path]` test module file), a file with two
-  same-named `#[cfg(test)]` modules and a macro-generated test are
-  `unavailable`, never a pass; `--new-api` accepts only a base that does
-  not build. The worktree is locked by a recovery record in its git
-  directory and put back after a kill by the next check.
-  Still open: the check is opt-in and this repository's
-  `.herdr/checks.toml` deliberately has no `[counterfactual]` table yet —
-  enable it only after the check has been exercised on a real run here
-  (and check that the module name it derives for a `#[path]` test module
-  file is exercised then). Later, by measurement: mutation testing of
-  changed lines only.
-  Moved to "Needs a decision" by the coordinator 2026-10-23: the item's
-  open step contradicts itself. The verify reads `[counterfactual]` at the
-  commit's base, and `herdr worker verify` has no flag to run the check ad
-  hoc, so no real run here can exercise it before the table is on master.
-  Proposed t-rnazlej4 (a retried pass counts as passing) is a known gap in
-  the same check.
-  Question: how should the counterfactual check be enabled in this repository?
-  Options: fix t-rnazlej4 first, then a worker commit adds the table and the next runs exercise it (Recommended) | enable the table now and revert it if it blocks runs | keep it opt-in and drop the open step
-  Checked: `.herdr/checks.toml` (commented-out table), cli-reference.mdx "The table is read at the commit's base", `herdr worker verify --help` (no counterfactual flag).
 
 ### Decide
 

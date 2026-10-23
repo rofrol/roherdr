@@ -2419,3 +2419,24 @@ after rounds `20261018-172917-f040`, `20261018-200429-e576` and
   keeps needing code changes is retired or redesigned by the owner; and the
   coordinator turns a `predicate_review_due` finding into an item with its
   fixtures, never into an LLM judgment on a finding.
+
+## No GitHub protection of the fork; the local allowlist and verify are the boundary (t-6mbbnkor, 2026-10-23)
+
+- The user decided 2026-10-23, asked again by the coordinator: nothing on
+  GitHub; the local allowlist and verify are enough. This replaces the
+  earlier choice of a ruleset with a separate credential (2026-10-10,
+  2026-10-12), which waited on that credential since. Done before: the
+  upstream push URL is disabled and `gh` defaults to the fork; the
+  coordinator's write scope and install/push paths are in the allowlist
+  (e08a6305).
+- Not done, by this decision: a ruleset on the fork's `master`, required
+  CI checks, a `gh` wrapper for other repositories.
+
+## The review golden set waits for the supervisor before a real-model run (t-73ysybkj, 2026-10-23)
+
+- Slices 1-3 landed: the deterministic context pack, bounded read-only
+  review tools with a mechanical file:line check, the golden set with a
+  dated cut-off and `herdr todo review-eval` (tests use a fake reviewer).
+- The user decided 2026-10-23: the first real-model run of
+  `herdr todo review-eval` stays unrun until the supervisor's review step
+  needs it; it is a gate in the driver-retirement record (t-54d2offk).
