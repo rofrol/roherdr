@@ -58,6 +58,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   recommended it). Noted, not taken now: thresholds against the
   remaining allowance per remaining day instead of the even share
   (MiMo, DeepSeek, Argon).
+  In flight 2026-10-23: run `r-ulhwynwg` (continues r-6ymh3gib).
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
