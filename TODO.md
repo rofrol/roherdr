@@ -84,6 +84,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the focused job's too; the parent line gets no marker; a click on the
   parent opens the parent (no reopening of its last job).
 
+- [ ] A click on a running todo run's line always shows something (the [t-vehovtsh]
+  user, 2026-10-23, a screenshot of `run r-gj3emu6x · attention`: "why
+  does nothing show when I click it, no output in any window? ask the
+  models"). Checked: `open_run_log` in `src/client/shell/todo_runs.rs`
+  opens the run details only for a `waiting` run and the step log only
+  when `has_log`; a run in `attention` (its worker working) has no step
+  log, so the click returns without any feedback, although the worker's
+  log exists (`herdr worker log <id>`).
+
 - [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
   2026-10-23: "when I hover the mouse over a space's name, the whole name
   should show too, as it does for a tab's name; ask the models"). Checked:
