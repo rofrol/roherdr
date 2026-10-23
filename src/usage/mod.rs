@@ -19,6 +19,7 @@ mod kimi;
 mod openai_api;
 mod openrouter;
 mod prices;
+mod samples;
 
 pub(crate) use keys::DEFAULT_AUTH_FILE;
 
@@ -442,6 +443,9 @@ fn record_fetched(
             usage.status = ProviderUsageStatus::Ok;
             usage.observed_at = Some(now);
             cache.record_success(&usage);
+            if provider == Provider::Claude {
+                samples::SampleLog::record(&usage, now);
+            }
             Ok(usage)
         }
         Err(FetchError::RateLimited) => {
@@ -513,11 +517,29 @@ fn publish(
     config: &UsageConfig,
     last: &BTreeMap<Provider, ProviderUsage>,
 ) -> bool {
+    let mut providers = last.values().cloned().collect::<Vec<_>>();
+    attach_daily_use(&mut providers, now_unix());
     let report = UsageReport {
         enabled: config.enabled,
-        providers: last.values().cloned().collect(),
+        providers,
     };
     events.blocking_send(AppEvent::UsageUpdated(report)).is_ok()
+}
+
+/// Claude's weekly use per local weekday, built from the recorded samples at `now`.
+fn attach_daily_use(providers: &mut [ProviderUsage], now: u64) {
+    let Some(claude) = providers
+        .iter_mut()
+        .find(|usage| usage.provider == Provider::Claude.id())
+    else {
+        return;
+    };
+    let log = samples::SampleLog::load();
+    claude.daily_use = samples::RECORDED_WINDOWS.into_iter().find_map(|window| {
+        samples::daily_use(log.samples(), Provider::Claude.id(), window, now, |at| {
+            crate::platform::local_utc_offset_at(at).unwrap_or(0)
+        })
+    });
 }
 
 /// Keep the last good allowance when a refresh fails so the footer does not blank out.

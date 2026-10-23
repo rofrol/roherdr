@@ -698,6 +698,7 @@ mod limit_tests {
                 spend: Vec::new(),
                 completion_tokens: None,
                 setup: None,
+                daily_use: None,
             }],
         }
     }

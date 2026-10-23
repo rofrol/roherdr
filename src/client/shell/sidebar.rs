@@ -1362,6 +1362,7 @@ pub(crate) fn render_sidebar(
             usage_area,
             report,
             crate::usage::now_unix(),
+            state.usage_daily_use_labels,
             palette,
             hits,
         );

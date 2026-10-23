@@ -145,6 +145,10 @@ pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     None
 }
 
+pub(crate) fn local_utc_offset_at(_timestamp: i64) -> Option<i64> {
+    None
+}
+
 pub(crate) fn status_commands_supported() -> bool {
     false
 }

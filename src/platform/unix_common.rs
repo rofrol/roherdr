@@ -705,6 +705,17 @@ pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     datetime_from_tm(&local)
 }
 
+/// Seconds east of UTC of the local zone at `timestamp`, under that date's
+/// own daylight saving rules.
+pub(crate) fn local_utc_offset_at(timestamp: i64) -> Option<i64> {
+    let at = timestamp as libc::time_t;
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&at, &mut local) }.is_null() {
+        return None;
+    }
+    Some(datetime_from_tm(&local)?.assume_utc().unix_timestamp() - timestamp)
+}
+
 pub(crate) fn status_commands_supported() -> bool {
     true
 }

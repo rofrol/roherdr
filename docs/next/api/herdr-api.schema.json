@@ -16544,6 +16544,17 @@
               ],
               "description": "Text-completion tokens over the same period as `spend`."
             },
+            "daily_use": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageDailyUse"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How much of the current weekly window was used on each weekday,\nfrom samples the server recorded. Absent when the server has no\nsample of the current window, or is older."
+            },
             "error_kind": {
               "anyOf": [
                 {
@@ -21890,6 +21901,85 @@
             "output",
             "requests",
             "since"
+          ],
+          "type": "object"
+        },
+        "UsageDailyUse": {
+          "description": "A window's use per weekday, Monday first. Each position covers the\nwindow's part of that calendar day in the server's local time; the\nreset's weekday, unless the reset falls at local midnight, holds both the\nwindow's first and its last hours.",
+          "properties": {
+            "current_day": {
+              "description": "Position of the weekday holding the server's time, which is still filling.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "day_starts": {
+              "description": "Unix seconds of each position's local midnight, Monday first: the\nday of the window on that weekday, the earlier one for the reset's.",
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "days": {
+              "description": "Percentage points used on each weekday, Monday through Sunday;\n`null` where samples are missing or the day has not come yet, which\nis unknown and never 0. Use is counted from the day before's last\nsample, or from 0% at the window's start.",
+              "items": {
+                "format": "int16",
+                "maximum": 32767,
+                "minimum": -32768,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
+            "pace_percent": {
+              "description": "The latest utilization less an even pace through the window\n(`100 × elapsed / 7 days`), in signed whole percent.",
+              "format": "int32",
+              "type": "integer"
+            },
+            "partial_from": {
+              "description": "Per position, Monday first: Unix seconds of the day's first sample\nwhere the day before has no sample, so `days` holds only the growth\nfrom that sample and the use during the gap is in no day; `null`\nwhere the day's use is complete. Empty from older servers.",
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
+            "resets_at": {
+              "description": "Unix seconds when the window resets.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "starts_at": {
+              "description": "Unix seconds where the window starts: `resets_at` less seven days.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "window": {
+              "description": "Id of the window the days divide, such as `weekly`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "window",
+            "starts_at",
+            "resets_at",
+            "days",
+            "day_starts",
+            "pace_percent"
           ],
           "type": "object"
         },

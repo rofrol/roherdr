@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    ProviderUsage, ProviderUsageStatus, UsageAccount, UsageErrorKind, UsageFreshness, UsageReport,
-    UsageResetCredit, UsageWindow,
+    ProviderUsage, ProviderUsageStatus, UsageAccount, UsageDailyUse, UsageErrorKind,
+    UsageFreshness, UsageReport, UsageResetCredit, UsageWindow,
 };
 
 use super::render::{display_width, put_segment, put_text};
@@ -31,6 +31,22 @@ pub(super) struct ClientUsageState {
     in_flight_since: Option<Instant>,
     next_poll: Option<Instant>,
     unsupported_boot: Option<String>,
+    /// Each provider's daily use labels, read in the local zone when the
+    /// report arrived; render does not read the clock's zone itself.
+    pub(super) daily_use_labels: DailyUseLabelsByProvider,
+}
+
+/// Provider id and the labels of its daily use positions.
+pub(super) type DailyUseLabelsByProvider = Vec<(String, DailyUseLabels)>;
+
+/// Local-time text for each daily use position, Monday first.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct DailyUseLabels {
+    /// The weekday initial of each position.
+    pub(super) initials: Vec<char>,
+    /// `partial: no sample before 09:15` where the day's use is only its
+    /// own growth after a day without samples.
+    pub(super) partial: Vec<Option<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -115,6 +131,7 @@ impl ClientShellState {
         }
         let changed = self.usage.report != report
             || self.usage.report_endpoint.as_ref() != Some(&endpoint_id);
+        self.usage.daily_use_labels = daily_use_labels(report.as_ref(), local_offset_at);
         self.usage.report = report;
         self.usage.report_endpoint = Some(endpoint_id);
         (changed, Vec::new())
@@ -148,6 +165,63 @@ impl ClientShellState {
 
 pub(super) fn local_utc_offset_secs() -> i64 {
     crate::usage::local_utc_offset_secs()
+}
+
+/// The local zone's offset at `at`, under that date's daylight saving rules;
+/// the current offset where the platform cannot say.
+fn local_offset_at(at: i64) -> i64 {
+    crate::platform::local_utc_offset_at(at).unwrap_or_else(local_utc_offset_secs)
+}
+
+/// The weekday initial of each daily use position, from its day's start in
+/// the local offset of that date, and the local time a partial day's first
+/// sample was taken at.
+fn daily_use_labels(
+    report: Option<&UsageReport>,
+    local_offset_at: impl Fn(i64) -> i64,
+) -> DailyUseLabelsByProvider {
+    let local = |at: u64| {
+        let at = i64::try_from(at).unwrap_or(i64::MAX);
+        at.saturating_add(local_offset_at(at))
+    };
+    report
+        .into_iter()
+        .flat_map(|report| &report.providers)
+        .filter_map(|provider| {
+            let daily_use = provider.daily_use.as_ref()?;
+            let initials = daily_use
+                .day_starts
+                .iter()
+                .map(|&start| weekday_initial(local(start)))
+                .collect();
+            let partial = daily_use
+                .partial_from
+                .iter()
+                .map(|from| {
+                    from.and_then(|from| local_hour_minute(local(from)))
+                        .map(|time| format!("partial: no sample before {time}"))
+                })
+                .collect();
+            Some((
+                provider.provider.clone(),
+                DailyUseLabels { initials, partial },
+            ))
+        })
+        .collect()
+}
+
+/// `09:15` for local seconds since the epoch.
+fn local_hour_minute(local: i64) -> Option<String> {
+    let local = time::OffsetDateTime::from_unix_timestamp(local).ok()?;
+    Some(format!("{:02}:{:02}", local.hour(), local.minute()))
+}
+
+/// `M`, `T`, `W`, … for local seconds since the epoch.
+fn weekday_initial(local: i64) -> char {
+    time::OffsetDateTime::from_unix_timestamp(local)
+        .ok()
+        .and_then(|local| local.weekday().to_string().chars().next())
+        .unwrap_or('?')
 }
 
 /// `Wed 15:29` in the captured local offset.
@@ -272,12 +346,20 @@ pub(super) fn split_spaces_and_footer(
     (spaces, footer)
 }
 
-/// Separator row plus one row per provider.
+/// Separator row plus one row per provider, and two more under a provider
+/// with daily use.
 fn footer_height(report: &UsageReport) -> u16 {
-    u16::try_from(report.providers.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(1)
+    report
+        .providers
+        .iter()
+        .map(|provider| 1 + DAILY_USE_ROWS * u16::from(provider.daily_use.is_some()))
+        .fold(1, u16::saturating_add)
 }
+
+/// The bars and the weekday initials under a provider's row.
+const DAILY_USE_ROWS: u16 = 2;
+/// Bar heights from the lowest to the largest bucket of the window.
+const DAILY_USE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Column of the two-letter provider code, and of the short and weekly window cells.
 const CODE_COLUMN: u16 = 1;
@@ -289,6 +371,7 @@ pub(super) fn render_usage_footer(
     area: Rect,
     report: &UsageReport,
     now_unix: u64,
+    daily_use_labels: &[(String, DailyUseLabels)],
     palette: &Palette,
     hits: &mut ShellHitMap,
 ) {
@@ -306,7 +389,11 @@ pub(super) fn render_usage_footer(
     let content_width = area.width.saturating_sub(SIDEBAR_TOGGLE_RESERVE);
     hits.usage_footer = Rect::new(area.x, area.y, content_width, area.height);
 
-    for (row, provider) in (area.y + 1..area.bottom()).zip(&report.providers) {
+    let mut row = area.y + 1;
+    for provider in &report.providers {
+        if row >= area.bottom() {
+            break;
+        }
         render_provider_row(
             buffer,
             Rect::new(area.x, row, content_width, 1),
@@ -316,7 +403,129 @@ pub(super) fn render_usage_footer(
         );
         hits.tooltips
             .push(provider_code_tooltip(area.x, row, provider));
+        row += 1;
+        if let Some(daily_use) = &provider.daily_use {
+            if row.saturating_add(DAILY_USE_ROWS) <= area.bottom() {
+                let labels = daily_use_labels
+                    .iter()
+                    .find(|(id, _)| *id == provider.provider)
+                    .map(|(_, labels)| labels);
+                render_daily_use(
+                    buffer,
+                    Rect::new(area.x, row, content_width, DAILY_USE_ROWS),
+                    &provider.provider,
+                    daily_use,
+                    labels,
+                    palette,
+                    hits,
+                );
+            }
+            row = row.saturating_add(DAILY_USE_ROWS);
+        }
     }
+}
+
+/// One bar per weekday under the provider's windows, Monday first, today
+/// highlighted, an unknown day `·` and a partial day dim with a tooltip
+/// saying so, then the use against an even pace; under them each day's
+/// weekday initial.
+#[allow(clippy::too_many_arguments)] // The footer's render inputs, passed through.
+fn render_daily_use(
+    buffer: &mut Buffer,
+    area: Rect,
+    provider_id: &str,
+    daily_use: &UsageDailyUse,
+    labels: Option<&DailyUseLabels>,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
+    let largest = daily_use
+        .days
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let mut x = area.x.saturating_add(SHORT_WINDOW_COLUMN);
+    for (index, day) in daily_use.days.iter().enumerate() {
+        let current = daily_use.current_day.map(usize::from) == Some(index);
+        let partial = labels
+            .and_then(|labels| labels.partial.get(index))
+            .and_then(Option::as_ref)
+            .filter(|_| day.is_some());
+        let (glyph, color) = match day {
+            Some(used) if partial.is_some() => (daily_use_bar(*used, largest), palette.overlay0),
+            Some(used) => (daily_use_bar(*used, largest), palette.overlay1),
+            None => ('·', palette.overlay0),
+        };
+        let mut style = if current {
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        if let Some(text) = partial {
+            style = style.add_modifier(Modifier::DIM);
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(x, area.y, 1, 1),
+                id: format!("usage:{provider_id}:day:{index}"),
+                text: text.clone(),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        let mut glyph_buffer = [0; 4];
+        put_segment(
+            buffer,
+            x,
+            area.y,
+            area.right(),
+            glyph.encode_utf8(&mut glyph_buffer),
+            style,
+        );
+        let initial = labels
+            .and_then(|labels| labels.initials.get(index))
+            .copied()
+            .unwrap_or('?');
+        put_segment(
+            buffer,
+            x,
+            area.y.saturating_add(1),
+            area.right(),
+            initial.encode_utf8(&mut glyph_buffer),
+            if current {
+                style
+            } else {
+                Style::default().fg(palette.overlay0)
+            },
+        );
+        x = x.saturating_add(1);
+    }
+    put_segment(
+        buffer,
+        x.saturating_add(1),
+        area.y,
+        area.right(),
+        &format!("{:+}% vs pace", daily_use.pace_percent),
+        Style::default().fg(if daily_use.pace_percent > 0 {
+            palette.yellow
+        } else {
+            palette.overlay0
+        }),
+    );
+}
+
+/// The bar for `used` points against the window's largest day; no use,
+/// or a drop, is the lowest bar.
+fn daily_use_bar(used: i16, largest: i16) -> char {
+    if used <= 0 || largest <= 0 {
+        return DAILY_USE_BARS[0];
+    }
+    let steps = DAILY_USE_BARS.len() as i32;
+    let level = (i32::from(used) * steps + i32::from(largest) - 1) / i32::from(largest);
+    DAILY_USE_BARS[usize::try_from(level.clamp(1, steps) - 1).unwrap_or(0)]
 }
 
 /// Hovering a row's code (and its `!` mark) names the vendor: `AN Anthropic`.
@@ -866,6 +1075,7 @@ mod tests {
             area,
             report,
             1_000,
+            &[],
             &Palette::catppuccin(),
             &mut hits,
         );
@@ -955,6 +1165,193 @@ mod tests {
         assert_eq!(footer_text(&report, 26)[1], " AN $76.92/$200 +$9.87");
     }
 
+    /// 2026-10-19 00:00 UTC, a Monday.
+    const MONDAY: u64 = 1_792_368_000;
+
+    fn daily_use(days: Vec<Option<i16>>, current_day: Option<u8>, pace: i32) -> UsageDailyUse {
+        UsageDailyUse {
+            window: "weekly".into(),
+            starts_at: MONDAY,
+            resets_at: MONDAY + 7 * 86_400,
+            days,
+            day_starts: (0..7).map(|day| MONDAY + day * 86_400).collect(),
+            current_day,
+            pace_percent: pace,
+            partial_from: Vec::new(),
+        }
+    }
+
+    fn render_with_offset(
+        report: &UsageReport,
+        width: u16,
+        local_offset_at: impl Fn(i64) -> i64,
+    ) -> Buffer {
+        let area = Rect::new(0, 0, width, footer_height(report));
+        let mut buffer = Buffer::empty(area);
+        render_usage_footer(
+            &mut buffer,
+            area,
+            report,
+            1_000,
+            &daily_use_labels(Some(report), local_offset_at),
+            &Palette::catppuccin(),
+            &mut ShellHitMap::default(),
+        );
+        buffer
+    }
+
+    fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+        let area = buffer.area;
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn footer_shows_daily_use_bars_and_weekdays_under_the_an_row() {
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(daily_use(
+            vec![None, Some(8), Some(2), Some(0), None, Some(4), Some(1)],
+            Some(6),
+            4,
+        ));
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude, windowed("codex", "Codex", 87, 100)],
+        };
+        assert_eq!(footer_height(&report), 5);
+
+        let buffer = render_with_offset(&report, 26, |_| 0);
+        assert_eq!(
+            buffer_rows(&buffer),
+            vec![
+                "─".repeat(26),
+                " AN   2% 47m   12% 6d".to_owned(),
+                "    ·█▂▁·▄▁ +4% vs pace".to_owned(),
+                "    MTWTFSS".to_owned(),
+                " OA  87% 47m  100% 6d".to_owned(),
+            ]
+        );
+        let palette = Palette::catppuccin();
+        // Today, Sunday, is highlighted in both rows.
+        assert_eq!(buffer[(10, 2)].fg, palette.accent);
+        assert_eq!(buffer[(10, 3)].fg, palette.accent);
+        assert_eq!(buffer[(9, 2)].fg, palette.overlay1);
+        // An unknown day is dim, never a bar.
+        assert_eq!(buffer[(4, 2)].fg, palette.overlay0);
+    }
+
+    #[test]
+    fn daily_use_weekdays_follow_the_local_offset_and_pace_can_be_behind() {
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(daily_use(vec![Some(3); 7], None, -3));
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        // An hour west of UTC, the Monday 00:00 UTC day starts on Sunday evening.
+        let rows = buffer_rows(&render_with_offset(&report, 26, |_| -3_600));
+        assert_eq!(rows[2], "    ███████ -3% vs pace");
+        assert_eq!(rows[3], "    SMTWTFS");
+    }
+
+    #[test]
+    fn daily_use_weekdays_read_each_dates_own_offset_across_a_dst_change() {
+        // Central Europe: CEST (+2) until 2026-10-25 01:00 UTC, then CET (+1);
+        // the days start at that week's local midnights.
+        let cet = |at: i64| if at < 1_792_890_000 { 7_200 } else { 3_600 };
+        let mut week = daily_use(vec![Some(1); 7], Some(6), 0);
+        week.day_starts = (0..7).map(|day| MONDAY - 7_200 + day * 86_400).collect();
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(week);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        assert_eq!(
+            daily_use_labels(Some(&report), cet),
+            vec![(
+                "claude".to_owned(),
+                DailyUseLabels {
+                    initials: "MTWTFSS".chars().collect(),
+                    partial: Vec::new(),
+                }
+            )]
+        );
+        // Sunday evening's offset alone would put every midnight on the day before.
+        assert_eq!(
+            daily_use_labels(Some(&report), |_| 3_600)[0].1.initials,
+            "SMTWTFS".chars().collect::<Vec<_>>()
+        );
+        assert!(daily_use_labels(None, cet).is_empty());
+    }
+
+    #[test]
+    fn a_partial_day_is_dim_and_its_tooltip_names_its_first_sample() {
+        let mut week = daily_use(
+            vec![None, None, Some(3), Some(5), None, None, None],
+            Some(3),
+            0,
+        );
+        // Wednesday 09:15 UTC, after a sleep from the reset.
+        let wednesday_first = MONDAY + 2 * 86_400 + 9 * 3_600 + 15 * 60;
+        week.partial_from = vec![None, None, Some(wednesday_first), None, None, None, None];
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(week);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        // In local time, an hour east of UTC.
+        let labels = daily_use_labels(Some(&report), |_| 3_600);
+        assert_eq!(
+            labels[0].1.partial[2].as_deref(),
+            Some("partial: no sample before 10:15")
+        );
+        let area = Rect::new(0, 0, 26, footer_height(&report));
+        let mut buffer = Buffer::empty(area);
+        let mut hits = ShellHitMap::default();
+        let palette = Palette::catppuccin();
+        render_usage_footer(
+            &mut buffer,
+            area,
+            &report,
+            1_000,
+            &labels,
+            &palette,
+            &mut hits,
+        );
+        assert_eq!(buffer_rows(&buffer)[2], "    ··▅█··· +0% vs pace");
+        // Wednesday is dim; Thursday, today, counted from Wednesday, is not.
+        assert_eq!(buffer[(6, 2)].fg, palette.overlay0);
+        assert!(buffer[(6, 2)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(7, 2)].modifier.contains(Modifier::DIM));
+        let partial = hits
+            .tooltips
+            .iter()
+            .filter(|tooltip| tooltip.id.contains(":day:"))
+            .collect::<Vec<_>>();
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].rect, Rect::new(6, 2, 1, 1));
+        assert_eq!(partial[0].text, "partial: no sample before 10:15");
+    }
+
+    #[test]
+    fn daily_use_bars_scale_to_the_largest_day() {
+        assert_eq!(daily_use_bar(0, 0), '▁');
+        assert_eq!(daily_use_bar(-2, 5), '▁');
+        assert_eq!(daily_use_bar(1, 40), '▁');
+        assert_eq!(daily_use_bar(20, 40), '▄');
+        assert_eq!(daily_use_bar(39, 40), '█');
+        assert_eq!(daily_use_bar(40, 40), '█');
+    }
+
     #[test]
     fn footer_dims_stale_windows_and_hides_values_from_before_a_reset() {
         let mut claude = windowed("claude", "Claude", 30, 100);
@@ -979,6 +1376,7 @@ mod tests {
             area,
             &report,
             1_000,
+            &[],
             &Palette::catppuccin(),
             &mut ShellHitMap::default(),
         );
@@ -1052,6 +1450,7 @@ mod tests {
                 area,
                 &report,
                 1_000,
+                &[],
                 &Palette::catppuccin(),
                 &mut ShellHitMap::default(),
             );

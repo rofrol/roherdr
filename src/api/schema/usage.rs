@@ -98,6 +98,45 @@ pub struct ProviderUsage {
     /// line. Set together with `status: error`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
+    /// How much of the current weekly window was used on each weekday,
+    /// from samples the server recorded. Absent when the server has no
+    /// sample of the current window, or is older.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_use: Option<UsageDailyUse>,
+}
+
+/// A window's use per weekday, Monday first. Each position covers the
+/// window's part of that calendar day in the server's local time; the
+/// reset's weekday, unless the reset falls at local midnight, holds both the
+/// window's first and its last hours.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageDailyUse {
+    /// Id of the window the days divide, such as `weekly`.
+    pub window: String,
+    /// Unix seconds where the window starts: `resets_at` less seven days.
+    pub starts_at: u64,
+    /// Unix seconds when the window resets.
+    pub resets_at: u64,
+    /// Percentage points used on each weekday, Monday through Sunday;
+    /// `null` where samples are missing or the day has not come yet, which
+    /// is unknown and never 0. Use is counted from the day before's last
+    /// sample, or from 0% at the window's start.
+    pub days: Vec<Option<i16>>,
+    /// Per position, Monday first: Unix seconds of the day's first sample
+    /// where the day before has no sample, so `days` holds only the growth
+    /// from that sample and the use during the gap is in no day; `null`
+    /// where the day's use is complete. Empty from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partial_from: Vec<Option<u64>>,
+    /// Unix seconds of each position's local midnight, Monday first: the
+    /// day of the window on that weekday, the earlier one for the reset's.
+    pub day_starts: Vec<u64>,
+    /// Position of the weekday holding the server's time, which is still filling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_day: Option<u8>,
+    /// The latest utilization less an even pace through the window
+    /// (`100 × elapsed / 7 days`), in signed whole percent.
+    pub pace_percent: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -261,6 +300,7 @@ impl ProviderUsage {
             spend: Vec::new(),
             completion_tokens: None,
             setup: None,
+            daily_use: None,
         }
     }
 }

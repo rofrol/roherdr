@@ -287,6 +287,8 @@ pub(super) struct ShellRenderState<'a> {
     /// Why the pressed space cannot be dragged, once the pointer moved.
     pub(super) workspace_drag_refusal: Option<super::WorkspaceDragRefusal>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,
+    /// The usage footer's daily use weekday initials and partial-day notes per provider.
+    pub(super) usage_daily_use_labels: &'a [(String, super::usage::DailyUseLabels)],
     pub(super) space_sort: super::space_sort::SpaceSort,
     /// The notification history button's unread count, or none to hide it.
     pub(super) notification_log_button: Option<usize>,

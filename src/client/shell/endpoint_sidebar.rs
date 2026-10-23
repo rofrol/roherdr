@@ -752,6 +752,7 @@ pub(super) fn render_expanded(
             usage_area,
             report,
             crate::usage::now_unix(),
+            state.usage_daily_use_labels,
             palette,
             hits,
         );
