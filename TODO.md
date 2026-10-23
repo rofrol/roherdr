@@ -48,6 +48,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   choice (`todo queue on` has no agent option; its runs use
   `[workers] default_agent`), and the sidebar line for a stopped run.
   In flight: slice 3 (`todo queue on --agent/--model`), run `r-2v5o4s25`.
+  Slice 3 landed 2026-10-23 (run r-2v5o4s25): `herdr todo queue on --agent
+  <claude|pi|pi-anthropic> --model <provider/model>` is stored with the queue
+  (migration on `todo_queues`), shown in `todo queue status` and passed to
+  every run the queue starts and to its usage gate. Open: the sidebar line
+  for a stopped run (its stop reason shown where the run shows).
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
