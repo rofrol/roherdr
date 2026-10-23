@@ -60,6 +60,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-cnqqvt3r): next, before t-eu3egeam.
   In flight 2026-10-23: slice 1 (the transcript reading, the API field,
   `herdr agent context`, `ctx 420k` on the tab), run `r-ahz6pvgc`.
+  Slice 1 landed 2026-10-23 (run r-ahz6pvgc): the server reads each Claude
+  session's last-request input (input + cache creation + cache read) from
+  its transcript with a persisted cursor at server start, handoff, session
+  start, turn end and idle, unknown after `/clear`, a new session or a
+  rewritten transcript (the first read of a session seen mid-life reads the
+  last request from the file's end); optional `AgentInfo.context`; `herdr
+  agent context [--json]` with window and percent null and status unknown;
+  `ctx 420k` (rounded down) or `ctx ?`, dim, at the right of the
+  coordinator's tab line. Next, slice 2: the window from a named source and
+  the percentage, as round 20261023-144933-e938 decided.
 
 - [ ] A coordinator that continues its own chain closes a run without a [t-feyc35sb]
   stop the user must acknowledge (the user, 2026-10-23, a screenshot of
