@@ -56,6 +56,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a worktree); event 281697 offers only abort. The worker's commit
   f70dcd7aa stays on its branch; once the checkout is clean, a new run
   brings it in.
+  Run r-jqgfs3ej aborted after the checkout was cleaned; slices 1 and 2
+  run together as `r-dbsdbze2` (cherry-picks f70dcd7aa, then Monday first).
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
