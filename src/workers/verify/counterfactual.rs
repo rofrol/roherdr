@@ -139,7 +139,8 @@ pub(super) fn check(request: &Request<'_>, base: &str, head: &str, tree_clean: b
         Ok(root) => PathBuf::from(root.trim()),
         Err(Git::Unavailable(why) | Git::Failed(why)) => return Checked::unavailable(why),
     };
-    let mut worktree = match Worktree::take(dir, head) {
+    let written = plans.iter().map(|plan| plan.path.clone()).collect();
+    let mut worktree = match Worktree::take(dir, head, written) {
         Ok(worktree) => worktree,
         Err(why) => return Checked::unavailable(why),
     };
@@ -162,6 +163,12 @@ pub(super) fn check(request: &Request<'_>, base: &str, head: &str, tree_clean: b
 /// the `commits` check already reports.
 pub(super) fn not_checked(why: &str) -> Checked {
     Checked::not_applicable(why)
+}
+
+/// The check cannot run: a worktree a killed check left mutated could not be
+/// put back (`recover_leftover`), and no check may write it until it is.
+pub(super) fn not_recovered(why: &str) -> Checked {
+    Checked::unavailable(why)
 }
 
 /// Why the repository's configuration cannot be used.
@@ -565,6 +572,13 @@ struct Recovery {
     /// The branch the worktree was on, to return to; none when it was
     /// detached.
     branch: Option<String>,
+    /// The paths, from the repository's root, the check overlays on the
+    /// base. Recovery puts the worktree back only when every change in it is
+    /// at one of them: a change elsewhere is not the check's, and putting
+    /// the worktree back would lose it. A record without them (an older
+    /// build's) claims no path.
+    #[serde(default)]
+    written: Vec<String>,
 }
 
 /// The worktree the check writes to, put back at the head however the check
@@ -585,16 +599,8 @@ impl<'a> Worktree<'a> {
     /// Takes the worktree: its exclusive lock and the record that restores it
     /// after a kill. A record left by a check that died is used to put the
     /// worktree back here, before anything else, and is then replaced.
-    fn take(dir: &'a Path, head: &'a str) -> Result<Self, String> {
-        let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])
-            .map(|out| PathBuf::from(out.trim()))
-            .map_err(|error| {
-                format!(
-                    "cannot find the worktree's git directory: {}",
-                    error_text(error)
-                )
-            })?;
-        let record = git_dir.join(RECOVERY_FILE);
+    fn take(dir: &'a Path, head: &'a str, written: Vec<String>) -> Result<Self, String> {
+        let record = record_path(dir)?;
         // First the record a check that died left: what it puts back is what
         // the branch below is read from.
         recover(dir, &record)?;
@@ -608,6 +614,7 @@ impl<'a> Worktree<'a> {
             pid: std::process::id(),
             head: head.to_owned(),
             branch: branch.clone(),
+            written,
         };
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -687,6 +694,53 @@ fn put_back(dir: &Path, head: &str, branch: Option<&str>) -> Result<(), String> 
     Ok(())
 }
 
+/// The record's path: in the worktree's git directory, out of the working
+/// tree, where no checkout or clean of ours writes.
+fn record_path(dir: &Path) -> Result<PathBuf, String> {
+    let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])
+        .map(|out| PathBuf::from(out.trim()))
+        .map_err(|error| {
+            format!(
+                "cannot find the worktree's git directory: {}",
+                error_text(error)
+            )
+        })?;
+    Ok(git_dir.join(RECOVERY_FILE))
+}
+
+/// Puts back a worktree a killed check left mutated, from the record beside
+/// its git directory; no record is nothing to do. The verify calls it before
+/// it reads the worktree's `HEAD` or asks whether the tree is clean: a killed
+/// check left the worktree detached at the base with the commit's tests
+/// overlaid, and every finding made on that tree would be about the base.
+pub(super) fn recover_leftover(dir: &Path) -> Result<(), String> {
+    recover(dir, &record_path(dir)?)
+}
+
+/// The paths, from the repository's root, of every change git reports in the
+/// worktree, untracked files included and ignored ones not.
+fn changed_paths(dir: &Path) -> Result<Vec<String>, String> {
+    let out = git(
+        dir,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+    )
+    .map_err(|error| format!("cannot read the worktree's status: {}", error_text(error)))?;
+    // Each entry is `XY path`; porcelain paths are from the repository's
+    // root, whatever directory git runs in.
+    Ok(out
+        .split('\0')
+        .filter_map(|entry| entry.get(3..))
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Restores the worktree a record says a check was writing when it died, and
 /// removes the record. No record is nothing to do; a record whose process is
 /// still alive is another check's lock, refused; a record that cannot be read
@@ -721,11 +775,31 @@ fn recover(dir: &Path, record: &Path) -> Result<(), String> {
             record.display()
         ));
     }
+    // Putting the worktree back cleans and checks out by force: a change the
+    // check did not write (an edit made after it died) would be lost.
+    let foreign: Vec<String> = changed_paths(dir)?
+        .into_iter()
+        .filter(|path| !entry.written.contains(path))
+        .collect();
+    if !foreign.is_empty() {
+        return Err(format!(
+            "a counterfactual check (pid {}) left the worktree mutated, but it also has changes \
+             the check did not write ({}), which putting it back at {} would lose; move them \
+             away and run the verify again, or put the worktree back yourself and remove {}",
+            entry.pid,
+            foreign.join(", "),
+            entry.head,
+            record.display()
+        ));
+    }
     put_back(dir, &entry.head, entry.branch.as_deref()).map_err(|why| {
         format!(
             "a counterfactual check (pid {}) left {} writing the worktree, and putting it back \
-             at {} failed: {why}",
-            entry.pid, RECOVERY_FILE, entry.head
+             at {} failed: {why}; put the worktree back yourself and remove {}",
+            entry.pid,
+            RECOVERY_FILE,
+            entry.head,
+            record.display()
         )
     })?;
     std::fs::remove_file(record).map_err(|error| {
@@ -867,7 +941,10 @@ fn test_argv(config: &Config, test: &str) -> Vec<String> {
 /// Puts the worktree back at the commit and runs there every test that failed
 /// on the base: each must pass there, named as passing, or its failure on the
 /// base proves nothing. A test that did not fail on the base is not asked:
-/// its base result already decides the check.
+/// its base result already decides the check — except under `--new-api`, where
+/// a base that does not build proves nothing, so each of its tests is asked of
+/// the commit itself: `--new-api` may accept a base that cannot compile the
+/// commit's tests, never a test that does not pass on the commit.
 fn confirm_on_head(
     request: &Request<'_>,
     plans: &[Plan],
@@ -875,25 +952,34 @@ fn confirm_on_head(
     worktree: &mut Worktree<'_>,
     outcomes: &mut [Vec<Outcome>],
 ) -> Result<(), String> {
-    let asked = outcomes
-        .iter()
-        .flatten()
-        .any(|outcome| outcome.outcome == WorkerCounterfactualOutcome::Failed);
-    if !asked {
+    let asks = |outcome: &Outcome| match outcome.outcome {
+        WorkerCounterfactualOutcome::Failed => true,
+        WorkerCounterfactualOutcome::BaseUnbuildable => request.new_api,
+        _ => false,
+    };
+    if !outcomes.iter().flatten().any(asks) {
         return Ok(());
     }
     worktree.back_to_head()?;
+    // The commit's own tree, built with its own test scopes: a configured
+    // `run` may only execute what `build` produced.
+    let built = match run_argv(request.dir, &config.build, request.env) {
+        Ran::Exited(0, _) => Ok(()),
+        Ran::Exited(code, output) => Err(format!(
+            "the commit does not build with its own test scopes (exit {code}):\n{output}"
+        )),
+        Ran::Unavailable(why) => Err(why),
+    };
     for (plan, file) in plans.iter().zip(outcomes.iter_mut()) {
         for (test, outcome) in plan.tests.iter().zip(file.iter_mut()) {
-            if outcome.outcome != WorkerCounterfactualOutcome::Failed {
+            if !asks(outcome) {
                 continue;
             }
             let argv = test_argv(config, test);
-            outcome.on_head = Some(head_result(
-                &argv,
-                test,
-                &run_argv(request.dir, &argv, request.env),
-            ));
+            outcome.on_head = Some(match &built {
+                Err(why) => OnHead::Unavailable(why.clone()),
+                Ok(()) => head_result(&argv, test, &run_argv(request.dir, &argv, request.env)),
+            });
         }
     }
     Ok(())
@@ -906,14 +992,13 @@ fn head_result(argv: &[String], test: &str, ran: &Ran) -> OnHead {
     let command = argv.join(" ");
     match ran {
         Ran::Unavailable(why) => OnHead::Unavailable(why.clone()),
-        Ran::Exited(code, output) if no_tests_ran(output) => OnHead::Unavailable(format!(
-            "{command} ran no test for it on the commit itself, so its failure on the base \
-             proves nothing about it (exit {code}):\n{output}"
-        )),
         Ran::Exited(code, output) => match result_of(output, test) {
             Some(false) => OnHead::Passed,
             Some(true) => OnHead::Failed(format!(
                 "it fails on the commit itself too (exit {code}):\n{output}"
+            )),
+            None if no_tests_ran(output) => OnHead::Unavailable(format!(
+                "{command} ran no test for it on the commit itself (exit {code}):\n{output}"
             )),
             None => OnHead::Unavailable(format!(
                 "{command} exited with {code} on the commit itself without naming `{test}` as \
@@ -1015,13 +1100,6 @@ fn classify(argv: &[String], test: &str, ran: &Ran) -> Outcome {
     };
     match ran {
         Ran::Unavailable(why) => outcome(WorkerCounterfactualOutcome::Unavailable, why.clone()),
-        Ran::Exited(code, output) if no_tests_ran(output) => outcome(
-            WorkerCounterfactualOutcome::Unavailable,
-            format!(
-                "{command} ran no test for it, so it does not exist on the base as named \
-                 (exit {code}):\n{output}"
-            ),
-        ),
         Ran::Exited(code, output) => match result_of(output, test) {
             Some(false) => outcome(
                 WorkerCounterfactualOutcome::Passed,
@@ -1030,6 +1108,17 @@ fn classify(argv: &[String], test: &str, ran: &Ran) -> Outcome {
             Some(true) => outcome(
                 WorkerCounterfactualOutcome::Failed,
                 format!("it failed on the base (exit {code}):\n{output}"),
+            ),
+            // A run that names no test at all, as a filter that matched
+            // nothing does, says the test is not on the base under that name.
+            // Only when no line names it: a runner of several targets can
+            // report `running 0 tests` for one of them while another runs it.
+            None if no_tests_ran(output) => outcome(
+                WorkerCounterfactualOutcome::Unavailable,
+                format!(
+                    "{command} ran no test for it, so it does not exist on the base as named \
+                     (exit {code}):\n{output}"
+                ),
             ),
             // A run that exits without naming the test proves nothing, even
             // with a non-zero code: a harness that fails before its tests, or
@@ -1045,14 +1134,34 @@ fn classify(argv: &[String], test: &str, ran: &Ran) -> Outcome {
     }
 }
 
-/// What a runner's output says about `test`: the first line that names it as
-/// a test result, `true` when it marks it failed, `false` when it marks it
-/// passed. `None` when the output never names it.
+/// What a runner's output says about `test`: `true` when it marks it failed
+/// and `false` when it marks it passed; `None` when the output never names it.
+/// Each target that runs it (a test binary, or a libtest `Running` section)
+/// is judged by its last line, because a retried test prints each attempt
+/// (`TRY 1 FAIL`, then `PASS`) and only its final result is the test's; and a
+/// failure in any target is the test's, so a target that passes cannot hide
+/// another that failed.
 fn result_of(output: &str, test: &str) -> Option<bool> {
-    output.lines().find_map(|line| {
-        let (failed, name) = marker(line)?;
-        names(&name, test).then_some(failed)
-    })
+    let mut section = String::new();
+    let mut last: Vec<(String, bool)> = Vec::new();
+    for line in output.lines() {
+        if let Some(running) = line.trim_start().strip_prefix("Running ") {
+            section = running.trim().to_owned();
+            continue;
+        }
+        let Some(marked) = marker(line) else {
+            continue;
+        };
+        if !names(&marked.name, test) {
+            continue;
+        }
+        let target = marked.target.unwrap_or_else(|| section.clone());
+        match last.iter_mut().find(|(seen, _)| *seen == target) {
+            Some(entry) => entry.1 = marked.failed,
+            None => last.push((target, marked.failed)),
+        }
+    }
+    (!last.is_empty()).then(|| last.iter().any(|(_, failed)| *failed))
 }
 
 /// Whether a marker's name is `test`'s: the runner prints it qualified with
@@ -1065,13 +1174,21 @@ fn names(name: &str, test: &str) -> bool {
             .is_some_and(|prefix| prefix.ends_with("::"))
 }
 
-/// A runner's line marking one test's result, with the test's name and
-/// whether it failed: `cargo nextest`'s
-/// `PASS [   0.001s] (1/1) crate::test` (`FAIL`, `LEAK` and `TIMEOUT` fail,
-/// and `TRY n` comes before a retried attempt's), and libtest's
-/// `test crate::test ... ok` (`... FAILED` fails). A summary line names no
-/// test and is `None`.
-fn marker(line: &str) -> Option<(bool, String)> {
+/// One test's result as a runner's line marks it.
+struct Marked {
+    failed: bool,
+    name: String,
+    /// The test binary's id nextest prints before the name; `None` for a
+    /// libtest line, whose target is the `Running` line above it.
+    target: Option<String>,
+}
+
+/// A runner's line marking one test's result: `cargo nextest`'s
+/// `PASS [   0.001s] (1/1) binary crate::test` (`FAIL`, `LEAK-FAIL` and
+/// `TIMEOUT` fail, `LEAK` passed and left processes behind, and `TRY n` comes
+/// before a retried attempt's), and libtest's `test crate::test ... ok`
+/// (`... FAILED` fails). A summary line names no test and is `None`.
+fn marker(line: &str) -> Option<Marked> {
     let mut rest = line.trim_start();
     if let Some(after) = rest.strip_prefix("TRY ") {
         rest = after.trim_start();
@@ -1080,8 +1197,11 @@ fn marker(line: &str) -> Option<(bool, String)> {
     }
     let (word, after) = rest.split_once(char::is_whitespace)?;
     let failed = match word {
-        "PASS" => false,
-        "FAIL" | "LEAK" | "TIMEOUT" => true,
+        // `LEAK` is a test that passed and left processes behind: a pass,
+        // not the failure this check needs; `LEAK-FAIL` is one a profile
+        // with `leak-timeout.result = "fail"` fails for it.
+        "PASS" | "LEAK" => false,
+        "FAIL" | "LEAK-FAIL" | "TIMEOUT" => true,
         // libtest: `test name ... ok`, `... FAILED`, and `... ignored` (not
         // a result either way).
         "test" => {
@@ -1093,7 +1213,11 @@ fn marker(line: &str) -> Option<(bool, String)> {
                 return None;
             }
             let name = name.trim();
-            return (!name.is_empty()).then(|| (failed, name.to_owned()));
+            return (!name.is_empty()).then(|| Marked {
+                failed,
+                name: name.to_owned(),
+                target: None,
+            });
         }
         _ => return None,
     };
@@ -1106,9 +1230,16 @@ fn marker(line: &str) -> Option<(bool, String)> {
     }
     // What is left is the test binary's id and then the test's name
     // (`herdr::bin/herdr workers::tests::one`); a test's name has no spaces,
-    // so the last word is it.
-    let last = name.split_whitespace().next_back()?;
-    Some((failed, last.to_owned()))
+    // so the last word is it and the rest is the binary's.
+    let (target, last) = match name.trim_end().rsplit_once(char::is_whitespace) {
+        Some((target, last)) => (target.trim().to_owned(), last),
+        None => (String::new(), name.trim()),
+    };
+    (!last.is_empty()).then(|| Marked {
+        failed,
+        name: last.to_owned(),
+        target: Some(target),
+    })
 }
 
 /// Whether a run's output shows that it ran no test at all: the filter
@@ -1131,8 +1262,8 @@ fn no_tests_ran(output: &str) -> bool {
 fn report(plans: &[Plan], outcomes: &[Vec<Outcome>], base: &str, new_api: bool) -> Checked {
     let mut tests = Vec::new();
     let mut proven = 0usize;
-    // A test that failed on the base but whose run on the commit itself did
-    // not pass, with what that run said.
+    // Each test whose run on the commit itself did not pass, with what that
+    // run said.
     let mut unconfirmed: Vec<(String, String, String, bool)> = Vec::new();
     for (plan, file) in plans.iter().zip(outcomes) {
         for (test, outcome) in plan.tests.iter().zip(file) {
@@ -1156,7 +1287,16 @@ fn report(plans: &[Plan], outcomes: &[Vec<Outcome>], base: &str, new_api: bool) 
                 }
                 None => {}
             }
-            if outcome.outcome == WorkerCounterfactualOutcome::Failed && !proven_here {
+            // A run on the commit that did not pass denies the check: one
+            // that failed there is a defect of the commit, one this cannot
+            // read is no proof. A test whose base never built is asked too
+            // under `--new-api` (`confirm_on_head`), so accepting that flag
+            // cannot hide such a run.
+            let unconfirmed_head = matches!(
+                outcome.on_head,
+                Some(OnHead::Failed(_)) | Some(OnHead::Unavailable(_))
+            );
+            if unconfirmed_head {
                 unconfirmed.push((
                     test.clone(),
                     plan.path.clone(),
@@ -1191,8 +1331,8 @@ fn report(plans: &[Plan], outcomes: &[Vec<Outcome>], base: &str, new_api: bool) 
             check: failed(
                 NAME,
                 format!(
-                    "the commit does not pass its own test, so failing on the base {base} \
-                     proves nothing: {why}{more}"
+                    "the commit does not pass its own test, so it cannot be proven: \
+                     {why}{more}"
                 ),
             ),
             tests,
@@ -1366,13 +1506,16 @@ struct Scan {
 }
 
 /// The path of a file inside a crate's source root: `src/a.rs` in the root
-/// crate, `crates/name/src/a.rs` in a crate of a workspace.
+/// crate, and a workspace member's, whatever its level: `crates/name/src/a.rs`
+/// and `crates/group/name/src/a.rs` are both after `/src/`. A path outside a
+/// `crates/` tree (`tests/a.rs`, `benches/a.rs`) is a crate root of its own and
+/// has none.
 fn source_rest(path: &str) -> Option<&str> {
     if let Some(rest) = path.strip_prefix("src/") {
         return Some(rest);
     }
-    let workspace = path.strip_prefix("crates/")?;
-    workspace.split_once("/src/").map(|(_, rest)| rest)
+    let member = path.strip_prefix("crates/")?;
+    member.split_once("/src/").map(|(_, rest)| rest)
 }
 
 /// Whether a file is a crate root by its path: `lib.rs`, `main.rs`, or a
@@ -2018,9 +2161,14 @@ mod tests {
         build = [\"sh\", \"build.sh\"]\n\
         run = [\"sh\", \"run.sh\", \"{test}\"]\n";
 
+    /// The build stand-in: it logs the tree it built and reads its verdict
+    /// from `build.<state>.rc`, with the same `base`/`head` state the run
+    /// stand-in uses.
     const BUILD_SH: &str = "#!/bin/sh\n\
-        echo \"build $@\" >> calls.log\n\
-        if [ -f build.rc ]; then exit \"$(cat build.rc)\"; fi\n\
+        state=base\n\
+        [ -f head.marker ] && state=head\n\
+        echo \"build $state\" >> calls.log\n\
+        if [ -f \"build.$state.rc\" ]; then exit \"$(cat \"build.$state.rc\")\"; fi\n\
         exit 0\n";
 
     /// The test harness stand-in: it logs its arguments and the tree it ran
@@ -2057,7 +2205,7 @@ mod tests {
         write(
             &dir,
             &[
-                (".gitignore", "/target\nrun.*.rc\nbuild.rc\ncalls.log\n"),
+                (".gitignore", "/target\nrun.*.rc\nbuild.*.rc\ncalls.log\n"),
                 ("src/lib.rs", "pub fn base() {}\n"),
                 (".herdr/checks.toml", CHECKS),
                 ("build.sh", BUILD_SH),
@@ -2127,7 +2275,7 @@ mod tests {
         write(
             &dir,
             &[
-                (".gitignore", "/target\nrun.*.rc\nbuild.rc\ncalls.log\n"),
+                (".gitignore", "/target\nrun.*.rc\nbuild.*.rc\ncalls.log\n"),
                 (".herdr/checks.toml", CHECKS),
                 ("build.sh", BUILD_SH),
                 ("run.sh", RUN_SH),
@@ -2711,7 +2859,7 @@ mod tests {
         // The base's run comes first, and the commit's own run confirms it.
         assert_eq!(
             calls(&dir),
-            "build \nrun tests::added base\nrun tests::added head\n"
+            "build base\nrun tests::added base\nbuild head\nrun tests::added head\n"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2922,17 +3070,20 @@ mod tests {
         write(
             &dir,
             &[
-                ("build.rc", "1\n"),
+                ("build.base.rc", "1\n"),
                 ("run.tests::added.base.rc", "1\n"),
                 ("run.tests::added.head.rc", "0\n"),
             ],
         );
         let head = commit(
             &dir,
-            &[(
-                "src/lib.rs",
-                &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
-            )],
+            &[
+                ("head.marker", HEAD_MARKER),
+                (
+                    "src/lib.rs",
+                    &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+                ),
+            ],
         );
         let checked = checked_commit(&dir, &base, false);
         assert_eq!(
@@ -2967,11 +3118,371 @@ mod tests {
                 false
             )]
         );
-        // It changes nothing else: no test was run.
+        // It proves nothing: the base's test was never run, and the commit's
+        // own test was, under `--new-api` too, so a test that fails on the
+        // commit cannot hide behind the flag.
         let calls = calls(&dir);
-        assert!(calls.starts_with("build "), "{calls}");
-        assert!(!calls.contains("run tests::added"), "{calls}");
+        assert!(calls.starts_with("build base"), "{calls}");
+        assert!(!calls.contains("run tests::added base"), "{calls}");
+        assert!(calls.contains("build head"), "{calls}");
+        assert!(calls.contains("run tests::added head"), "{calls}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unbuildable_base_under_new_api_still_asks_the_commit() {
+        let (dir, base) = repository("newapi-head");
+        write(
+            &dir,
+            &[
+                ("build.base.rc", "1\n"),
+                ("run.tests::added.head.rc", "1\n"),
+            ],
+        );
+        let head = commit(
+            &dir,
+            &[
+                ("head.marker", HEAD_MARKER),
+                (
+                    "src/lib.rs",
+                    &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+                ),
+            ],
+        );
+        let checked = checked_commit(&dir, &base, true);
+        assert_eq!(
+            checked.check.outcome,
+            WorkerCheckOutcome::Failed,
+            "{checked:#?}"
+        );
+        assert!(
+            checked.check.detail.contains("does not pass its own test"),
+            "{checked:#?}"
+        );
+        assert_eq!(reported(&checked).len(), 1);
+        assert!(!reported(&checked)[0].2, "{checked:#?}");
+        assert_eq!(head_of(&dir), head);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What a check killed by SIGKILL leaves: the worktree detached at the
+    /// base, half overlaid, and the record of where to put it back.
+    fn killed_check_left(dir: &Path, base: &str) -> String {
+        write(
+            dir,
+            &[
+                ("run.tests::added.base.rc", "1\n"),
+                ("run.tests::added.head.rc", "0\n"),
+            ],
+        );
+        let head = commit(
+            dir,
+            &[
+                ("head.marker", HEAD_MARKER),
+                (
+                    "src/lib.rs",
+                    &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+                ),
+            ],
+        );
+        git_in(dir, &["checkout", "-q", "--force", "--detach", base]);
+        std::fs::write(dir.join("src/lib.rs"), "half an overlay\n").unwrap();
+        write_record(dir, dead_pid(), &head, Some("master"));
+        head
+    }
+
+    fn verified_check<'a>(
+        verification: &'a WorkerVerification,
+        name: &str,
+    ) -> &'a crate::api::schema::WorkerVerifyCheck {
+        verification
+            .checks
+            .iter()
+            .find(|check| check.check == name)
+            .unwrap_or_else(|| panic!("no {name} check: {verification:#?}"))
+    }
+
+    #[test]
+    fn the_verify_puts_back_a_killed_checks_tree_before_it_reads_it() {
+        let (dir, base) = repository("dirty-leftover");
+        let head = killed_check_left(&dir, &base);
+        let verification = super::super::verify(&request(&dir, &base, false), 0);
+        // Every finding is about the commit, not the base the killed check
+        // left: its `HEAD`, its clean tree, and the check run there.
+        assert_eq!(verification.head.as_deref(), Some(head.as_str()));
+        assert_eq!(
+            verified_check(&verification, "clean_tree").outcome,
+            WorkerCheckOutcome::Passed,
+            "{verification:#?}"
+        );
+        let counterfactual = verified_check(&verification, NAME);
+        assert_eq!(
+            counterfactual.outcome,
+            WorkerCheckOutcome::Passed,
+            "{verification:#?}"
+        );
+        assert!(
+            counterfactual.detail.contains("1 test"),
+            "{verification:#?}"
+        );
+        assert_eq!(head_of(&dir), head);
+        assert_eq!(
+            git_in(&dir, &["symbolic-ref", "--short", "HEAD"]).trim(),
+            "master"
+        );
+        assert!(!record_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_change_the_killed_check_did_not_write_is_never_put_back() {
+        let (dir, base) = repository("foreign-leftover");
+        let head = killed_check_left(&dir, &base);
+        // An edit made after the check died, at a path it never overlays.
+        std::fs::write(dir.join("notes.txt"), "the worker's note\n").unwrap();
+        let verification = super::super::verify(&request(&dir, &base, false), 0);
+        let counterfactual = verified_check(&verification, NAME);
+        assert_eq!(
+            counterfactual.outcome,
+            WorkerCheckOutcome::Unavailable,
+            "{verification:#?}"
+        );
+        assert!(
+            counterfactual.detail.contains("notes.txt"),
+            "{verification:#?}"
+        );
+        // Nothing was put back or removed: the edit, the overlay and the
+        // record are all where they were.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "the worker's note\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(),
+            "half an overlay\n"
+        );
+        assert_eq!(head_of(&dir), base);
+        assert!(record_path(&dir).exists());
+        assert_ne!(head, base);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unbuildable_base_under_new_api_with_a_passing_commit_passes() {
+        let (dir, base) = repository("newapi-pass");
+        write(
+            &dir,
+            &[
+                ("build.base.rc", "1\n"),
+                ("run.tests::added.head.rc", "0\n"),
+            ],
+        );
+        commit(
+            &dir,
+            &[
+                ("head.marker", HEAD_MARKER),
+                (
+                    "src/lib.rs",
+                    &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+                ),
+            ],
+        );
+        let checked = checked_commit(&dir, &base, true);
+        assert_eq!(
+            checked.check.outcome,
+            WorkerCheckOutcome::Passed,
+            "{checked:#?}"
+        );
+        assert_eq!(
+            reported(&checked),
+            vec![(
+                "tests::added".to_owned(),
+                WorkerCounterfactualOutcome::BaseUnbuildable,
+                false
+            )]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_commit_that_does_not_build_its_own_tests_is_never_a_pass() {
+        let (dir, base) = repository("head-unbuildable");
+        write(
+            &dir,
+            &[
+                ("build.head.rc", "1\n"),
+                ("run.tests::added.base.rc", "1\n"),
+            ],
+        );
+        let head = commit(
+            &dir,
+            &[
+                ("head.marker", HEAD_MARKER),
+                (
+                    "src/lib.rs",
+                    &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+                ),
+            ],
+        );
+        let checked = checked_commit(&dir, &base, false);
+        // Its failure on the base proves nothing when the commit cannot run
+        // it: never a pass.
+        assert_eq!(
+            checked.check.outcome,
+            WorkerCheckOutcome::Unavailable,
+            "{checked:#?}"
+        );
+        assert!(
+            checked
+                .check
+                .detail
+                .contains("does not build with its own test scopes"),
+            "{checked:#?}"
+        );
+        // Its test was never run on a commit that did not build.
+        assert!(!calls(&dir).contains("run tests::added head"));
+        assert_eq!(head_of(&dir), head);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_dirty_tree_without_a_record_is_left_alone() {
+        let (dir, base) = repository("dirty");
+        let head = commit(
+            &dir,
+            &[(
+                "src/lib.rs",
+                &test_module("    #[test]\n    fn added() { assert_eq!(1, 2); }\n"),
+            )],
+        );
+        std::fs::write(dir.join("src/lib.rs"), "the worker's edit\n").unwrap();
+        let checked = check(&request(&dir, &base, false), &base, &head, false);
+        assert_eq!(
+            checked.check.outcome,
+            WorkerCheckOutcome::Passed,
+            "{checked:#?}"
+        );
+        assert!(checked.check.detail.contains("not clean"), "{checked:#?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(),
+            "the worker's edit\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- the runner's output ---------------------------------------------
+
+    #[test]
+    fn a_retried_test_is_judged_by_its_last_result() {
+        let output = "        TRY 1 FAIL [   0.100s] binary tests::added\n\
+                      RETRY [   0.200s] binary tests::added\n\
+                      PASS [   0.300s] binary tests::added\n";
+        assert_eq!(result_of(output, "tests::added"), Some(false));
+        let failed = "        PASS [   0.100s] binary tests::added\n\
+                      TRY 2 FAIL [   0.200s] binary tests::added\n";
+        assert_eq!(result_of(failed, "tests::added"), Some(true));
+    }
+
+    #[test]
+    fn a_leaked_test_passed_and_timed_out_one_failed() {
+        assert_eq!(
+            result_of(
+                "        LEAK [   0.100s] binary tests::added\n",
+                "tests::added"
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            result_of(
+                "        TIMEOUT [ 120.000s] binary tests::added\n",
+                "tests::added"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_named_result_wins_over_another_targets_zero_count() {
+        let ran = Ran::Exited(
+            1,
+            "   Compiling herdr\n     Running unittests src/main.rs\n\
+             running 0 tests\n\
+             FAIL [   0.001s] (1/1) binary tests::added\n"
+                .into(),
+        );
+        let outcome = classify(
+            &["sh".to_owned(), "run.sh".to_owned()],
+            "tests::added",
+            &ran,
+        );
+        assert_eq!(outcome.outcome, WorkerCounterfactualOutcome::Failed);
+    }
+
+    #[test]
+    fn a_libtest_line_names_a_test() {
+        let output = "running 1 test\ntest tests::added ... FAILED\n\
+                      test result: FAILED. 0 passed; 1 failed\n";
+        assert_eq!(result_of(output, "tests::added"), Some(true));
+        let passed = "running 1 test\ntest tests::added ... ok\n";
+        assert_eq!(result_of(passed, "tests::added"), Some(false));
+        // The summary names no test.
+        assert_eq!(result_of("test result: FAILED. 0 passed", "added"), None);
+    }
+
+    #[test]
+    fn a_failure_in_one_target_is_not_hidden_by_another_that_passes() {
+        for output in [
+            "        FAIL [   0.100s] crate::bin/a tests::added\n\
+                     PASS [   0.200s] crate::bin/b tests::added\n",
+            "        PASS [   0.100s] crate::bin/b tests::added\n\
+                     FAIL [   0.200s] crate::bin/a tests::added\n",
+            "     Running unittests src/main.rs (target/debug/deps/a)\n\
+             test tests::added ... FAILED\n\
+                  Running unittests src/lib.rs (target/debug/deps/b)\n\
+             test tests::added ... ok\n",
+        ] {
+            assert_eq!(result_of(output, "tests::added"), Some(true), "{output}");
+        }
+        // A retry within one target is still judged by its last attempt.
+        let retried = "        TRY 1 FAIL [   0.100s] crate::bin/a tests::added\n\
+                       PASS [   0.200s] crate::bin/b tests::added\n\
+                       PASS [   0.300s] crate::bin/a tests::added\n";
+        assert_eq!(result_of(retried, "tests::added"), Some(false));
+    }
+
+    #[test]
+    fn a_leak_the_profile_fails_is_a_failure() {
+        assert_eq!(
+            result_of(
+                "        LEAK-FAIL [   0.100s] binary tests::added\n",
+                "tests::added"
+            ),
+            Some(true)
+        );
+        // A retry line names the test but is no result.
+        assert_eq!(
+            result_of(
+                "        RETRY [   0.100s] binary tests::added\n",
+                "tests::added"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_named_result_on_the_commit_wins_over_another_targets_zero_count() {
+        let ran = Ran::Exited(
+            0,
+            "     Running unittests src/main.rs\nrunning 0 tests\n\
+             PASS [   0.001s] (1/1) binary tests::added\n"
+                .into(),
+        );
+        assert!(head_result(&["run".to_owned()], "tests::added", &ran).passed());
+        let none = Ran::Exited(0, "running 0 tests\n".into());
+        assert!(matches!(
+            head_result(&["run".to_owned()], "tests::added", &none),
+            OnHead::Unavailable(_)
+        ));
     }
 
     #[test]
@@ -3178,7 +3689,7 @@ mod tests {
             let base = base.clone();
             let head = head.clone();
             std::panic::catch_unwind(move || {
-                let _worktree = Worktree::take(&dir, &head).unwrap();
+                let _worktree = Worktree::take(&dir, &head, vec!["src/lib.rs".to_owned()]).unwrap();
                 git(&dir, &["clean", "-fdq"]).unwrap();
                 git(&dir, &["checkout", "-q", "--force", "--detach", &base]).unwrap();
                 std::fs::write(dir.join("src/lib.rs"), "half an overlay\n").unwrap();
@@ -3241,6 +3752,7 @@ mod tests {
             pid,
             head: head.to_owned(),
             branch: branch.map(str::to_owned),
+            written: vec!["src/lib.rs".to_owned()],
         };
         std::fs::write(record_path(dir), serde_json::to_vec(&entry).unwrap()).unwrap();
     }

@@ -120,6 +120,10 @@ pub(super) enum CheckCommand<'a> {
 pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
     let dir = request.dir;
     let mut checks = Vec::new();
+    // A counterfactual check killed while it wrote the worktree left it at the
+    // base with the commit's tests overlaid: put it back before anything
+    // below reads its `HEAD` or its tree.
+    let recovered = counterfactual::recover_leftover(dir);
     let head = git(dir, &["rev-parse", "--verify", "HEAD^{commit}"])
         .ok()
         .map(|out| out.trim().to_owned());
@@ -266,8 +270,9 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
     // The commit's own tests must fail without it: a test that passes on
     // the base proves nothing (see `counterfactual`). It runs after the
     // commands, from the head, and puts the worktree back itself.
-    let counterfactual = match (&base_commit, &head) {
-        (Ok(base), Some(head)) => counterfactual::check(request, base, head, tree_clean),
+    let counterfactual = match (&recovered, &base_commit, &head) {
+        (Err(why), _, _) => counterfactual::not_recovered(why),
+        (Ok(()), Ok(base), Some(head)) => counterfactual::check(request, base, head, tree_clean),
         _ => counterfactual::not_checked("the commit and its base are unknown"),
     };
     checks.push(counterfactual.check);
