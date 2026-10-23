@@ -336,7 +336,7 @@ sequenceDiagram
 Not implemented yet. Decided by the user on 2026-10-23 ("implement the best
 solution"; "if TODO.md is not dirty, the supervisor gives the first item,
 then the next"; "there will be only one agent, no workers"; drafting and
-review on Opus) after the consult rounds named in `cost-baseline.md`, which
+review on Opus; "only Opus") after the consult rounds named in `cost-baseline.md`, which
 also holds the measured baseline and the estimates this design is checked
 against, and rounds `20261023-215510-0b94` and `20261023-221441-3128`. There
 is no coordinator LLM: herdr's queue mode (`herdr todo queue on`, built,
@@ -363,9 +363,7 @@ there being one item's run:
   finding is recorded in TODO.md or DECISIONS.md by item id; records only
   grow; a landed item leaves "Next, in order" (`acts_need_recorded`,
   `land_needs_terminal`, `records_only_grow`, `landed_leaves_next`);
-- the agent is Sonnet by default, Opus for risky items and after any failed
-  verify, Haiku only for a first attempt at a mechanical item during its
-  trial (`route_risky`, `route_after_failure`, `haiku_only_on_trial`);
+- the agent and both calls run on Opus only (no routing to cheaper models);
 - nothing lands unverified, and a non-trivial diff lands only after
   `review_run` approved it (`mayLand_needs_verified`,
   `nontrivial_needs_review`);
@@ -375,8 +373,7 @@ there being one item's run:
 
 Assumed, not proved: a crash loses only notes that were never recorded and
 that nothing acted on; how "a change outside a run's own item" is detected
-(per-item hashes against the last analysed ones); how `draft_task` picks the
-class; what the analysis and the review find.
+(per-item hashes against the last analysed ones); what the analysis and the review find.
 `per-item-workflow.svg` and `per-item-sequence.svg` are rendered from the
 two blocks below like the diagrams above.
 
@@ -396,23 +393,17 @@ flowchart TD
   end
 
   subgraph S["One item's run: one implementing agent and typed calls, epoch e"]
-    START --> DR["draft_task (Opus): task, subject, paths, checks, class from the item's text"]
+    START --> DR["draft_task (Opus): task, subject, paths, checks from the item's text"]
     DR --> PC{"needsPreConsult: no decided round newer than the last commit on the target paths, or a new fact?"}
     PC -->|"yes: no coordinator to consult"| ASK["the question recorded in the item"]
-    PC -->|"no: consult_skipped_iff"| RT{"route: item class, failed verifies"}
-    RT -->|"risky, or after a failed verify"| OP["Opus agent"]
-    RT -->|routine| SO["Sonnet agent"]
-    RT -->|"mechanical, Haiku trial on"| HA["Haiku agent"]
-    OP --> RUN["the agent implements in the folder slot (runStart), herdr verifies"]
-    SO --> RUN
-    HA --> RUN
-    RUN -->|"verify failed, attempt < 2"| RT
+    PC -->|"no: consult_skipped_iff"| RUN["the Opus agent implements in the folder slot (runStart), herdr verifies"]
+    RUN -->|"verify failed, attempt < 2: retry"| RUN
     RUN -->|"agent asks"| AQ{"answer_question"}
     AQ -->|"allow, deny or answer"| RUN
     AQ -->|"reserved for the user"| ASK
     RUN -->|verified| TR{"trivial diff?"}
     TR -->|no| REV["review_run (Opus): diff, item, decisions excerpt"]
-    REV -->|"retry: findings recorded"| RT
+    REV -->|"retry: findings recorded"| RUN
     REV -->|escalate| ASK
     REV -->|approve| LAND
     TR -->|"yes: mayLand"| LAND["cherry-pick, install, TODO edit, push; land e needs pending = [] and the run terminal"]
@@ -435,7 +426,7 @@ sequenceDiagram
   participant Q as herdr queue (server)
   participant A as Analysis call
   participant DT as draft_task (Opus)
-  participant W as Agent (Sonnet, Opus or Haiku)
+  participant W as Agent (Opus)
   participant V as Verify and landing (herdr)
   participant R as review_run (Opus)
   participant S as TODO.md and DECISIONS.md (by item id)
@@ -447,12 +438,12 @@ sequenceDiagram
     A-->>Q: verdict per item, applied between runs
   end
   Q->>DT: the top item's text, epoch e
-  DT-->>Q: task, subject, paths, checks, class
+  DT-->>Q: task, subject, paths, checks
   alt no decided round newer than the last commit on the target paths
     Q->>S: record the question in the item, move it to Needs a decision
     Q-->>U: the question in the ? list
   else ready
-    Q->>W: start the agent in the folder slot (model by class)
+    Q->>W: start the agent in the folder slot
     opt the agent asks
       W->>Q: question
       Q->>Q: answer_question: allow, deny, answer or escalate
@@ -462,7 +453,7 @@ sequenceDiagram
     Q->>V: verify (one commit, message, paths, clean tree, checks)
     alt failed, attempt < 2
       V-->>Q: failed
-      Q->>W: retry on Opus
+      Q->>W: retry with the findings
     else verified
       opt the diff is not trivial
         Q->>R: diff, item, decisions excerpt

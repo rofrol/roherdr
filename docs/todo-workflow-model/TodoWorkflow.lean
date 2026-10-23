@@ -1546,16 +1546,17 @@ the long-lived coordinator re-sent a ~490k-token context dozens of times per
 item, so there is no coordinator LLM. herdr's queue (deterministic) starts
 the top item's run on a durable event (a run landed, the user answered,
 server start); one agent implements the item, and the model is called only
-in small typed calls: `draft_task` (task, subject, paths, checks, class),
+in small typed calls: `draft_task` (task, subject, paths, checks),
 `answer_question` and `review_run` (both drafting and review on Opus). The
 next run starts only once the previous one is terminal and TODO.md has no
 change outside a run's own item that the last analysis did not see (then a
 read-only analysis runs first). Every question for the user and every
 finding is recorded in the item or DECISIONS.md before anything acts on it.
-A mid-item handoff stays as a backstop for a huge item. The agent's model is
-routed by item class, a non-trivial diff needs `review_run` before it lands,
+A mid-item handoff stays as a backstop for a huge item. A non-trivial diff
+needs `review_run` before it lands,
 and an item with no decided round newer than the last commit on its target
-paths waits on the user (no coordinator consults any more).
+paths waits on the user (no coordinator consults any more). The agent and
+both calls run on Opus only (the user, 2026-10-23).
 
 Below, a `Session` is one item's run: its agent and its typed calls.
 `PerItem.Queue` replaces `Coordinator.decide` once it is implemented; the
@@ -1660,26 +1661,7 @@ def Queue.exec (q : Queue) : List Cmd → Option Queue
 /-- The live session, if any, holds the current epoch. -/
 def Queue.wf (q : Queue) : Prop := ∀ s, q.session = some s → s.epoch = q.epoch
 
-/-! ### Worker routing, review before landing, and when to consult -/
-
-inductive ItemClass where
-  | routine     -- a bounded feature or fix, tests, docs
-  | risky       -- concurrency, protocol or wire, persisted state, refactor-risk
-  | mechanical  -- renames, regenerated files, text-only edits
-  deriving DecidableEq, Repr
-
-inductive WorkerModel where
-  | sonnet | opus | haiku
-  deriving DecidableEq, Repr
-
-/-- Sonnet by default, Opus for risky items and after any failed verify,
-Haiku only for mechanical items while its trial is on. -/
-def route (cls : ItemClass) (failedVerifies : Nat) (haikuTrial : Bool) : WorkerModel :=
-  if failedVerifies > 0 then .opus
-  else match cls with
-    | .risky => .opus
-    | .mechanical => if haikuTrial then .haiku else .sonnet
-    | .routine => .sonnet
+/-! ### Review before landing, and when an item waits on the user -/
 
 /-- A commit lands only when verified, and a non-trivial diff only after the
 short-context review (diff, item, decisions excerpt) passed. -/
@@ -1905,23 +1887,6 @@ theorem landed_leaves_next (q q' : Queue) (e : Nat) (s : Session)
   split at h
   · cases h; simp
   · cases h
-
-/-- Risky items get Opus. -/
-theorem route_risky (n : Nat) (t : Bool) : route .risky n t = .opus := by
-  unfold route; split <;> rfl
-
-/-- Any failed verify moves the next attempt to Opus. -/
-theorem route_after_failure (c : ItemClass) (n : Nat) (t : Bool) (h : n > 0) :
-    route c n t = .opus := by
-  simp [route, h]
-
-/-- Haiku only for a first attempt at a mechanical item during its trial. -/
-theorem haiku_only_on_trial (c : ItemClass) (n : Nat) (t : Bool) (h : route c n t = .haiku) :
-    t = true ∧ c = .mechanical ∧ n = 0 := by
-  unfold route at h
-  by_cases hn : n > 0
-  · simp [hn] at h
-  · cases c <;> cases t <;> simp_all <;> omega
 
 /-- A non-trivial diff lands only verified and reviewed. -/
 theorem nontrivial_needs_review (v : Verdict) (r : Bool) (h : mayLand v false r = true) :
