@@ -2523,3 +2523,23 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   that writes it; a handoff moves it.
 - `--stop-reason` stays the user-facing stop; a coordinator never
   acknowledges for the user.
+
+## An agent's context size and its window's share (t-gpnmlys3, 2026-10-23)
+
+- The user asked 2026-10-12 to see a coordinator's context size on its
+  tab, and again 2026-10-23 because the coordinator could not see its
+  own fill. Rounds 20261012-205835-a0b3 and 20261023-144933-e938.
+- Landed in two slices: the server reads each Claude session's last
+  request input (input + cache creation + cache read) from its
+  transcript with a persisted cursor at named events, unknown after
+  `/clear` or a new session (r-ahz6pvgc); the window comes from a named
+  source, the percentage and a status over (>= 70%), under or unknown
+  (never counted as under), `herdr agent context <pane> [--json]`, and
+  `ctx 420k · 42%` on the coordinator's tab (r-ejybru6k).
+- Claude Code records no context window (its transcript,
+  `~/.claude.json` and `settings.json` checked), so the window comes from
+  the user setting `[agents] context_window` or a vendor table, which
+  is empty until a value can be cited; a model with several variants in
+  the table is unknown; an input above the window withholds it.
+- Still open in t-2k3ima2h: herdr enforcing the 70% handoff at the turn
+  end.
