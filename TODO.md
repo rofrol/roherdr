@@ -49,6 +49,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   "% of the weekly allowance", never "of the week"; the time zone named in
   the pace tooltip.
   Correction: the tooltip round is 20261023-200429-d9be, not 20261023-200511.
+  Decided by the user 2026-10-23 (d-npefh3mu, after the user asked how 2x
+  and red are scaled when 14.3 % is a full bar, and compared both drawn
+  in a terminal tab), replacing the full-bar-at-1x scale above: B2, a full
+  bar is 2x the daily share (2 x 100/7 %), so 1x is a half bar (`▄`); the
+  height grows up to 2x in yellow above 1x; above 2x the bar is full and
+  bold red. Round 20261023-200843-9dc9 (sol, MiMo, DeepSeek, Argon all
+  recommended it). Noted, not taken now: thresholds against the
+  remaining allowance per remaining day instead of the even share
+  (MiMo, DeepSeek, Argon).
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
