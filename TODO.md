@@ -58,6 +58,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     (t-2k3ima2h): herdr checks at the turn-end event and tells or stops
     the coordinator, instead of the coordinator remembering to look.
   Decided by the user 2026-10-23 (d-cnqqvt3r): next, before t-eu3egeam.
+  In flight 2026-10-23: slice 1 (the transcript reading, the API field,
+  `herdr agent context`, `ctx 420k` on the tab), run `r-ahz6pvgc`.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
