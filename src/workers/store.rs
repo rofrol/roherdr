@@ -3236,6 +3236,16 @@ impl Tx<'_> {
         runs.collect()
     }
 
+    /// The done runs tenure `coordinator_id` owns.
+    pub(super) fn done_runs_of_coordinator(&self, coordinator_id: &str) -> StoreResult<Vec<Run>> {
+        let mut statement = self.tx.prepare(&run_select(
+            "WHERE r.owner_coordinator_id = ?1 AND r.status = 'done' \
+             ORDER BY r.created_ms, r.rowid",
+        ))?;
+        let runs = statement.query_map([coordinator_id], run_from_row)?;
+        runs.collect()
+    }
+
     /// Appends one record of an item's life.
     pub(super) fn item_history(&self, record: &NewHistory, at_ms: u64) -> StoreResult<()> {
         self.tx.execute(

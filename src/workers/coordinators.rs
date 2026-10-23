@@ -1599,7 +1599,7 @@ impl WorkerSupervisor {
     }
 
     /// Moves what tenure `from` owns to `owner` inside `tx`: its open runs,
-    /// and its workers on copies of their statuses, returned with the
+    /// its done runs whose stop notice is held back, and its workers on copies of their statuses, returned with the
     /// `owner_moved` event for [`Self::settle_moves`].
     fn move_owned(
         registry: &Registry,
@@ -1620,6 +1620,13 @@ impl WorkerSupervisor {
         let staged = Self::stage_owner_moves(registry, tx, from, &moved, at)?;
         for run in tx.open_runs_of_coordinator(from)? {
             tx.move_run_owner(&run.info.run_id, owner, cause, at)?;
+        }
+        // A done run's held stop notice waits for the coordinator that goes
+        // on with the chain, now the new owner, not for the old pane.
+        for run in tx.done_runs_of_coordinator(from)? {
+            if run.stop_notice_pending() {
+                tx.move_run_owner(&run.info.run_id, owner, cause, at)?;
+            }
         }
         Ok((moved, staged))
     }

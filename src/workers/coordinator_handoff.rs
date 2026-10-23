@@ -683,7 +683,7 @@ impl WorkerSupervisor {
         self.shared.changed.notify_all();
         super::notify_clients();
         super::notify_user(super::UserNotice {
-            title: "Coordinator handoff aborted".to_owned(),
+            title: format!("coordinator {}: handoff aborted", handoff.coordinator_id),
             body: format!(
                 "{cause}; coordinator {} keeps its tenure in pane {}",
                 handoff.coordinator_id, handoff.old_pane
@@ -1322,7 +1322,10 @@ mod tests {
                 .filter(|notice| notice.body.contains(&tenure.coordinator_id))
                 .collect();
             assert_eq!(notices.len(), 1, "{name}");
-            assert_eq!(notices[0].title, "Coordinator handoff aborted");
+            assert_eq!(
+                notices[0].title,
+                format!("coordinator {}: handoff aborted", tenure.coordinator_id)
+            );
             supervisor.fence_pane(Some("p1")).unwrap();
             if pane == "p2" {
                 let current = supervisor.coordinator_of_pane("p1").unwrap();
@@ -1582,7 +1585,10 @@ mod tests {
             .filter(|notice| notice.body.contains(&tenure.coordinator_id))
             .collect();
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].title, "Coordinator handoff aborted");
+        assert_eq!(
+            notices[0].title,
+            format!("coordinator {}: handoff aborted", tenure.coordinator_id)
+        );
         supervisor.fence_pane(Some("p1")).unwrap();
         // The abort is persisted too.
         drop(supervisor);
@@ -1721,7 +1727,8 @@ mod tests {
         assert_eq!(
             crate::workers::take_user_notices()
                 .into_iter()
-                .filter(|notice| notice.title == "Coordinator handoff aborted")
+                .filter(|notice| notice.title.starts_with("coordinator ")
+                    && notice.title.ends_with(": handoff aborted"))
                 .count(),
             1
         );

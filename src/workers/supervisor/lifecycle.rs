@@ -1058,7 +1058,7 @@ impl WorkerSupervisor {
         self.record(number, Direction::Herdr, &event);
         notify_user(UserNotice {
             pane_id: None,
-            title: format!("Worker {name}: a tool call's output is held open"),
+            title: format!("worker {name} (w{number}): a tool call's output is held open"),
             body: held_output_summary(&report),
         });
     }

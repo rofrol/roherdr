@@ -88,6 +88,15 @@ pub(super) fn envs_for_handoff() -> BTreeMap<String, HashMap<String, String>> {
         .collect()
 }
 
+/// The name a queue's notices give it: its repository's directory name
+/// (the whole path when it has none).
+fn queue_name(repo: &str) -> &str {
+    Path::new(repo)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(repo)
+}
+
 /// Takes a queue's environment out of a live handoff's payload entry;
 /// gives back an entry that is not a queue's.
 #[cfg(unix)]
@@ -784,7 +793,7 @@ impl WorkerSupervisor {
             super::announce();
             crate::workers::notify_user(crate::workers::UserNotice {
                 pane_id: None,
-                title: format!("TODO queue of {repo} paused"),
+                title: format!("todo queue {}: paused", queue_name(repo)),
                 body: ENV_NEEDED.to_owned(),
             });
         }
@@ -882,7 +891,7 @@ impl WorkerSupervisor {
         if let Some(reason) = paused {
             crate::workers::notify_user(crate::workers::UserNotice {
                 pane_id: None,
-                title: format!("TODO queue of {repo} paused"),
+                title: format!("todo queue {}: paused", queue_name(repo)),
                 body: reason,
             });
         }
@@ -900,7 +909,10 @@ impl WorkerSupervisor {
                 if let Some(reason) = blocked_reason(&run.item, &run.item_digest, &runs) {
                     crate::workers::notify_user(crate::workers::UserNotice {
                         pane_id: None,
-                        title: format!("TODO queue: {} blocked ({status})", run.item),
+                        title: format!(
+                            "todo run {}: queued item {} blocked ({status})",
+                            run.run_id, run.item
+                        ),
                         body: reason,
                     });
                 }

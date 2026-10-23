@@ -1024,7 +1024,7 @@ impl WorkerSupervisor {
                 crate::workers::notify_user(crate::workers::UserNotice {
                     pane_id: None,
                     title: format!(
-                        "{} done; the next item {} did not start",
+                        "todo run {run_id}: {} done; the next item {} did not start",
                         run.info.item, next.item
                     ),
                     body: why.clone(),

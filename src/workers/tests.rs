@@ -10540,6 +10540,62 @@ mod todo_runs {
     }
 
     #[test]
+    fn a_coordinator_handoff_carries_a_held_back_stop_notice_to_its_successor() {
+        let fixture = todo_repo("todo-stop-handoff");
+        with_finish(&fixture);
+        let repo = fixture.repo.display().to_string();
+        fixture
+            .supervisor
+            .coordinator_start(&repo, "p-coordinator", Some("s-coordinator"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        crate::workers::take_user_notices();
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("Half of it landed.".into()),
+                stop_reason: Some(STOP_REASON.into()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(crate::workers::take_user_notices().is_empty());
+        fixture
+            .supervisor
+            .coordinator_handoff(None, Some("p-coordinator"), "p-next", None, None)
+            .unwrap();
+        let moved = run_events(&fixture, &run.run_id, "run_owner_moved");
+        assert_eq!(moved.len(), 1, "{moved:#?}");
+        assert_eq!(moved[0]["to_pane"], "p-next");
+        // The old pane goes while its successor goes on with the chain.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+        assert!(crate::workers::take_user_notices().is_empty());
+        // The successor goes: the user learns of the stop, once.
+        fixture
+            .supervisor
+            .owner_event("p-next", OwnerEvent::PaneClosed, "");
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(
+            notices[0]
+                .title
+                .starts_with(&format!("todo run {}: ", run.run_id)),
+            "{notices:?}"
+        );
+        fixture
+            .supervisor
+            .owner_event("p-next", OwnerEvent::AgentExited, "");
+        assert!(crate::workers::take_user_notices().is_empty());
+    }
+
+    #[test]
     fn a_refused_next_start_is_an_event_on_the_done_run() {
         let fixture = todo_repo("todo-close-next-refused");
         with_finish(&fixture);
@@ -10574,7 +10630,13 @@ mod todo_runs {
         // The user is told, once.
         let notices = crate::workers::take_user_notices();
         assert_eq!(notices.len(), 1, "{notices:?}");
-        assert!(notices[0].title.contains(ITEM2), "{notices:?}");
+        assert!(
+            notices[0]
+                .title
+                .starts_with(&format!("todo run {}: ", run.run_id))
+                && notices[0].title.contains(ITEM2),
+            "{notices:?}"
+        );
         assert_eq!(notices[0].body, why);
         // Settled: a restart does not try again.
         fixture.supervisor.resume_runs();
