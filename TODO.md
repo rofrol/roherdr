@@ -3731,6 +3731,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-dboichuo): when the consult round
   ends, its helper jobs fold into one summary at the caller; a failure
   stays in that summary until acknowledged.
+  Asked by the user 2026-10-23, a screenshot of the coordinator's tab
+  line `Items ▼ ◒ 1 !1`, the row `↳ job wait r-gj3emu6x reinstall` and the
+  squares `! ◒`: "isn't it redundant, a job under the tab and a square?
+  ask the models". Round 20261023-142518-ecf4 (sol, MiMo, DeepSeek,
+  Argon): yes, the waited-on job shows as a count, a wait row and a
+  square; one job must be one clickable element. Folded, the wait row
+  stays (no squares then) and is clickable. They differ on two points
+  (asked the user, below): unfolded, keep a clickable wait row with the
+  times and drop that job's square (sol, Argon), or keep the square with
+  a wait marker and the times and drop the row (MiMo, DeepSeek); and
+  whether the counts hide while the squares are unfolded (sol, DeepSeek,
+  Argon) or always show (MiMo).
 
 - [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
   2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
