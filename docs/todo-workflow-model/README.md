@@ -331,96 +331,99 @@ sequenceDiagram
   C-->>U: queue empty or every item waits on the user
 ```
 
-## Target design: a fresh coordinator session per item
+## Target design: queue mode, one agent per item
 
 Not implemented yet. Decided by the user on 2026-10-23 ("implement the best
-solution"; "if TODO.md is not dirty, the supervisor gives the coordinator
-the first item, then a handoff, the supervisor gives the next item") after
-the consult rounds named in `cost-baseline.md`, which also holds the
-measured baseline and the estimates this design is checked against, and
-round `20261023-215510-0b94`. `PerItem` in `TodoWorkflow.lean` models it:
+solution"; "if TODO.md is not dirty, the supervisor gives the first item,
+then the next"; "there will be only one agent, no workers"; drafting and
+review on Opus) after the consult rounds named in `cost-baseline.md`, which
+also holds the measured baseline and the estimates this design is checked
+against, and rounds `20261023-215510-0b94` and `20261023-221441-3128`. There
+is no coordinator LLM: herdr's queue mode (`herdr todo queue on`, built,
+not yet trialled) starts each item's run, one agent implements it, and the
+model is called only in typed calls (`draft_task`, `answer_question`,
+`review_run`). `PerItem` in `TodoWorkflow.lean` models it, a `Session`
+there being one item's run:
 
-- herdr's queue (deterministic, no LLM) starts a fresh coordinator session
-  for the top item, with the item's text in the session's prompt, on a
-  durable event (a run landed, the user answered, server start); the start
-  is a pure function of durable state, so a lost wake only delays it and a
-  repeated one starts nothing more (`reconcile_idem`,
-  `reconcile_starts_iff`, `reconcile_keeps_live`, `reconcile_takes_top`);
-- no session starts while the previous item's run is not terminal, or
-  while TODO.md has a change outside a session's own item that the last
-  accepted consistency analysis did not see; the analysis is accepted only
-  between sessions, and a session's own commands never mark TODO.md dirty
-  (`no_start_while_busy`, `no_start_while_dirty`,
-  `analysed_between_sessions`, `own_commands_keep_clean`);
-- every start advances the tenure epoch; the live session holds the current
-  epoch and a command from a superseded one changes nothing (`exec_wf`,
-  `stale_refused`);
-- a session lands its item (only once its run is terminal), parks it for
-  the user, or hands off (a backstop for a huge item) only once everything
-  it learned (open questions, consult findings) is recorded in TODO.md or
-  DECISIONS.md by item id; records only grow; a landed item leaves "Next,
-  in order" (`acts_need_recorded`, `land_needs_terminal`,
-  `records_only_grow`, `landed_leaves_next`);
-- workers are Sonnet by default, Opus for risky items and after any failed
+- the queue starts the top item's run on a durable event (a run landed,
+  the user answered, server start); the start is a pure function of
+  durable state, so a lost wake only delays it and a repeated one starts
+  nothing more (`reconcile_idem`, `reconcile_starts_iff`,
+  `reconcile_keeps_live`, `reconcile_takes_top`);
+- no run starts while the previous item's run is not terminal, or while
+  TODO.md has a change outside a run's own item that the last accepted
+  analysis did not see; the analysis is accepted only between runs, and a
+  run's own commands never mark TODO.md dirty (`no_start_while_busy`,
+  `no_start_while_dirty`, `analysed_between_sessions`,
+  `own_commands_keep_clean`);
+- every start advances the epoch; a command from a superseded run changes
+  nothing (`exec_wf`, `stale_refused`);
+- a run lands its item (only once terminal), parks it for the user, or
+  hands off (a backstop for a huge item) only once every question and
+  finding is recorded in TODO.md or DECISIONS.md by item id; records only
+  grow; a landed item leaves "Next, in order" (`acts_need_recorded`,
+  `land_needs_terminal`, `records_only_grow`, `landed_leaves_next`);
+- the agent is Sonnet by default, Opus for risky items and after any failed
   verify, Haiku only for a first attempt at a mechanical item during its
   trial (`route_risky`, `route_after_failure`, `haiku_only_on_trial`);
-- nothing lands unverified, and a non-trivial diff lands only after the
-  short-context review (`mayLand_needs_verified`, `nontrivial_needs_review`);
-- a pre-task consult is skipped exactly when the item's decided round is
-  newer than the last commit on its target paths and nothing new came up
-  (`consult_skipped_iff`).
+- nothing lands unverified, and a non-trivial diff lands only after
+  `review_run` approved it (`mayLand_needs_verified`,
+  `nontrivial_needs_review`);
+- an item whose decided round is not newer than the last commit on its
+  target paths, or with a new fact, waits on the user: with no coordinator
+  nobody runs a consult round (`consult_skipped_iff`).
 
 Assumed, not proved: a crash loses only notes that were never recorded and
-that nothing acted on; how "a change outside a session's own item" is
-detected (per-item hashes against the last analysed ones, the session's
-edits through `todo_edit.py` attributed to it); how an item's class is
-chosen; what the analysis and the review find.
+that nothing acted on; how "a change outside a run's own item" is detected
+(per-item hashes against the last analysed ones); how `draft_task` picks the
+class; what the analysis and the review find.
 `per-item-workflow.svg` and `per-item-sequence.svg` are rendered from the
 two blocks below like the diagrams above.
 
 ```mermaid
 flowchart TD
   subgraph Q["herdr queue (server, no LLM) — PerItem.Queue"]
-    EV(["durable event: run landed, user answered, server start"]) -->|wake| RC{"live session?"}
+    EV(["durable event: run landed, user answered, server start"]) -->|wake| RC{"an item's run live?"}
     RC -->|"yes: reconcile_keeps_live"| NOP(["nothing starts"])
     RC -->|no| BZ{"the previous item's run terminal?"}
     BZ -->|"no: no_start_while_busy"| WAITR(["wait for runTerminal"])
-    BZ -->|yes| DT{"TODO.md changed outside a session's own item since the last analysis?"}
-    DT -->|"yes: no_start_while_dirty"| AN["analysis agent (read-only): verdict per changed item"]
-    AN -->|"accepted between sessions: analysed"| EV
+    BZ -->|yes| DT{"TODO.md changed outside a run's own item since the last analysis?"}
+    DT -->|"yes: no_start_while_dirty"| AN["analysis call (read-only): verdict per changed item"]
+    AN -->|"accepted between runs: analysed"| EV
     DT -->|no| NX{"an item in Next, in order?"}
     NX -->|no| IDLE(["queue empty or every item waits on the user"])
-    NX -->|"yes: reconcile_takes_top"| START["epoch + 1, fresh session for the top item"]
+    NX -->|"yes: reconcile_takes_top"| START["epoch + 1, the top item's run"]
   end
 
-  subgraph S["Coordinator session (fresh LLM, one item, epoch e)"]
-    START --> READ["the item's text in the session's prompt; edits only by id through todo_edit.py"]
-    READ --> PC{"needsPreConsult: no decided round newer than the last commit on the target paths, or a new fact?"}
-    PC -->|yes| CONS["consult round"]
-    PC -->|"no: consult_skipped_iff"| TASK
-    CONS -->|"learn finding, then record"| TASK["write the task file"]
-    TASK --> RT{"route: item class, failed verifies"}
-    RT -->|"risky, or after a failed verify"| OP["Opus worker"]
-    RT -->|routine| SO["Sonnet worker"]
-    RT -->|"mechanical, Haiku trial on"| HA["Haiku worker"]
-    OP --> RUN["herdr todo run (runStart): worker, then verify"]
+  subgraph S["One item's run: one implementing agent and typed calls, epoch e"]
+    START --> DR["draft_task (Opus): task, subject, paths, checks, class from the item's text"]
+    DR --> PC{"needsPreConsult: no decided round newer than the last commit on the target paths, or a new fact?"}
+    PC -->|"yes: no coordinator to consult"| ASK["the question recorded in the item"]
+    PC -->|"no: consult_skipped_iff"| RT{"route: item class, failed verifies"}
+    RT -->|"risky, or after a failed verify"| OP["Opus agent"]
+    RT -->|routine| SO["Sonnet agent"]
+    RT -->|"mechanical, Haiku trial on"| HA["Haiku agent"]
+    OP --> RUN["the agent implements in the folder slot (runStart), herdr verifies"]
     SO --> RUN
     HA --> RUN
-    RUN -->|"verify failed, attempt < 3"| RT
+    RUN -->|"verify failed, attempt < 2"| RT
+    RUN -->|"agent asks"| AQ{"answer_question"}
+    AQ -->|"allow, deny or answer"| RUN
+    AQ -->|"reserved for the user"| ASK
     RUN -->|verified| TR{"trivial diff?"}
-    TR -->|no| REV["short-context review: diff, item, decisions excerpt"]
-    REV -->|"findings: learn, record, retry"| RT
-    REV -->|passed| LAND
-    TR -->|"yes: mayLand"| LAND["approve: cherry-pick, install, TODO edit, push; land e needs pending = [] and the run terminal"]
-    TASK -->|"a question only the user can answer"| ASK["learn question, then record"]
-    ASK --> PARK["park e: needs pending = []"]
-    TASK -->|"context too big for one item (backstop)"| HO["handOff e: needs pending = [], epoch + 1, same item"]
+    TR -->|no| REV["review_run (Opus): diff, item, decisions excerpt"]
+    REV -->|"retry: findings recorded"| RT
+    REV -->|escalate| ASK
+    REV -->|approve| LAND
+    TR -->|"yes: mayLand"| LAND["cherry-pick, install, TODO edit, push; land e needs pending = [] and the run terminal"]
+    ASK --> PARK["park e: the item waits in Needs a decision"]
+    RUN -->|"context too big (backstop)"| HO["handOff e: needs pending = [], epoch + 1, same item"]
   end
 
   LAND -->|"item leaves Next: landed_leaves_next"| EV
-  PARK -->|"item waits in Needs a decision"| EV
-  HO --> READ
-  CR(["session process gone: crash"]) -->|"unrecorded notes lost, nothing acted on them"| EV
+  PARK -->|"the queue takes the next item"| EV
+  HO --> RUN
+  CR(["the agent's process is gone: crash"]) -->|"unrecorded notes lost, nothing acted on them"| EV
   STALE(["command from a superseded epoch"]) -->|"stale_refused"| X(["refused, nothing changes"])
   UE(["the user edits another item"]) -->|"foreignEdit: dirty"| EV
 ```
@@ -430,57 +433,44 @@ sequenceDiagram
   autonumber
   actor U as User
   participant Q as herdr queue (server)
-  participant C as Coordinator session (fresh per item)
-  participant M as Other models (consult)
-  participant D as Driver (herdr todo run)
-  participant W as Worker (Sonnet, Opus or Haiku)
-  participant R as Reviewer (short context)
-  participant S as Durable records (TODO.md, DECISIONS.md by item id)
-  participant A as Analysis agent
+  participant A as Analysis call
+  participant DT as draft_task (Opus)
+  participant W as Agent (Sonnet, Opus or Haiku)
+  participant V as Verify and landing (herdr)
+  participant R as review_run (Opus)
+  participant S as TODO.md and DECISIONS.md (by item id)
 
   Note over Q: a durable event: run landed, user answered or server start
-  Q->>Q: reconcile: no live session, the previous run terminal, an item next?
-  opt TODO.md changed outside a session's own item since the last analysis
+  Q->>Q: reconcile: no live run, the previous run terminal, an item next?
+  opt TODO.md changed outside a run's own item since the last analysis
     Q->>A: analyse the changed items (read-only)
-    A-->>Q: verdict per item, accepted between sessions
+    A-->>Q: verdict per item, applied between runs
   end
-  Q->>C: start session for the top item, epoch e, the item's text in the prompt
-  opt no decided round newer than the last commit on the target paths, or a new fact
-    C->>M: consult round (brief from the item and the code)
-    M-->>C: answers
-    C->>S: record findings (before acting on them)
-  end
-  alt a question only the user can answer
-    C->>S: record the question
-    C->>Q: park e
-    Q-->>U: the question in Needs a decision and the ? list
-    Note over C: session ends, and the answer is a durable event that wakes the queue
-  else the item can be done
-    C->>D: todo run (task, message, paths, checks, model by class)
-    D->>W: start attempt n
-    W-->>D: WORKER-DONE
-    D->>D: verify (one commit, message, paths, clean tree, checks)
-    alt verify failed and n < 3
-      D-->>C: failed
-      C->>D: retry with Opus
-    else verified and the diff is not trivial
-      D-->>C: verified
-      C->>R: diff, item, decisions excerpt
-      opt high-consequence diff (concurrency, protocol, persisted state)
-        R->>M: diff consult
-        M-->>R: findings
-      end
-      R-->>C: findings or passed
-      C->>S: record findings
+  Q->>DT: the top item's text, epoch e
+  DT-->>Q: task, subject, paths, checks, class
+  alt no decided round newer than the last commit on the target paths
+    Q->>S: record the question in the item, move it to Needs a decision
+    Q-->>U: the question in the ? list
+  else ready
+    Q->>W: start the agent in the folder slot (model by class)
+    opt the agent asks
+      W->>Q: question
+      Q->>Q: answer_question: allow, deny, answer or escalate
+      Q-->>U: only what is reserved for the user
     end
-    C->>D: approve: cherry-pick, install, TODO edit, push
-    D-->>Q: run landed (durable event)
-    C->>Q: land e, session ends
+    W-->>Q: WORKER-DONE
+    Q->>V: verify (one commit, message, paths, clean tree, checks)
+    alt failed, attempt < 2
+      V-->>Q: failed
+      Q->>W: retry on Opus
+    else verified
+      opt the diff is not trivial
+        Q->>R: diff, item, decisions excerpt
+        R-->>Q: approve, retry or escalate
+      end
+      Q->>V: cherry-pick, install, TODO edit, push
+      V-->>Q: run landed (durable event)
+    end
   end
-  opt context too big inside one item (backstop)
-    C->>S: record everything pending
-    C->>Q: handOff e
-    Q->>C: fresh session, epoch e + 1, same item
-  end
-  Note over Q,C: a command carrying a superseded epoch is refused
+  Note over Q: the next run starts only after this one is terminal
 ```

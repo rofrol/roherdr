@@ -53,8 +53,9 @@ worker's usage) replaces these estimates with recorded numbers.
 | Fresh coordinator session per item | coordinator ~$1.6-2.2 | only with the one-item read; otherwise 0-20% saving |
 | B: no coordinator, one agent per item | ~$3-5 | needs an independent reviewer and an incremental TODO analysis |
 | Target: per-item session, one-item read, class-routed workers, short-context review, consults only when needed | ~$3-4 | the models' range, to be measured |
+| Chosen (2026-10-23): queue mode, no coordinator LLM, one agent per item, `draft_task` and `review_run` on Opus; Opus agent first, then Sonnet | ~$3-6 | worker cost (~$6 at 2.2 Opus runs) plus cents of typed calls; Sonnet cuts the non-cache share of each run |
 
-Adoption criterion (the trial, 20-40 items stratified by item class): cost
+Adoption criterion (the trial t-ftnvhl7h: ~10 items with an Opus agent, then ~15 with Sonnet): cost
 per item at least 35% lower, with no rise in rework (amended or reverted
 commits, follow-up items), lost questions or the user's interventions.
 

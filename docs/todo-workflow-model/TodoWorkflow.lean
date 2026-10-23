@@ -1538,34 +1538,37 @@ example :
           [.needsDecision "t-a" "which?", .next "t-b"]).decide == .dispatch "t-b"
 
 
-/-! ## Target design: a fresh coordinator session per item (not implemented yet)
+/-! ## Target design: queue mode, one agent per item (not implemented yet)
 
 Decided by the user on 2026-10-23 after consult rounds
-`20261023-211512-5f06`, `20261023-211937-9803`, `20261023-212316-447d` and
-`20261023-212927-b9d8`: the long-lived coordinator re-sent a ~550k-token
-context about 36 times per item. In the target design herdr's queue starts a
-fresh coordinator session for the top item on a durable event (a run landed,
-the user answered, server start); the session reads only that item, records
-every open question and consult finding before it acts, and ends when its
-item has landed or waits on the user. The next session starts only once the
-previous one is gone, its run is terminal and TODO.md has no change outside a
-session's own item that the last analysis did not see (then a read-only
-analysis runs first). A mid-item handoff stays as a backstop
-for a huge item. Workers are routed by item class, a non-trivial diff needs a
-short-context review before it lands, and a pre-task consult is skipped when
-the item's decided round is newer than the last commit on its target paths.
+`20261023-211512-5f06` .. `20261023-221441-3128` (see `cost-baseline.md`):
+the long-lived coordinator re-sent a ~490k-token context dozens of times per
+item, so there is no coordinator LLM. herdr's queue (deterministic) starts
+the top item's run on a durable event (a run landed, the user answered,
+server start); one agent implements the item, and the model is called only
+in small typed calls: `draft_task` (task, subject, paths, checks, class),
+`answer_question` and `review_run` (both drafting and review on Opus). The
+next run starts only once the previous one is terminal and TODO.md has no
+change outside a run's own item that the last analysis did not see (then a
+read-only analysis runs first). Every question for the user and every
+finding is recorded in the item or DECISIONS.md before anything acts on it.
+A mid-item handoff stays as a backstop for a huge item. The agent's model is
+routed by item class, a non-trivial diff needs `review_run` before it lands,
+and an item with no decided round newer than the last commit on its target
+paths waits on the user (no coordinator consults any more).
 
-`PerItem.Queue` replaces `Coordinator.decide`'s 70% handoff once it is
-implemented; the run, git, relay and supervision machines above stay. -/
+Below, a `Session` is one item's run: its agent and its typed calls.
+`PerItem.Queue` replaces `Coordinator.decide` once it is implemented; the
+run, git, relay and supervision machines above stay. -/
 
 namespace PerItem
 
 abbrev ItemId := String
 abbrev NoteId := Nat
 
-/-- One coordinator session: the tenure epoch it was started under, its one
-item, and what it has learned but not yet recorded (open questions to the
-user and consult findings). -/
+/-- One item's run (its agent and typed calls): the epoch it was started
+under, its one item, and what it has learned but not yet recorded (open
+questions to the user and review findings). -/
 structure Session where
   epoch   : Nat
   item    : ItemId
@@ -1586,13 +1589,13 @@ structure Queue where
 
 inductive Cmd where
   | wake                          -- a durable event: run landed, user answered, server start
-  | learn (e : Nat) (n : NoteId)  -- the session meets a question or a consult finding
+  | learn (e : Nat) (n : NoteId)  -- the run meets a question or a review finding
   | record (e : Nat)              -- it writes what it learned to durable records
   | land (e : Nat)                -- its item's run landed through the driver; the session ends
   | park (e : Nat)                -- its item waits on the user; the session ends
   | handOff (e : Nat)             -- backstop for a huge item: a fresh session, same item
-  | crash                         -- the session's process is gone
-  | runStart (e : Nat)            -- the session starts its item's `herdr todo run`
+  | crash                         -- the agent's process is gone
+  | runStart (e : Nat)            -- the agent starts working in the folder slot
   | runTerminal                   -- herdr: that run is done, blocked or aborted
   | foreignEdit                   -- the user or another session edits another item
   | analysed                      -- herdr accepts a consistency analysis (between sessions)
