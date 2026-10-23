@@ -32,6 +32,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `run-r-gj3emu6x-install.log`: the same test, capture file missing); the
   coordinator retried the install once.
   Decided by the user 2026-10-23 (d-k73immye): approved, as the next item.
+  Round 20261023-142004-c534 (sol, MiMo, DeepSeek, Argon), checked against
+  the assets, decided by the coordinator:
+  - The three hooks stop spawning the herdr CLI and send the JSON-RPC
+    request straight to `HERDR_SOCKET_PATH`, as the codex, copilot,
+    cursor and other hooks do (all four): the fork and exec of the CLI
+    under load is what the 1 s limit killed. The siblings' 0.5 s socket
+    timeout stays, labelled as an external deadline: it bounds the agent's
+    synchronous hook against a hung server, not a delivery policy.
+  - A failed report is recorded without output: one appended line in a
+    herdr state file (hook, pane, method, error class), stdout and stderr
+    stay empty (all four).
+  - The PowerShell twins in the same change (MiMo, confirmed): letta's
+    `Start-Job` with `Wait-Job -Timeout 1` leaves the job running and
+    loses the report; qodercli and qwen call `herdr` with no bound. They
+    use what the other hooks' `.ps1` twins use to reach the server.
+  - Tests: a fake server socket bound before the hook runs records the
+    request; the test asserts the request it received and empty
+    stdout/stderr, no sleep; the fake-binary tests of these three hooks
+    go. `HERDR_INTEGRATION_VERSION` bumps once against the latest release.
+  - Proposed separately (sol, DeepSeek, Argon): a durable report spool
+    that herdr reconciles at named events, so a timed-out report is
+    recovered, for every hook.
 
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
@@ -4216,6 +4238,15 @@ Items agents add. Not approved until the user moves them up.
   event it asserts and never by a duration: treat them as one item, fix the
   three tests and the hook's report loss, and keep a stress run of each in
   `just check` only if it is deterministic.
+
+- [ ] A hook's report that times out is recovered, not lost (from round [t-wdsfco7d]
+  20261023-142004-c534, sol, DeepSeek, Argon, while deciding
+  [t-claehqkg]): every socket hook keeps a 0.5 s bound against a hung
+  server and drops the report when it is hit. Proposal: the hook writes
+  the report atomically to a per-pane spool before the socket request,
+  and herdr reconciles the spool at server start, turn end and handoff,
+  idempotent by the report's seq. Touches every integration asset and the
+  server.
 
 ## Needs a decision
 
