@@ -67,6 +67,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   History; the History label (`notification_log_button`,
   `src/client/shell/notification_log.rs`) grows with the unread count, so
   a wider neighbour (`✉3`, `?10`) can push the clicked button out.
+  Round 20261023-135532-3a4d (sol, MiMo, DeepSeek, Argon), checked against
+  `render_header_indicators`, decided by the coordinator:
+  - Reproduce first, with a render test at the boundary width before and
+    after the click: two paths can drop the button, the admission loop
+    (labels + 2 cells, Bookmarks dropped first) and a second, silent one
+    in the draw loop (`if right < limit + width + 2 { continue; }`), which
+    can drop a button the admission kept because History's drawn width
+    (`render_notification_log_button`, wider while its list is open) is
+    not the estimate (MiMo, confirmed in the code). Check too whether the
+    click changed a label's width (`sync_notification_log_source`, an
+    open list's style) or the bookmark count (sol, Argon).
+  - Fix: one width computation for admission and drawing; the button whose
+    list is open is never dropped and keeps its x while the list is open;
+    counts are capped (`99+`) before anything is dropped. While the pointer
+    is over the header row, the shown set and the buttons' x stay as last
+    drawn and are recomputed on leaving it or on a resize, as the spaces
+    list already holds its order under the pointer (sol, DeepSeek, Argon;
+    MiMo preferred a pure function of state and width).
+  - Noted, not now: an overflow `…` menu for dropped buttons (sol, Argon).
+  - Tests: the boundary widths (needed - 1, needed, needed + 1) with and
+    without an open list; a click on Bookmarks at the boundary keeps its
+    rect, and a second click at the same cell closes the list; Asking is
+    never dropped.
 
 - [ ] A clicked job square is no longer pinned under its folded tab line [t-5r7ujawk]
   (the user, 2026-10-23: "the herdr job square must no longer be pinned
