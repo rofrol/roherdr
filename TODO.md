@@ -69,6 +69,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   transcripts by `herdr usage --workspace` (`src/usage/estimate.rs`, an
   estimate, only sessions herdr still knows); no persistent ledger yet
   (t-twmvyrnk, part 1).
+  Round 20261023-135901-681a (sol, MiMo, DeepSeek, Argon), all four: a
+  space's true percentage of the subscription limit cannot be known.
+  Utilization is per account and includes use herdr never sees
+  (claude.ai, other machines), a rolling 5 h window drops old use as new
+  arrives, so a window's utilization change is not what was used in it,
+  and Anthropic's weights are unpublished; calibrating weights from
+  deltas (d) is not identifiable. Defensible: Claude tokens per space by
+  class (input, output, cache read, cache write) over rolling 1 h, 6 h,
+  24 h and 7 d, labelled "Claude tokens observed in herdr", with the
+  account's 5 h and 7-day utilization and reset times shown apart (never
+  a rolling "last 7 days" relabelled as the 7-day window). Prerequisite
+  for any of it: the server-owned persistent ledger of t-twmvyrnk part 1
+  (per response: time, space, session, message and request id, model,
+  token classes; per-session transcript cursor; reconciled at server
+  start, transcript writes, turn end, session exit; aggregates served by
+  the API, no I/O in render); closed panes and finished workers keep
+  their history. Placement: a usage view with spaces × windows; the
+  sidebar at most one compact number. Open (asked the user, below):
+  whether a percentage is shown at all.
 
 - [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
   clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
