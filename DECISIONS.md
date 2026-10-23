@@ -2440,3 +2440,27 @@ after rounds `20261018-172917-f040`, `20261018-200429-e576` and
 - The user decided 2026-10-23: the first real-model run of
   `herdr todo review-eval` stays unrun until the supervisor's review step
   needs it; it is a gate in the driver-retirement record (t-54d2offk).
+
+## Coordination is herdr's tenure and notes only, in a herdr pane (2026-10-23)
+
+The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
+(agent-kit), with consult rounds `20261023-122037-addb` and
+`20261023-123609-60d6` (sol, MiMo, Argon; DeepSeek failed):
+
+- herdr's coordinator tenure and `herdr handoff` notes are the only lease
+  and claim implementation; the plain-file lease under
+  `~/.local/state/todo-locks/` and its `agent-state` helper are retired (a
+  coordinator held that lease for this repository with no herdr tenure, so a
+  second one could take `herdr coordinator start`).
+- A TODO is coordinated only in a herdr pane. Outside one the skill offers
+  `herdr coordinator open` and stops. This drops the proposed process-tenure
+  handover (t-3htrjf33) and `herdr todo run` landing for a process tenure
+  (t-7thqae2b): a process cannot be frozen like a pane, and the driver is
+  being retired for the Bend supervisor.
+- A plain `/todo` start refused while a frozen pane lives is correct
+  fencing, since that pane's agent may still act. The rule now says the
+  named successor finishes a pending handoff, any other start reports and
+  stops, and a plain start takes it over only once the frozen pane is gone.
+  This replaces the proposed Rust change (t-h2iol5sp). Not decided: why
+  `coordinator ready` and `coordinator handoff --successor` are two steps
+  (three tenures were frozen on 2026-10-23: bend-wasm, bend, herdr-bend).

@@ -3979,33 +3979,6 @@ Items agents add. Not approved until the user moves them up.
   three tests and the hook's report loss, and keep a stress run of each in
   `just check` only if it is deterministic.
 
-- [ ] A process coordinator tenure has a handover (from the user's decision [t-3htrjf33]
-  2026-10-23 that herdr's tenure and notes are the only coordination
-  primitives, inside and outside a herdr pane; consult round
-  `20261023-122037-addb`). `coordinator ready` and `coordinator handoff` are
-  pane-only, so the global `todo` skill hands a tenure taken with
-  `coordinator acquire --pid` over by ending it first: the repository has no
-  coordinator until the successor acquires, and any plain `/todo` start can
-  take it in between. Wanted: a handover for a process holder that keeps the
-  tenure held and names the note until the successor that claimed the note
-  takes it, like the pane flow.
-
-- [ ] `herdr todo run` lands for a coordinator outside a herdr pane (from the [t-7thqae2b]
-  same decision, 2026-10-23). A run started by a process tenure
-  (`coordinator acquire --pid`) cannot bind its owner tenure, so its landing
-  ends `blocked` (`src/workers/runs.rs` around line 2511); the global `todo`
-  skill records that as a blocker, so coordinating from a plain terminal,
-  tmux or ssh cannot land anything.
-
-- [ ] A frozen coordinator handoff whose successor never came can be finished [t-h2iol5sp]
-  (from the same decision, 2026-10-23). The global rules say any `/todo`
-  start finishes a pending coordinator handoff whose successor never came,
-  but a tenure frozen by `coordinator ready` refuses every plain start while
-  its old pane lives; only that pane can go on or `--abort`. On 2026-10-23
-  `herdr coordinator status` showed three frozen tenures (bend-wasm, bend,
-  herdr-bend). Decide: a successor start from the pending note (claim the
-  note, then take the frozen tenure), or report-only, and align the rule.
-
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
