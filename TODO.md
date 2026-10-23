@@ -4064,6 +4064,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   waiting on a tracked job). How a finding is rated (useful, noise, wrong)
   and by whom is to be decided with the models before building.
 
+- [ ] The idle-agents fold opens and disappears when another agent changes [t-xgkgb4jz]
+  state (the user, 2026-10-23: "fold idle agents works badly: when I have
+  a working agent in a tab and its state changes, the fold expands and
+  disappears, although the folded ones are still idle; ask the models").
+  Code: `release_unquiet_folds` (`src/client/shell/space_tabs.rs:1012`,
+  called on every snapshot from `src/client/shell/state.rs:2368`) drops
+  each folded id for which `still_quiet` / `tab_is_quiet`
+  (`space_tabs.rs:540`, `:490`) is false in that one snapshot, for good.
+  Consult round pending; the cause is not verified yet.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
