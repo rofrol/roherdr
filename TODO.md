@@ -3619,6 +3619,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     hidden run keeps its job row, a failed wait job keeps its square).
   Open, asked the user: when a failed consult helper job's tab and square
   go (see "Needs a decision" answer below once given).
+  Decided by the user 2026-10-23 (d-dboichuo): when the consult round
+  ends, its helper jobs fold into one summary at the caller; a failure
+  stays in that summary until acknowledged.
 
 ## Proposed
 
