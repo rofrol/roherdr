@@ -4185,6 +4185,23 @@ Items agents add. Not approved until the user moves them up.
   then bind for a run holder on a server started with `--handoff-import`
   binds.
 
+- [ ] The todo run landing's remaining crash and race windows (follow-up [t-uv54urfc]
+  of t-ydd2vlwe slice 2, review rounds 20261023-230513-039b and
+  20261024-000859-5d7b; left out of slice 2 attempt 3 on purpose): (1)
+  every mutation of the shared landing checkout is check-then-act against
+  other sessions (one can switch the checkout's branch between the
+  driver's `on_branch` check and its fast-forward or restore; sol): serialise
+  the driver's checkout mutations with the other writers or move the
+  landing to its own worktree of the target branch; (2) the successor
+  dispatch (`follow_up`) runs after the `Done` write, so a crash in between
+  loses the next run or queue step (sol, MiMo, DeepSeek): persist the
+  dispatch intent with `Done` and acknowledge it idempotently; (3) a verify
+  that passed but whose acknowledgement was lost runs the checks again
+  (DeepSeek); (4) abort is refused while an effect is in flight
+  (`Rejection::EffectInFlight`), so a hung install or push cannot be
+  aborted (MiMo, DeepSeek): record the abort and act at the effect's
+  acknowledgement.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
