@@ -2506,3 +2506,20 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
 - Not done here: no `.ps1` hook reaches the server without the CLI
   (attempt 1 found it), so the PowerShell twins are a proposed item of
   their own; a durable report spool is proposed too.
+
+## A coordinator that continues its own chain leaves no stop for the user (t-feyc35sb, 2026-10-23)
+
+- The user, 2026-10-23, asked why a run the coordinator closed with
+  `--stop-reason "coordinator dispatches the next item itself"` waited for
+  the user's acknowledgement although the coordinator started the next run
+  two minutes later. Round 20261023-150439-de3c (sol, MiMo, DeepSeek,
+  Argon agreeing); approved by the user as the next item (d-q32vnu3m).
+- Landed (run r-o7bhmarv): `todo resume ... --continue-self` shows the
+  done run as `between runs` with no acknowledgement and no notice while
+  the owner lives; `todo run --continues <run>` records the predecessor
+  durably and clears it (same repository or owner alone never does);
+  the owner going away first turns it into one notified, user-facing stop
+  (`coordinator gone before the next run`), decided in the transaction
+  that writes it; a handoff moves it.
+- `--stop-reason` stays the user-facing stop; a coordinator never
+  acknowledges for the user.
