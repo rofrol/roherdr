@@ -4217,6 +4217,14 @@ Items agents add. Not approved until the user moves them up.
   idempotent by the report's seq. Touches every integration asset and the
   server.
 
+- [ ] The PowerShell hooks reach herdr without a slow or unbounded CLI call [t-xacqeyuc]
+  (found 2026-10-23 by run r-l6754rbi of [t-claehqkg]): every
+  `src/integration/assets/*/*.ps1` reports with `& $herdr ...`; codex's
+  has no bound, qodercli's and qwen's neither, and letta's `Start-Job` +
+  `Wait-Job -Timeout 1` leaves the job running and loses the report. A
+  first PowerShell client of the server needs the Windows transport of
+  `HERDR_SOCKET_PATH` (a Unix socket or a named pipe) settled first.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
