@@ -81,6 +81,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   In flight 2026-10-23: slice 1 of the transition core with the landing
   (t-cmjqsat2), run `r-qllfvm6w` (continues r-ulhwynwg).
 
+- [ ] Tag each coordinator turn by kind and record every worker's token usage (the user, 2026-10-23: "this phase tagging must be next in the TODO") [t-j2ayjqdl]
+  So the delegation-only share of the coordinator-and-workers cost can be
+  separated from what a single agent would also pay (round
+  20261023-205607-7d3d, all four models: the coordinator/worker ratio is
+  not the overhead). herdr records, per coordinator assistant turn, its
+  kind (task writing, wait and resume, driver acks, diff review, user
+  conversation, consult, other) with its cache-read, cache-write, input
+  and output tokens and context size, and per worker its usage for every
+  agent kind: pi workers (gpt-6.1-sol, deepseek) run with `--no-session`
+  and recorded no usage at all (39 of 80 workers in 2026-10-16..23).
+  Measured baseline the same week at list prices: coordinator Claude Code
+  sessions with subagents $205 (678M tokens), Claude workers $155 (367M),
+  40 landings, cache reads over 98% of tokens, about 415K cache-read
+  tokens per coordinator message, workers' median 22% of tokens before
+  their first edit; scripts in the session's scratchpad were one-off and
+  are not the implementation. How a turn's kind is derived (from the
+  commands it ran and the events it answered, never from model prose) is
+  settled with the models before coding. Feeds the queue trial and the
+  handoff threshold comparison in t-ic5rrxn3.
+
 - [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
   (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
   space's todo runs moving through the driver's steps" on branch
@@ -228,14 +248,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   no usage. The ratio is not the overhead (a single agent also talks with
   the user, consults and reviews, and carries every item's exploration in
   its own context); the models' ranges were -20% to +65%, central
-  +20-40%. The trial therefore also tags each coordinator turn by kind
-  (task writing, wait and resume, driver acks, diff review, user
-  conversation, consult) with its cache-read, cache-write and output
-  tokens and context size, and records pi workers' usage, so the
-  delegation-only share can be separated. The largest measured lever is
-  the coordinator's context per turn (about 415K cache-read tokens per
-  message, $130 of cache reads in the week); see the handoff threshold
-  question in "Needs a decision".
+  +20-40%. Tagging coordinator turns by kind is its own item, next after
+  the transition core ("Tag each coordinator turn by kind"). The largest
+  measured lever is the coordinator's context per turn (about 415K
+  cache-read tokens per message, $130 of cache reads in the week).
+  Decided by the user 2026-10-23 (question t-v6ttkikt, folded in here):
+  handing off at about 200K tokens of context instead of 70% of the
+  window is measured in the queue trial first, next to the current 70%,
+  comparing cost per landed item; the rule changes only after that.
   Asked 2026-10-12 (the user: "loss of memory between items and shallower
   review: how do others counter it? ask the models").
   Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
@@ -4411,9 +4431,5 @@ user needs to decide or do.
   Bend retirement (t-54d2offk) waits.
 
 ### Decide
-
-- [ ] [t-v6ttkikt] Should a coordinator hand off at a fixed context size of about 200K tokens instead of at 70% of the model's window?
-  Options: about 200K tokens, measured in the queue trial first (Recommended) | about 200K tokens now | keep 70% of the window
-  Checked: round 20261023-205607-7d3d (sol, MiMo, Argon agreeing): coordinator sessions averaged about 415K cache-read tokens per assistant message over 1,569 messages in 2026-10-16..23 ($130 of cache reads); halving that saves about $65, about 18% of the measured Claude spend, more than removing every wait turn. More handoffs cost a note and a fresh read each; not measured. The 70% value is the user's (2026-10-13, round 20261013-133453-319c) in the global rules and t-ic5rrxn3.
 
 ### Needs you to act or watch
