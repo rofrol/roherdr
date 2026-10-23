@@ -3593,6 +3593,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   job (`ask deepseek flash`, failed on DeepSeek's balance) left as a tab
   under the coordinator, and `!5` on another session's tab for five such
   failed helper jobs.
+  Round 20261023-132516-7afc (sol, MiMo, DeepSeek, Argon), checked against
+  the code and decided by the coordinator:
+  - One line per run: the headless worker's line folds into its run's
+    line (the run knows its worker id), keeping the worker's state apart
+    from the run's step (a worker can exit while the step still reads
+    `attention`); a question shows on that line. All four agreed.
+  - A wait job on a shown run leaves no `↳ job` row and no square: the
+    coordinator's row reads `↳ waiting on r-x`. The link is derived on the
+    server from facts it already has, not declared: the `herdr todo wait`
+    inside a job tab registers a `RunWait` whose `waiter_pane` is that
+    job's pane (`src/workers/runs/activity.rs`, `src/app/api/waits.rs`),
+    and the coordinator's background wait names that job, so the edge
+    resolves through the job to the run (Argon; sol, MiMo and DeepSeek
+    proposed a `herdr-job run --waits-on run:r-x` flag, dismissed: a
+    declaration can claim a wait that never registered). The job collapses
+    only while its `todo.wait` is registered or after it exits 0; a job
+    that exits non-zero keeps its red square (Argon, sol).
+  - Only the owner's wait collapses; another observer's wait shows as
+    before (MiMo).
+  - Dismissed: dropping the rule that a long wait runs as a visible job
+    (Argon): the user's rules require it.
+  - First slice: the worker line folds into the run line, and the
+    job-to-run wait collapse, both with client tests (one row per run, a
+    hidden run keeps its job row, a failed wait job keeps its square).
+  Open, asked the user: when a failed consult helper job's tab and square
+  go (see "Needs a decision" answer below once given).
 
 ## Proposed
 
