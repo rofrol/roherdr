@@ -3854,6 +3854,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Source: `src/workers/supervision.rs`; the Lean model in
   `docs/todo-workflow-model/` describes supervision.
 
+- [ ] Statistics of the supervisor's findings, like consult stats (the [t-p74oswca]
+  user, 2026-10-23: "some statistics of this supervisor need collecting,
+  as in consult stats"). The findings already carry their states
+  (`herdr supervise` notices list holds: pending, retracted, delivered,
+  resolved, annotated, per predicate and rule version); what is missing is
+  a report of how useful each predicate is: per predicate and rule
+  version, how many findings, how many led to action versus were
+  acknowledged without one or retracted, time to acknowledgement, and
+  false positives as judged by the acknowledging coordinator or the user
+  (e.g. f-491 `coordinator_idle` and f-492 `untracked_shell` on
+  2026-10-23 were acknowledged with no action: the coordinator was
+  waiting on a tracked job). How a finding is rated (useful, noise, wrong)
+  and by whom is to be decided with the models before building.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
