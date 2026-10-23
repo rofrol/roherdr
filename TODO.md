@@ -98,6 +98,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a crash between an effect and its acknowledgement), the cli-reference
   docs; then `approve_landing` and the no-push case in the core.
 
+- [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
+  "increase the default sidebar width to 36"). Found in review of
+  t-2wcx22ue (run r-qrmzbihv, commit 6dd671f90): at the default 32
+  columns the weekly chart's over-pace text (`+2pp · 3.1pp over at 01:04`
+  after the bars, 34 columns) does not fit and the target is dropped
+  whole; at 36 it fits. The default is `sidebar_width: 32` in
+  `src/config/model.rs:1432`, documented in the generated config comment
+  at `src/main.rs:252`; tests assert it at `src/config/model.rs:1920` and
+  `src/client/shell/tests/chrome_context.rs:317`. The maximum stays 44; a
+  width the user saved (session snapshot) or configured is kept.
+  The user, 2026-10-23: "36 is to be done together with what needed 34":
+  this completes t-2wcx22ue (the over-pace text it added), so it goes
+  right after the item in progress.
+
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
   tagging? ask the models"; round 20261023-215046-6830, all four models: split
@@ -4045,17 +4059,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   2026-10-23 were acknowledged with no action: the coordinator was
   waiting on a tracked job). How a finding is rated (useful, noise, wrong)
   and by whom is to be decided with the models before building.
-
-- [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
-  "increase the default sidebar width to 36"). Found in review of
-  t-2wcx22ue (run r-qrmzbihv, commit 6dd671f90): at the default 32
-  columns the weekly chart's over-pace text (`+2pp · 3.1pp over at 01:04`
-  after the bars, 34 columns) does not fit and the target is dropped
-  whole; at 36 it fits. The default is `sidebar_width: 32` in
-  `src/config/model.rs:1432`, documented in the generated config comment
-  at `src/main.rs:252`; tests assert it at `src/config/model.rs:1920` and
-  `src/client/shell/tests/chrome_context.rs:317`. The maximum stays 44; a
-  width the user saved (session snapshot) or configured is kept.
 
 ## Proposed
 
