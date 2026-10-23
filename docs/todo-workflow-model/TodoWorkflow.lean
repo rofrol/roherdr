@@ -3,16 +3,19 @@
 
 A hand-written model (see README.md) of how a repository's TODO is worked
 through in herdr: the coordination tenure and its handoff, one item's run
-through `herdr todo run`, the supervisor that watches a worker for its
-owner, and the coordinator's decision at an item boundary. Commands are
+through `herdr todo run` and how a landed run is closed, the relay of a
+worker's questions to its owner, the read-only supervision that detects
+stuck coordinators and workers, and the coordinator's decision at an item
+boundary. Commands are
 named in comments. Only behavior is modelled; no I/O.
 
 `none` from a `step` function means the command is refused or does not
 apply in that state; the state is unchanged. `Run.run` and `Watch.run`
 evaluate a script of events and fail (`none`) at the first refused one.
 Abstracted away: the content of the cherry-picked commit (verify checks it;
-the model trusts it), and the composition of the parts: `Tenure`, `Repo`,
-`Git` and `Watch` are separate machines, so nothing here proves that a frozen
+the model trusts it), how the server derives supervision's facts, and the
+composition of the parts: `Tenure`, `Repo`, `Git` and `Watch` are separate
+machines, so nothing here proves that a frozen
 tenure stops worker starts across them.
 -/
 
@@ -189,13 +192,24 @@ def Run.attempt? : Run → Option Nat
 def Run.attemptOk (r : Run) : Prop :=
   ∀ a, r.attempt? = some a → 1 ≤ a ∧ a ≤ maxAttempts
 
-/-! ## Runs of a repository: identity and the one worker slot
+/-! ## Runs of a repository: identity, the one worker slot, and closing
 
-Every run is kept with its id and its TODO item. A run id is never reused,
-an item with an unfinished run (a refused admission included) is attached to,
-not launched again, and only one run at a time holds the worker slot. -/
+Every run is kept with its id, its TODO item and the coordination tenure that
+owns it. A run id is never reused, an item with an unfinished run (a refused
+admission included) is attached to, not launched again, and only one run at
+a time holds the worker slot. A landed run is closed one of three ways:
+`--next` (the driver starts that item's run), `--stop-reason` (a stop the
+user sees until a person acknowledges it) or `--continue-self` (between
+runs: the coordinator starts the next run itself, and nobody is asked). A
+run started with `--continues <run>` names its predecessor, a durable link,
+and clears it; if the owning tenure ends first, that event turns the run
+into a stop the user sees. Decided here, after consult round
+`20261023-150810-9b94`: the link stays within one tenure (its id survives a
+handoff), a predecessor has at most one successor, only a `done` run is
+closed, and `--continue-self` is refused once the tenure has ended. -/
 
 abbrev ItemId := String
+abbrev TenureId := String
 
 /-- A run that holds the folder slot: from admission until its commit is
 cherry-picked or the run ends (verify runs in the slot's worktree too). -/
@@ -208,26 +222,67 @@ def Run.finished : Run → Bool
   | .done | .blocked => true
   | _ => false
 
-structure RunRec where
-  id   : RunId
-  item : ItemId
-  run  : Run
+inductive Disposition where
+  | open_                       -- not closed yet
+  | next (item : ItemId)        -- --next
+  | stop (acked : Bool)         -- --stop-reason, or the owner's tenure ended
+  | betweenRuns                 -- --continue-self
+  | continuedBy (succ : RunId)  -- a run started with --continues names it
   deriving DecidableEq, Repr
 
+structure RunRec where
+  id        : RunId
+  item      : ItemId
+  owner     : TenureId
+  run       : Run
+  disp      : Disposition
+  continues : Option RunId    -- the durable link to its predecessor
+  deriving DecidableEq, Repr
+
+/-- The user is asked about a run only while it is an unacknowledged stop. -/
+def RunRec.asksUser (x : RunRec) : Bool := x.disp == .stop false
+
 structure Repo where
-  runs : List RunRec
+  runs  : List RunRec
+  ended : List TenureId   -- tenures whose pane closed or agent exited
   deriving Repr
+
+inductive Close where
+  | next (item : ItemId) | stop | continueSelf
+  deriving DecidableEq, Repr
+
+inductive Actor where
+  | user | coordinator
+  deriving DecidableEq, Repr
 
 inductive RepoCmd where
-  | launch (id : RunId) (item : ItemId)   -- herdr todo run <item>
-  | event (id : RunId) (e : Event)        -- an event of that run (attach included)
+  | launch (id : RunId) (item : ItemId) (owner : TenureId) (continues : Option RunId)
+  | event (id : RunId) (e : Event)            -- an event of that run (attach included)
+  | close (id : RunId) (c : Close)            -- approve with --next / --stop-reason / --continue-self
+  | ackStop (who : Actor) (id : RunId)        -- ack-stop: a person saw it
+  | tenureEnded (owner : TenureId)            -- the owner's pane closed or agent exited
   deriving Repr
 
+/-- `l` with record `x` replaced by `x'`. -/
+def replaceRec (l : List RunRec) (x x' : RunRec) : List RunRec :=
+  l.map fun y => if y = x then x' else y
+
 def Repo.step (s : Repo) : RepoCmd → Option Repo
-  | .launch id item =>
+  | .launch id item o k =>
       if s.runs.any (·.id == id) then none
       else if s.runs.any (fun x => x.item == item && !x.run.finished) then none
-      else some { runs := s.runs ++ [⟨id, item, .preflight⟩] }
+      else if o ∈ s.ended then none
+      else
+        let fresh : RunRec := ⟨id, item, o, .preflight, .open_, k⟩
+        match k with
+        | none => some { s with runs := s.runs ++ [fresh] }
+        | some p =>
+          match s.runs.find? (·.id == p) with
+          | some x =>
+            if x.disp = .betweenRuns ∧ x.owner = o then
+              some { s with runs := replaceRec s.runs x { x with disp := .continuedBy id } ++ [fresh] }
+            else none
+          | none => none
   | .event id e =>
       match s.runs.find? (·.id == id) with
       | none => none
@@ -236,7 +291,33 @@ def Repo.step (s : Repo) : RepoCmd → Option Repo
         | none => none
         | some r' =>
           if r'.busy && s.runs.any (fun y => y.id != id && y.run.busy) then none
-          else some { runs := s.runs.map fun y => if y.id = id then { y with run := r' } else y }
+          else some { s with runs := s.runs.map fun y => if y.id = id then { y with run := r' } else y }
+  | .close id c =>
+      match s.runs.find? (·.id == id) with
+      | some x =>
+        if x.run = .done ∧ x.disp = .open_ then
+          match c with
+          | .next i => some { s with runs := replaceRec s.runs x { x with disp := .next i } }
+          | .stop => some { s with runs := replaceRec s.runs x { x with disp := .stop false } }
+          | .continueSelf =>
+            if x.owner ∈ s.ended then none
+            else some { s with runs := replaceRec s.runs x { x with disp := .betweenRuns } }
+        else none
+      | none => none
+  | .ackStop who id =>
+      match who with
+      | .coordinator => none
+      | .user =>
+        match s.runs.find? (·.id == id) with
+        | some x =>
+          if x.disp = .stop false then
+            some { s with runs := replaceRec s.runs x { x with disp := .stop true } }
+          else none
+        | none => none
+  | .tenureEnded o =>
+      some { runs := s.runs.map fun y =>
+               if y.owner = o ∧ y.disp = .betweenRuns then { y with disp := .stop false } else y,
+             ended := o :: s.ended }
 
 def Repo.exec (s : Repo) : List RepoCmd → Option Repo
   | []      => some s
@@ -278,19 +359,21 @@ def Git.step (g : Git) : GitEvent → Git × Bool
 def Git.exec (g : Git) : List GitEvent → Git
   | []      => g
   | e :: es => (g.step e).1.exec es
-/-! ## The supervisor (deterministic, not an LLM)
+/-! ## Worker questions (the relay in `src/workers/supervisor/questions.rs`)
 
-It watches one worker for the pane that started it (its owner) and turns
+Not the supervisor of the global rules (that is `Supervision` below): this
+relay, part of `WorkerSupervisor`, watches one worker for the pane that
+started it (its owner) and turns
 the worker's events into numbered obligations of that owner: `herdr worker
 wait --attention` returns them, `herdr worker ack <seq>` clears one after it
 is handled, and the Stop hook refuses the owner's stop while one is open. A
 question is handled once answered (`worker answer --request`) or handed to
 the user (`worker escalate`). On the owner's own events (its pane closes,
 its agent exits, hits a limit, is blocked on its own question, or ends its
-turn with a question unanswered; herdr starts) the supervisor escalates every
+turn with a question unanswered; herdr starts) the relay escalates every
 unanswered question to the user and drops the owner's other obligations. It
-never kills or restarts, and acts on no timer. (`WorkerSupervisor` in the
-code also starts, stops and kills workers; that part is not modelled.)
+acts on no timer. (`WorkerSupervisor` also starts, stops and kills workers;
+that part is not modelled.)
 Questions are accounted for by their number, not their text. -/
 
 inductive Kind where
@@ -417,6 +500,117 @@ def Watch.ownerMayStop (w : Watch) : Bool := w.obligations.isEmpty
 answered and acknowledged. -/
 def Watch.accounts (w : Watch) (s : Nat) : Prop :=
   (∃ o ∈ w.obligations, o.seq = s ∧ o.isQuestion = true) ∨ s ∈ w.escalated ∨ s ∈ w.handled
+/-! ## Supervision (`src/workers/supervision.rs`): the read-only sweep
+
+This is the supervisor the global rules meant: a deterministic check that
+coordinators and workers are not stuck. It joins what the server already
+knows about each subject into facts, checks named predicates against them,
+and records each predicate that holds as a finding in an append-only ledger.
+A new finding lists a `?` entry for the user and queues a notice to the
+coordinator; only the user or the herdr repository's coordinator acknowledges
+one, and a finding no longer seen is resolved. It never answers, prompts,
+kills, restarts or marks work done. It runs when a coordinator's pane
+reports a turn or changes state, and on a timer (see README). The facts are
+abstract inputs here: how the server derives them is not modelled. -/
+
+/-- What the server knows about one subject (a coordinator or an assignment). -/
+structure Facts where
+  subject          : String
+  isCoordinator    : Bool
+  agentIdle        : Bool
+  runnableItems    : Bool   -- its repository has runnable TODO items
+  openDecision     : Bool   -- a decision waits on the user
+  knownWait        : Bool   -- a wait the server knows of (job, worker, run)
+  workingAfterStop : Bool   -- shows working after its reported turn end
+  untrackedShells  : Bool   -- more background tasks than tracked waits
+  verdictUnacked   : Bool   -- a verdict recorded, no waiter acknowledged it
+  stoppedNoVerdict : Bool   -- a worker's turn ended without a WORKER line
+  unaccounted      : Bool   -- an accepted assignment nothing accounts for
+  diskLow          : Bool   -- under the build guard's free space
+  deriving DecidableEq, Repr
+
+inductive Predicate where
+  | coordinatorIdle | workingAfterStop | untrackedShell | diskLow
+  | verdictUndelivered | stoppedWithoutVerdict | unaccountedAssignment
+  deriving DecidableEq, Repr
+
+/-- Each predicate is a positive fact plus the event that did not follow;
+quiet output alone is never a finding. -/
+def Predicate.holds : Predicate → Facts → Bool
+  | .coordinatorIdle, f =>
+      f.isCoordinator && f.agentIdle && f.runnableItems && !f.openDecision && !f.knownWait
+  | .workingAfterStop, f      => f.workingAfterStop
+  | .untrackedShell, f        => f.isCoordinator && f.untrackedShells
+  | .diskLow, f               => f.isCoordinator && f.diskLow
+  | .verdictUndelivered, f    => f.verdictUnacked
+  | .stoppedWithoutVerdict, f => f.stoppedNoVerdict
+  | .unaccountedAssignment, f => f.unaccounted
+
+def allPredicates : List Predicate :=
+  [.coordinatorIdle, .workingAfterStop, .untrackedShell, .diskLow,
+   .verdictUndelivered, .stoppedWithoutVerdict, .unaccountedAssignment]
+
+structure Finding where
+  predicate : Predicate
+  subject   : String
+  deriving DecidableEq, Repr
+
+/-- A sweep's findings: a pure function of the facts. -/
+def detect (snap : List Facts) : List Finding :=
+  snap.flatMap fun f => (allPredicates.filter (·.holds f)).map fun p => ⟨p, f.subject⟩
+
+inductive FindingState where
+  | open_ | acknowledged | resolved
+  deriving DecidableEq, Repr
+
+/-- Append-only: rows are never deleted, only resolved. -/
+structure Ledger where
+  entries : List (Finding × FindingState)
+  deriving Repr
+
+def Ledger.active (l : Ledger) (x : Finding) : Bool :=
+  l.entries.any fun e => e.1 == x && e.2 != .resolved
+
+/-- What a sweep opens: each detected finding once, unless it is already
+active. Each one lists a `?` entry for the user and queues a notice to its
+coordinator. -/
+def Ledger.newFindings (l : Ledger) (snap : List Facts) : List Finding :=
+  (detect snap).eraseDups.filter fun x => !l.active x
+
+/-- Resolve what is no longer seen, then open what is new. -/
+def Ledger.sweep (l : Ledger) (snap : List Facts) : Ledger :=
+  let found := detect snap
+  let kept := l.entries.map fun e =>
+    if e.2 != .resolved && !found.contains e.1 then (e.1, .resolved) else e
+  { entries := kept ++ (l.newFindings snap).map fun x => (x, .open_) }
+
+inductive Acker where
+  | user                    -- a click in their own client's `?` list
+  | herdrCoordinator        -- supervise.acknowledge from its tenure's pane
+  | agent (pane : PaneId)   -- any other agent, the stalled one included
+  deriving DecidableEq, Repr
+
+/-- Refused for an agent, and for a finding with no open row. -/
+def Ledger.ack (l : Ledger) (who : Acker) (x : Finding) : Option Ledger :=
+  match who with
+  | .agent _ => none
+  | _ =>
+    if l.entries.any (fun e => e.1 == x && e.2 == .open_) then
+      some { entries := l.entries.map fun e =>
+               if e.1 = x ∧ e.2 = .open_ then (e.1, .acknowledged) else e }
+    else none
+
+/-- Everything the workflow keeps, with the supervision ledger beside it. -/
+structure System where
+  tenure : Tenure
+  repo   : Repo
+  git    : Git
+  relay  : Watch
+  ledger : Ledger
+
+def System.supervise (sys : System) (snap : List Facts) : System :=
+  { sys with ledger := sys.ledger.sweep snap }
+
 /-! ## The coordinator (an LLM session in a herdr pane) -/
 
 inductive Item where
@@ -618,41 +812,66 @@ end Run
 section Repo
 
 /-- A run id is never reused. -/
-theorem launch_new_id (s : Repo) (id : RunId) (item : ItemId)
-    (h : ∃ x ∈ s.runs, x.id = id) : s.step (.launch id item) = none := by
+theorem launch_new_id (s : Repo) (id : RunId) (item : ItemId) (o : TenureId)
+    (k : Option RunId) (h : ∃ x ∈ s.runs, x.id = id) :
+    s.step (.launch id item o k) = none := by
   obtain ⟨x, hx, rfl⟩ := h
   have : s.runs.any (·.id == x.id) = true := List.any_eq_true.2 ⟨x, hx, by simp⟩
   simp [Repo.step, this]
 
 /-- An item with an unfinished run (a refused admission included) is never
 launched again: that run is attached to. -/
-theorem no_relaunch (s : Repo) (id : RunId) (item : ItemId)
-    (h : ∃ x ∈ s.runs, x.item = item ∧ x.run.finished = false) :
-    s.step (.launch id item) = none := by
+theorem no_relaunch (s : Repo) (id : RunId) (item : ItemId) (o : TenureId)
+    (k : Option RunId) (h : ∃ x ∈ s.runs, x.item = item ∧ x.run.finished = false) :
+    s.step (.launch id item o k) = none := by
   obtain ⟨x, hx, rfl, hf⟩ := h
   have : s.runs.any (fun y => y.item == x.item && !y.run.finished) = true :=
     List.any_eq_true.2 ⟨x, hx, by simp [hf]⟩
   simp only [Repo.step, this]
   split <;> simp
 
+/-- The slot invariant follows when every busy record of the new state was
+already busy, under the same id, in the old one. -/
+theorem oneWorker_of_busy_from (s s' : Repo) (h : s.oneWorker)
+    (hsub : ∀ y ∈ s'.runs, y.run.busy = true → ∃ x ∈ s.runs, x.id = y.id ∧ x.run.busy = true) :
+    s'.oneWorker := by
+  intro x hx y hy bx byy
+  obtain ⟨x0, hx0, hxi, bx0⟩ := hsub x hx bx
+  obtain ⟨y0, hy0, hyi, by0⟩ := hsub y hy byy
+  rw [← hxi, ← hyi]; exact h x0 hx0 y0 hy0 bx0 by0
+
+/-- Replacing a record by one with the same id and run keeps busy records. -/
+theorem replace_busy_from (l : List RunRec) (x x' : RunRec) (y : RunRec)
+    (hy : y ∈ replaceRec l x x') (hb : y.run.busy = true) (hid : x'.id = x.id)
+    (hrun : x'.run = x.run) :
+    ∃ z ∈ l, z.id = y.id ∧ z.run.busy = true := by
+  obtain ⟨z, hz, rfl⟩ := List.mem_map.1 hy
+  refine ⟨z, hz, ?_, ?_⟩ <;> by_cases hzx : z = x <;> simp_all
+
 theorem step_oneWorker (s s' : Repo) (c : RepoCmd)
     (h : s.oneWorker) (hs : s.step c = some s') : s'.oneWorker := by
   cases c with
-  | launch id item =>
+  | launch id item o k =>
+    apply oneWorker_of_busy_from s s' h
     simp only [Repo.step] at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    intro y hy hb
     split at hs
-    · simp at hs
+    · simp only [Option.some.injEq] at hs; subst hs
+      rcases List.mem_append.1 hy with hy | hy
+      · exact ⟨y, hy, rfl, hb⟩
+      · simp at hy; subst hy; simp [Run.busy] at hb
     · split at hs
+      · rename_i x _
+        split at hs
+        · simp only [Option.some.injEq] at hs; subst hs
+          rcases List.mem_append.1 hy with hy | hy
+          · exact replace_busy_from _ x _ y hy hb rfl rfl
+          · simp at hy; subst hy; simp [Run.busy] at hb
+        · simp at hs
       · simp at hs
-      · simp only [Option.some.injEq] at hs
-        subst hs
-        intro x hx y hy bx byy
-        simp only [List.mem_append, List.mem_singleton] at hx hy
-        rcases hx with hx | rfl <;> rcases hy with hy | rfl
-        · exact h x hx y hy bx byy
-        · simp [Run.busy] at byy
-        · simp [Run.busy] at bx
-        · rfl
   | event id e =>
     simp only [Repo.step] at hs
     split at hs
@@ -689,6 +908,42 @@ theorem step_oneWorker (s s' : Repo) (c : RepoCmd)
           · rw [hx]; exact (other bx' y0 hy0 by').symm
           · rw [hy']; exact other by' x0 hx0 bx'
           · exact h x0 hx0 y0 hy0 bx' by'
+  | close id c =>
+    apply oneWorker_of_busy_from s s' h
+    intro y hy hb
+    simp only [Repo.step] at hs
+    split at hs
+    · rename_i x _
+      split at hs
+      · cases c <;> simp only [Option.some.injEq] at hs
+        · subst hs; exact replace_busy_from _ x _ y hy hb rfl rfl
+        · subst hs; exact replace_busy_from _ x _ y hy hb rfl rfl
+        · split at hs; · simp at hs
+          simp only [Option.some.injEq] at hs; subst hs
+          exact replace_busy_from _ x _ y hy hb rfl rfl
+      · simp at hs
+    · simp at hs
+  | ackStop who id =>
+    apply oneWorker_of_busy_from s s' h
+    intro y hy hb
+    cases who
+    · simp only [Repo.step] at hs
+      split at hs
+      · rename_i x _
+        split at hs
+        · simp only [Option.some.injEq] at hs; subst hs
+          exact replace_busy_from _ x _ y hy hb rfl rfl
+        · simp at hs
+      · simp at hs
+    · simp [Repo.step] at hs
+  | tenureEnded o =>
+    apply oneWorker_of_busy_from s s' h
+    intro y hy hb
+    simp only [Repo.step, Option.some.injEq] at hs; subst hs
+    obtain ⟨z, hz, rfl⟩ := List.mem_map.1 hy
+    refine ⟨z, hz, ?_, ?_⟩
+    · split <;> rfl
+    · split at hb <;> exact hb
 
 /-- Over any sequence of commands, at most one run holds the worker slot. -/
 theorem one_worker (cs : List RepoCmd) (s s' : Repo)
@@ -700,7 +955,150 @@ theorem one_worker (cs : List RepoCmd) (s s' : Repo)
     obtain ⟨m, hm, hrest⟩ := hrun
     exact ih m (step_oneWorker s m c h hm) hrest
 
+/-- `--continue-self` never asks the user: a run between runs is not a stop. -/
+theorem between_runs_asks_nobody (x : RunRec) (h : x.disp = .betweenRuns) :
+    x.asksUser = false := by
+  simp [RunRec.asksUser, h]
+
+/-- Only a person acknowledges a stop; a coordinator never does. -/
+theorem coordinator_cannot_ack_stop (s : Repo) (id : RunId) :
+    s.step (.ackStop .coordinator id) = none := by
+  simp [Repo.step]
+
+/-- The link is explicit: a launch with `--continues p` goes through only when
+`p` is between runs, owned by the same tenure, and the new run records `p`. -/
+theorem continues_is_explicit (s s' : Repo) (id p : RunId) (item : ItemId) (o : TenureId)
+    (hs : s.step (.launch id item o (some p)) = some s') :
+    (∃ x ∈ s.runs, x.id = p ∧ x.disp = .betweenRuns ∧ x.owner = o) ∧
+    (⟨id, item, o, .preflight, .open_, some p⟩ : RunRec) ∈ s'.runs := by
+  simp only [Repo.step] at hs
+  split at hs; · simp at hs
+  split at hs; · simp at hs
+  split at hs; · simp at hs
+  split at hs
+  · rename_i x hf
+    split at hs
+    · rename_i hc
+      simp only [Option.some.injEq] at hs; subst hs
+      have hx := List.mem_of_find?_eq_some hf
+      have hid : x.id = p := by simpa using List.find?_some hf
+      exact ⟨⟨x, hx, hid, hc.1, hc.2⟩, List.mem_append_right _ (by simp)⟩
+    · simp at hs
+  · simp at hs
+
+/-- The launch also clears the predecessor: its row now names the successor. -/
+theorem continues_clears (s s' : Repo) (id p : RunId) (item : ItemId) (o : TenureId)
+    (hs : s.step (.launch id item o (some p)) = some s') :
+    ∃ x ∈ s.runs, x.id = p ∧ x.disp = .betweenRuns ∧
+      { x with disp := .continuedBy id } ∈ s'.runs := by
+  simp only [Repo.step] at hs
+  split at hs; · simp at hs
+  split at hs; · simp at hs
+  split at hs; · simp at hs
+  split at hs
+  · rename_i x hf
+    split at hs
+    · rename_i hc
+      simp only [Option.some.injEq] at hs; subst hs
+      have hx := List.mem_of_find?_eq_some hf
+      have hid : x.id = p := by simpa using List.find?_some hf
+      exact ⟨x, hx, hid, hc.1, List.mem_append_left _ (List.mem_map.2 ⟨x, hx, by simp⟩)⟩
+    · simp at hs
+  · simp at hs
+
+/-- Only a landed run that is still open is closed. -/
+theorem close_only_done (s s' : Repo) (id : RunId) (c : Close)
+    (hs : s.step (.close id c) = some s') :
+    ∃ x ∈ s.runs, x.id = id ∧ x.run = .done ∧ x.disp = .open_ := by
+  simp only [Repo.step] at hs
+  split at hs
+  · rename_i x hf
+    split at hs
+    · rename_i hc
+      exact ⟨x, List.mem_of_find?_eq_some hf, by simpa using List.find?_some hf, hc.1, hc.2⟩
+    · simp at hs
+  · simp at hs
+
+/-- If the owning tenure ends while a run is between runs, the run becomes a
+stop the user sees. -/
+theorem tenure_end_surfaces (s : Repo) (x : RunRec) (hx : x ∈ s.runs)
+    (hb : x.disp = .betweenRuns) :
+    ∃ s', s.step (.tenureEnded x.owner) = some s' ∧
+      ∃ y ∈ s'.runs, y.id = x.id ∧ y.asksUser = true := by
+  refine ⟨_, rfl, { x with disp := .stop false }, ?_, rfl, by simp [RunRec.asksUser]⟩
+  exact List.mem_map.2 ⟨x, hx, by simp [hb]⟩
+
+/-- A pending stop never disappears unless a person acknowledges it. -/
+theorem stop_stays_until_user_ack (s s' : Repo) (c : RepoCmd) (x : RunRec)
+    (hx : x ∈ s.runs) (hd : x.disp = .stop false) (hs : s.step c = some s')
+    (hc : c ≠ .ackStop .user x.id) :
+    ∃ y ∈ s'.runs, y.id = x.id ∧ y.disp = .stop false := by
+  have keep : ∀ (a a' : RunRec), a.disp ≠ .stop false →
+      ∃ y ∈ replaceRec s.runs a a', y.id = x.id ∧ y.disp = .stop false := by
+    intro a a' ha
+    refine ⟨x, List.mem_map.2 ⟨x, hx, ?_⟩, rfl, hd⟩
+    have : x ≠ a := fun e => ha (e ▸ hd)
+    simp [this]
+  cases c with
+  | launch id item o k =>
+    simp only [Repo.step] at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    split at hs
+    · simp only [Option.some.injEq] at hs; subst hs
+      exact ⟨x, List.mem_append_left _ hx, rfl, hd⟩
+    · split at hs
+      · rename_i a _
+        split at hs
+        · rename_i ha
+          simp only [Option.some.injEq] at hs; subst hs
+          obtain ⟨y, hy, h1, h2⟩ := keep a _ (by rw [ha.1]; simp)
+          exact ⟨y, List.mem_append_left _ hy, h1, h2⟩
+        · simp at hs
+      · simp at hs
+  | event id e =>
+    simp only [Repo.step] at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    split at hs; · simp at hs
+    simp only [Option.some.injEq] at hs; subst hs
+    refine ⟨_, List.mem_map.2 ⟨x, hx, rfl⟩, ?_, ?_⟩ <;> split <;> simp [hd]
+  | close id c =>
+    simp only [Repo.step] at hs
+    split at hs
+    · rename_i a _
+      split at hs
+      · rename_i ha
+        have hna : a.disp ≠ .stop false := by rw [ha.2]; simp
+        cases c <;> simp only [Option.some.injEq] at hs
+        · subst hs; exact keep a _ hna
+        · subst hs; exact keep a _ hna
+        · split at hs; · simp at hs
+          simp only [Option.some.injEq] at hs; subst hs
+          exact keep a _ hna
+      · simp at hs
+    · simp at hs
+  | ackStop who id =>
+    cases who
+    · simp only [Repo.step] at hs
+      split at hs
+      · rename_i a hf
+        split at hs
+        · simp only [Option.some.injEq] at hs; subst hs
+          have hid : a.id = id := by simpa using List.find?_some hf
+          by_cases hax : x = a
+          · subst hax; exact absurd (by rw [hid]) hc
+          · exact ⟨x, List.mem_map.2 ⟨x, hx, by simp [hax]⟩, rfl, hd⟩
+        · simp at hs
+      · simp at hs
+    · simp [Repo.step] at hs
+  | tenureEnded o =>
+    simp only [Repo.step, Option.some.injEq] at hs; subst hs
+    exact ⟨x, List.mem_map.2 ⟨x, hx, by simp [hd]⟩, rfl, hd⟩
+
 end Repo
+
 
 section Git
 
@@ -756,7 +1154,7 @@ theorem master_only_grows (es : List GitEvent) (g : Git) :
       · simp only [hp, ↓reduceIte, Bool.false_eq_true]; exact List.prefix_refl _
 
 end Git
-section Supervisor
+section WorkerQuestions
 
 /-- Every worker event wakes the owner and leaves it an obligation, so the
 owner cannot stop before acknowledging it. -/
@@ -1017,7 +1415,90 @@ theorem seqs_fresh (es : List SupEvent) (w w' : Watch)
     obtain ⟨m, hm, hrest⟩ := hrun
     exact ih m (step_seqsBelow w m e h hm) hrest
 
-end Supervisor
+end WorkerQuestions
+section Supervision
+
+theorem mem_allPredicates (p : Predicate) : p ∈ allPredicates := by
+  cases p <;> simp [allPredicates]
+
+/-- A finding is detected exactly when its predicate holds for its subject. -/
+theorem detect_iff (snap : List Facts) (p : Predicate) (s : String) :
+    (⟨p, s⟩ : Finding) ∈ detect snap ↔ ∃ f ∈ snap, f.subject = s ∧ p.holds f = true := by
+  simp only [detect, List.mem_flatMap, List.mem_map, List.mem_filter]
+  constructor
+  · rintro ⟨f, hf, q, ⟨-, hq⟩, hx⟩
+    cases hx
+    exact ⟨f, hf, rfl, hq⟩
+  · rintro ⟨f, hf, rfl, hp⟩
+    exact ⟨f, hf, p, ⟨mem_allPredicates p, hp⟩, rfl⟩
+
+/-- A stuck coordinator (idle with runnable items, no open decision and no
+known wait) is detected. -/
+theorem idle_coordinator_detected (snap : List Facts) (f : Facts) (hf : f ∈ snap)
+    (hc : f.isCoordinator = true) (hi : f.agentIdle = true) (hr : f.runnableItems = true)
+    (hd : f.openDecision = false) (hw : f.knownWait = false) :
+    (⟨.coordinatorIdle, f.subject⟩ : Finding) ∈ detect snap :=
+  (detect_iff snap _ _).2 ⟨f, hf, rfl, by simp [Predicate.holds, hc, hi, hr, hd, hw]⟩
+
+/-- After a sweep, every detected finding has a row that is not resolved. -/
+theorem sweep_records (l : Ledger) (snap : List Facts) (x : Finding)
+    (hx : x ∈ detect snap) :
+    ∃ st, (x, st) ∈ (l.sweep snap).entries ∧ st ≠ .resolved := by
+  simp only [Ledger.sweep]
+  cases ha : l.active x
+  · refine ⟨.open_, List.mem_append_right _ (List.mem_map.2 ⟨x, ?_, rfl⟩), by simp⟩
+    exact List.mem_filter.2 ⟨List.mem_eraseDups.2 hx, by simp [ha]⟩
+  · obtain ⟨e, he, hm⟩ := List.any_eq_true.1 ha
+    simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne, ne_eq] at hm
+    obtain ⟨rfl, hst⟩ := hm
+    refine ⟨e.2, List.mem_append_left _ (List.mem_map.2 ⟨e, he, ?_⟩), hst⟩
+    have : (detect snap).contains e.1 = true := List.elem_iff.2 hx
+    simp only [this, Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
+
+/-- The ledger is append-only: every finding it had stays in it. -/
+theorem sweep_keeps (l : Ledger) (snap : List Facts) (e : Finding × FindingState)
+    (he : e ∈ l.entries) : ∃ st, (e.1, st) ∈ (l.sweep snap).entries := by
+  simp only [Ledger.sweep]
+  by_cases hc : (e.2 != .resolved && !(detect snap).contains e.1) = true
+  · exact ⟨.resolved, List.mem_append_left _ (List.mem_map.2 ⟨e, he,
+      by simp only [hc, ↓reduceIte]⟩)⟩
+  · exact ⟨e.2, List.mem_append_left _ (List.mem_map.2 ⟨e, he,
+      by simp only [hc, Bool.false_eq_true, ↓reduceIte]⟩)⟩
+
+/-- A detected finding that is not already active is opened by the sweep,
+so it reaches the user's `?` list and its coordinator's notices. -/
+theorem new_finding_surfaces (l : Ledger) (snap : List Facts) (x : Finding)
+    (hx : x ∈ detect snap) (ha : l.active x = false) :
+    x ∈ l.newFindings snap ∧ (x, FindingState.open_) ∈ (l.sweep snap).entries := by
+  have hn : x ∈ l.newFindings snap :=
+    List.mem_filter.2 ⟨List.mem_eraseDups.2 hx, by simp [ha]⟩
+  exact ⟨hn, List.mem_append_right _ (List.mem_map.2 ⟨x, hn, rfl⟩)⟩
+
+/-- An acknowledgement needs an open row. -/
+theorem ack_needs_open (l l' : Ledger) (who : Acker) (x : Finding)
+    (h : l.ack who x = some l') : ∃ e ∈ l.entries, e.1 = x ∧ e.2 = .open_ := by
+  cases who <;> simp only [Ledger.ack] at h
+  all_goals first
+    | (split at h
+       · rename_i hany
+         obtain ⟨e, he, hm⟩ := List.any_eq_true.1 hany
+         exact ⟨e, he, by simpa using hm⟩
+       · simp at h)
+    | simp at h
+
+/-- The stalled agent cannot silence its own finding. -/
+theorem agent_cannot_ack (l : Ledger) (p : PaneId) (x : Finding) :
+    l.ack (.agent p) x = none := rfl
+
+/-- Supervision never acts: a sweep changes only its own ledger, never the
+tenure, the runs, the branches or the question relay. -/
+theorem supervise_never_acts (sys : System) (snap : List Facts) :
+    (sys.supervise snap).tenure = sys.tenure ∧ (sys.supervise snap).repo = sys.repo ∧
+    (sys.supervise snap).git = sys.git ∧ (sys.supervise snap).relay = sys.relay := by
+  simp [System.supervise]
+
+end Supervision
+
 
 section Coordinator
 

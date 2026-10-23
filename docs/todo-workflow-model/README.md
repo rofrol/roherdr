@@ -2,11 +2,13 @@
 
 A hand-written model of how a repository's TODO is worked through with herdr:
 the coordination tenure and its handoff, one item's run through
-`herdr todo run`, the supervisor that watches a worker for its owner, and the
+`herdr todo run` and how a landed run is closed (`--next`, `--stop-reason`,
+`--continue-self`), the relay of a worker's questions to its owner, the
+read-only supervision that detects stuck coordinators and workers, and the
 coordinator's decision at an item boundary.
 
 **These proofs establish properties of this model only.** `TodoWorkflow.lean`
-was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328`, `20261023-135828-a549`, `20261023-140629-1d9c`, `20261023-142050-c4f5` and `20261023-143108-0292`) from `AGENTS.md`,
+was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328`, `20261023-135828-a549`, `20261023-140629-1d9c`, `20261023-142050-c4f5`, `20261023-143108-0292`, `20261023-150255-21dc`, `20261023-150810-9b94` and `20261023-151322-2194`) from `AGENTS.md`,
 `DECISIONS.md`, `.herdr/checks.toml`, the CLI help and the global `todo` and
 `handoff` skills. It is not extracted from the Rust code, and nothing checks
 that the code still matches it. The Rust code and its tests are the source of
@@ -32,6 +34,8 @@ Over any sequence of events, not just one step:
   (`landing_is_trap`, `landing_stays`).
 - No run from preflight reaches a fourth attempt
   (`attempts_bounded_from_preflight`).
+- A run's pending stop never disappears until a person acknowledges it
+  (`stop_stays_until_user_ack`).
 - A question a worker asks is never lost: its number stays an open
   obligation, goes to the user, or is answered and acknowledged
   (`question_never_lost`).
@@ -53,17 +57,39 @@ For single steps:
   whose pane closes is forgotten, so the note can be claimed again.
 - A refused admission waits for the same run's attach; a run id is never
   reused, and an item with an unfinished run is never launched again.
+- `--continue-self`: a run between runs asks nobody; a run started with
+  `--continues p` goes through only when `p` is between runs and owned by the
+  same tenure, records the link and clears `p`; only a landed, still open
+  run is closed; if the tenure ends first, the run becomes a stop the user
+  sees; a coordinator never acknowledges a stop (`between_runs_asks_nobody`,
+  `continues_is_explicit`, `continues_clears`, `close_only_done`,
+  `tenure_end_surfaces`, `coordinator_cannot_ack_stop`). Decided in the
+  model where the item leaves it open: the link stays within one tenure, one
+  successor per predecessor, only a `done` run is closed, and
+  `--continue-self` is refused after the tenure ended.
 - A push goes through only as a fast-forward; one that is not changes
   nothing and waits as `push_failed` (a diverged origin is the user's to
   resolve; no rebase is modelled). The same commit never lands twice, on
   master or on origin.
-- The supervisor: obligations are numbered, and answers, escalations and
+- The question relay (part of `WorkerSupervisor`): obligations are numbered, and answers, escalations and
   acknowledgements name the number; every worker event wakes the owner and
   blocks its stop until acknowledged; an unanswered question cannot be
   acknowledged away; a stopped worker that exits by itself goes on to verify;
   when the owner goes away every unanswered question reaches the user, no
   obligation is left that only the gone owner could acknowledge, and later
   worker questions go straight to the user (`gone_owner_not_woken`).
+- Supervision (the supervisor of the global rules): a finding is detected
+  exactly when its named predicate holds, so an idle coordinator with
+  runnable items and no known wait is detected; every detected finding has
+  an open row after a sweep, and a new one is opened once and reaches the
+  user's `?` list and its coordinator's notices; the ledger keeps every
+  finding; an acknowledgement needs an open row and an agent cannot give
+  one; a sweep changes only its ledger, never the tenure, the runs, the
+  branches or the relay (`detect_iff`, `idle_coordinator_detected`,
+  `sweep_records`, `new_finding_surfaces`, `sweep_keeps`, `ack_needs_open`,
+  `agent_cannot_ack`, `supervise_never_acts`). Who acks as the herdr
+  coordinator is a trusted input here. This proves detection of the
+  named predicates, not of every way to be stuck.
 - The coordinator dispatches only from its own pane holding an unfrozen
   tenure, and stops when the queue is empty.
 
@@ -80,13 +106,15 @@ not proved across them).
 | handoff note claim | `src/cli/handoff.rs` |
 | `Run`, `Run.step` | `src/workers/runs/` (`finish.rs`: install, TODO edit, push), `src/cli/todo.rs` |
 | verify | `src/workers/verify/`, `.herdr/checks.toml` |
-| `Watch` (the supervisor) | `src/workers/supervisor/questions.rs` (questions, escalation), worker wait/ack and the Stop hook |
+| `Watch` (the question relay) | `src/workers/supervisor/questions.rs` (questions, escalation), worker wait/ack and the Stop hook |
+| `Facts`, `detect`, `Ledger` (supervision) | `src/workers/supervision.rs`, `src/api/schema/supervision.rs` |
+| `Repo`, `Disposition` | `src/workers/runs/`, the `--continue-self` item of `TODO.md` (not implemented yet) |
 | `Coordinator.decide` | the global `todo` skill (agent-kit), not herdr code |
 
-`Watch` is the supervision the global rules describe (a deterministic event
-loop that wakes the owner or alerts the user, never kills, no timer); the
-`WorkerSupervisor` type in the code also starts, stops and kills workers,
-which the model leaves out. Left out too: `todo wait`/`resume` events and
+`Watch` is the question relay, not the supervisor: the supervisor of the
+global rules is supervision (`detect`, `Ledger`). Supervision also sweeps
+every 5 minutes besides its events; whether that timer is allowed under the
+rule against periodic catch-up is an open question for the user. Left out too: `todo wait`/`resume` events and
 their acknowledgements, queue mode, `--close`/`--next` chaining, the counterfactual
 check and auto-review.
 
@@ -170,19 +198,34 @@ flowchart TD
     PU -->|fail| PF(["push_failed"])
     PF -->|retry-push| PU
     PU -->|ok| DONE(["done"])
+    DONE -->|"--next"| NX(["next item's run started by the driver"])
+    DONE -->|"--stop-reason"| ST(["stop: the user acknowledges"])
+    DONE -->|"--continue-self"| BR(["between runs: nobody asked"])
+    BR -->|"todo run --continues this run"| P
+    BR -->|"owner's tenure ends first"| ST
     IF -->|abort| B
     EF -->|abort| B
     PF -->|abort| B
   end
   D --> P
 
-  subgraph SV["Supervisor (deterministic, no timer, never kills) — Watch"]
+  subgraph QR["Question relay (WorkerSupervisor, no timer) — Watch"]
     WE["worker asks / ends a turn / exits"] -->|"numbered obligation + wake the owner"| OB(["open obligation seq: owner may not stop"])
     OB -->|"question answered, then worker ack seq"| CL(["handled"])
     OB -->|"ack of an unanswered question"| RF(["refused"])
     OB -->|"owner escalates, or owner gone with it unanswered"| UQ(["question in the user's ? list"])
   end
+
+  subgraph SU["Supervision (read-only sweep: detects stuck, never acts) — detect, Ledger"]
+    FX["facts: tenures, panes, workers, runs, disk"] -->|"named predicates"| FD{"a predicate holds?"}
+    FD -->|"yes"| FN(["finding recorded, append-only"])
+    FD -->|"no longer"| FR(["finding resolved"])
+    FN -->|"? entry"| FU(["user"])
+    FN -->|"notice at a turn boundary"| FC(["coordinator"])
+    FN -->|"ack by the user or the herdr coordinator only"| FA(["acknowledged"])
+  end
   W -.-> WE
+  C0 -.->|"turn report / state change"| FX
   OB -.->|"herdr worker wait --attention returns"| C0
 
   DONE -->|"next item boundary"| C0
