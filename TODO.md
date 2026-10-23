@@ -93,6 +93,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-q32vnu3m): approved, as the next item.
   In flight 2026-10-23: run `r-o7bhmarv`.
 
+- [ ] Under the usage widget's AN line, a chart of how the Claude weekly [t-tpcxnvxd]
+  allowance is used on each day of the week, with the current day (the
+  user, 2026-10-23: "under AN in the usage widget I want to see a chart of
+  how usage goes down on each day of the week, and the current day; ask
+  the models"). Checked: herdr keeps only the latest usage observation
+  per provider (`src/usage/cache.rs`, `usage-cache.json`); Claude reports
+  the 7-day window's utilization and its `resets_at`
+  (`src/usage/claude.rs`), so per-day history needs samples recorded
+  over time.
+
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
