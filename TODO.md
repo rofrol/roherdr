@@ -133,52 +133,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `docs/todo-workflow-model/measure.py` reads these records instead of
   journal scans, and one item's worker cost reconciles with them.
 
-- [ ] Tag each coordinator turn by kind and record every worker's token usage (the user, 2026-10-23: "this phase tagging must be next in the TODO") [t-j2ayjqdl]
-  So the delegation-only share of the coordinator-and-workers cost can be
-  separated from what a single agent would also pay (round
-  20261023-205607-7d3d, all four models: the coordinator/worker ratio is
-  not the overhead). herdr records, per coordinator assistant turn, its
-  kind (task writing, wait and resume, driver acks, diff review, user
-  conversation, consult, other) with its cache-read, cache-write, input
-  and output tokens and context size, and per worker its usage for every
-  agent kind: pi workers (gpt-6.1-sol, deepseek) run with `--no-session`
-  and recorded no usage at all (39 of 80 workers in 2026-10-16..23).
-  Measured baseline the same week at list prices: coordinator Claude Code
-  sessions with subagents $205 (678M tokens), Claude workers $155 (367M),
-  40 landings, cache reads over 98% of tokens, about 415K cache-read
-  tokens per coordinator message, workers' median 22% of tokens before
-  their first edit; scripts in the session's scratchpad were one-off and
-  are not the implementation. How a turn's kind is derived (from the
-  commands it ran and the events it answered, never from model prose) is
-  settled with the models before coding. Feeds the queue trial and the
-  handoff threshold comparison in t-ic5rrxn3.
-  Split 2026-10-23 (round 20261023-215046-6830): the workers' usage moved to
-  the item before this one; this item keeps the coordinator's turn kinds,
-  which explain where its cost goes but gate neither `herdr todo show` nor
-  the worker routing.
+- [ ] Claude workers take `--model` (the user, 2026-10-23: queue mode with [t-b6of3yhr]
+  one implementing agent per item, then a cheaper model; round
+  20261023-221441-3128). `todo run`, `todo run --draft` and `todo queue
+  on` pass `--model` to Claude Code for a Claude worker (today it applies
+  to pi only and a Claude worker always runs Claude Code's default, Opus);
+  the run records the model that actually ran; the draft (`draft_task`)
+  and review (`review_run`) calls stay on Opus (decided by the user
+  2026-10-23). Exit: a run started with `--model sonnet` shows Sonnet in
+  its recorded usage (t-2tvx7res) and its events.
 
-- [ ] herdr's queue gives each item to a fresh coordinator session (the [t-ovgzbujq]
-  user, 2026-10-23: "if TODO.md is not dirty, the supervisor gives the
-  coordinator the first item, then a handoff, the supervisor gives the
-  next item, and so on; ask the models"; round 20261023-215510-0b94, all
-  four models; merges t-ufyllobh, t-lhm7fnmd and t-rfksf3tt; model:
-  `PerItem` in docs/todo-workflow-model/TodoWorkflow.lean and its two
-  diagrams). The queue (deterministic, no LLM) persists the item id, the
-  TODO.md blob it read and the session's generation before it starts a
-  fresh coordinator session whose prompt holds the item's text; the
-  session never reads TODO.md whole and edits only by id through
-  `scripts/todo_edit.py`; every question to the user and every consult
-  finding is committed into the item or DECISIONS.md before the session
-  acts on it or ends (no separate store). The next session starts only
-  on the positive event "the previous session's process exited and every
-  run of its item is terminal"; herdr checks the generation on run start,
-  answer and TODO write, so a superseded session acts on nothing (the
-  rest of t-ic5rrxn3's fence may follow). A question moves the item to
-  "Needs a decision" and the queue takes the next item. The threshold
-  handoff stays a backstop for a huge item. Exit: three consecutive items
-  land through fresh sessions with no handoff note, mean coordinator
-  context under 150k tokens per call (`measure.py`), and a session killed
-  mid-item leaves its run to finish before the next session starts.
+- [ ] Trial queue mode with one agent per item, Opus then Sonnet, and fill [t-ftnvhl7h]
+  in the cost comparison (the user, 2026-10-23: "there will be only one
+  agent, no workers", "save the table of estimates in the repo, then
+  compare after the new cheaper model"; round 20261023-221441-3128;
+  carries out the trial decided 2026-10-12, d-amwperuu). `herdr todo
+  queue on`: the server starts `todo run --draft` for the top item, one
+  implementing agent per item, `draft_task` and `review_run` on Opus, no
+  coordinator LLM; the chat session only talks with the user and answers
+  escalations. First about 10 items with an Opus agent (the queue's own
+  baseline), then about 15 with `--model sonnet`, risky items (concurrency,
+  protocol or wire, persisted state, refactor-risk) staying on Opus.
+  Measure per landed item: cost from t-2tvx7res's records and
+  `docs/todo-workflow-model/measure.py --since <cutover>`, attempts,
+  review verdicts, rework (amended or reverted commits, follow-up items),
+  questions to the user; fill the "After the cheaper model" table in
+  docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
+  least 35% lower with no rise in rework or interventions; otherwise ask
+  the user with the numbers. Lost against the coordinator: consult
+  rounds (an escalation to the user replaces them) and cross-item
+  judgment (t-ctxfxkwf).
 
 - [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
   session (the user, 2026-10-23, same decision; round
@@ -193,6 +177,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   records the analysed hashes in one step, between sessions, so its own
   output never re-triggers it. Exit: the user's edit of another item holds
   the next session until the analysis; a session's own notes do not.
+  Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
+  the item's run (its agent and its `draft_task` and `review_run` calls);
+  the analysis runs before the queue starts the next run. Start it once
+  the trial's Opus part (t-ftnvhl7h) has shown where `draft_task` misses
+  cross-item context, so an untested gate does not spoil the trial.
 
 - [ ] Claude workers are routed by item class (the user, 2026-10-23, same [t-iltryyob]
   decision as the item above). `todo run --agent claude --model` passes
@@ -207,6 +196,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   above it land first, with a baseline window of Opus runs; compare runs
   by item class, all attempts included, after `todo show` has its own
   measurement window.
+  Queue mode, 2026-10-23: the `--model` plumbing moved to t-b6of3yhr; this
+  item routes by class, the class coming from `draft_task` (a field it
+  must fill), after the trial (t-ftnvhl7h).
 
 - [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
   (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
@@ -221,372 +213,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   core. Through a todo run: the worker cherry-picks it onto its branch,
   rebases if needed and keeps it one commit; the driver verifies, installs
   and pushes. Tell herdr-67 when the installed herdr has it.
-
-- [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
-  2026-10-12: "replace this session with a fresh herdr coordinator, and make
-  such a handoff regular"; the herdr coordinator's own session had cost
-  ~$106 of list price in one day, mostly cache reads of a huge context).
-  herdr measures each coordinator session's context (tokens per turn read
-  from its transcript) and, at a configurable size (`[coordinator]
-  handoff_context_tokens`), raises a deterministic "handoff due" at the
-  coordinator's next turn boundary with nothing in flight it cannot hand
-  over: the coordinator writes `.local/coordinator-handoff.md` (runs in
-  flight with their waits, open questions, usage state), herdr starts a
-  fresh session in the same tab role with the todo skill, transfers the
-  tenure and the worker ownership, and ends the old session once the new
-  one has acknowledged the note; no timers.
-  Designed with the models (2026-10-12, the user: "ask the models"; sol,
-  MiMo, DeepSeek agreeing): (a) trigger on per-turn input context size
-  (uncached + cache writes + cache reads of one turn, not cumulative) with
-  cost per turn as a guardrail, at the next turn boundary, preferring a
-  review boundary but never waiting for "no run in flight"; (b) herdr
-  generates the handoff snapshot from its own state (runs and their waits,
-  tenure, worker ownership, pending question ids, usage), versioned; the
-  agent appends only intent herdr cannot know; (c) transfer with an epoch
-  fence: the successor starts without mutation rights, acknowledges and
-  reconciles the snapshot, then the tenure epoch advances and the old
-  session loses write authority before it is ended; waits are rebuilt
-  from durable run ids, never carried in a session; (d) the successor must
-  read less than its predecessor: it starts from the snapshot and pages in
-  TODO.md/DECISIONS.md items only as needed; (e) `/compact` stays an
-  in-session tool, measured against handoffs, not a replacement.
-  Asked again 2026-10-12 (the user: "we need automatic switching to a new
-  coordinator when the context gets too big; ask the models"): the switch
-  must be automatic, not a manual handoff like the one at 15:05 today.
-  Automatic switch designed with the models (round 20261012-152237-bf3d,
-  sol, MiMo, DeepSeek agreeing; decided by the coordinator):
-  - herdr runs it as a durable state machine per tenure, CAS on the epoch,
-    one switch in flight: `active` -> `preparing` (herdr latches the
-    trigger from the transcript usage of one model request, starts the
-    successor read-only with a fixed prompt naming the snapshot) ->
-    `frozen` at the old session's next Stop (no new mutations; the
-    ownership Stop hook lets a frozen session end its turn) -> snapshot
-    written by herdr -> the successor's mechanical `herdr coordinator ack
-    --snapshot <id>` (an RPC herdr validates, not prose) -> one
-    transaction advances the epoch and moves worker ownership and question
-    routing -> herdr ends the old session. Each step's done event is that
-    step's own record; the old session's intent note is optional and
-    never gates the switch.
-  - Mutations (`todo resume`, `worker answer|ack`, decisions, TODO edits)
-    check the caller's epoch; a stale caller is refused. Shell writes
-    outside herdr stay cooperative (a PreToolUse deny for a frozen or
-    superseded session).
-  - The old session's background waits are Claude Code shells, not herdr
-    state: they are not moved; the successor rebuilds its waits from the
-    durable run ids and cursors in the snapshot, and a late wake of the
-    old session finds it superseded.
-  - An AskUserQuestion menu lives inside a turn, so none is open at a
-    Stop; plain-text questions are `herdr decision` records (the question
-    gate already enforces it) and the successor asks them again by id.
-  - Successor fails to start or exits before its ack (limit, trust
-    dialog, crash): a failure event; the switch aborts, the old session
-    unfreezes and keeps authority, and the user is told once; the trigger
-    stays latched until an explicit retry.
-  - Threshold: per-request input tokens (uncached + cache writes + cache
-    reads), default the smaller of 50% of the model's window and twice the
-    measured fresh-session floor, configurable; a floor at or above the
-    threshold is a configuration error, never a rotation loop. Cost per
-    turn is a separate guardrail that may only lower the threshold.
-  - First slice: a manual `herdr coordinator switch` driving the whole
-    state machine with a fake agent that speaks the ack, table tests of
-    every transition, a crash injected at each step (one writable epoch,
-    no lost obligation), then the automatic trigger from scripted
-    transcripts.
-  Asked 2026-10-12 (the user: "think with the models about the most
-  economical model, because the coordinator now has a very large context
-  after a while; ask the models. Maybe a coordinator per TODO task? Maybe
-  some coordinator launched every so often that reviews the TODO? Or maybe
-  it is not needed? How do others do it?"): before building the automatic
-  switch, decide whether a resident coordinator session is needed at all.
-  Round 20261012-154713-644a (sol, MiMo, DeepSeek, all three agreeing):
-  continuity belongs in herdr's state (TODO.md, the ledger, runs), not in
-  a model's context; a resident session's cost grows with turns times an
-  ever larger context (this session: 9.4M cache-read tokens in its first
-  hour). Ranking: no resident coordinator (cheapest), per-item coordinator
-  (`todo next`) only for items a deterministic rule flags (multi-slice,
-  risky paths, missing checks), resident with rotation second-best, a
-  periodic reviewer worst (timer-driven, stale, still large). Duties:
-  deterministic for ordering, starts, verify, landing, routing; bounded
-  stateless calls for drafting, review (Opus-class, full diff and checks),
-  worker questions, triage of a new request or a failed verify into a
-  multiple-choice question, consult synthesis; the user for priority,
-  scope and risk. Others (confident claims only): Copilot coding agent
-  and OpenHands run one bounded agent per issue, Claude Code subagents and
-  Anthropic's research system give each subtask a fresh context,
-  Magentic-One keeps its state in ledgers; none keeps one all-day context.
-  Proposed first step: an A/B over the next 20-30 items, `todo queue on`
-  with `--draft` and `--auto-review` against the resident coordinator,
-  measuring cost per landed item, cache tokens per day, user questions per
-  item, review-caught bugs, reverts and reopenings. Not covered by the
-  models: what the user talks to; the coordinator's proposal is a
-  short-lived session per conversation started from a herdr snapshot.
-  Note: `--draft` and `--auto-review` call `claude -p` on the user's
-  subscription login, not the API credits.
-  Decided by the user 2026-10-12 (d-amwperuu): trial queue mode (`todo
-  queue on`, `--draft`, `--auto-review`) over 20-30 items, measuring cost
-  per landed item, user questions per item and review-caught bugs; the
-  resident coordinator stays only for talking with the user. The
-  automatic switch above waits for the trial's result. Prerequisite found
-  by the coordinator: `todo run --draft` and queue runs take no `--agent`
-  (`src/cli/todo.rs` `parse_draft_run`), so their workers and the draft
-  and review calls would run on the subscription (weekly window ~94%,
-  where the usage gate refuses); the trial starts once [t-s6lkxb4v]
-  lands.
-  Added by the user 2026-10-23 (after consult rounds
-  20261023-203039-2b9d, 20261023-203538-abcc, 20261023-204145-67ee on why
-  coordinator and workers rather than one agent): the trial also measures
-  the overhead of trivial items (one-line docs, a constant, a rename) run
-  through the driver with a cheap fast worker (`--agent pi --model ...`)
-  and `--auto-review`: per-run wall time split into model time versus
-  slot, verify and landing steps, tokens per landed item against the diff
-  size, the share of trivial items, and the auto-review approve, retry and
-  escalate rates. The rounds agreed the value is separating the author
-  from the acceptance decision (the contract fixed before the code, a
-  fresh-context acceptor), which a worker plus `--auto-review` already
-  gives. A coordinator-authored run kind (verify keyed by run or commit
-  instead of `worker_id`, author distinct from acceptor, a Lean model
-  change that also models auto-review) is built only if these numbers
-  show a cheap worker is not enough; no code or model change before then.
-  Added by the user 2026-10-23 (round 20261023-205607-7d3d on the token
-  overhead of coordinator and workers versus one agent): measured
-  2026-10-16..23 at list prices, the herdr coordinator's Claude Code
-  sessions with their subagents cost $205 (678M tokens) against $155
-  (367M) for 41 Claude workers over 40 landings; 39 pi workers recorded
-  no usage. The ratio is not the overhead (a single agent also talks with
-  the user, consults and reviews, and carries every item's exploration in
-  its own context); the models' ranges were -20% to +65%, central
-  +20-40%. Tagging coordinator turns by kind is its own item, next after
-  the transition core ("Tag each coordinator turn by kind"). The largest
-  measured lever is the coordinator's context per turn (about 415K
-  cache-read tokens per message, $130 of cache reads in the week).
-  Decided by the user 2026-10-23 (question t-v6ttkikt, folded in here):
-  handing off at about 200K tokens of context instead of 70% of the
-  window is measured in the queue trial first, next to the current 70%,
-  comparing cost per landed item; the rule changes only after that.
-  Asked 2026-10-12 (the user: "loss of memory between items and shallower
-  review: how do others counter it? ask the models").
-  Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
-  memory as small, scoped, versioned repository instructions (Copilot
-  and path instructions, CodeRabbit path instructions and learnings,
-  Devin knowledge and playbooks, Cursor rules, CLAUDE.md/AGENTS.md,
-  OpenHands path-triggered microagents) plus code retrieval (Aider's repo
-  map, Greptile's graph), not one long context; auto-accumulated lesson
-  stores go stale and bloat prompts. Review depth comes from codebase
-  access, not a bigger diff prompt: a diff-only reviewer structurally
-  misses the bugs the resident coordinator caught (a helper's guards, a
-  documented port, a contract change in a regenerated schema). Agreed
-  countermeasures: (1) a deterministic context pack for draft and review
-  (the item, its linked decisions, its run history with failure reasons,
-  `git log` and ripgrep hits for the paths and symbols the item names);
-  (2) the review call gets bounded read-only repository tools; (3) a
-  short checklist (about 20 lines) distilled from caught bug classes,
-  each line with its source; (4) each finding cites file:line and how it
-  was verified, uncited findings are dropped; (5) generated, schema and
-  contract paths are never cut by the 200 KB diff limit; (6) a bug class
-  caught twice becomes a check, not a memory; (7) the user's answers are
-  written back into TODO.md/DECISIONS.md at decision time (already the
-  rule). Measure: a golden set of the coordinator's past catches replayed
-  blind against the new reviewer, and shadow-running both on the same
-  items. Second specialised reviewers only for high-risk paths (DeepSeek)
-  or not at this scale (MiMo).
-  The user agreed 2026-10-12 to a short-lived session per conversation
-  starting from a herdr snapshot ("it can be done; ask the models").
-  The user, 2026-10-12, shared https://x.com/omarsar0/status/2109643758228869175
-  (paper arXiv 2610.07782, "Persistent Memory in Multi-Agent LLM Inference")
-  and asked to ask the models what it means for this design.
-  The user, 2026-10-12, asked to analyse with the models
-  https://x.com/ClaudeDevs/status/2108591328732856655 (Claude Managed Agents
-  dynamic workflows, public beta 2026-10-09) for this design.
-  Round 20261012-183931-38d0 on Managed Agents dynamic workflows (sol,
-  MiMo, DeepSeek agreeing): herdr stays the control plane (ledger,
-  restart safety, approvals, merges, spend caps); neither Managed Agents
-  (the repository leaves the machine, server-side state beside herdr's,
-  beta guarantees unknown) nor Claude Code's local workflows own queue
-  state, commits or pushes; at most one wraps as a worker type. The 66/70
-  planted-bug claim has no cost matching and no false-positive count, so
-  it says nothing yet about review depth. Fan-out review (specialised
-  reviewers plus a verifier with repository tools) only as a risk-gated
-  stage chosen by a deterministic rule, and only if a cost-matched
-  experiment (same dollars per item, held-out catches, clean controls,
-  blind scoring, escalations counted) shows it beats one deep review. A
-  planner that splits a large item into phases may propose; herdr
-  validates and owns sequencing. First step all three name: tag every
-  credit call with item, run and stage (draft, worker, review) so the
-  experiments cost nothing extra to measure.
-  Asked 2026-10-12 (the user: "maybe the coordinators of other spaces
-  should hand off? because of the large context; ask the models").
-  Measured by the coordinator from the transcripts at 19:05 (last call's
-  input context; cache reads since the session started): rormpc 739k
-  (829M), try-roguix 532k (667M), guix-x86 493k (512M), violai 386k
-  (335M), roguix-vps 352k (242M), herdr 348k (78M), chat-hosted 255k,
-  odherdr 215k, job-seeker 188k, classify-x-posts 165k; a fresh session
-  starts at about 75k. rormpc's space alone cost ~$72 list today.
-  Round 20261012-190801-487e (sol, MiMo, DeepSeek agreeing): end idle
-  coordinators (violai, job-seeker, classify-x-posts) after a short note,
-  with no replacement until the user has work there; hand off the active
-  oversized ones now (rormpc, try-roguix, guix); a coordinator blocked on
-  the user (roguix-vps, odherdr) records its question verbatim with its
-  options as the note's first item, then ends; chat-hosted stays. Rule: an
-  active session past about 300-400k hands off; history (cache reads
-  already paid) is no reason. Safe order: stop starting and landing work,
-  write the note (open questions verbatim, run ids with what each waits on
-  and what was read, verdicts decided but not applied, explicit
-  do-not-repeat actions, branch, HEAD, dirty files), end the old session
-  before the new one acts (no epoch fence yet), the new session's first
-  turn reads back and reconciles every run id with herdr and git before
-  acting. `/compact` is a weaker middle (can drop run ids). MiMo: this
-  herdr session grows ~87k tokens an hour; find what it inlines (whole
-  worker reports, diffs) before more handoffs.
-  Decided by the user 2026-10-12 (d-gt5w4lxu): only the three largest
-  (rormpc, try-roguix, guix) hand off now; the others stay as they are.
-  (d-n663neph): the herdr coordinator hands off after the current slice.
-  The user, 2026-10-12, asked to analyse with the models
-  https://x.com/kimmonismus/status/2109640479688335602 (DeepMind AlphaProof
-  Nexus: Gemini models in a loop with Lean as the verifier).
-  Asked 2026-10-12 (the user: "is there no way for pi and Claude
-  coordinators to pick up this handoff themselves? ask the models; or other
-  agents like opencode, codex, agy").
-  Round 20261012-192328-6320 (sol, MiMo, DeepSeek agreeing): yes, for
-  every agent kind, without per-agent features: herdr owns the trigger,
-  the snapshot from its own state, starting the successor (`herdr agent
-  start --kind <same kind> --prompt "read <snapshot>, then run herdr
-  coordinator ack ..."`), the fence and ending the old session; per-agent
-  hooks (Claude's SessionStart injection, /clear) are optional
-  accelerators behind capability flags, never needed for correctness;
-  auto-compact is not a handoff. Boundary signal is a command, not prose:
-  `herdr coordinator ready --note <path>` (herdr checks the tenure, the
-  epoch, the last turn's clean end, hashes the note), then the
-  successor's `herdr coordinator ack --epoch E --snapshot <hash>`.
-  Decided by the coordinator where they split: a new pane in the old
-  pane's tab (sol, DeepSeek; MiMo preferred the same pane), focus stays
-  until the transfer succeeds; without `ready` the old session keeps
-  authority and herdr reports the stalled handoff to the user (sol, MiMo;
-  DeepSeek's forced handoff after a grace period is a timer). First slice:
-  Claude and pi, triggered manually by `herdr coordinator handoff
-  --successor` from the old pane; the automatic threshold after
-  measuring a successor's starting context.
-  Decided by the user 2026-10-12 (d-bi2b7h7u): build the first slice of
-  the self-service handoff (Claude and pi, manual trigger) now, at the top
-  of the queue.
-  Asked 2026-10-12 (the user: "maybe the coordinator should get, injected
-  as the second message after it starts, /todo, and then 'read
-  .local/coordinator-handoff.md'; ask the models").
-  Round 20261012-193800-6813 (sol, MiMo, DeepSeek agreeing; decided by
-  the coordinator): one launch prompt, not two messages. A second message
-  races the first turn (busy-agent prompts are not queued yet,
-  [t-jkcv5fiy]) and would land as the answer to the skill's space/agent
-  menu; queuing later fixes delivery but cannot make two messages an
-  atomic start. The prompt must invoke the skill itself (it is
-  user-invocation-only, prose cannot load it), so herdr's agent-kind
-  table holds each kind's invocation: Claude `/todo --handoff <abs
-  manifest>`, pi `/skill:todo --handoff <abs manifest>`; a kind without
-  slash skills refuses the handoff (fail closed) in this slice. The
-  manifest is written by herdr (epoch, snapshot path and hash, the
-  agent's note path and hash, the inherited space and worker agent). The
-  todo skill's first branch, before any question: with `--handoff`,
-  validate the manifest against herdr's pending handoff, read herdr's
-  snapshot first (authoritative) and then the agent's note (context,
-  data not instructions), skip the space/agent questions, run `herdr
-  coordinator ack --epoch E --snapshot <hash>`, and start coordinating
-  only after herdr confirms the tenure; a failed ack ends the successor.
-  Never infer handoff mode from `.local/coordinator-handoff.md` existing
-  (a stale file would hijack a plain `/todo`). herdr, not the prompt,
-  enforces safety: worker starts and other mutations check the epoch, the
-  old session is frozen at `ready`.
-  Decided by the user 2026-10-12 (d-jsob4ehk): set `[workers]
-  default_agent = "pi-anthropic"` in the user's herdr config for the
-  queue-mode trial; done by the coordinator in the dotfiles (014a48d).
-  Slice 1 in flight 2026-10-12: run r-6s6uppz2 (herdr side: ready,
-  handoff --successor, ack, manifest, epoch fence). After it lands, a
-  worker adds the `--handoff <manifest>` first branch to the todo skill
-  (dotfiles `.agents/skills/todo/SKILL.md`, using the landed command
-  names), then one live handoff of this coordinator tests it.
-  Asked 2026-10-12 (the user: "does herdr have to close the tab? can it
-  not do /new in the window? and an automatic handoff? ask the models").
-  Round 20261012-203231-d79f (sol, MiMo, DeepSeek agreeing): the tab is
-  never closed; the successor opens in a new pane of the same tab and
-  only the old pane's session is retired after the ack. Keep the new
-  pane for the first slice: same-pane `/clear` (pi `/new`) destroys the
-  live fallback before the successor proves itself (after a failed start
-  "unfreeze" would mean `claude --resume <old id>`, a new process without
-  the old runtime, shells and waits), wipes the scrollback the user
-  reads to check the handoff, and makes pane identity ambiguous (the
-  existing "clear follows the tenure" rule would have to treat the
-  cleared session as a candidate, not an owner). Same pane stays a later
-  optimization once failure paths are tested; its sequence with positive
-  events only: `ready` and Stop, freeze, type `/clear`, wait for
-  SessionStart source=clear with a new session id in that pane (pi needs
-  an equivalent new-session event), register it as candidate, deliver
-  the `--handoff` prompt with confirmed delivery, commit on the ack.
-  Automatic handoff: on Stop, at [t-2k3ima2h]'s retire threshold, with no
-  unanswered user question and no pending handoff; turned on only after
-  injected pre-ack failures show the rollback works, with a user-visible
-  notice and a switch to turn it off; one automatic handoff per tenure
-  (no loops after a resume). The in-flight new-pane slice lands as is.
-  Attempt 1 of r-6s6uppz2 (2cd7b8ad3) reviewed 2026-10-12: the ready,
-  successor and ack path and ack validation hold; not landed because the
-  fence covers only some mutations, nothing refuses a superseded caller
-  (and a failed close of the old pane is ignored), a successor that never
-  produces an event freezes the tenure with no cancel, and the pending
-  handoff is memory-only. Attempt 2 builds on that commit with those
-  fixes, `coordinator handoff --abort`, abort on a Blocked successor, a
-  single-lock ack and a server-side absolute-path check. Kept as decided
-  by the coordinator: `ready` runs inside the turn (documented); manifest
-  and note copies stay after the handoff for audit.
-  Attempt 2 (cbe26c7b8) reviewed: wider fence, superseded record, failed
-  close reported, `--abort`, persisted pending handoff, one-lock ack and
-  absolute note path are in. Not landed: the abort on a Blocked successor
-  (the coordinator's own instruction) would fire on normal startup, since
-  the successor's first `herdr coordinator ack` may need a permission
-  answer; a live handoff before the successor is detected aborts it; the
-  superseded fence ignores the session (a resumed old session elsewhere
-  passes, a reused pane id is wrongly fenced); a failed persist of the ack
-  only warns. Attempt 3 (the last) fixes these four. Noted for later:
-  raw API clients without `caller_pane_id` are not fenced, the fence is
-  check-then-act, store reads under the registry lock, no fsync.
-  The live handoff waits for "Handoff fence and persistence edge cases"
-  (d-gr63towv).
-  Slice 1 of the self-service handoff landed (r-6s6uppz2, attempt 3,
-  reviewed against two earlier attempts): `coordinator ready --note`,
-  `coordinator handoff --successor|--abort`, `coordinator ack`; frozen and
-  superseded callers fenced by pane and session; pending handoff persisted
-  and restored; Blocked successor stays pending. Left for a follow-up:
-  event-driven abort and successor-started writes only log a failed persist;
-  a double failure in the ack can leave the file saying superseded; a
-  reused old pane with an unknown session is fenced; the pane-session map
-  is never pruned; raw API clients without caller_pane_id are not fenced;
-  the fence is check-then-act. Next: the todo skill's `--handoff` branch,
-  then one live handoff of this coordinator.
-  The todo skill takes the handoff (dotfiles 9a46c57, workers w286 and
-  w288; w286's own str.replace missed its anchor and it still reported
-  done). Left: one live handoff of this coordinator.
-  Blocked 2026-10-13: the remaining live handoff depends on the funding
-  choice in t-x2jbucrm; the credit successor run was aborted after three
-  attempts failed the real offline CLI compatibility check.
-  Which live handoff should be tested after the successor funding decision?
-  Options: follow the funding choice in t-x2jbucrm (Recommended) | test a pi successor on the ChatGPT login now without claiming a credit-funded handoff passed
-  Checked: slice 1, the edge-case fix and the todo skill branch are landed;
-  no credit-successor implementation was installed by the failed run.
-  Decided by the user 2026-10-16 (d-enlpejzi): the live handoff follows the funding decision: test the pi-on-credits successor (t-x2jbucrm) once it lands.
-  Approved 2026-10-23 by the user ("check it against the TODO items, they
-  may be redundant; after sorting, give it to the herdr coordinator as the
-  next TODO"; Lean model review rounds 20261023-153329-be6c and
-  20261023-162239-cf7d, triage round 20261023-162900-79da, sol, MiMo,
-  DeepSeek, Argon): finish the coordinator fence. The handoff fence landed
-  (d-gr63towv: map pruning, unknown session, persist errors), but the
-  fence still covers only calls carrying a caller pane, and it is
-  check-then-act. Scope: authorize atomically with the mutation (tenure
-  epoch and pane generation checked in the same step that mutates) for
-  run start, worker answers and store writes; fence raw API clients
-  without caller_pane_id. Exit: a split-brain test (a superseded or
-  reused-pane coordinator acting during and after a handoff) fails on the
-  current code and passes after, with no leaked tenure, run start or
-  write.
-  Re-scoped 2026-10-23 (the user: "implement the best solution"; round
-  20261023-212927-b9d8, all four models): with a fresh coordinator session
-  per item (t-ovgzbujq), the threshold handoff is
-  only a backstop for a huge item. Finish the atomic fence (still needed:
-  stale sessions must not act); drop further threshold tuning.
 
 - [ ] Landing and abort in `herdr todo run` end in a known git state (the [t-cmjqsat2]
   user, 2026-10-23, from the Lean model review, rounds
@@ -614,18 +240,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   committed traces are replayed by a Rust test under `just check`.
   2026-10-23: `PerItem` (the target per-item design) was added to the
   model with its proofs; keep it in step with this item's changes.
-
-- [ ] Trial the per-item design and fill in the cost comparison (the user, [t-xvvzmzb4]
-  2026-10-23: "save the table of estimates in the repo, then compare after
-  the new cheaper model"). 20-40 items stratified by class; run
-  `docs/todo-workflow-model/measure.py --since <cutover>` and t-j2ayjqdl's
-  numbers; fill the "After the cheaper model" table in
-  docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
-  least 35% lower with no rise in rework, lost questions or the user's
-  interventions; otherwise ask the user with the numbers.
-  Prerequisites (round 20261023-215046-6830): the exact item count and every
-  worker's usage, pi included; compare by item class, never raw averages
-  across the cutover.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
@@ -1278,7 +892,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tracker plan). Edit only with scripts/todo_edit.py; one commit per
   section; every other item and heading unchanged in meaning.
   2026-10-23: the coordinator's own need (reading one item) is covered by
-  the queue's item prompt (t-ovgzbujq); this item keeps the file's slimming.
+  queue mode's `draft_task` (t-ftnvhl7h); this item keeps the file's slimming.
 
 - [ ] Releases run through herdr's driver, portable and without allow rules [t-5bunzos6]
   (the user, 2026-10-12, on rormpc-tools' release script: "it must work
@@ -3330,6 +2944,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   20261023-211512-5f06 .. 20261023-212927-b9d8): the queue starts a fresh
   coordinator session per item; see t-ovgzbujq and the items after it, and
   docs/todo-workflow-model/cost-baseline.md.
+  Then decided 2026-10-23 (round 20261023-221441-3128): no coordinator
+  LLM at all; queue mode with one implementing agent per item, see
+  t-ftnvhl7h (the per-item coordinator loop t-ovgzbujq was retired, its
+  text in DECISIONS.md).
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
