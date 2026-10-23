@@ -231,3 +231,101 @@ flowchart TD
   DONE -->|"next item boundary"| C0
   B -->|"Needs a decision / report"| C0
 ```
+
+## Sequence
+
+The same workflow as messages between the parts, over one TODO item
+(`todo-sequence.svg`, rendered like the diagram above):
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as User
+  participant C as Coordinator (LLM, herdr pane)
+  participant T as Tenure (herdr server)
+  participant D as Driver (herdr todo run)
+  participant G as Usage gate
+  participant W as Worker (headless, folder slot)
+  participant Q as Question relay (WorkerSupervisor)
+  participant V as Verify
+  participant M as master / origin
+  participant SV as Supervision (read-only sweep)
+
+  U->>C: /todo
+  C->>T: coordinator start
+  alt another pane holds it or a handoff is pending
+    T-->>C: refused (coordinator_active)
+    C-->>U: report the holder, stop
+  else free
+    T-->>C: held by this pane
+  end
+
+  loop each item in "Next, in order"
+    C->>D: todo run item (task, message, paths, checks)
+    D->>D: preflight (checks.toml, operations.toml, disk, no unfinished run of the item)
+    D->>G: admit?
+    alt refused (high or unknown usage)
+      G-->>D: refused, run id kept
+      D-->>C: admission refused
+      Note over C,D: later: attach the same run, never launch again
+    else admitted
+      G-->>D: admitted
+      D->>W: start attempt n (n ≤ 3)
+      opt the worker asks
+        W->>Q: question
+        Q->>C: obligation seq, wake (worker wait --attention)
+        C->>Q: answer seq, then ack seq
+        Q->>W: answer
+      end
+      W-->>D: WORKER-DONE or WORKER-BLOCKED
+      D->>W: stop (force-stop if still alive)
+      D->>V: worker verify (one commit, message, paths, clean tree, checks)
+      alt failed and n < 3
+        V-->>D: failed
+        D->>C: failed
+        C->>D: retry with a new task
+      else unavailable
+        V-->>D: unavailable
+        C->>D: verify again
+      else verified
+        V-->>D: verified
+        D->>M: cherry-pick onto master (slot freed)
+        D->>D: install (just clean-install), TODO edit
+        D->>M: push origin master
+        alt origin is a prefix of master
+          M-->>D: fast-forward pushed
+          D-->>C: done
+          alt --next item
+            C->>D: close with --next: the driver starts that item's run
+          else --continue-self
+            C->>D: close as between runs (nobody is asked)
+            C->>D: todo run next item --continues this run (link clears it)
+            Note over C,D: if the tenure ends first: a stop the user sees
+          else --stop-reason
+            C->>D: close as a stop
+            D-->>U: stop shown until a person acknowledges it
+          end
+        else diverged
+          M-->>D: refused, nothing changed
+          D-->>C: push_failed (retry-push or abort)
+        end
+      end
+    end
+    opt context over 70% at the item boundary
+      C->>T: coordinator ready --note, handoff --successor
+      Note over T: frozen: no worker start, answer or ack
+      T->>C: successor pane claims the note, then coordinator ack
+    end
+  end
+  par on a coordinator's turn report or state change, and every 5 minutes
+    SV->>SV: facts from tenures, panes, workers, runs, disk → named predicates
+    opt a predicate holds (e.g. coordinator idle with runnable items and no wait, verdict undelivered)
+      SV->>SV: record finding (append-only, deduplicated)
+      SV-->>U: ? entry
+      SV-->>C: notice at its next turn boundary
+      C->>SV: acknowledge the finding id (or the user does)
+    end
+    Note over SV: never answers, prompts, kills, restarts or marks work done
+  end
+  C-->>U: queue empty or every item waits on the user
+```
