@@ -11,43 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
-  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
-  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
-  strong; ours is weak, so move acceptance onto checks, keep the model
-  review for intent and API shape). Decided by the user 2026-10-12
-  (d-64mjmvju): yes, queue it.
-  The tamper guard landed 2026-10-18 (run r-atcxbo5o, attempt 2): the
-  verify reports a commit's guarded paths (herdr's `.herdr/checks.toml`,
-  `.herdr/review-checklist.md` and `.herdr/review-golden/**`, plus the
-  repository's own `[review] guarded_paths` read at the base, a union) as
-  an optional field and a `guarded` check without changing the verdict; a
-  discovery that cannot be read is an `unavailable` check and refuses the
-  approval; `herdr todo resume --action approve` refuses such a commit
-  unless it passes `--accept-guarded-paths`, which the run records, and
-  the automatic review and queue mode escalate to a `review` event with
-  the paths instead of approving.
-  The counterfactual tests landed 2026-10-20 (`abaf908ca`, attempt 1's
-  commit; hardened by `d9027c556` with the seven fixes of review round
-  `20261019-040000`): the verify proves that a test a commit adds or
-  changes fails without it, by putting its whole `#[cfg(test)]` module
-  (or the whole file, for `test_globs` and test module files such as
-  `tests/**/*.rs` and `**/tests/**`) on the run's base in the worker's
-  folder, building there and running each test by its module-qualified
-  name, then running it on the commit itself, where it must pass, named;
-  a run that names nothing, a test outside a `#[cfg(test)]` module the
-  check can take whole (a `#[path]` test module file), a file with two
-  same-named `#[cfg(test)]` modules and a macro-generated test are
-  `unavailable`, never a pass; `--new-api` accepts only a base that does
-  not build. The worktree is locked by a recovery record in its git
-  directory and put back after a kill by the next check.
-  Still open: the check is opt-in and this repository's
-  `.herdr/checks.toml` deliberately has no `[counterfactual]` table yet —
-  enable it only after the check has been exercised on a real run here
-  (and check that the module name it derives for a `#[path]` test module
-  file is exercised then). Later, by measurement: mutation testing of
-  changed lines only.
-
 - [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
   run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
   a notification again? ask the models": the toast was the todo driver's
@@ -4076,6 +4039,52 @@ user needs to decide or do.
   Question: who runs `herdr todo review-eval` against a real model, and on which budget?
   Options: leave it unrun until the supervisor's review step needs it (Recommended) | run it now on the ChatGPT plan model | run it now on the Anthropic credit path (`--credits`)
   Checked: slice 3's close, `docs/next` and `herdr todo review-eval --help`; no real run has been made (its tests use a fake reviewer).
+
+- [ ] Machine-checked acceptance before model review (from the user's [t-ufkea5zx]
+  question 2026-10-12 on AlphaProof Nexus; round 20261012-191051-6212,
+  sol, MiMo, DeepSeek agreeing: a simple loop works when the verifier is
+  strong; ours is weak, so move acceptance onto checks, keep the model
+  review for intent and API shape). Decided by the user 2026-10-12
+  (d-64mjmvju): yes, queue it.
+  The tamper guard landed 2026-10-18 (run r-atcxbo5o, attempt 2): the
+  verify reports a commit's guarded paths (herdr's `.herdr/checks.toml`,
+  `.herdr/review-checklist.md` and `.herdr/review-golden/**`, plus the
+  repository's own `[review] guarded_paths` read at the base, a union) as
+  an optional field and a `guarded` check without changing the verdict; a
+  discovery that cannot be read is an `unavailable` check and refuses the
+  approval; `herdr todo resume --action approve` refuses such a commit
+  unless it passes `--accept-guarded-paths`, which the run records, and
+  the automatic review and queue mode escalate to a `review` event with
+  the paths instead of approving.
+  The counterfactual tests landed 2026-10-20 (`abaf908ca`, attempt 1's
+  commit; hardened by `d9027c556` with the seven fixes of review round
+  `20261019-040000`): the verify proves that a test a commit adds or
+  changes fails without it, by putting its whole `#[cfg(test)]` module
+  (or the whole file, for `test_globs` and test module files such as
+  `tests/**/*.rs` and `**/tests/**`) on the run's base in the worker's
+  folder, building there and running each test by its module-qualified
+  name, then running it on the commit itself, where it must pass, named;
+  a run that names nothing, a test outside a `#[cfg(test)]` module the
+  check can take whole (a `#[path]` test module file), a file with two
+  same-named `#[cfg(test)]` modules and a macro-generated test are
+  `unavailable`, never a pass; `--new-api` accepts only a base that does
+  not build. The worktree is locked by a recovery record in its git
+  directory and put back after a kill by the next check.
+  Still open: the check is opt-in and this repository's
+  `.herdr/checks.toml` deliberately has no `[counterfactual]` table yet —
+  enable it only after the check has been exercised on a real run here
+  (and check that the module name it derives for a `#[path]` test module
+  file is exercised then). Later, by measurement: mutation testing of
+  changed lines only.
+  Moved to "Needs a decision" by the coordinator 2026-10-23: the item's
+  open step contradicts itself. The verify reads `[counterfactual]` at the
+  commit's base, and `herdr worker verify` has no flag to run the check ad
+  hoc, so no real run here can exercise it before the table is on master.
+  Proposed t-rnazlej4 (a retried pass counts as passing) is a known gap in
+  the same check.
+  Question: how should the counterfactual check be enabled in this repository?
+  Options: fix t-rnazlej4 first, then a worker commit adds the table and the next runs exercise it (Recommended) | enable the table now and revert it if it blocks runs | keep it opt-in and drop the open step
+  Checked: `.herdr/checks.toml` (commented-out table), cli-reference.mdx "The table is read at the commit's base", `herdr worker verify --help` (no counterfactual flag).
 
 ### Decide
 
