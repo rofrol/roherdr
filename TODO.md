@@ -78,6 +78,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   trace format v1 (JSON under `tests/fixtures/todo-traces/`) replayed by
   one Rust test. Full answer, with the signatures and the trace example:
   the Lean session's note, recorded in the task of slice 1.
+  In flight 2026-10-23: slice 1 of the transition core with the landing
+  (t-cmjqsat2), run `r-qllfvm6w` (continues r-ulhwynwg).
 
 - [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
   (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
