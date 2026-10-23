@@ -26,6 +26,10 @@ use crate::api::schema::{
 use crate::workers::todo_editor::{self, SCRIPT_NAME};
 use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
 
+/// Held while a stop notice is settled, so a run's follow-up and its
+/// owner's going away never both send it.
+static STOP_NOTICE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
 /// blank lines.
 fn indented(note: &str) -> String {
@@ -812,10 +816,10 @@ impl WorkerSupervisor {
     }
 
     /// Settles what a done run's close or note named after it: starts the next
-    /// item's run ([`Self::start_next`]) or hands the stop reason to the
-    /// user as a notification (the item's history has it with the `done`
-    /// event). Each is recorded, so a server that starts settles only what
-    /// is left ([`WorkerSupervisor::resume_runs`]).
+    /// item's run ([`Self::start_next`]) or settles the stop reason's notice
+    /// ([`Self::stop_notice`]; the item's history has the reason with the
+    /// `done` event). Each is recorded, so a server that starts settles only
+    /// what is left ([`WorkerSupervisor::resume_runs`]).
     pub(super) fn follow_up(&self, run_id: &str, env: Option<HashMap<String, String>>) {
         let Ok(run) = self.load_run(run_id) else {
             return;
@@ -830,26 +834,71 @@ impl WorkerSupervisor {
                 }
             }
         }
-        if let Some(reason) = run.finish.stop_reason.clone() {
-            if !run.finish.stop_notified {
-                let approved = if run.finish.close.is_some() {
-                    "closed"
-                } else {
-                    "approved"
-                };
-                crate::workers::notify_user(crate::workers::UserNotice {
-                    pane_id: None,
-                    title: format!("{} {approved}; no next item started", run.info.item),
-                    body: reason.clone(),
-                });
-                let noted = self.update_run(
-                    run_id,
-                    json!({"type": "run_stop_notified", "reason": reason}),
-                    |current| current.finish.stop_notified = true,
-                );
-                if let Err(error) = noted {
-                    tracing::warn!(run_id, error, "cannot record the stop reason's notice");
-                }
+        if run.finish.stop_reason.is_some() {
+            self.stop_notice(run_id);
+        }
+    }
+
+    /// Hands a done run's stop reason to the user as a notification, once,
+    /// when no coordinator is there to go on with the chain: the run has no
+    /// owner pane, or its owner pane or agent is gone (herdr's own events,
+    /// never a timer). While the owner is there the stop stays recorded on
+    /// the run and in the item's history only; the owner going away later
+    /// sends it then ([`Self::owner_gone_stop_notices`]).
+    pub(in crate::workers) fn stop_notice(&self, run_id: &str) {
+        // The run's follow-up and its owner's event may settle it at once.
+        let _settling = lock(&STOP_NOTICE);
+        let Ok(run) = self.load_run(run_id) else {
+            return;
+        };
+        let Some(reason) = run.finish.stop_reason.clone() else {
+            return;
+        };
+        if run.info.status != TodoRunStatus::Done || run.finish.stop_notified {
+            return;
+        }
+        if let Some(owner) = run.owner_pane.as_deref() {
+            if self.gone_owner(owner).is_none() {
+                return;
+            }
+        }
+        let approved = if run.finish.close.is_some() {
+            "closed"
+        } else {
+            "approved"
+        };
+        crate::workers::notify_user(crate::workers::UserNotice {
+            pane_id: None,
+            title: format!(
+                "todo run {run_id}: {} {approved}; no next item started",
+                run.info.item
+            ),
+            body: reason.clone(),
+        });
+        let noted = self.update_run(
+            run_id,
+            json!({"type": "run_stop_notified", "reason": reason}),
+            |current| current.finish.stop_notified = true,
+        );
+        if let Err(error) = noted {
+            tracing::warn!(run_id, error, "cannot record the stop reason's notice");
+        }
+    }
+
+    /// Sends the stop notices [`Self::stop_notice`] held back while owner
+    /// pane `pane_id` was there, now that it is gone.
+    pub(in crate::workers) fn owner_gone_stop_notices(&self, pane_id: &str) {
+        let runs = match self.run_store().map(|store| store.runs(None)) {
+            Ok(Ok(runs)) => runs,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot read the todo runs' stop notices");
+                return;
+            }
+            Err(_) => return,
+        };
+        for run in runs {
+            if run.owner_pane.as_deref() == Some(pane_id) && run.stop_notice_pending() {
+                self.stop_notice(&run.info.run_id);
             }
         }
     }

@@ -10278,15 +10278,33 @@ mod todo_runs {
         assert_eq!(item.events[2].run_id.as_deref(), Some(run.run_id.as_str()));
         let list = fixture.supervisor.history_list(Some(&repo)).unwrap();
         assert_eq!(list[0].last.kind, HistoryEventKind::Closed);
-        // The user is notified once; a restart does not notify again.
+        // Its coordinator is there to go on with the chain: no notice, not
+        // after a restart either.
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert!(run_events(&fixture, &run.run_id, "run_stop_notified").is_empty());
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
+        // Once its pane closes the user is notified, once, naming the run;
+        // the agent's exit after it and a restart do not notify again.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
         let notices = crate::workers::take_user_notices();
         assert_eq!(notices.len(), 1, "{notices:?}");
-        assert!(notices[0].title.contains(ITEM), "{notices:?}");
+        assert!(
+            notices[0]
+                .title
+                .starts_with(&format!("todo run {}: {ITEM} closed", run.run_id)),
+            "{notices:?}"
+        );
         assert_eq!(notices[0].body, STOP_REASON);
         assert_eq!(
             run_events(&fixture, &run.run_id, "run_stop_notified").len(),
             1
         );
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::AgentExited, "");
         fixture.supervisor.resume_runs();
         assert!(crate::workers::take_user_notices().is_empty());
         // No next run started.
@@ -10426,7 +10444,7 @@ mod todo_runs {
     }
 
     #[test]
-    fn a_note_with_a_stop_reason_records_it_and_notifies_the_user() {
+    fn a_note_with_a_stop_reason_records_it_and_notifies_the_user_without_a_coordinator() {
         let fixture = todo_repo("todo-note-stop");
         with_finish(&fixture);
         let repo = repo_of(&fixture);
@@ -10436,11 +10454,18 @@ mod todo_runs {
             .unwrap();
         let (review, _) = wait(&fixture, &run.run_id, None);
         crate::workers::take_user_notices();
+        // Its coordinator's pane closed; a resume from outside a pane takes
+        // the run over, which leaves no coordinator to go on.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
         fixture
             .supervisor
             .todo_resume(TodoResumeParams {
                 note: Some("Half of it landed.".into()),
                 stop_reason: Some(STOP_REASON.into()),
+                caller_pane_id: None,
+                caller_workspace_id: None,
                 ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
             })
             .unwrap();
@@ -10458,9 +10483,60 @@ mod todo_runs {
         );
         let notices = crate::workers::take_user_notices();
         assert_eq!(notices.len(), 1, "{notices:?}");
-        assert!(notices[0].title.contains("approved"), "{notices:?}");
+        assert_eq!(
+            notices[0].title,
+            format!(
+                "todo run {}: {ITEM} approved; no next item started",
+                run.run_id
+            ),
+            "{notices:?}"
+        );
         assert_eq!(notices[0].body, STOP_REASON);
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
         assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn a_held_back_stop_notice_is_sent_once_when_herdr_starts_without_its_coordinator() {
+        let fixture = todo_repo("todo-stop-owner-at-start");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        crate::workers::take_user_notices();
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("Half of it landed.".into()),
+                stop_reason: Some(STOP_REASON.into()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(crate::workers::take_user_notices().is_empty());
+        // The done run's owner is still watched, and herdr finds its pane
+        // gone when it starts.
+        assert!(fixture
+            .supervisor
+            .owner_panes()
+            .contains(&"p-coordinator".to_owned()));
+        fixture.supervisor.resume_runs();
+        let gone = |pane: &str| (pane == "p-coordinator").then_some(OwnerEvent::PaneClosed);
+        fixture.supervisor.owners_at_start(gone);
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].title.contains(&run.run_id), "{notices:?}");
+        // Settled: the next start neither notifies nor watches the owner.
+        fixture.supervisor.owners_at_start(gone);
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert!(!fixture
+            .supervisor
+            .owner_panes()
+            .contains(&"p-coordinator".to_owned()));
     }
 
     #[test]

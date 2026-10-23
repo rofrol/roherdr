@@ -613,7 +613,15 @@ impl Run {
             && ((self.finish.next.is_some()
                 && self.info.next_run_id.is_none()
                 && self.info.next_refusal.is_none())
-                || (self.finish.stop_reason.is_some() && !self.finish.stop_notified))
+                || self.stop_notice_pending())
+    }
+
+    /// Whether the run is done with a stop reason the user was not notified
+    /// of yet: held back while its owner is there.
+    pub(super) fn stop_notice_pending(&self) -> bool {
+        self.info.status == TodoRunStatus::Done
+            && self.finish.stop_reason.is_some()
+            && !self.finish.stop_notified
     }
 }
 
@@ -2756,7 +2764,8 @@ impl WorkerSupervisor {
         ))
     }
 
-    /// The owner panes of the runs that have not ended.
+    /// The owner panes of the runs that have not ended, and of the done
+    /// runs whose stop notice waits for their owner to go.
     pub(super) fn run_owner_panes(&self) -> Vec<String> {
         let runs = match self.run_store().map(|store| store.runs(None)) {
             Ok(Ok(runs)) => runs,
@@ -2771,7 +2780,7 @@ impl WorkerSupervisor {
                 matches!(
                     run.info.status,
                     TodoRunStatus::Running | TodoRunStatus::Waiting | TodoRunStatus::Blocked
-                )
+                ) || run.stop_notice_pending()
             })
             .filter_map(|run| run.owner_pane)
             .collect()

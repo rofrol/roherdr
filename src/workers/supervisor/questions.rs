@@ -363,7 +363,7 @@ impl WorkerSupervisor {
         {
             self.orphan_coordinator(pane_id, &format!("{cause}{cause_suffix}"));
         }
-        let mut any = false;
+        let mut gone = false;
         {
             let mut registry = lock(&self.shared.registry);
             // Also for an owner of no worker now: a run it owns may start
@@ -373,6 +373,7 @@ impl WorkerSupervisor {
                     registry
                         .gone_owners
                         .insert(pane_id.to_owned(), format!("{cause}{cause_suffix}"));
+                    gone = true;
                 }
                 // An agent works in the pane again: it is there.
                 (OwnerEvent::Working, _) => {
@@ -380,6 +381,15 @@ impl WorkerSupervisor {
                 }
                 _ => {}
             }
+        }
+        // No coordinator goes on with the chains it stopped: the user
+        // learns of each stop now.
+        if gone {
+            self.owner_gone_stop_notices(pane_id);
+        }
+        let mut any = false;
+        {
+            let mut registry = lock(&self.shared.registry);
             let owned: Vec<u64> = registry
                 .workers
                 .iter()
