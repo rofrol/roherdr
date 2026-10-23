@@ -11,54 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Under the usage widget's AN line, a chart of how the Claude weekly [t-tpcxnvxd]
-  allowance is used on each day of the week, with the current day (the
-  user, 2026-10-23: "under AN in the usage widget I want to see a chart of
-  how usage goes down on each day of the week, and the current day; ask
-  the models"). Checked: herdr keeps only the latest usage observation
-  per provider (`src/usage/cache.rs`, `usage-cache.json`); Claude reports
-  the 7-day window's utilization and its `resets_at`
-  (`src/usage/claude.rs`), so per-day history needs samples recorded
-  over time.
-  Round 20261023-162434-99ba (sol, MiMo, DeepSeek, Argon), decided by the
-  coordinator:
-  - Slice 1, data (all four): the server appends every completed poll of
-    the Claude usage endpoint (account, window, utilization, `resets_at`,
-    time) to a durable bounded log, atomically, at the poll-result event;
-    the shared latest-observation cache stays as it is. Days are cut from
-    the window anchored at `resets_at` (7 days back), never Monday to
-    Sunday; samples of an earlier window are a separate series, never
-    diffed across a reset; a stretch with no samples (machine asleep,
-    herdr stopped) is a gap, never zero and never interpolated; the
-    5-hour window stays out of this chart. Tests over synthetic samples:
-    a reset mid-history, gaps, duplicate and out-of-order samples,
-    day boundaries across DST, retention.
-  - Check first (MiMo, Argon): whether `seven_day` is a fixed window
-    ending at `resets_at` or a rolling one (then a day's change mixes new
-    use with use ageing out); record a few days of samples and look.
-  - The chart's shape is the user's (asked below): per-day use as bars,
-    or the cumulative use against an even pace to `resets_at`; always
-    under AN, or opened by a click on the AN row.
-  Decided by the user 2026-10-23 (d-xsfejmv4): per-day use as bars,
-  always under AN, today highlighted, the pace as a number beside them
-  (`+4% vs pace`).
-  Decided by the user 2026-10-23: "the 7-day window is fixed; Monday is
-  always the first position". So the open question of slice 1 is settled
-  (a fixed window, not rolling), and slice 2: the chart's first position
-  is always Monday, then Tuesday through Sunday, today highlighted;
-  buckets are calendar days in local time from Monday, and the reset's
-  position follows from `resets_at`; the first day's use is measured from
-  the window's start (0 % at the reset) instead of being unknown.
-  Blocked 2026-10-23: run r-jqgfs3ej approved (event 281148) stopped at
-  the cherry-pick with "the landing worktree ... has uncommitted changes"
-  (11 files under `src/client/shell/` and a new `todo_flow.rs`, another
-  session's work, the Lean model session herdr-67, asked to move them to
-  a worktree); event 281697 offers only abort. The worker's commit
-  f70dcd7aa stays on its branch; once the checkout is clean, a new run
-  brings it in.
-  Run r-jqgfs3ej aborted after the checkout was cleaned; slices 1 and 2
-  run together as `r-dbsdbze2` (cherry-picks f70dcd7aa, then Monday first).
-
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
   Claude Code records no window). Decided by the user 2026-10-23

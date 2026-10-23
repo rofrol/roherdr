@@ -2543,3 +2543,21 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   the table is unknown; an input above the window withholds it.
 - Still open in t-2k3ima2h: herdr enforcing the 70% handoff at the turn
   end.
+
+## A weekly usage chart under the AN row (t-tpcxnvxd, 2026-10-23)
+
+- The user asked 2026-10-23 for a chart under AN of how the weekly Claude
+  allowance is used on each day and the current day. Round
+  20261023-162434-99ba (sol, MiMo, DeepSeek, Argon); the user chose
+  per-day bars, always shown, today highlighted, the pace as a number
+  (d-xsfejmv4, asked again as d-cpbmlatz), and said the 7-day window is
+  fixed with Monday always first.
+- Landed (run r-dbsdbze2, attempt 2, bringing in r-jqgfs3ej's commit whose
+  landing another session's edits had blocked): every Claude usage poll's
+  weekly window is logged (`usage-samples.json`, 21 days, atomic); the
+  server builds the series from local calendar days Monday to Sunday, the
+  first day counted from 0 % at the reset, a day with no samples `·`
+  (never 0), a day after such a day only its own growth, marked partial,
+  and growth during a gap in no day; weekday initials from each date's own
+  offset (`local_utc_offset_at` in `src/platform/`); bars and the pace
+  under AN.
