@@ -4046,6 +4046,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   waiting on a tracked job). How a finding is rated (useful, noise, wrong)
   and by whom is to be decided with the models before building.
 
+- [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
+  "increase the default sidebar width to 36"). Found in review of
+  t-2wcx22ue (run r-qrmzbihv, commit 6dd671f90): at the default 32
+  columns the weekly chart's over-pace text (`+2pp · 3.1pp over at 01:04`
+  after the bars, 34 columns) does not fit and the target is dropped
+  whole; at 36 it fits. The default is `sidebar_width: 32` in
+  `src/config/model.rs:1432`, documented in the generated config comment
+  at `src/main.rs:252`; tests assert it at `src/config/model.rs:1920` and
+  `src/client/shell/tests/chrome_context.rs:317`. The maximum stays 44; a
+  width the user saved (session snapshot) or configured is kept.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
