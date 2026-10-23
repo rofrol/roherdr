@@ -41,6 +41,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `coordinator_handoff.rs`).
   In flight: slice 2 (a handoff carries held stop notices; source names on
   the other worker notices), run `r-bgbctzdi`.
+  Slice 2 landed 2026-10-23 (run r-bgbctzdi): a coordinator handoff moves done
+  runs with a held stop notice to the successor, and every `notify_user`
+  title leads with its source (`todo run <id>:`, `todo queue <repo>:`,
+  `worker <name> (<id>):`, `coordinator <id>:`). Open: queue mode's agent
+  choice (`todo queue on` has no agent option; its runs use
+  `[workers] default_agent`), and the sidebar line for a stopped run.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
