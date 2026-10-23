@@ -54,6 +54,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Proposed separately (sol, DeepSeek, Argon): a durable report spool
     that herdr reconciles at named events, so a timed-out report is
     recovered, for every hook.
+  In flight 2026-10-23: run `r-l6754rbi`.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
