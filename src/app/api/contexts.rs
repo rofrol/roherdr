@@ -217,21 +217,25 @@ mod tests {
                 "at": "2099-01-01T00:00:00Z",
                 "model": "claude-opus-5-5",
                 "window": {
-                    "provenance": "unknown",
-                    "detail": "no source knows the window of claude-opus-5-5",
+                    "tokens": 1_000_000,
+                    "provenance": "table",
+                    "detail": "herdr's table: claude-opus-5-5 (standard)",
+                    "url": "https://platform.claude.com/docs/en/models/overview",
+                    "checked": "2026-10-23",
                 },
             })
         );
 
-        // The user's setting gives the window; a reload that changes it resolves it again.
+        // The user's setting comes before the table; a reload that changes it resolves it
+        // again.
         let mut config = crate::config::Config::default();
         config
             .agents
             .context_window
-            .insert("claude-opus-5-5".into(), 1_000_000);
+            .insert("claude-opus-5-5".into(), 900_000);
         app.apply_live_config(&config, &[], &[], false);
         let window = agent(&mut app)["context"]["window"].clone();
-        assert_eq!(window["tokens"], 1_000_000);
+        assert_eq!(window["tokens"], 900_000);
         assert_eq!(window["provenance"], "user");
         // A window below the measured input is wrong for this session: withheld.
         config

@@ -30,10 +30,26 @@ pub(crate) struct TableEntry {
 }
 
 /// Context windows taken from a vendor document, cited by URL and the day it was checked.
-/// Empty: no entry could be checked against a vendor document yet, so only the user's
-/// setting gives a window. A model listed with more than one variant has no window from the
-/// table, since the transcript does not name the variant.
-pub(crate) const TABLE: &[TableEntry] = &[];
+/// A model listed with more than one variant has no window from the table, since the
+/// transcript does not name the variant.
+pub(crate) const TABLE: &[TableEntry] = &[
+    anthropic("claude-fable-5-1", 1_000_000),
+    anthropic("claude-opus-5-5", 1_000_000),
+    anthropic("claude-sonnet-5-5", 1_000_000),
+    anthropic("claude-haiku-5-5", 1_000_000),
+];
+
+/// Anthropic's "Models overview" lists one context window per current model ("Compare
+/// models", row "Context window"), with no separate long-context variant.
+const fn anthropic(model: &'static str, tokens: u64) -> TableEntry {
+    TableEntry {
+        model,
+        variant: "standard",
+        tokens,
+        url: "https://platform.claude.com/docs/en/models/overview",
+        checked: "2026-10-23",
+    }
+}
 
 /// The window of the model that served `context`'s request: an agent fact, then the user's
 /// `user` setting (exact model id to tokens), then `table`.
@@ -169,12 +185,53 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_table_is_empty_until_an_entry_cites_a_vendor_document() {
-        // Every entry needs a vendor URL and the day it was checked; none could be checked.
+    fn every_shipped_entry_cites_a_vendor_document_and_a_day() {
         assert!(TABLE
             .iter()
             .all(|entry| entry.url.starts_with("https://") && entry.checked.len() == 10));
-        assert!(TABLE.is_empty());
+    }
+
+    #[test]
+    fn the_current_claude_models_resolve_to_their_documented_window() {
+        for model in [
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ] {
+            let window = resolve(
+                &context(420_522, Some(model)),
+                None,
+                &BTreeMap::new(),
+                TABLE,
+            );
+            assert_eq!(window.tokens, Some(1_000_000), "{model}");
+            assert_eq!(window.provenance, "table", "{model}");
+            assert_eq!(
+                window.url.as_deref(),
+                Some("https://platform.claude.com/docs/en/models/overview"),
+                "{model}"
+            );
+            assert_eq!(window.checked.as_deref(), Some("2026-10-23"), "{model}");
+        }
+    }
+
+    #[test]
+    fn the_shipped_table_leaves_other_models_unknown_and_yields_to_the_user_setting() {
+        let unknown = resolve(
+            &context(100, Some("claude-opus-5-5-preview")),
+            None,
+            &BTreeMap::new(),
+            TABLE,
+        );
+        assert_eq!(
+            (unknown.tokens, unknown.provenance.as_str()),
+            (None, "unknown")
+        );
+        let user = BTreeMap::from([("claude-opus-5-5".to_string(), 500_000)]);
+        let window = resolve(&context(100, Some("claude-opus-5-5")), None, &user, TABLE);
+        assert_eq!(window.tokens, Some(500_000));
+        assert_eq!(window.provenance, "user");
     }
 
     #[test]
