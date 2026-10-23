@@ -1896,6 +1896,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `src/client/shell/space_tabs.rs` picks one `AgentMark` in order
   `AwaitsReply`, `Waits` (a todo wait), `WaitsOnJob`/`WaitsOnIdleJob`,
   `BackgroundWork`, so an open question hides every background mark.
+  Round 20261023-132830-d448 (sol, MiMo, DeepSeek, Argon), checked
+  against `agent_mark`/`agent_icon` in `src/client/shell.rs` and
+  `tab_state` in `src/client/shell/space_tabs.rs`. All four: a question
+  and background work are two independent facts, not one new glyph (a
+  one-cell combination is unlearnable across the Dots, Symbols and
+  Shapes styles, colour alone fails colour-blind users, animation costs
+  render work); the `?` must never be hidden, also while the agent is
+  Working (today `AwaitsReply` needs Idle/Done, for a tab Done); count
+  only running work: wait edges whose target runs, running nested jobs,
+  the agent's background shells, owned workers and todo runs, read from
+  the snapshot, never discovered in render; tooltip names both facts
+  ("reply requested · 2 jobs running"); the space row shows the question
+  and the work apart. Tests: the full matrix (question × status ×
+  each background source × style), an invariant that `?` always shows.
+  They differ on placement (asked the user, below).
 
 - [ ] Wake a coordinator when an external reply arrives (the owner via the [t-22gwwmer]
   roguix-vps coordinator, 2026-10-11: "why is nothing happening here?
