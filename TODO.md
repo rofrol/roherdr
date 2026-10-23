@@ -102,6 +102,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the 7-day window's utilization and its `resets_at`
   (`src/usage/claude.rs`), so per-day history needs samples recorded
   over time.
+  Round 20261023-162434-99ba (sol, MiMo, DeepSeek, Argon), decided by the
+  coordinator:
+  - Slice 1, data (all four): the server appends every completed poll of
+    the Claude usage endpoint (account, window, utilization, `resets_at`,
+    time) to a durable bounded log, atomically, at the poll-result event;
+    the shared latest-observation cache stays as it is. Days are cut from
+    the window anchored at `resets_at` (7 days back), never Monday to
+    Sunday; samples of an earlier window are a separate series, never
+    diffed across a reset; a stretch with no samples (machine asleep,
+    herdr stopped) is a gap, never zero and never interpolated; the
+    5-hour window stays out of this chart. Tests over synthetic samples:
+    a reset mid-history, gaps, duplicate and out-of-order samples,
+    day boundaries across DST, retention.
+  - Check first (MiMo, Argon): whether `seven_day` is a fixed window
+    ending at `resets_at` or a rolling one (then a day's change mixes new
+    use with use ageing out); record a few days of samples and look.
+  - The chart's shape is the user's (asked below): per-day use as bars,
+    or the cumulative use against an even pace to `resets_at`; always
+    under AN, or opened by a click on the AN row.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
