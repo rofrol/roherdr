@@ -11,25 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The weekly chart's row shows both the pace and the even-pace target to [t-2wcx22ue]
-  the next day boundary, without a left indent (follow-up of t-f5katvlq,
-  closed 2026-10-23; the user, a screenshot of `AN 24% 55m 19% 5d4h`, bars,
-  `-7pp vs pace`: "how to read this? 19% used, 14.3% a day, -7pp, and I
-  see that until 2:00 I can still use 28.6% - 19% = 9.6%? ask the
-  models"). The reading is right: the window resets about 01:04, so at
-  the next window-day boundary even pace is 2 x 100/7 = 28.6 %. Round
-  20261023-210649-9ec0 (sol, MiMo, DeepSeek, Argon): the target is a plan, not
-  a limit (the 5-hour window can stop use first; past the boundary the
-  number jumps); over pace it reads "N pp over", never a negative "left".
-  Decided by the user 2026-10-23 (d-ysjhba2e): both in the row, e.g.
-  `-7pp · +9.6pp to 01:04` (over pace `+2pp · 3.1pp over at 01:04`), and
-  no indent from the left for the chart's rows; the tooltip says it is
-  the even-pace target, not a limit, and names the 5-hour window.
-  The user, 2026-10-23: "on this chart I care about the 7-day limit; I
-  usually do not exceed the short one". So the row and the tooltip are
-  about the 7-day window only; the tooltip does not dwell on the 5-hour
-  window (at most one short line naming it as a separate limit).
-
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
   new package; much less code than all of herdr; then various TUIs, GUIs

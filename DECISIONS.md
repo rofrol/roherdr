@@ -2623,3 +2623,21 @@ handoff became a backstop; the coordinator/worker comparison
 docs/todo-workflow-model/cost-baseline.md; model: `PerItem` in
 TodoWorkflow.lean with two diagrams. Items: t-ufyllobh, t-iltryyob,
 t-rfksf3tt and the two around it.
+
+## The weekly chart row: pace and the even-pace target (t-2wcx22ue, 2026-10-23)
+
+- Follow-up of t-f5katvlq. Decided by the user (d-ysjhba2e, round
+  20261023-210649-9ec0): the row shows both the pace and the 7-day
+  window's even-pace target at the next window-day boundary, e.g.
+  `-7pp · +9.6pp to 01:04`, over pace `+2pp · 3.1pp over at 01:04`
+  (never a negative "left"); the chart's rows have no left indent; the
+  tooltip calls the target a plan, not a limit, and names the 5-hour
+  window in one short line only ("on this chart I care about the 7-day
+  limit").
+- Landed (run r-qrmzbihv): window days are 24-hour steps from
+  `starts_at`, the last one ending at the reset (target 100 %); the
+  boundary's local time is computed with the other labels when the report
+  arrives, not in render; the pace label is now the short `-7pp`; the
+  target, then the pace, are dropped whole when they do not fit.
+- Known limit, asked in "Needs a decision": at the default 32-column
+  sidebar the over-pace text (34 columns) drops the target.
