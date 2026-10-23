@@ -59,6 +59,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   remaining allowance per remaining day instead of the even share
   (MiMo, DeepSeek, Argon).
   In flight 2026-10-23: run `r-ulhwynwg` (continues r-6ymh3gib).
+  The user's screenshot 2026-10-23 20:15 (the build before this item):
+  today's cell is highlighted with a full background, which reads as a full
+  bar and hides the bar's height; the highlight must not hide it (an
+  underline or the initial's colour, not the cell's background). Checked in
+  the review of r-ulhwynwg.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
