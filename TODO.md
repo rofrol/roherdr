@@ -31,6 +31,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
   `coordinator_handoff.rs`). In flight: slice 1 (the stop notice only when
   the coordinator is gone, named `todo run <id>:`), run `r-4h4bbmbj`.
+  Slice 1 landed 2026-10-23 (run r-4h4bbmbj): the stop notice is held while
+  the run's owner pane is there and sent once when it closes or its agent
+  exits (or at herdr start), titled `todo run <id>: ...`. Open: a coordinator
+  handoff (the old pane exits, the successor lives) still sends it, since only
+  the owner pane is checked, not the coordination tenure (`owner_coordinator`);
+  queue mode's agent choice; the sidebar line for a stop; source names on the
+  other worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
+  `coordinator_handoff.rs`).
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
