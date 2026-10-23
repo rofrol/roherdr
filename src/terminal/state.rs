@@ -249,6 +249,9 @@ pub struct TerminalState {
     reported_task: Option<String>,
     /// Prompts herdr typed, followed through the agent's turn reports.
     pub prompt_turns: super::prompt_turns::PromptTurns,
+    /// The input context of the agent's last completed request, as the server last read it
+    /// from the agent's transcript (`crate::agent_context`); `None` while unknown.
+    pub agent_context: Option<crate::api::schema::AgentContext>,
     /// How many background tasks the agent still ran when its last turn ended, reported with
     /// that turn's end (`pane.report_turn`); `None` while unknown: no end reported since the
     /// turn started, or one without a count.
@@ -317,6 +320,7 @@ impl TerminalState {
             limit_report: None,
             reported_task: None,
             prompt_turns: Default::default(),
+            agent_context: None,
             turn_background_tasks: None,
             turn_closed: false,
             held_completion: false,

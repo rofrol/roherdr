@@ -18,6 +18,7 @@ fn state_with_tabs_and_width(tabs: bool, sidebar_width: u16) -> ClientShellState
         waiting_since_ms: None,
         limited: None,
         restart_pending: None,
+        last_request_input_tokens: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1302,6 +1303,66 @@ fn a_tab_marks_an_agent_whose_cli_was_updated_until_it_restarts() {
     projected.agents[0].restart_pending = None;
     state.set_snapshot(Box::new(projected));
     assert_eq!(restart_mark(&mut state).1, None);
+}
+
+#[test]
+fn a_coordinators_tab_line_shows_its_context_size_or_that_it_is_unknown() {
+    let mut state = state_with_tabs(true);
+    let context = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let (line, _) = state.hits.space_tabs[0];
+        let row = frame_rows(&frame)[line.y as usize].clone();
+        let tooltip = state
+            .hits
+            .tooltips
+            .iter()
+            .find(|target| target.id.starts_with("tab-context:") && target.rect.y == line.y)
+            .map(|target| target.text.clone());
+        (row, tooltip)
+    };
+
+    // Only a coordinator's line shows it.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].last_request_input_tokens = Some(420_522);
+    state.set_snapshot(Box::new(projected));
+    let (row, tooltip) = context(&mut state);
+    assert!(!row.contains("ctx "), "{row}");
+    assert_eq!(tooltip, None);
+
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    state.set_snapshot(Box::new(projected));
+    let (row, tooltip) = context(&mut state);
+    assert!(row.contains("ctx 420k"), "{row}");
+    assert_eq!(
+        tooltip.as_deref(),
+        Some("Context: 420522 tokens, input of the last request, not cost or cumulative")
+    );
+
+    // Unknown (a new session before its first request) is `?`, never 0.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].last_request_input_tokens = None;
+    state.set_snapshot(Box::new(projected));
+    let (row, tooltip) = context(&mut state);
+    assert!(row.contains("ctx ?"), "{row}");
+    assert!(
+        tooltip
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Context: unknown until")),
+        "{tooltip:?}"
+    );
+}
+
+#[test]
+fn the_context_size_is_cut_to_thousands_or_tenths_of_millions() {
+    use super::super::space_tabs::{context_text, TabContext};
+    let text = |tokens| context_text(TabContext { tokens });
+    assert_eq!(text(None), "ctx ?");
+    assert_eq!(text(Some(0)), "ctx 0");
+    assert_eq!(text(Some(999)), "ctx 999");
+    assert_eq!(text(Some(420_522)), "ctx 420k");
+    assert_eq!(text(Some(999_999)), "ctx 999k");
+    assert_eq!(text(Some(1_250_000)), "ctx 1.2M");
 }
 
 #[test]
@@ -2712,6 +2773,7 @@ fn header_agent(
         waiting_since_ms: None,
         limited: None,
         restart_pending: None,
+        last_request_input_tokens: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

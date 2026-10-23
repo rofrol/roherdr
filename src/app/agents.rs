@@ -512,6 +512,7 @@ impl App {
                 &terminal.id,
                 terminal.effective_known_agent().or(terminal.detected_agent),
             ),
+            context: terminal.agent_context.clone(),
             task: terminal.reported_task().map(str::to_owned),
             background_tasks,
             completion_seq: terminal.last_agent_completion_seq,

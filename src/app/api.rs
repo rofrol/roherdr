@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod contexts;
 mod coordinators;
 mod env;
 mod integrations;

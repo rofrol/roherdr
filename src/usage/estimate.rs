@@ -501,6 +501,19 @@ fn plain_file_name(id: &str) -> bool {
     !id.is_empty() && id != "." && id != ".." && !id.contains(['/', '\\'])
 }
 
+/// The main transcript of `agent`'s session (without its subagents'), found
+/// as the usage report finds it; none for an agent whose transcripts herdr
+/// cannot read or a session without one.
+pub(crate) fn session_transcript(
+    agent: &str,
+    session: &SessionKey,
+    roots: &TranscriptRoots,
+) -> Option<PathBuf> {
+    locate(reader_for(agent)?, session, roots)
+        .into_iter()
+        .next()
+}
+
 fn locate(reader: Reader, session: &SessionKey, roots: &TranscriptRoots) -> Vec<PathBuf> {
     match (reader, session) {
         (_, SessionKey::Path(path)) => {

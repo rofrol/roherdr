@@ -207,6 +207,8 @@ pub struct App {
     pub(crate) plugin_installation_cleanup_allowed: bool,
     /// Watches agent launchers for updates; started with the first agent.
     pub(crate) launcher_watch: Option<agent_versions::LauncherWatch>,
+    /// How far each agent session's transcript was read for its context size.
+    pub(crate) agent_contexts: crate::agent_context::ContextStore,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -705,6 +707,11 @@ impl App {
             last_git_repo_discovery_refresh: Instant::now(),
             git_refresh_in_flight: false,
             launcher_watch: None,
+            agent_contexts: crate::agent_context::ContextStore::load(
+                policy
+                    .persist_session
+                    .then(crate::agent_context::ContextStore::default_dir),
+            ),
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_refresh_spawn_retry_pending: false,
@@ -769,6 +776,7 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app.refresh_restored_workspace_git_metadata();
+        app.reconcile_agent_contexts();
         Ok(app)
     }
 
@@ -832,6 +840,8 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
         app.refresh_restored_workspace_git_metadata();
+        // The replaced server's cursors are on disk: go on where it stopped.
+        app.reconcile_agent_contexts();
         Ok(app)
     }
 

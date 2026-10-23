@@ -38,6 +38,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "ack-verdict" => agent_ack_verdict(&args[1..]),
         "attach" => agent_attach(&scoped_args, scope()),
         "explain" => agent_explain(&scoped_args, scope()),
+        "context" => agent_context(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
         "awaiting-reply" => agent_awaiting_reply(&args[1..]),
         "limited" => agent_limited(&args[1..]),
@@ -567,6 +568,99 @@ fn agent_get(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         id: "cli:agent:get".into(),
         method: Method::AgentGet(scope.target(target)),
     })?)
+}
+
+/// What the input of a request means, in every report of it.
+const CONTEXT_MEASURE: &str = "input of the last request, not cost or cumulative";
+
+fn agent_context(args: &[String], scope: NameScope) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent context <target> [--json]";
+    let mut json = false;
+    let mut target = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "help" | "--help" | "-h" => {
+                eprintln!("{USAGE}");
+                return Ok(0);
+            }
+            value if value.starts_with('-') || target.is_some() => {
+                eprintln!("{USAGE}");
+                return Ok(2);
+            }
+            value => target = Some(value.to_string()),
+        }
+    }
+    let Some(target) = target else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let response = super::send_request(&agent_get_request(&target, &scope, "cli:agent:context"))?;
+    if response.get("error").is_some() {
+        eprintln!("{response}");
+        return Ok(1);
+    }
+    let report = context_report(&response["result"]["agent"]);
+    if json {
+        println!("{report}");
+    } else {
+        print!("{}", context_text(&report));
+    }
+    Ok(0)
+}
+
+/// `herdr agent context`'s report of an agent (`agent.get`'s result): the input context of its
+/// last completed request and where it was read. The window and the percentage stay `null`
+/// and the status `unknown` until herdr knows the model's window; unknown is never under a
+/// threshold.
+fn context_report(agent: &serde_json::Value) -> serde_json::Value {
+    let context = agent.get("context").filter(|context| context.is_object());
+    let field = |key: &str| {
+        context
+            .and_then(|context| context.get(key))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    serde_json::json!({
+        "pane_id": agent.get("pane_id").cloned().unwrap_or_default(),
+        "agent": agent.get("agent").cloned().unwrap_or_default(),
+        "tokens": field("last_request_input_tokens"),
+        "measure": CONTEXT_MEASURE,
+        "as_of": context.map(|_| serde_json::json!({
+            "session_id": field("session_id"),
+            "message_id": field("message_id"),
+            "at": field("at"),
+        })),
+        "provenance": context.map(|_| serde_json::json!({
+            "source": "transcript",
+            "sum": "input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
+        })),
+        "window": serde_json::Value::Null,
+        "percent": serde_json::Value::Null,
+        "status": "unknown",
+    })
+}
+
+fn context_text(report: &serde_json::Value) -> String {
+    let mut out = String::new();
+    match report["tokens"].as_u64() {
+        Some(tokens) => {
+            out.push_str(&format!("tokens: {tokens} ({CONTEXT_MEASURE})\n"));
+            let as_of = &report["as_of"];
+            out.push_str(&format!(
+                "as of: message {} at {}, session {}\n",
+                as_of["message_id"].as_str().unwrap_or("unknown"),
+                as_of["at"].as_str().unwrap_or("unknown"),
+                as_of["session_id"].as_str().unwrap_or("unknown"),
+            ));
+        }
+        None => out.push_str(
+            "tokens: unknown (no completed request in this session yet, or an agent \
+             whose transcript herdr cannot read)\n",
+        ),
+    }
+    out.push_str("window: unknown\nstatus: unknown\n");
+    out
 }
 
 fn agent_focus(args: &[String], scope: NameScope) -> std::io::Result<i32> {
@@ -1427,13 +1521,14 @@ fn print_agent_help() {
     );
     eprintln!("  herdr agent handoff <pane> --to claude|pi|codex [--focus]");
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
+    eprintln!("  herdr agent context <target> [--json]");
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
     );
     eprintln!("  targets accept unique agent names and pane ids that currently host agents");
     eprintln!("  inside a pane, a name resolves in the caller's workspace first, then in all;");
     eprintln!(
-        "  --global (get, read, send-keys, prompt, rename, focus, wait, wait-change, attach, explain)"
+        "  --global (get, read, send-keys, prompt, rename, focus, wait, wait-change, attach, explain, context)"
     );
     eprintln!("  looks a name up in every workspace at once");
     eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
@@ -1449,9 +1544,51 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        method_unknown, prompt_turn_unavailable, split_global_flag, unsupported_request_note,
-        NameScope,
+        context_report, context_text, method_unknown, prompt_turn_unavailable, split_global_flag,
+        unsupported_request_note, NameScope,
     };
+
+    #[test]
+    fn agent_context_reports_the_last_request_and_no_window_yet() {
+        let agent = serde_json::json!({
+            "pane_id": "w1:p1",
+            "agent": "claude",
+            "context": {
+                "last_request_input_tokens": 420_522,
+                "session_id": "s1",
+                "message_id": "msg_1",
+                "at": "2026-10-23T12:00:00Z",
+            },
+        });
+        let report = context_report(&agent);
+        assert_eq!(
+            report,
+            serde_json::json!({
+                "pane_id": "w1:p1",
+                "agent": "claude",
+                "tokens": 420_522,
+                "measure": "input of the last request, not cost or cumulative",
+                "as_of": {"session_id": "s1", "message_id": "msg_1", "at": "2026-10-23T12:00:00Z"},
+                "provenance": {
+                    "source": "transcript",
+                    "sum": "input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
+                },
+                "window": null,
+                "percent": null,
+                "status": "unknown",
+            })
+        );
+        assert!(context_text(&report).starts_with("tokens: 420522 (input of the last request"));
+    }
+
+    #[test]
+    fn an_agent_without_a_reading_is_unknown_not_zero() {
+        let report = context_report(&serde_json::json!({"pane_id": "w1:p1", "agent": "claude"}));
+        assert_eq!(report["tokens"], serde_json::Value::Null);
+        assert_eq!(report["as_of"], serde_json::Value::Null);
+        assert_eq!(report["status"], "unknown");
+        assert!(context_text(&report).starts_with("tokens: unknown"));
+    }
 
     #[test]
     fn an_older_server_without_prompt_tracked_is_recognized() {

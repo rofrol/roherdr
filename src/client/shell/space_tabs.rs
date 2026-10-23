@@ -86,6 +86,9 @@ pub(super) struct SpaceTabLine {
     /// [`RESTART_MARK`]'s tooltip names them; none when every agent is
     /// current.
     pub(super) restart: Option<String>,
+    /// A coordinator's line: the input context of its agent's last request,
+    /// drawn dim as `ctx 420k` ([`context_text`]); none on other lines.
+    pub(super) context: Option<TabContext>,
     /// Set on a todo run's line (see [`super::todo_runs::run_lines_at`]);
     /// its `tab_id` is [`super::todo_runs::run_line_id`], never a real
     /// tab's.
@@ -472,6 +475,7 @@ pub(super) fn worker_lines_at(
                 background: None,
                 background_count: 0,
                 restart: None,
+                context: None,
                 run: None,
                 wait: None,
             }
@@ -695,6 +699,8 @@ pub(super) fn space_tab_lines_filtered(
                 background: tab_background(snapshot, tab, state),
                 background_count: tab_background_count(snapshot, tab),
                 restart: tab_restart(snapshot, tab),
+                context: (tab.role == Some(crate::api::schema::TabRole::Coordinator))
+                    .then(|| tab_context(snapshot, tab)),
                 run: None,
                 wait: super::todo_runs::tab_wait_row(snapshot, tab, state),
             }
@@ -744,6 +750,7 @@ pub(super) fn space_tab_lines_filtered(
                 background: None,
                 background_count: 0,
                 restart: None,
+                context: None,
                 run: None,
                 wait: None,
             });
@@ -822,6 +829,7 @@ fn collapse_ended_workers(
                 background: None,
                 background_count: 0,
                 restart: None,
+                context: None,
                 run: None,
                 wait: None,
             });
@@ -1213,6 +1221,53 @@ fn tab_restart(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<S
         })
         .collect::<Vec<_>>();
     (!stale.is_empty()).then(|| stale.join(", "))
+}
+
+/// The input context of a coordinator's last request, as its tab line shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TabContext {
+    /// `None` while unknown: a session without a completed request yet, or an
+    /// agent whose transcript herdr cannot read. Never shown as 0.
+    pub(super) tokens: Option<u64>,
+}
+
+/// What the context size measures, on hover.
+pub(super) const CONTEXT_MEASURE: &str = "input of the last request, not cost or cumulative";
+
+/// The tab's agent's context size: the first of its agents with a reading.
+fn tab_context(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> TabContext {
+    TabContext {
+        tokens: snapshot
+            .agents
+            .iter()
+            .filter(|agent| agent.tab_id == tab.tab_id)
+            .find_map(|agent| agent.last_request_input_tokens),
+    }
+}
+
+/// `ctx 420k`: the tokens cut to thousands, or to tenths of millions from a
+/// million on (`ctx 1.2M`); `ctx ?` while unknown.
+pub(super) fn context_text(context: TabContext) -> String {
+    match context.tokens {
+        None => "ctx ?".into(),
+        Some(tokens @ 0..1_000) => format!("ctx {tokens}"),
+        Some(tokens @ 1_000..1_000_000) => format!("ctx {}k", tokens / 1_000),
+        Some(tokens) => format!(
+            "ctx {}.{}M",
+            tokens / 1_000_000,
+            tokens % 1_000_000 / 100_000
+        ),
+    }
+}
+
+/// The context size's tooltip, with the exact number.
+pub(super) fn context_tooltip(context: TabContext) -> String {
+    match context.tokens {
+        Some(tokens) => format!("Context: {tokens} tokens, {CONTEXT_MEASURE}"),
+        None => format!(
+            "Context: unknown until this session's first completed request ({CONTEXT_MEASURE})"
+        ),
+    }
 }
 
 /// How many background tasks the tab's agents had running when their turns
@@ -1769,6 +1824,36 @@ pub(super) fn render_space_tab_lines(
                 starts_at_target: false,
             });
         }
+        // A coordinator's context size, dim and left of the above, while the
+        // label keeps a few columns.
+        let context = line.context.map(|context| (context_text(context), context));
+        let context = context.filter(|(text, _)| {
+            area_width.saturating_sub(plan_width + was_width + bg_width)
+                >= super::render::display_width(text) + 1 + 6
+        });
+        let context_width = context
+            .as_ref()
+            .map_or(0, |(text, _)| super::render::display_width(text) + 1);
+        if let Some((text, context)) = context.as_ref() {
+            let context_x =
+                text_x + area_width - plan_width - was_width - bg_width - (context_width - 1);
+            super::render::put_text(
+                buffer,
+                context_x,
+                y,
+                context_width - 1,
+                text,
+                Style::default().fg(palette.overlay1),
+            );
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(context_x, y, context_width - 1, 1),
+                id: format!("tab-context:{}", line.tab_id),
+                text: context_tooltip(*context),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        let bg_width = bg_width + context_width;
         let label_width = area_width.saturating_sub(plan_width + was_width + bg_width);
         // The agent's badge leads the label (`CL fix tooltip`) while the
         // label keeps a few columns.

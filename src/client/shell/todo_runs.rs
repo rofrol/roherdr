@@ -133,6 +133,7 @@ fn stopped_line(run: &ClientShellTodoRun, reason: &str) -> space_tabs::SpaceTabL
         background: None,
         background_count: 0,
         restart: None,
+        context: None,
         run: Some(RunLine {
             run_id: run.run_id.clone(),
             tooltip: format!(
@@ -264,6 +265,7 @@ pub(super) fn run_lines_at(
                 background: None,
                 background_count: 0,
                 restart: None,
+                context: None,
                 run: Some(RunLine {
                     run_id: run.run_id.clone(),
                     tooltip,

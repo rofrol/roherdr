@@ -28,6 +28,7 @@ fn agent(
         waiting_since_ms: None,
         limited: None,
         restart_pending: None,
+        last_request_input_tokens: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

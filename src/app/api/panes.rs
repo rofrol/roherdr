@@ -1583,6 +1583,14 @@ impl App {
             message: params.message,
             seq: params.seq,
         });
+        // An agent turning idle finished its requests: its context size as of the last one.
+        if params.state == crate::api::schema::PaneAgentState::Idle {
+            self.reconcile_agent_context(
+                ws_idx,
+                pane_id,
+                crate::agent_context::ContextEvent::Reconcile,
+            );
+        }
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         self.report_agent_resume(
@@ -1659,6 +1667,17 @@ impl App {
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         if applied && session_ref.is_some() {
+            // A session start (a new or cleared session, a resume, a compaction) leaves the
+            // context size unknown until its first request.
+            self.reconcile_agent_context(
+                ws_idx,
+                pane_id,
+                if session_start_source.is_some() {
+                    crate::agent_context::ContextEvent::SessionStart
+                } else {
+                    crate::agent_context::ContextEvent::Reconcile
+                },
+            );
             if session_start_source.as_deref() == Some("clear") {
                 self.clear_coordinator_session_in(ws_idx, pane_id, cleared_session.as_deref());
             }
@@ -1773,6 +1792,14 @@ impl App {
         });
         if finished {
             changed |= self.state.release_held_completion(ws_idx, pane_id);
+        }
+        // The turn's requests are in the transcript: the context size as of its last one.
+        if finished {
+            self.reconcile_agent_context(
+                ws_idx,
+                pane_id,
+                crate::agent_context::ContextEvent::Reconcile,
+            );
         }
         // A coordinator's turn report is a supervision sweep's event, and a boundary for the
         // findings' notices to it.

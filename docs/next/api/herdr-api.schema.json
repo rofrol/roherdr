@@ -12383,6 +12383,40 @@
           ],
           "type": "object"
         },
+        "AgentContext": {
+          "description": "The input context of an agent's last completed request: how full its context window was\nas of that request. Not cost, and not cumulative over the session.",
+          "properties": {
+            "at": {
+              "description": "When the transcript recorded that message (RFC 3339, as the agent wrote it).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_request_input_tokens": {
+              "description": "The request's input tokens: for Claude its `input_tokens` plus\n`cache_creation_input_tokens` plus `cache_read_input_tokens`; output excluded.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "message_id": {
+              "description": "The transcript message the reading came from (Claude's `message.id`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "description": "The agent session the request belongs to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "last_request_input_tokens",
+            "session_id"
+          ],
+          "type": "object"
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -12425,6 +12459,17 @@
                 "integer",
                 "null"
               ]
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentContext"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The input context of the agent's last completed request, read from its transcript.\nAbsent while unknown: an agent whose transcripts herdr cannot read (Claude only for\nnow), and a new session (`/clear`, a resume, a compaction) or a rewritten transcript\nuntil that session's first completed request. Unknown is never 0."
             },
             "cwd": {
               "type": [

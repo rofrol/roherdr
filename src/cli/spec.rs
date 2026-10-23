@@ -971,6 +971,16 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("context")
+                .about("Show the input context of the agent's last request")
+                .arg(required("target", "TARGET"))
+                .arg(global_name_flag())
+                .arg(json_flag())
+                .after_help(
+                    "Reads the agent's transcript as of its last completed request: for Claude, input + cache creation + cache read tokens, output excluded; not cost and not cumulative. Unknown after a session start (/clear, a resume, a compaction) until that session's first completed request. Claude only for now. The window, the percentage and an over or under status are not known yet: --json prints them as null and status unknown.",
+                ),
+        )
+        .subcommand(
             Command::new("explain")
                 .about("Explain agent detection state")
                 .arg(Arg::new("target").value_name("TARGET"))

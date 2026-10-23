@@ -232,6 +232,9 @@ pub(super) fn snapshot_with_completions(
                 waiting_since_ms: agent.waiting_since_ms,
                 limited: agent.limited,
                 restart_pending: agent.restart_pending,
+                last_request_input_tokens: agent
+                    .context
+                    .map(|context| context.last_request_input_tokens),
                 state_labels,
                 tokens,
                 focused,

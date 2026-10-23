@@ -1478,6 +1478,10 @@ pub struct ClientShellAgent {
     /// The agent runs an older version of its CLI than the one installed (see `AgentInfo`).
     #[serde(default)]
     pub restart_pending: Option<crate::api::schema::AgentRestartPending>,
+    /// The input context of the agent's last completed request (see `AgentInfo::context`);
+    /// `None` while unknown and from older servers. Always serialized, like `task`.
+    #[serde(default)]
+    pub last_request_input_tokens: Option<u64>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

@@ -508,6 +508,12 @@ pub struct AgentInfo {
     /// its launcher now has installed, until it is restarted. Claude and pi only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_pending: Option<AgentRestartPending>,
+    /// The input context of the agent's last completed request, read from its transcript.
+    /// Absent while unknown: an agent whose transcripts herdr cannot read (Claude only for
+    /// now), and a new session (`/clear`, a resume, a compaction) or a rewritten transcript
+    /// until that session's first completed request. Unknown is never 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentContext>,
     /// What the agent reported it works on now (`pane.report_task`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -590,6 +596,23 @@ pub struct AgentRestartPending {
     pub running_version: String,
     /// What it prints now.
     pub installed_version: String,
+}
+
+/// The input context of an agent's last completed request: how full its context window was
+/// as of that request. Not cost, and not cumulative over the session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentContext {
+    /// The request's input tokens: for Claude its `input_tokens` plus
+    /// `cache_creation_input_tokens` plus `cache_read_input_tokens`; output excluded.
+    pub last_request_input_tokens: u64,
+    /// The agent session the request belongs to.
+    pub session_id: String,
+    /// The transcript message the reading came from (Claude's `message.id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// When the transcript recorded that message (RFC 3339, as the agent wrote it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
