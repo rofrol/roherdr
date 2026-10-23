@@ -257,6 +257,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and review calls would run on the subscription (weekly window ~94%,
   where the usage gate refuses); the trial starts once [t-s6lkxb4v]
   lands.
+  Added by the user 2026-10-23 (after consult rounds
+  20261023-203039-2b9d, 20261023-203538-abcc, 20261023-204145-67ee on why
+  coordinator and workers rather than one agent): the trial also measures
+  the overhead of trivial items (one-line docs, a constant, a rename) run
+  through the driver with a cheap fast worker (`--agent pi --model ...`)
+  and `--auto-review`: per-run wall time split into model time versus
+  slot, verify and landing steps, tokens per landed item against the diff
+  size, the share of trivial items, and the auto-review approve, retry and
+  escalate rates. The rounds agreed the value is separating the author
+  from the acceptance decision (the contract fixed before the code, a
+  fresh-context acceptor), which a worker plus `--auto-review` already
+  gives. A coordinator-authored run kind (verify keyed by run or commit
+  instead of `worker_id`, author distinct from acceptor, a Lean model
+  change that also models auto-review) is built only if these numbers
+  show a cheap worker is not enough; no code or model change before then.
   Asked 2026-10-12 (the user: "loss of memory between items and shallower
   review: how do others counter it? ask the models").
   Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
