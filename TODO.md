@@ -88,6 +88,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     worktree child, CJK, zero budget, uncut) asserting the record, and a
     shell render test asserting the registered target and no overlap with
     the buttons. The existing 450 ms dwell and 10 s hide stay as they are.
+  Decided by the user 2026-10-23, replacing the rect bullet above: the
+  tooltip may cover the name-line buttons; it shows the full name, drawn
+  as a tab name's tooltip is (from the name's left edge over the rest of
+  the row), so no clipping against the buttons and no overlap test.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
