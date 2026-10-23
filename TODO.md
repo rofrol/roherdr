@@ -272,6 +272,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   instead of `worker_id`, author distinct from acceptor, a Lean model
   change that also models auto-review) is built only if these numbers
   show a cheap worker is not enough; no code or model change before then.
+  Added by the user 2026-10-23 (round 20261023-205607-7d3d on the token
+  overhead of coordinator and workers versus one agent): measured
+  2026-10-16..23 at list prices, the herdr coordinator's Claude Code
+  sessions with their subagents cost $205 (678M tokens) against $155
+  (367M) for 41 Claude workers over 40 landings; 39 pi workers recorded
+  no usage. The ratio is not the overhead (a single agent also talks with
+  the user, consults and reviews, and carries every item's exploration in
+  its own context); the models' ranges were -20% to +65%, central
+  +20-40%. The trial therefore also tags each coordinator turn by kind
+  (task writing, wait and resume, driver acks, diff review, user
+  conversation, consult) with its cache-read, cache-write and output
+  tokens and context size, and records pi workers' usage, so the
+  delegation-only share can be separated. The largest measured lever is
+  the coordinator's context per turn (about 415K cache-read tokens per
+  message, $130 of cache reads in the week); see the handoff threshold
+  question in "Needs a decision".
   Asked 2026-10-12 (the user: "loss of memory between items and shallower
   review: how do others counter it? ask the models").
   Round 20261012-155246-e730 (sol, MiMo, DeepSeek agreeing): others keep
@@ -4447,5 +4463,9 @@ user needs to decide or do.
   Bend retirement (t-54d2offk) waits.
 
 ### Decide
+
+- [ ] [t-v6ttkikt] Should a coordinator hand off at a fixed context size of about 200K tokens instead of at 70% of the model's window?
+  Options: about 200K tokens, measured in the queue trial first (Recommended) | about 200K tokens now | keep 70% of the window
+  Checked: round 20261023-205607-7d3d (sol, MiMo, Argon agreeing): coordinator sessions averaged about 415K cache-read tokens per assistant message over 1,569 messages in 2026-10-16..23 ($130 of cache reads); halving that saves about $65, about 18% of the measured Claude spend, more than removing every wait turn. More handoffs cost a note and a fresh read each; not measured. The 70% value is the user's (2026-10-13, round 20261013-133453-319c) in the global rules and t-ic5rrxn3.
 
 ### Needs you to act or watch
