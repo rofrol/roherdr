@@ -111,6 +111,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   The user, 2026-10-23: "36 is to be done together with what needed 34":
   this completes t-2wcx22ue (the over-pace text it added), so it goes
   right after the item in progress.
+  The user, 2026-10-23, with a screenshot of the chart at the left edge
+  (`····_·· -4pp · +6.6pp to 02:00`): "add the indent back after all, the
+  width goes up to 36". So this item also restores the chart rows' left
+  indent of `SHORT_WINDOW_COLUMN` (4) that t-2wcx22ue removed, both rows.
+  With the indent the under-pace row is 34 columns (fits at 36); the
+  over-pace row `+2pp · 3.1pp over at 01:04` is 38 (does not fit: the
+  target drops) — asked as a decision.
 
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
