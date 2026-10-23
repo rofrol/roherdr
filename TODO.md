@@ -4255,6 +4255,26 @@ Items agents add. Not approved until the user moves them up.
   first PowerShell client of the server needs the Windows transport of
   `HERDR_SOCKET_PATH` (a Unix socket or a named pipe) settled first.
 
+- [ ] A coordinator that continues its own chain closes a run without a [t-feyc35sb]
+  stop the user must acknowledge (the user, 2026-10-23, a screenshot of
+  `run r-l6754rbi · stopped` with the reason "coordinator dispatches the
+  next item itself after writing its task" and an acknowledge button:
+  "why do I have to acknowledge this? ask the models"). Cause: the
+  coordinator used `--stop-reason` because `--next` needs the next task
+  up front; slice 4 of t-wl3p3pr7 (`428a10312`) shows every stop until
+  the user acknowledges it. Round 20261023-150439-de3c (sol, MiMo,
+  DeepSeek, Argon, all agreeing), decided by the coordinator:
+  - A third disposition beside `--next` and `--stop-reason`:
+    `--continue-self` (the coordinator will start the next run itself).
+    The run shows `between runs`, never asks the user, and clears when a
+    run started with `--continues <run>` names it as its predecessor (a
+    durable link, never inferred from the same repository or owner).
+  - If the owner's tenure ends (pane closed, agent exited) before such a
+    run, that event turns it into a stop the user sees and is notified
+    of.
+  - `--stop-reason` stays the user-facing stop; a coordinator never
+    acknowledges for the user (`ack-stop` means a person saw it).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
