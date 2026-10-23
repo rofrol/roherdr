@@ -113,6 +113,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   branches are kept; run r-3csypteo builds on attempt 3 with that fix, the
   crash gap between `update-ref` and `read-tree` in `move_branch`, and
   the abort loop when a restore cannot be planned (to be checked).
+  Slice 2 landed 2026-10-24 (run r-3csypteo, on top of r-xnft343u's attempt
+  3): the landing runs through `core::step` in `src/workers/runs/landing.rs`;
+  the order is verify a synthetic integration commit in the folder slot,
+  then land it with a guarded fast-forward (a moved head re-verifies, at
+  most 3 times, then stops for the user); the landed and TODO commits carry
+  `Herdr-Item`/`Herdr-Run` from creation and are found only by them; restore
+  moves the branch by `update-ref` compare-and-swap; state, cursor and
+  effect intent in the `runs.landing` column (new migration, `json_valid`
+  guards; an unparsable landing fails closed and can still be aborted);
+  reconcile from git at startup and handoff. Reviews: rounds
+  20261023-230513-039b, 20261024-000859-5d7b, 20261024-004600-8c78.
+  Remaining: `approve_landing` and the no-push case in the core, the
+  tenure fence wiring (t-ic5rrxn3), the Proposed item on the landing's
+  remaining crash and race windows; tell the Lean session (herdr-67's
+  successor) that the landing order is verify, then land.
 
 - [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
   "increase the default sidebar width to 36"). Found in review of
