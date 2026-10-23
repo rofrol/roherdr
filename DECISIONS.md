@@ -2485,3 +2485,24 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
 - Runs stopped before that change are marked acknowledged by a store
   migration: 90 of them would otherwise have appeared at once.
 - `todo resume --next-agent/--next-model` existed already.
+
+## The letta, qodercli and qwen hooks report over the herdr socket (t-claehqkg, 2026-10-23)
+
+- Found 2026-10-18 and again 2026-10-23 when installs failed on
+  `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`:
+  the three `.sh` hooks spawned the herdr CLI with `timeout=1` inside a
+  blanket `except`, so under load the spawn was killed and the report lost
+  silently. Approved by the user 2026-10-23 (d-k73immye).
+- Round 20261023-142004-c534 (sol, MiMo, DeepSeek, Argon): send the
+  `pane.report_agent_session` request straight to `HERDR_SOCKET_PATH`, as
+  the other hooks do; keep the siblings' 0.5 s socket timeout as an
+  external deadline (the agent runs the hook synchronously), not a
+  delivery policy; record a failed report as one line in
+  `$XDG_STATE_HOME/herdr/hook-report-failures.jsonl`, stdout and stderr
+  empty; test with a fake server socket, no sleeps.
+- Landed (run r-l6754rbi, attempt 2): the three `.sh` hooks; versions
+  letta 2, qodercli 4, qwen 2 (the `.ps1` markers follow, as one constant
+  covers both).
+- Not done here: no `.ps1` hook reaches the server without the CLI
+  (attempt 1 found it), so the PowerShell twins are a proposed item of
+  their own; a durable report spool is proposed too.

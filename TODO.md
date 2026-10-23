@@ -59,51 +59,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     the coordinator, instead of the coordinator remembering to look.
   Decided by the user 2026-10-23 (d-cnqqvt3r): next, before t-eu3egeam.
 
-- [ ] The letta, qodercli and qwen hooks silently drop a session report that takes over a second (found by the coordinator 2026-10-18 while landing [t-claehqkg]
-  t-nwxujise, whose install's `just check` failed on
-  `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`
-  with the capture file missing). Cause, reproduced: the hook runs
-  `subprocess.run(..., timeout=1)` inside a blanket `except Exception: pass`
-  (`src/integration/assets/letta/herdr-agent-session.sh:51`; the same in
-  `qodercli/herdr-agent-state.sh:34` and `qwen/herdr-agent-session.sh:43`), so
-  a `herdr` call slower than a second is killed and the report is lost with
-  exit 0 — the hook's intended silence is indistinguishable from a dropped
-  report. A fake herdr that sleeps 2 s and writes its args leaves no file,
-  while the same script with an instant fake writes it. The test flakes the
-  same way under load (`--stress-count 40` with 12 `yes` processes: 4 failed,
-  0 when alone). The fix is not a longer timeout: decide what the one second
-  protects (Letta's hook latency), make a dropped report observable, and make
-  the test deterministic (its fake herdr writes immediately; the test must not
-  measure the host's spawn latency). Touches the three integration assets and
-  their tests; no dependency, no protocol change.
-  Blocked an install again 2026-10-23 (run r-gj3emu6x, event 271195, log
-  `run-r-gj3emu6x-install.log`: the same test, capture file missing); the
-  coordinator retried the install once.
-  Decided by the user 2026-10-23 (d-k73immye): approved, as the next item.
-  Round 20261023-142004-c534 (sol, MiMo, DeepSeek, Argon), checked against
-  the assets, decided by the coordinator:
-  - The three hooks stop spawning the herdr CLI and send the JSON-RPC
-    request straight to `HERDR_SOCKET_PATH`, as the codex, copilot,
-    cursor and other hooks do (all four): the fork and exec of the CLI
-    under load is what the 1 s limit killed. The siblings' 0.5 s socket
-    timeout stays, labelled as an external deadline: it bounds the agent's
-    synchronous hook against a hung server, not a delivery policy.
-  - A failed report is recorded without output: one appended line in a
-    herdr state file (hook, pane, method, error class), stdout and stderr
-    stay empty (all four).
-  - The PowerShell twins in the same change (MiMo, confirmed): letta's
-    `Start-Job` with `Wait-Job -Timeout 1` leaves the job running and
-    loses the report; qodercli and qwen call `herdr` with no bound. They
-    use what the other hooks' `.ps1` twins use to reach the server.
-  - Tests: a fake server socket bound before the hook runs records the
-    request; the test asserts the request it received and empty
-    stdout/stderr, no sleep; the fake-binary tests of these three hooks
-    go. `HERDR_INTEGRATION_VERSION` bumps once against the latest release.
-  - Proposed separately (sol, DeepSeek, Argon): a durable report spool
-    that herdr reconciles at named events, so a timed-out report is
-    recovered, for every hook.
-  In flight 2026-10-23: run `r-l6754rbi`.
-
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
