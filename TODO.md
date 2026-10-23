@@ -48,6 +48,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     <weekday date time> <time zone>; source: Claude usage endpoint`.
   "% of the weekly allowance", never "of the week"; the time zone named in
   the pace tooltip.
+  Correction: the tooltip round is 20261023-200429-d9be, not 20261023-200511.
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
