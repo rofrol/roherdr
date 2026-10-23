@@ -3746,6 +3746,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-gqaxmd65): unfolded, the waited-on
   job shows as its square with a wait marker and its times (`↳◒
   14:18→14:20`), no separate wait row; the counts show only while folded.
+  Asked by the user 2026-10-23 (a screenshot: the worker line "The letta,
+  qodercli and qwen…" and `run r-l6754rbi · attention` under a `zsh`
+  tab): "why are these two not under the coordinator? it opened them;
+  ask the models". Checked: `space_tabs.rs` appends every worker line
+  and then every run line after all of a space's tabs. Round
+  20261023-143836-395e (sol, DeepSeek, Argon for nesting; MiMo against,
+  as a mutable owner pointer moves rows), decided by the coordinator:
+  - A run's line (the worker folded into it) is an indented row under its
+    current owner's tab line (owner pane -> tab, from the run record);
+    tab sort modes move a tab with its rows; rows under one owner keep
+    the run's creation order; several coordinators each keep their own.
+  - A folded or quiet-folded owner line shows `▶ N runs`, plus the run's
+    `?` when one asks or `!` when one is blocked, so a fold never hides a
+    question (the step name `attention` means the worker works, not that
+    the user is needed).
+  - Rows whose owner is none, gone (pane closed), outside this space or
+    filtered out go to a space-level group at the end, labelled by why
+    ("no owner", "owner closed"); a row is never dropped.
+  - A handoff or a takeover re-parents the row at that event, from the
+    record; selection and hover follow the run id.
+  - Tests: two coordinators; every sort mode; folded and quiet-folded
+    owner with an asking run; owner closed; handoff; takeover; an owner
+    filtered out; every run exactly once.
 
 - [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
   2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
