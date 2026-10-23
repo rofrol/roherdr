@@ -6773,6 +6773,10 @@
                 "null"
               ]
             },
+            "continue_self": {
+              "description": "With `close` or `note`: the caller, the run's coordinator, starts\nthe next run itself (`todo.run` with `continues` naming this run).\nThe done run is listed as between runs and never asks the user; if\nits owner's pane or agent goes before such a run, it becomes a stop\nthe user sees and is notified of. Excludes `next` and `stop_reason`;\nneeds the caller's pane.",
+              "type": "boolean"
+            },
             "decision": {
               "anyOf": [
                 {
@@ -6949,6 +6953,13 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "continues": {
+              "description": "The done run this run continues: one its coordinator approved with\n`continue_self` (it starts the next run itself). Refused unless that\nrun is done with `continue_self`, in this repository, and no other\nrun continues it; the new run's creation records the link on both\nruns (`run_continued` on the predecessor), which clears the\npredecessor's `between runs` listing.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cwd": {
               "description": "A directory in the repository (the CLI sends its working directory).",
@@ -21263,6 +21274,24 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "continue_self": {
+              "description": "The close or note said its coordinator starts the next run itself\n(`todo.resume`'s `continue_self`).",
+              "type": "boolean"
+            },
+            "continued_by": {
+              "description": "The run that continues this one, started with `continues` naming it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "continues": {
+              "description": "The run this one continues (`todo.run`'s `continues`).",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "created_ms": {
               "format": "uint64",

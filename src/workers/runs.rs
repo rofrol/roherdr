@@ -249,6 +249,18 @@ pub(super) struct RunFinish {
     /// Why a close named no next item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) stop_reason: Option<String>,
+    /// The close or note said its coordinator starts the next run itself
+    /// (`todo.resume`'s `continue_self`): the run is between runs until a
+    /// run continues it (`continued_by`), or its owner goes first, which
+    /// turns it into a stop (`stop_reason`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) continue_self: bool,
+    /// The run this one continues (`todo.run`'s `continues`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) continues: Option<String>,
+    /// The run that continues this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) continued_by: Option<String>,
     /// When the driver recorded its intent to start `next`: a run of that
     /// item created since then is the start a crash cut off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,6 +642,16 @@ impl Run {
             && !self.finish.stop_acknowledged
     }
 
+    /// Whether the run is done with `continue_self` and waits for the run
+    /// its coordinator starts next: no run continues it yet, and its owner
+    /// did not go first (which gives it a stop reason).
+    pub(super) fn continuation_pending(&self) -> bool {
+        self.info.status == TodoRunStatus::Done
+            && self.finish.continue_self
+            && self.finish.continued_by.is_none()
+            && self.finish.stop_reason.is_none()
+    }
+
     /// Whether clients list the run under its coordinator's space as
     /// stopped: done with a stop reason the user has not acknowledged.
     pub(super) fn stop_shown(&self) -> bool {
@@ -637,6 +659,41 @@ impl Run {
             && self.finish.stop_reason.is_some()
             && !self.finish.stop_acknowledged
     }
+}
+
+/// Whether a run of `repo` may continue run `id` (`todo.run`'s
+/// `continues`), as `found` holds it: done with `continue_self`, in the same
+/// repository, not continued yet and not turned into a stop by its owner
+/// going first. Why not otherwise.
+pub(in crate::workers) fn continuable(
+    found: Option<&Run>,
+    id: &str,
+    repo: &str,
+) -> Result<(), String> {
+    let Some(run) = found else {
+        return Err(format!("--continues names no run: {id} not found"));
+    };
+    if run.info.repo != repo {
+        return Err(format!(
+            "--continues names run {id} of another repository ({})",
+            run.info.repo
+        ));
+    }
+    if run.info.status != TodoRunStatus::Done || !run.finish.continue_self {
+        return Err(format!(
+            "--continues names run {id}, which is not done with --continue-self"
+        ));
+    }
+    if let Some(successor) = &run.finish.continued_by {
+        return Err(format!("run {id} is already continued by run {successor}"));
+    }
+    if run.finish.stop_reason.is_some() {
+        return Err(format!(
+            "run {id} stopped before a run continued it (its coordinator was gone); the user \
+             sees that stop"
+        ));
+    }
+    Ok(())
 }
 
 /// A registered check of a run: its name and its argv.
@@ -2365,6 +2422,7 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
             new_api: false,
+            continues: None,
         };
         let choice = Self::choice_of(None, agent);
         self.start_run_as(params, true, None, false, choice)
@@ -2451,6 +2509,12 @@ impl WorkerSupervisor {
                 return self.existing_wait_start(&params, active);
             }
             return Err(Self::run_active(&active));
+        }
+        if let Some(predecessor) = params.continues.as_deref() {
+            let found = store.run(predecessor).map_err(store_error)?;
+            if let Err(why) = continuable(found.as_ref(), predecessor, &repo) {
+                return Err(WorkerError::Invalid(why));
+            }
         }
         let preflighted = self.preflight(
             &params,
@@ -2600,6 +2664,9 @@ impl WorkerSupervisor {
                 next_run_id: None,
                 next_refusal: None,
                 stop_reason: None,
+                continue_self: false,
+                continues: params.continues.clone(),
+                continued_by: None,
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
                 drafted: draft,
@@ -2639,6 +2706,7 @@ impl WorkerSupervisor {
                 ignore_usage: params.ignore_usage,
                 new_api: params.new_api,
                 agent_fallback: agent_fallback.clone(),
+                continues: params.continues.clone(),
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -2680,21 +2748,42 @@ impl WorkerSupervisor {
             "pending_usage": pending_reason,
             "item_text": item_text,
             "item_ids": item_ids,
+            "continues": params.continues,
         });
         let claimed = store.transaction(|tx| {
             if let Some(start) = queue {
                 let reason = format!("run {run_id} of {} started by the queue", params.item);
                 let claim = start.run(&run_id, &params.item);
                 if !tx.queue_claim(&repo, start.token, &claim, &reason, at)? {
-                    return Ok(false);
+                    return Ok(Err(None));
                 }
             }
+            // The predecessor as this transaction sees it: another start
+            // that continued it, or its owner gone, committed since the
+            // check refuses this one.
+            let predecessor = match params.continues.as_deref() {
+                Some(id) => {
+                    let found = tx.run(id)?;
+                    if let Err(why) = continuable(found.as_ref(), id, &repo) {
+                        return Ok(Err(Some(why)));
+                    }
+                    found
+                }
+                None => None,
+            };
             tx.run_event(&mut run, &event, false, at)?;
-            Ok(true)
+            if let Some(mut predecessor) = predecessor {
+                predecessor.finish.continued_by = Some(run_id.clone());
+                predecessor.info.continued_by = Some(run_id.clone());
+                let continued = json!({"type": "run_continued", "successor": run_id});
+                tx.run_event(&mut predecessor, &continued, false, at)?;
+            }
+            Ok(Ok(()))
         });
         match claimed {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(Ok(())) => {}
+            Ok(Err(Some(why))) => return Err(WorkerError::Invalid(why)),
+            Ok(Err(None)) => {
                 return Err(WorkerError::RunActive(format!(
                     "the queue of {repo} started another run or was paused since it was read (its \
                      fencing token moved)"
@@ -2779,7 +2868,7 @@ impl WorkerSupervisor {
     }
 
     /// The owner panes of the runs that have not ended, and of the done
-    /// runs whose stop notice waits for their owner to go.
+    /// runs whose stop notice or next run waits for their owner to go.
     pub(super) fn run_owner_panes(&self) -> Vec<String> {
         let runs = match self.run_store().map(|store| store.runs(None)) {
             Ok(Ok(runs)) => runs,
@@ -2795,6 +2884,7 @@ impl WorkerSupervisor {
                     run.info.status,
                     TodoRunStatus::Running | TodoRunStatus::Waiting | TodoRunStatus::Blocked
                 ) || run.stop_notice_pending()
+                    || run.continuation_pending()
             })
             .filter_map(|run| run.owner_pane)
             .collect()
@@ -2959,6 +3049,7 @@ impl WorkerSupervisor {
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
             new_api: run.finish.new_api,
+            continues: None,
         };
         let ready = self.preflight(
             &params,
@@ -3511,6 +3602,7 @@ impl WorkerSupervisor {
             "keep_open": params.keep_open,
             "next": params.next,
             "stop_reason": params.stop_reason,
+            "continue_self": params.continue_self,
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
@@ -3569,6 +3661,8 @@ impl WorkerSupervisor {
                         current.finish.close = params.close.clone().or_else(|| queue_close.clone());
                         current.finish.next = params.next.clone();
                         current.finish.stop_reason = params.stop_reason.clone();
+                        current.finish.continue_self = params.continue_self;
+                        current.info.continue_self = params.continue_self;
                         current.info.next_item = params.next.as_ref().map(|next| next.item.clone());
                         current.info.stop_reason = params.stop_reason.clone();
                         current.current.review_event = Some(params.event);
@@ -3680,9 +3774,10 @@ impl WorkerSupervisor {
     }
 
     /// What follows a close or a note: a closing decision names the next
-    /// item to start (`next`) or why none (`stop_reason`), never neither,
-    /// never both; a note may name either (never both) or neither, since a
-    /// noted item stays open; neither comes without a close or a note. The
+    /// item to start (`next`), why none (`stop_reason`) or that its
+    /// coordinator starts the next run itself (`continue_self`), exactly
+    /// one of them; a note may name one of them or none, since a noted item
+    /// stays open; none comes without a close or a note. The
     /// next run's parameters are checked here as far as they do not depend
     /// on the repository's state when it starts (its preflight checks the
     /// rest then). In queue mode a close or a note names neither: the queue
@@ -3691,17 +3786,43 @@ impl WorkerSupervisor {
         let invalid = |why: String| Err(WorkerError::Invalid(why));
         let closes_or_notes = params.close.is_some() || params.note.is_some();
         if closes_or_notes && self.queue_is_on(&run.info.repo) {
-            if params.next.is_some() || params.stop_reason.is_some() {
+            if params.next.is_some() || params.stop_reason.is_some() || params.continue_self {
                 return invalid(format!(
                     "queue mode is on for {}: the queue starts the next item, so a close or a \
-                     note takes neither --next nor --stop-reason (`herdr todo queue pause` \
-                     stops it)",
+                     note takes none of --next, --stop-reason and --continue-self (`herdr todo \
+                     queue pause` stops it)",
                     run.info.repo
                 ));
             }
             return Ok(());
         }
         let decision = params.close.as_ref().or(params.note.as_ref());
+        if params.continue_self {
+            if decision.is_none() {
+                return invalid(
+                    "only an approval with a closing decision (--close) or a TODO note \
+                     (--note) takes --continue-self"
+                        .into(),
+                );
+            }
+            if params.next.is_some() || params.stop_reason.is_some() {
+                return invalid(
+                    "--continue-self excludes --next and --stop-reason: the coordinator \
+                     starts the next run itself"
+                        .into(),
+                );
+            }
+            // The owner's pane going before the next run is what turns the
+            // run into a stop the user sees; without a pane nothing would.
+            if params.caller_pane_id.is_none() {
+                return invalid(
+                    "--continue-self needs the coordinator's pane (run it from the pane that \
+                     starts the next run)"
+                        .into(),
+                );
+            }
+            return Ok(());
+        }
         match (decision, &params.next, &params.stop_reason) {
             (None, None, None) => return Ok(()),
             (None, _, _) => {
@@ -3716,8 +3837,9 @@ impl WorkerSupervisor {
             (Some(_), None, None) => {
                 return invalid(
                     "a closing decision needs --next <item-id> (the item whose run starts once \
-                     this run is done) or --stop-reason <text> (why no item starts next), unless \
-                     queue mode is on"
+                     this run is done), --stop-reason <text> (why no item starts next) or \
+                     --continue-self (you start the next run yourself with `todo run \
+                     --continues <run>`), unless queue mode is on"
                         .into(),
                 )
             }

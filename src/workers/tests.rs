@@ -6340,6 +6340,7 @@ mod todo_runs {
             auto_review: false,
             auto_answer: false,
             new_api: false,
+            continues: None,
         }
     }
 
@@ -6415,6 +6416,7 @@ mod todo_runs {
             close: None,
             next: None,
             stop_reason: None,
+            continue_self: false,
             caller_pane_id: Some("p-coordinator".into()),
             caller_session_id: None,
             caller_workspace_id: Some("ws-coordinator".into()),
@@ -7685,6 +7687,7 @@ mod todo_runs {
                 close: None,
                 next: None,
                 stop_reason: None,
+                continue_self: false,
                 caller_pane_id: Some("p-coordinator".into()),
                 caller_session_id: None,
                 caller_workspace_id: Some("ws-coordinator".into()),
@@ -8862,6 +8865,7 @@ mod todo_runs {
             close: None,
             next: None,
             stop_reason: None,
+            continue_self: false,
             caller_pane_id: Some("p-coordinator".into()),
             caller_session_id: None,
             caller_workspace_id: Some("ws-coordinator".into()),
@@ -10651,6 +10655,284 @@ mod todo_runs {
                 .starts_with(&format!("todo run {}: ", run.run_id)),
             "{notices:?}"
         );
+        fixture
+            .supervisor
+            .owner_event("p-next", OwnerEvent::AgentExited, "");
+        assert!(crate::workers::take_user_notices().is_empty());
+    }
+
+    /// Approves `run_id`'s review with a close and `--continue-self`: its
+    /// coordinator starts the next run itself.
+    fn close_continuing_self(fixture: &Fixture, run_id: &str, event: i64) {
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                close: Some("## Closed\n\n- Chosen.\n".into()),
+                continue_self: true,
+                ..resume_params(run_id, event, TodoAction::Approve)
+            })
+            .unwrap();
+    }
+
+    /// `todo.run` of [`ITEM2`] continuing run `predecessor`.
+    fn continuing(fixture: &Fixture, predecessor: &str) -> TodoRunParams {
+        let next = next_of_item2();
+        TodoRunParams {
+            item: next.item,
+            message: next.message,
+            paths: next.paths,
+            continues: Some(predecessor.to_owned()),
+            ..params(fixture, &next.task, "ok")
+        }
+    }
+
+    fn listed_run(fixture: &Fixture, run_id: &str) -> Option<crate::workers::ActiveRun> {
+        fixture
+            .supervisor
+            .active_runs()
+            .into_iter()
+            .find(|listed| listed.run_id == run_id)
+    }
+
+    #[test]
+    fn a_continue_self_run_is_between_runs_until_a_run_names_it_as_its_predecessor() {
+        let fixture = todo_repo("todo-continue-self");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        let refused = |params: TodoResumeParams| {
+            let error = fixture.supervisor.todo_resume(params).unwrap_err();
+            assert_eq!(error.code(), "invalid_request", "{error}");
+            error.to_string()
+        };
+        let approve = || TodoResumeParams {
+            continue_self: true,
+            ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+        };
+        let close = Some("## Closed\n".to_owned());
+        // Only a close or a note takes it, alone, from the coordinator's pane.
+        assert!(refused(approve()).contains("--continue-self"));
+        let message = refused(TodoResumeParams {
+            close: close.clone(),
+            stop_reason: Some("why".into()),
+            ..approve()
+        });
+        assert!(message.contains("excludes"), "{message}");
+        refused(TodoResumeParams {
+            close: close.clone(),
+            next: Some(next_of_item2()),
+            ..approve()
+        });
+        // Outside the pane (its owner here) it is refused too.
+        assert!(fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                close: close.clone(),
+                caller_pane_id: None,
+                caller_workspace_id: None,
+                ..approve()
+            })
+            .is_err());
+        // A close that names nothing says the third way.
+        let message = refused(TodoResumeParams {
+            close: close.clone(),
+            ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+        });
+        assert!(message.contains("--continue-self"), "{message}");
+
+        crate::workers::take_user_notices();
+        close_continuing_self(&fixture, &run.run_id, review.event_id);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(finished.continue_self);
+        assert_eq!(finished.stop_reason, None);
+        // Between runs: listed, nothing to acknowledge, no notice.
+        let between = listed_run(&fixture, &run.run_id).expect("the run is listed");
+        assert!(between.between_runs, "{between:?}");
+        assert_eq!(between.stop_reason, None);
+        assert!(crate::workers::take_user_notices().is_empty());
+        let error = fixture.supervisor.todo_ack_stop(&run.run_id).unwrap_err();
+        assert_eq!(error.code(), "invalid_request", "{error}");
+        assert!(fixture
+            .supervisor
+            .owner_panes()
+            .contains(&"p-coordinator".to_owned()));
+        // A restart leaves it as it is.
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
+
+        // The coordinator starts the next run, naming it: the link is
+        // recorded on both runs and the line goes.
+        let next = fixture
+            .supervisor
+            .todo_run(continuing(&fixture, &run.run_id))
+            .unwrap();
+        assert_eq!(next.continues.as_deref(), Some(run.run_id.as_str()));
+        let continued = run_events(&fixture, &run.run_id, "run_continued");
+        assert_eq!(continued.len(), 1, "{continued:#?}");
+        assert_eq!(continued[0]["successor"], next.run_id.as_str());
+        let predecessor = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            predecessor.continued_by.as_deref(),
+            Some(next.run_id.as_str())
+        );
+        assert!(listed_run(&fixture, &run.run_id).is_none());
+        let (next_review, _) = wait(&fixture, &next.run_id, None);
+        abort(&fixture, &next.run_id, next_review.event_id);
+        // Continued: its owner going later stops nothing and tells nobody.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert!(listed_run(&fixture, &run.run_id).is_none());
+        assert!(run_events(&fixture, &run.run_id, "run_continuation_lost").is_empty());
+    }
+
+    #[test]
+    fn todo_run_continues_only_an_uncontinued_continue_self_run_of_its_repository() {
+        let fixture = todo_repo("todo-continues-refused");
+        with_finish(&fixture);
+        let refused = |params: TodoRunParams| {
+            let error = fixture.supervisor.todo_run(params).unwrap_err();
+            assert_eq!(error.code(), "invalid_request", "{error}");
+            error.to_string()
+        };
+        let message = refused(TodoRunParams {
+            continues: Some("r-zzzzzzzz".into()),
+            ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+        });
+        assert!(message.contains("not found"), "{message}");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        close_continuing_self(&fixture, &run.run_id, review.event_id);
+        wait(&fixture, &run.run_id, Some(review.event_id));
+        // Same repository and owner alone never make a run its successor.
+        let other = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                continues: None,
+                ..continuing(&fixture, &run.run_id)
+            })
+            .unwrap();
+        assert!(listed_run(&fixture, &run.run_id).unwrap().between_runs);
+        // A run that is not done with --continue-self cannot be continued.
+        let (other_review, _) = wait(&fixture, &other.run_id, None);
+        abort(&fixture, &other.run_id, other_review.event_id);
+        let message = refused(continuing(&fixture, &other.run_id));
+        assert!(message.contains("--continue-self"), "{message}");
+        // Another repository's run cannot be continued.
+        let stored = fixture.supervisor.load_run(&run.run_id).unwrap();
+        let why = crate::workers::runs::continuable(Some(&stored), &run.run_id, "/elsewhere")
+            .unwrap_err();
+        assert!(why.contains("another repository"), "{why}");
+        // Continued once, never twice.
+        let next = fixture
+            .supervisor
+            .todo_run(continuing(&fixture, &run.run_id))
+            .unwrap();
+        let (next_review, _) = wait(&fixture, &next.run_id, None);
+        abort(&fixture, &next.run_id, next_review.event_id);
+        let message = refused(continuing(&fixture, &run.run_id));
+        assert!(message.contains("already continued"), "{message}");
+        assert_eq!(run_events(&fixture, &run.run_id, "run_continued").len(), 1);
+    }
+
+    #[test]
+    fn a_continue_self_run_becomes_a_stop_once_when_its_coordinator_goes_first() {
+        let fixture = todo_repo("todo-continue-self-gone");
+        with_finish(&fixture);
+        let repo = repo_of(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        crate::workers::take_user_notices();
+        close_continuing_self(&fixture, &run.run_id, review.event_id);
+        wait(&fixture, &run.run_id, Some(review.event_id));
+        assert!(crate::workers::take_user_notices().is_empty());
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].title.contains(&run.run_id), "{notices:?}");
+        assert_eq!(notices[0].body, "coordinator gone before the next run");
+        // A stop the user sees and acknowledges, recorded in the history.
+        let stopped = listed_run(&fixture, &run.run_id).expect("the stop is listed");
+        assert!(!stopped.between_runs);
+        assert_eq!(
+            stopped.stop_reason.as_deref(),
+            Some("coordinator gone before the next run")
+        );
+        let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history_kinds(&item).last(),
+            Some(&HistoryEventKind::Stopped)
+        );
+        // Once: neither the agent's exit nor a restart tells it again.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::AgentExited, "");
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_continuation_lost").len(),
+            1
+        );
+        // A run started now does not continue it.
+        let error = fixture
+            .supervisor
+            .todo_run(continuing(&fixture, &run.run_id))
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_request", "{error}");
+        fixture.supervisor.todo_ack_stop(&run.run_id).unwrap();
+        assert!(listed_run(&fixture, &run.run_id).is_none());
+    }
+
+    #[test]
+    fn a_coordinator_handoff_carries_a_continue_self_run_to_its_successor() {
+        let fixture = todo_repo("todo-continue-self-handoff");
+        with_finish(&fixture);
+        let repo = fixture.repo.display().to_string();
+        fixture
+            .supervisor
+            .coordinator_start(&repo, "p-coordinator", Some("s-coordinator"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        crate::workers::take_user_notices();
+        close_continuing_self(&fixture, &run.run_id, review.event_id);
+        wait(&fixture, &run.run_id, Some(review.event_id));
+        fixture
+            .supervisor
+            .coordinator_handoff(None, Some("p-coordinator"), "p-next", None, None)
+            .unwrap();
+        let moved = run_events(&fixture, &run.run_id, "run_owner_moved");
+        assert_eq!(moved.len(), 1, "{moved:#?}");
+        assert_eq!(moved[0]["to_pane"], "p-next");
+        // The old pane goes while its successor goes on with the chain.
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+        assert!(crate::workers::take_user_notices().is_empty());
+        assert!(listed_run(&fixture, &run.run_id).unwrap().between_runs);
+        // The successor goes before the next run: the user learns of it, once.
+        fixture
+            .supervisor
+            .owner_event("p-next", OwnerEvent::PaneClosed, "");
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].body, "coordinator gone before the next run");
         fixture
             .supervisor
             .owner_event("p-next", OwnerEvent::AgentExited, "");

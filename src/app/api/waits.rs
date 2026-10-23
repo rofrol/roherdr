@@ -147,6 +147,7 @@ impl App {
                 step_command: run.step_command,
                 has_log: run.step_log.is_some(),
                 stop_reason: run.stop_reason,
+                between_runs: run.between_runs,
             })
             .collect()
     }
@@ -273,6 +274,7 @@ mod tests {
             step_command: Some("just clean-install TODO.md".into()),
             step_log: Some("/state/run.log".into()),
             stop_reason: None,
+            between_runs: false,
         }]);
         assert_eq!(runs[0].step, "cherry_pick");
         assert_eq!(runs[0].status, "running");

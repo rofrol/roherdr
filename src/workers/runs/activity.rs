@@ -29,8 +29,9 @@ struct StepActivity {
 
 static STEPS: Mutex<BTreeMap<String, StepActivity>> = Mutex::new(BTreeMap::new());
 
-/// A run as clients list it under its coordinator's space: in progress, or
-/// done with a stop reason the user has not acknowledged yet.
+/// A run as clients list it under its coordinator's space: in progress,
+/// done with a stop reason the user has not acknowledged yet, or done and
+/// between runs of its coordinator's own chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveRun {
     pub(crate) run_id: String,
@@ -48,6 +49,9 @@ pub(crate) struct ActiveRun {
     /// Why the done run's close started no next item, until the user
     /// acknowledges it (`todo.ack_stop`).
     pub(crate) stop_reason: Option<String>,
+    /// The done run's coordinator starts the next run itself
+    /// (`continue_self`) and has not yet: nothing for the user to do.
+    pub(crate) between_runs: bool,
 }
 
 /// The command a run event says the step starts, as one line, with its
@@ -136,6 +140,7 @@ fn active_run(run: Run) -> ActiveRun {
         .stop_shown()
         .then(|| run.finish.stop_reason.clone())
         .flatten();
+    let between_runs = run.continuation_pending();
     let info = shown(super::decision::shown(run.info));
     ActiveRun {
         run_id: info.run_id,
@@ -150,6 +155,7 @@ fn active_run(run: Run) -> ActiveRun {
         step_command: info.step_command,
         step_log: info.step_log,
         stop_reason,
+        between_runs,
     }
 }
 
@@ -273,6 +279,9 @@ mod tests {
             next_run_id: None,
             next_refusal: None,
             stop_reason: None,
+            continue_self: false,
+            continues: None,
+            continued_by: None,
             auto_review: false,
             auto_answer: false,
             new_api: false,

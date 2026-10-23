@@ -15,7 +15,7 @@ use super::worker::take_string_option;
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
                  [--ignore-usage] [--auto-review] [--auto-answer] [--agent claude|pi|pi-anthropic]
-                 [--model MODEL] [--new-api]
+                 [--model MODEL] [--new-api] [--continues RUN_ID]
       --agent names the agent of the run's workers: claude (Claude Code on
       the subscription), pi (headless pi on the ChatGPT plan) or
       pi-anthropic (headless pi on the Anthropic API credits). Without it
@@ -100,6 +100,12 @@ const USAGE: &str = "usage:
       that does not build with the commit's tests (base_unbuildable) instead
       of failing, and records it as not proven. It relaxes nothing else: a
       test that passes on the base still fails the verify.
+      With --continues RUN_ID the run continues the chain of RUN_ID, a run
+      you approved with --continue-self: its creation records RUN_ID as its
+      predecessor (a run_continued event on RUN_ID names it), which ends
+      RUN_ID's between runs line. Refused when RUN_ID is not done with
+      --continue-self, is already continued, stopped because its
+      coordinator was gone, or belongs to another repository.
   herdr todo run <item-id> --draft [--ignore-usage] [--agent claude|pi|pi-anthropic]
                  [--model MODEL]
       The server drafts the task, SUBJECT, the GLOBs and the check NAMEs
@@ -134,14 +140,14 @@ const USAGE: &str = "usage:
                        --next-message SUBJECT --next-paths GLOB...
                        [--next-check NAME...] [--next-agent claude|pi|pi-anthropic]
                        [--next-model MODEL]
-                       | --stop-reason TEXT]]
+                       | --stop-reason TEXT | --continue-self]]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
-      --close needs --next or --stop-reason, unless queue mode is on (todo
-      queue), where it takes neither: the queue starts the next item.
-      --note takes either of them the same way, or neither (a noted item
-      stays open), and in queue mode neither. In
+      --close needs one of --next, --stop-reason and --continue-self,
+      unless queue mode is on (todo queue), where it takes none: the queue
+      starts the next item. --note takes one of them the same way, or none
+      (a noted item stays open), and in queue mode none. In
       queue mode (a run the queue started, or any run while the queue is on)
       approve without --note or --close closes the item as the queue's own
       review does (a section of DECISIONS.md), so the queue never runs it
@@ -162,6 +168,14 @@ const USAGE: &str = "usage:
       also notifies the user, and one for a short disk first runs the
       folder slot's target sweep and preflight once more. With --stop-reason, TEXT goes into the item's history
       when the run is done and to the user as a notification.
+      With --continue-self you start the next run yourself (todo run
+      --continues <run-id>), for instance once you wrote its task: the done
+      run is listed under your space as between runs, with nothing for the
+      user to acknowledge and no notification. If your pane closes or your
+      agent exits before such a run, it becomes a stop the user sees
+      (\"coordinator gone before the next run\") and is notified of, once; a
+      coordinator handoff moves it to the successor's pane. It needs this
+      pane.
       approve stops the worker, verifies its commit with the checks,
       cherry-picks it onto the run's branch with the trailers Herdr-Item: <item-id> and
       Herdr-Run: <run-id>/<attempt> (only when the branch is still at the
@@ -861,6 +875,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
             let (message, rest) = take_string_option(&rest, "--message")?;
+            let (continues, rest) = take_string_option(&rest, "--continues")?;
             let item = match rest.as_slice() {
                 [item] if !item.starts_with("--") => item.clone(),
                 _ => {
@@ -896,6 +911,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 auto_review,
                 auto_answer,
                 new_api,
+                continues,
             };
             if credits {
                 Method::TodoRunAnthropic(params)
@@ -928,6 +944,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
             let (keep_open, rest) = take_switch(&rest, "--keep-open")?;
             let (accept_guarded_paths, rest) = take_switch(&rest, "--accept-guarded-paths")?;
+            let (continue_self, rest) = take_switch(&rest, "--continue-self")?;
             let (event, rest) = take_string_option(&rest, "--event")?;
             let (action, rest) = take_string_option(&rest, "--action")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -1009,6 +1026,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 next_model,
                 stop_reason.as_deref(),
             )?;
+            if continue_self && close.is_none() && note.is_none() {
+                return Err("only --close or --note takes --continue-self".into());
+            }
+            if continue_self && (next.is_some() || stop_reason.is_some()) {
+                return Err("--continue-self excludes --next and --stop-reason".into());
+            }
             let note = note.map(|path| read_text("--note", &path)).transpose()?;
             let close = close.map(|path| read_text("--close", &path)).transpose()?;
             let task = task.map(|path| read_task(&path)).transpose()?;
@@ -1035,6 +1058,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 close,
                 next,
                 stop_reason,
+                continue_self,
                 caller_session_id: caller_session(pane.as_deref()),
                 caller_pane_id: pane,
                 caller_workspace_id: super::target::caller_workspace_id(),
@@ -2074,6 +2098,76 @@ mod tests {
             panic!("--note alone did not parse");
         };
         assert_eq!((params.next, params.stop_reason), (None, None));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn continue_self_goes_with_a_close_or_a_note_alone_and_run_takes_its_predecessor() {
+        let dir =
+            std::env::temp_dir().join(format!("herdr-cli-todo-continue-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let close = dir.join("close.md");
+        std::fs::write(&close, "## Closed\n").unwrap();
+        let close = close.display().to_string();
+        let resume = |extra: &[&str]| {
+            let mut words = vec![
+                "resume",
+                "r-abcd2345",
+                "--event",
+                "9",
+                "--action",
+                "approve",
+            ];
+            words.extend_from_slice(extra);
+            parse(&args(&words))
+        };
+        for decision in ["--close", "--note"] {
+            let Ok(Some(Method::TodoResume(params))) =
+                resume(&[decision, &close, "--continue-self"])
+            else {
+                panic!("{decision} --continue-self did not parse");
+            };
+            assert!(params.continue_self);
+            assert_eq!((params.next, params.stop_reason), (None, None));
+        }
+        for bad in [
+            &["--continue-self"][..],
+            &["--close", &close, "--continue-self", "--stop-reason", "x"][..],
+        ] {
+            assert!(resume(bad).is_err(), "{bad:?}");
+        }
+        let Ok(Some(Method::TodoResume(params))) = resume(&["--close", &close]) else {
+            panic!("--close alone did not parse");
+        };
+        assert!(!params.continue_self);
+
+        let task = dir.join("task.md");
+        std::fs::write(&task, "Do the thing\n").unwrap();
+        let task = task.display().to_string();
+        let run = |extra: &[&str]| {
+            let mut words = vec![
+                "run",
+                "t-abcd2345",
+                "--task",
+                &task,
+                "--message",
+                "feat: x",
+                "--paths",
+                "src/**",
+                "--check",
+                "tests",
+            ];
+            words.extend_from_slice(extra);
+            parse(&args(&words))
+        };
+        let Ok(Some(Method::TodoRunWait(params))) = run(&["--continues", "r-bcde3456"]) else {
+            panic!("run --continues did not parse");
+        };
+        assert_eq!(params.continues.as_deref(), Some("r-bcde3456"));
+        let Ok(Some(Method::TodoRunWait(params))) = run(&[]) else {
+            panic!("run did not parse");
+        };
+        assert_eq!(params.continues, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

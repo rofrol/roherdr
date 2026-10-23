@@ -89,6 +89,14 @@ pub struct TodoRunParams {
     /// `.herdr/checks.toml` at the commit's base.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub new_api: bool,
+    /// The done run this run continues: one its coordinator approved with
+    /// `continue_self` (it starts the next run itself). Refused unless that
+    /// run is done with `continue_self`, in this repository, and no other
+    /// run continues it; the new run's creation records the link on both
+    /// runs (`run_continued` on the predecessor), which clears the
+    /// predecessor's `between runs` listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
 }
 
 /// `todo.run` whose worker's task the server drafts itself: a bounded,
@@ -198,6 +206,14 @@ pub struct TodoResumeParams {
     /// a notification. Excludes `next`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// With `close` or `note`: the caller, the run's coordinator, starts
+    /// the next run itself (`todo.run` with `continues` naming this run).
+    /// The done run is listed as between runs and never asks the user; if
+    /// its owner's pane or agent goes before such a run, it becomes a stop
+    /// the user sees and is notified of. Excludes `next` and `stop_reason`;
+    /// needs the caller's pane.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub continue_self: bool,
     /// With `approve` in queue mode (a run the queue started, or any run
     /// while the repository's queue is on): leave the item open. Without
     /// it, and without `note` or `close`, the approval closes the item as
@@ -559,6 +575,16 @@ pub struct TodoRunInfo {
     /// `stop_reason`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// The close or note said its coordinator starts the next run itself
+    /// (`todo.resume`'s `continue_self`).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub continue_self: bool,
+    /// The run this one continues (`todo.run`'s `continues`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
+    /// The run that continues this one, started with `continues` naming it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_by: Option<String>,
     /// The server reviews the run's `review` events itself
     /// (`todo.run`'s `auto_review`).
     #[serde(default, skip_serializing_if = "super::is_false")]

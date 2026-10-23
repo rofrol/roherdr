@@ -30,6 +30,10 @@ use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
 /// owner's going away never both send it.
 static STOP_NOTICE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The stop reason of a run its coordinator said it continues itself, once
+/// the coordinator is gone before the next run.
+pub(in crate::workers) const CONTINUATION_LOST: &str = "coordinator gone before the next run";
+
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
 /// blank lines.
 fn indented(note: &str) -> String {
@@ -824,6 +828,12 @@ impl WorkerSupervisor {
         let Ok(run) = self.load_run(run_id) else {
             return;
         };
+        // Its owner may have gone while the run finished: nobody starts
+        // the run that would continue it.
+        if run.continuation_pending() {
+            self.continuation_lost(run_id);
+            return;
+        }
         if !run.follow_up_pending() {
             return;
         }
@@ -911,8 +921,61 @@ impl WorkerSupervisor {
         self.todo_status(run_id)
     }
 
+    /// Turns done run `run_id`, which its coordinator said it continues
+    /// itself (`continue_self`), into a stop the user sees and is notified
+    /// of ([`Self::stop_notice`]) once its owner pane or agent is gone
+    /// (herdr's own events, never a timer) and no run continues it. Checked
+    /// in the transaction that writes it, so a `todo.run --continues` that
+    /// committed first keeps the run continued.
+    pub(in crate::workers) fn continuation_lost(&self, run_id: &str) {
+        let Ok(run) = self.load_run(run_id) else {
+            return;
+        };
+        if !run.continuation_pending() {
+            return;
+        }
+        let Some(cause) = run
+            .owner_pane
+            .as_deref()
+            .and_then(|owner| self.gone_owner(owner))
+        else {
+            return;
+        };
+        let Ok(store) = self.run_store() else {
+            return;
+        };
+        let lost = store.transaction(|tx| {
+            let Some(mut current) = tx.run(run_id)? else {
+                return Ok(false);
+            };
+            if !current.continuation_pending() {
+                return Ok(false);
+            }
+            current.finish.stop_reason = Some(CONTINUATION_LOST.to_owned());
+            current.info.stop_reason = current.finish.stop_reason.clone();
+            let event = json!({
+                "type": "run_continuation_lost",
+                "reason": CONTINUATION_LOST,
+                "cause": cause,
+            });
+            tx.run_event(&mut current, &event, false, now_ms())?;
+            Ok(true)
+        });
+        match lost {
+            Ok(true) => {
+                super::announce();
+                self.stop_notice(run_id);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(run_id, %error, "cannot record the lost continuation");
+            }
+        }
+    }
+
     /// Sends the stop notices [`Self::stop_notice`] held back while owner
-    /// pane `pane_id` was there, now that it is gone.
+    /// pane `pane_id` was there, now that it is gone, and turns the runs it
+    /// said it continues itself into such stops ([`Self::continuation_lost`]).
     pub(in crate::workers) fn owner_gone_stop_notices(&self, pane_id: &str) {
         let runs = match self.run_store().map(|store| store.runs(None)) {
             Ok(Ok(runs)) => runs,
@@ -923,8 +986,13 @@ impl WorkerSupervisor {
             Err(_) => return,
         };
         for run in runs {
-            if run.owner_pane.as_deref() == Some(pane_id) && run.stop_notice_pending() {
+            if run.owner_pane.as_deref() != Some(pane_id) {
+                continue;
+            }
+            if run.stop_notice_pending() {
                 self.stop_notice(&run.info.run_id);
+            } else if run.continuation_pending() {
+                self.continuation_lost(&run.info.run_id);
             }
         }
     }
@@ -1007,6 +1075,7 @@ impl WorkerSupervisor {
             // A chained run names its own API additions nowhere: it is not
             // the run that landed the commit it starts from.
             new_api: false,
+            continues: None,
             // Set below from `next.agent` or `[workers] default_agent`.
             agent: None,
             // The next run's own model, or none for its agent's default.

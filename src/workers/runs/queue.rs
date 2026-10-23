@@ -775,6 +775,7 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
             new_api: false,
+            continues: None,
         };
         let choice = Self::choice_of(None, queue_agent(&queue));
         #[cfg(test)]

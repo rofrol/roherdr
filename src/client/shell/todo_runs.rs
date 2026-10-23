@@ -109,14 +109,45 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What a done run's details say while its coordinator starts the next run
+/// itself.
+const BETWEEN_RUNS_TEXT: &str =
+    "Between runs: its coordinator starts the next run itself; nothing waits for you.";
+
 /// The line of a run that stopped with `reason`, until it is acknowledged.
 fn stopped_line(run: &ClientShellTodoRun, reason: &str) -> space_tabs::SpaceTabLine {
-    use crate::api::schema::AgentStatus;
     let reason = one_line(reason);
+    done_line(
+        run,
+        format!("run {} · stopped · {reason}", run.run_id),
+        format!(
+            "run {} · item {} · stopped, no next item started: {reason} · click: run details",
+            run.run_id, run.item
+        ),
+    )
+}
+
+/// The line of a done run whose coordinator starts the next run itself:
+/// no action, nothing for the user to acknowledge.
+fn between_runs_line(run: &ClientShellTodoRun) -> space_tabs::SpaceTabLine {
+    done_line(
+        run,
+        format!("run {} · between runs", run.run_id),
+        format!(
+            "run {} · item {} · done; its coordinator starts the next run itself · click: run \
+             details",
+            run.run_id, run.item
+        ),
+    )
+}
+
+/// The line of a done run that is still listed, with its label and tooltip.
+fn done_line(run: &ClientShellTodoRun, label: String, tooltip: String) -> space_tabs::SpaceTabLine {
+    use crate::api::schema::AgentStatus;
     space_tabs::SpaceTabLine {
         tab_id: run_line_id(&run.run_id),
         state: Some((AgentStatus::Done, AgentMark::None)),
-        label: format!("run {} · stopped · {reason}", run.run_id),
+        label,
         agent: None,
         active: false,
         jobs: Vec::new(),
@@ -136,17 +167,15 @@ fn stopped_line(run: &ClientShellTodoRun, reason: &str) -> space_tabs::SpaceTabL
         context: None,
         run: Some(RunLine {
             run_id: run.run_id.clone(),
-            tooltip: format!(
-                "run {} · item {} · stopped, no next item started: {reason} · click: run details",
-                run.run_id, run.item
-            ),
+            tooltip,
         }),
         wait: None,
     }
 }
 
 /// One line per todo run of `workspace`, oldest first: those in progress,
-/// and those stopped with a reason not acknowledged yet.
+/// those stopped with a reason not acknowledged yet, and those between runs
+/// of their coordinator's own chain.
 pub(super) fn run_lines(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,
@@ -186,6 +215,9 @@ pub(super) fn run_lines_at(
         .map(|run| {
             if let Some(reason) = run.stop_reason.as_deref() {
                 return stopped_line(run, reason);
+            }
+            if run.between_runs {
+                return between_runs_line(run);
             }
             let running = run.status == "running";
             let step = step_text(&run.step);
@@ -387,13 +419,12 @@ impl ClientShellState {
             run_id: run_id.clone(),
         });
         let supported = self.supports_endpoint_method(&method);
-        let stop_reason = self.snapshot.as_deref().and_then(|snapshot| {
-            snapshot
-                .todo_runs
-                .iter()
-                .find(|run| run.run_id == run_id)
-                .and_then(|run| run.stop_reason.clone())
-        });
+        let listed = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.todo_runs.iter().find(|run| run.run_id == run_id));
+        let stop_reason = listed.and_then(|run| run.stop_reason.clone());
+        let between_runs = listed.is_some_and(|run| run.between_runs);
         let ack = stop_reason.is_some()
             && self.supports_endpoint_method(&Method::TodoAckStop(TodoRunTarget {
                 run_id: run_id.clone(),
@@ -401,6 +432,7 @@ impl ClientShellState {
         let text = match (&stop_reason, supported) {
             // The snapshot already has the reason; the status adds the rest.
             (Some(reason), _) => stopped_text(reason),
+            (None, _) if between_runs => BETWEEN_RUNS_TEXT.into(),
             (None, true) => "Loading run details…".into(),
             (None, false) => "This server does not advertise todo.status.".into(),
         };
@@ -426,7 +458,7 @@ impl ClientShellState {
         {
             if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
                 // A stopped run keeps the reason its snapshot gave.
-                if stop_reason.is_none() {
+                if stop_reason.is_none() && !between_runs {
                     details.text = "Run details could not be requested.".into();
                 }
             }
@@ -469,6 +501,9 @@ impl ClientShellState {
                 let mut text = match run.stop_reason.as_deref() {
                     Some(stop) if status == "done" => {
                         format!("{}\n\nStep: {}", stopped_text(stop), step_text(step))
+                    }
+                    None if status == "done" && run.continue_self && run.continued_by.is_none() => {
+                        format!("{BETWEEN_RUNS_TEXT}\n\nStep: {}", step_text(step))
                     }
                     _ => format!(
                         "Point-in-time run details\nStep: {}\nStatus: {status}\n\n{reason}",
@@ -554,14 +589,15 @@ impl ClientShellState {
     }
 
     /// Asks the server for a popup that shows the run's step log and
-    /// follows it. Waiting and stopped runs instead open read-only details
+    /// follows it. Waiting, stopped and between-runs runs instead open read-only details
     /// fetched with `todo.status`, even when they have no log. Running runs without a
     /// log or without `todo.open_log` support open nothing.
     pub(super) fn open_run_log(&mut self, run_id: String, outcome: &mut ClientShellInput) {
         outcome.repaint = true;
         if self.snapshot.as_deref().is_some_and(|snapshot| {
             snapshot.todo_runs.iter().any(|run| {
-                run.run_id == run_id && (run.status == "waiting" || run.stop_reason.is_some())
+                run.run_id == run_id
+                    && (run.status == "waiting" || run.stop_reason.is_some() || run.between_runs)
             })
         }) {
             self.open_run_details(run_id, outcome);
@@ -606,6 +642,7 @@ mod tests {
             step_command: Some("just clean-install TODO.md".into()),
             has_log: true,
             stop_reason: None,
+            between_runs: false,
         }
     }
 

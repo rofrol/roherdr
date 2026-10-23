@@ -2755,6 +2755,9 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             next_run_id: finish.next_run_id.clone(),
             next_refusal: finish.next_refusal.clone(),
             stop_reason: finish.stop_reason.clone(),
+            continue_self: finish.continue_self,
+            continues: finish.continues.clone(),
+            continued_by: finish.continued_by.clone(),
             auto_review: finish.auto_review,
             auto_answer: finish.auto_answer,
             new_api: finish.new_api,
@@ -2871,6 +2874,11 @@ fn history_of(run: &Run, event: &Value) -> Option<NewHistory> {
             }),
             (None, None) => None,
         },
+        // A run its coordinator was to continue itself, gone before it did.
+        "run_continuation_lost" => Some(NewHistory {
+            text: text(&event["reason"]),
+            ..record(HistoryEventKind::Stopped)
+        }),
         "run_event" => {
             let kind = match event["kind"].as_str()? {
                 "blocked" => HistoryEventKind::Blocked,
@@ -3369,16 +3377,20 @@ impl Store {
         runs.collect()
     }
 
-    /// The runs clients list, oldest first: those in progress, and the
-    /// done runs with a stop reason the user has not acknowledged
-    /// ([`Run::stop_shown`]).
+    /// The runs clients list, oldest first: those in progress, the done
+    /// runs with a stop reason the user has not acknowledged
+    /// ([`Run::stop_shown`]), and the done runs between runs
+    /// ([`Run::continuation_pending`]).
     pub(super) fn runs_shown(&self) -> StoreResult<Vec<Run>> {
         let conn = lock(&self.conn);
         let mut statement = conn.prepare(&run_select(
             "WHERE r.status IN ('running', 'waiting') \
              OR (r.status = 'done' AND CASE WHEN json_valid(r.finish) THEN \
-                 json_extract(r.finish, '$.stop_reason') IS NOT NULL \
-                 AND coalesce(json_extract(r.finish, '$.stop_acknowledged'), 0) = 0 \
+                 (json_extract(r.finish, '$.stop_reason') IS NOT NULL \
+                  AND coalesce(json_extract(r.finish, '$.stop_acknowledged'), 0) = 0) \
+                 OR (coalesce(json_extract(r.finish, '$.continue_self'), 0) = 1 \
+                  AND json_extract(r.finish, '$.continued_by') IS NULL \
+                  AND json_extract(r.finish, '$.stop_reason') IS NULL) \
                  ELSE 0 END) \
              ORDER BY r.created_ms, r.rowid",
         ))?;

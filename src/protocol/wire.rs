@@ -1084,8 +1084,9 @@ pub struct ClientShellSupervisionFinding {
     pub acknowledged_by: Option<String>,
 }
 
-/// A `herdr todo run` in progress as its driver publishes it, or one that
-/// stopped with a reason the user has not acknowledged yet.
+/// A `herdr todo run` in progress as its driver publishes it, one that
+/// stopped with a reason the user has not acknowledged yet, or one done
+/// between runs of its coordinator's own chain.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellTodoRun {
     pub run_id: String,
@@ -1117,6 +1118,11 @@ pub struct ClientShellTodoRun {
     /// skipped when empty, so the bincode roundtrip of the snapshot holds.
     #[serde(default)]
     pub stop_reason: Option<String>,
+    /// The done run's coordinator starts the next run itself and has not
+    /// yet: listed as between runs, with nothing for the user to
+    /// acknowledge.
+    #[serde(default)]
+    pub between_runs: bool,
 }
 
 /// A wait edge: a pane waits on a job or a todo run now.
@@ -3326,6 +3332,7 @@ mod tests {
                 step_command: Some("just clean-install TODO.md".into()),
                 has_log: true,
                 stop_reason: None,
+                between_runs: false,
             }],
             waits: vec![ClientShellWait {
                 pane_id: "w1:p1".into(),

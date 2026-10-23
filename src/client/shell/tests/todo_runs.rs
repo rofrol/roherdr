@@ -53,6 +53,7 @@ fn running_install() -> ClientShellTodoRun {
         step_command: Some("just clean-install".into()),
         has_log: true,
         stop_reason: None,
+        between_runs: false,
     }
 }
 
@@ -604,4 +605,29 @@ fn a_server_without_ack_stop_shows_the_stopped_run_without_the_action() {
     )]);
     assert!(methods(&outcome).is_empty());
     assert!(state.overlay.is_some());
+}
+
+#[test]
+fn a_run_between_runs_of_its_coordinators_chain_offers_nothing_to_acknowledge() {
+    let mut projected = snapshot();
+    projected.todo_runs = vec![ClientShellTodoRun {
+        stop_reason: None,
+        between_runs: true,
+        ..stopped_run()
+    }];
+    let line = super::super::todo_runs::run_lines_at(&projected, &projected.workspaces[0], 1_000)
+        .remove(0);
+    assert_eq!(line.label, "run r-abcd2345 · between runs");
+    assert_eq!(line.plan, None);
+    assert_eq!(line.ask, None);
+    let mut state = state_with(projected);
+    state.set_endpoint_methods(Some(vec!["todo.status".into(), "todo.ack_stop".into()]));
+    let outcome = click_run(&mut state);
+    let sent = methods(&outcome);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0], Method::TodoStatus(target) if target.run_id == "r-abcd2345"));
+    assert!(details_text(&state).contains("Between runs"));
+    let text = sidebar_text(&mut state);
+    assert!(!text.contains("acknowledge"), "{text}");
+    assert_eq!(state.hits.overlay_primary.width, 0);
 }
