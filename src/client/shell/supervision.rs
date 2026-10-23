@@ -216,6 +216,7 @@ pub(super) fn render_row(
         text: "what herdr's supervision sweep saw: critical and warning findings".into(),
         bg: None,
         starts_at_target: false,
+        multiline: false,
     });
     Rect::new(
         area.x,

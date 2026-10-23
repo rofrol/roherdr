@@ -21939,6 +21939,30 @@
               },
               "type": "array"
             },
+            "first_sample_at": {
+              "description": "Per position, Monday first: Unix seconds of the day's first sample\nin the window; `null` without one. Empty from older servers.",
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
+            "last_sample_at": {
+              "description": "Per position, Monday first: Unix seconds of the day's last sample\nin the window; `null` without one. Empty from older servers.",
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
             "pace_percent": {
               "description": "The latest utilization less an even pace through the window\n(`100 × elapsed / 7 days`), in signed whole percent.",
               "format": "int32",
@@ -21967,6 +21991,16 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "used_percent": {
+              "description": "The latest sample's utilization, the one `pace_percent` compares\nwith the even pace. Absent from older servers.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "window": {
               "description": "Id of the window the days divide, such as `weekly`.",

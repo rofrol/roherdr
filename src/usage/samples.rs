@@ -191,6 +191,8 @@ pub(super) fn daily_use(
     let clock = LocalClock(&local_offset_at);
     let mut days = [DayUse::NotYet; 7];
     let mut day_starts = [None; 7];
+    let mut first_sample_at: [Option<u64>; 7] = [None; 7];
+    let mut last_sample_at: [Option<u64>; 7] = [None; 7];
     // The last sample of the day before, when that day has one.
     let mut previous_last: Option<&UsageSample> = None;
     // A week of local days, one more when the reset is not at midnight.
@@ -212,6 +214,12 @@ pub(super) fn daily_use(
             .filter(|sample| (start..end).contains(&sample.observed_at));
         let first = in_day.next();
         let last = in_day.next_back().or(first);
+        if let Some((first, last)) = first.zip(last) {
+            let earliest = first_sample_at[weekday].get_or_insert(first.observed_at);
+            *earliest = (*earliest).min(first.observed_at);
+            let latest = last_sample_at[weekday].get_or_insert(last.observed_at);
+            *latest = (*latest).max(last.observed_at);
+        }
         let used = first.zip(last).map(|(first, last)| {
             let last_percent = i16::from(last.used_percent);
             if start == starts_at {
@@ -250,6 +258,9 @@ pub(super) fn daily_use(
             .contains(&now)
             .then(|| weekday_position(clock.day(now)) as u8),
         pace_percent: (f64::from(latest.used_percent) - even_pace).round() as i32,
+        used_percent: Some(latest.used_percent),
+        first_sample_at: first_sample_at.to_vec(),
+        last_sample_at: last_sample_at.to_vec(),
     })
 }
 
@@ -403,6 +414,31 @@ mod tests {
         assert_eq!(series.current_day, Some(6));
         // 30% used against 100 × (167.5h / 168h) = 99.70%.
         assert_eq!(series.pace_percent, -70);
+        assert_eq!(series.used_percent, Some(30));
+        assert_eq!(
+            series.first_sample_at,
+            vec![
+                Some(START + 3 * HOUR),
+                Some(START + DAY_SECS + HOUR),
+                Some(START + 2 * DAY_SECS),
+                None,
+                None,
+                None,
+                Some(RESET - 3 * HOUR),
+            ]
+        );
+        assert_eq!(
+            series.last_sample_at,
+            vec![
+                Some(START + 3 * HOUR),
+                Some(START + 2 * DAY_SECS - 1),
+                Some(START + 2 * DAY_SECS),
+                None,
+                None,
+                None,
+                Some(RESET - HOUR),
+            ]
+        );
     }
 
     #[test]

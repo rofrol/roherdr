@@ -38,6 +38,10 @@ pub(super) struct TooltipTarget {
     /// left, so a mark just left of the target (the active tab's accent
     /// bar, the state icon) stays visible.
     pub(super) starts_at_target: bool,
+    /// Each `\n` in the text starts another row of the box, which grows
+    /// down from the target's row and moves up to stay on screen. Without
+    /// it a label's line breaks are spaces.
+    pub(super) multiline: bool,
 }
 
 impl ClientShellState {
@@ -132,16 +136,27 @@ impl ClientShellState {
             .tooltips
             .iter()
             .find(|target| target.id == tip.target)?;
-        let text = sanitize(&target.text);
+        let lines = if target.multiline {
+            target.text.split('\n').map(sanitize).collect::<Vec<_>>()
+        } else {
+            vec![sanitize(&target.text)]
+        };
         let area = buffer.area;
         let left_pad = u16::from(!target.starts_at_target);
-        let natural = (unicode_width::UnicodeWidthStr::width(text.as_str()) as u16)
+        let natural = (lines
+            .iter()
+            .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
+            .max()
+            .unwrap_or(0) as u16)
             .saturating_add(left_pad + 1);
-        let (x, width, text) = if target.starts_at_target {
+        let (x, width, lines) = if target.starts_at_target {
             let x = target.rect.x.min(area.right());
             let width = natural.min(area.right() - x);
-            let text = super::space_tabs::truncate(&text, width.saturating_sub(1) as usize);
-            (x, width, text)
+            let lines = lines
+                .iter()
+                .map(|line| super::space_tabs::truncate(line, width.saturating_sub(1) as usize))
+                .collect();
+            (x, width, lines)
         } else {
             let width = natural.min(area.width);
             // The box's padding column sits left of the target, so the text
@@ -154,9 +169,15 @@ impl ClientShellState {
             let x = anchor_x
                 .saturating_sub(1)
                 .min(area.right().saturating_sub(width));
-            (x, width, text)
+            (x, width, lines)
         };
-        let rect = Rect::new(x, target.rect.y, width, 1).intersection(area);
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let y = target
+            .rect
+            .y
+            .min(area.bottom().saturating_sub(height))
+            .max(area.y);
+        let rect = Rect::new(x, y, width, height).intersection(area);
         let palette = &self.config.palette;
         let bg = target.bg.unwrap_or(palette.surface1);
         let fg = if bg == palette.accent {
@@ -166,17 +187,21 @@ impl ClientShellState {
         };
         let style = Style::default().fg(fg).bg(bg);
         buffer.set_style(rect, style);
-        for x in rect.left()..rect.right() {
-            buffer[(x, rect.y)].set_symbol(" ");
+        for y in rect.top()..rect.bottom() {
+            for x in rect.left()..rect.right() {
+                buffer[(x, y)].set_symbol(" ");
+            }
         }
-        super::render::put_text(
-            buffer,
-            rect.x.saturating_add(left_pad),
-            rect.y,
-            rect.width.saturating_sub(left_pad + 1),
-            &text,
-            style,
-        );
+        for (y, line) in (rect.top()..rect.bottom()).zip(&lines) {
+            super::render::put_text(
+                buffer,
+                rect.x.saturating_add(left_pad),
+                y,
+                rect.width.saturating_sub(left_pad + 1),
+                line,
+                style,
+            );
+        }
         Some(rect)
     }
 }
@@ -198,4 +223,55 @@ fn sanitize(text: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown_tooltip(text: &str, multiline: bool, y: u16) -> Vec<String> {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &crate::config::Config::default(),
+        ));
+        state.hits.tooltips.push(TooltipTarget {
+            rect: Rect::new(4, y, 1, 1),
+            id: "usage:claude:day:0".into(),
+            text: text.into(),
+            bg: None,
+            starts_at_target: false,
+            multiline,
+        });
+        state.tooltip = Some(Tooltip {
+            target: "usage:claude:day:0".into(),
+            since: Instant::now(),
+            shown: true,
+        });
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 30, 6));
+        state.render_tooltip(&mut buffer);
+        (0..6)
+            .map(|row| {
+                (0..30)
+                    .map(|x| buffer[(x, row)].symbol().to_owned())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_multiline_tooltip_draws_a_row_per_line_and_stays_on_screen() {
+        let rows = shown_tooltip("first line\nsecond", true, 1);
+        assert_eq!(rows[1], "    first line");
+        assert_eq!(rows[2], "    second");
+        assert_eq!(rows[3], "");
+        // At the bottom row the box moves up so both lines show.
+        let rows = shown_tooltip("first line\nsecond", true, 5);
+        assert_eq!(rows[4], "    first line");
+        assert_eq!(rows[5], "    second");
+        // Other tooltips keep a label's line break on one row.
+        let rows = shown_tooltip("a\nb", false, 1);
+        assert_eq!(rows[1], "    a b");
+        assert_eq!(rows[2], "");
+    }
 }

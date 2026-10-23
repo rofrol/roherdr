@@ -261,6 +261,7 @@ pub(in crate::client::shell) fn build_row_tooltip(
         text,
         bg: None,
         starts_at_target: false,
+        multiline: false,
     }
 }
 
@@ -488,6 +489,7 @@ pub(crate) fn render_sidebar(
                         text: text.into(),
                         bg: None,
                         starts_at_target: false,
+                        multiline: false,
                     });
                 }
                 limit += 7;
@@ -947,6 +949,7 @@ pub(crate) fn render_sidebar(
                 text: "The focused space is in this group".into(),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         if let Some(jobs) = drawn.jobs.filter(|_| config.mouse_capture) {
@@ -963,6 +966,7 @@ pub(crate) fn render_sidebar(
                 ),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         if let Some(chip) = drawn.push_status.filter(|_| config.mouse_capture) {
@@ -985,6 +989,7 @@ pub(crate) fn render_sidebar(
                 ),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         if let Some(color) = grab_color.filter(|_| !config.spaces.tabs) {
@@ -1056,6 +1061,7 @@ pub(crate) fn render_sidebar(
                 text: tooltip,
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         if todo_button {
@@ -1098,6 +1104,7 @@ pub(crate) fn render_sidebar(
                 text: "Start a worker on this space's TODO (todo_command)".to_owned(),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         let to_top_hovered = state.hovered_name_button
@@ -1132,6 +1139,7 @@ pub(crate) fn render_sidebar(
                 text: tooltip.into(),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         if config.spaces.tabs && config.mouse_capture && wide.width >= 6 {
@@ -1176,6 +1184,7 @@ pub(crate) fn render_sidebar(
                 text: "New shell tab".into(),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         let tab_hits = super::space_tabs::render_space_tab_lines(
@@ -2004,6 +2013,7 @@ fn render_header_indicators(
                         text: format!("{}{}", indicator.tooltip(), super::space_tabs::LEGEND_MENU),
                         bg: None,
                         starts_at_target: false,
+                        multiline: false,
                     });
                 }
                 continue;
@@ -2029,6 +2039,7 @@ fn render_header_indicators(
             text: format!("{}{}", indicator.tooltip(), super::space_tabs::LEGEND_MENU),
             bg: None,
             starts_at_target: false,
+            multiline: false,
         });
         right = x.saturating_sub(1);
     }

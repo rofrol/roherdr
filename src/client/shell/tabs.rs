@@ -37,6 +37,7 @@ fn render_sound_toggle(
         .to_owned(),
         bg: None,
         starts_at_target: false,
+        multiline: false,
     });
     Rect::new(area.x, area.y, area.width - 3, area.height)
 }

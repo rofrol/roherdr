@@ -1631,6 +1631,7 @@ pub(super) fn render_space_tab_lines(
                 text: format!("{meaning}{LEGEND_CLICK}"),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
             if let Some(role) = line.role {
                 hits.legend
@@ -1684,6 +1685,7 @@ pub(super) fn render_space_tab_lines(
             },
             bg: None,
             starts_at_target: false,
+            multiline: false,
         });
         // The focused space's active tab also has an accent bar in the
         // fill's first column, so it is found by shape, not only by colour.
@@ -1759,6 +1761,7 @@ pub(super) fn render_space_tab_lines(
                 ),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         // The todo progress sits at the right end of the label's room, dim,
@@ -1797,6 +1800,7 @@ pub(super) fn render_space_tab_lines(
                 text: format!("Parent {name} exited; this job kept running"),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         // A pending restart, left of the above, while the label keeps a
@@ -1825,6 +1829,7 @@ pub(super) fn render_space_tab_lines(
                 ),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
             hits.legend
                 .push((mark, super::status_legend::LegendEntry::RestartPending));
@@ -1861,6 +1866,7 @@ pub(super) fn render_space_tab_lines(
                 ),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         // A coordinator's context size, dim and left of the above, while the
@@ -1895,6 +1901,7 @@ pub(super) fn render_space_tab_lines(
                 text: context_tooltip(context),
                 bg: None,
                 starts_at_target: false,
+                multiline: false,
             });
         }
         let bg_width = bg_width + context_width;
@@ -1946,6 +1953,7 @@ pub(super) fn render_space_tab_lines(
                 text: tooltip.clone(),
                 bg: Some(bg),
                 starts_at_target: true,
+                multiline: false,
             });
         } else if label != line.label {
             hits.tooltips.push(super::tooltip::TooltipTarget {
@@ -1956,6 +1964,7 @@ pub(super) fn render_space_tab_lines(
                 bg: Some(bg),
                 // Over the label only: the accent bar left of it stays.
                 starts_at_target: true,
+                multiline: false,
             });
         }
         super::render::put_text(buffer, label_x, y, label_width, &label, text_style);
@@ -2012,6 +2021,7 @@ pub(super) fn render_space_tab_lines(
                     text: format!("Fold or unfold its jobs{LEGEND_MENU}"),
                     bg: None,
                     starts_at_target: false,
+                    multiline: false,
                 });
             }
         }
@@ -2064,6 +2074,7 @@ pub(super) fn render_space_tab_lines(
                     text,
                     bg: Some(bg),
                     starts_at_target: true,
+                    multiline: false,
                 });
             }
             super::render::put_text(
@@ -2157,6 +2168,7 @@ pub(super) fn render_space_tab_lines(
                             text: square.label.clone(),
                             bg: Some(square_fill(square, &fills, palette)),
                             starts_at_target: false,
+                            multiline: false,
                         });
                     }
                     square_x = square_x.saturating_add(SQUARE_WIDTH + SQUARE_GAP);
@@ -2212,6 +2224,7 @@ fn render_quiet_fold(
         .into(),
         bg: None,
         starts_at_target: false,
+        multiline: false,
     });
     hits.folds.push((rect, line.tab_id.clone()));
 }

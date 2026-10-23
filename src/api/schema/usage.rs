@@ -137,6 +137,18 @@ pub struct UsageDailyUse {
     /// The latest utilization less an even pace through the window
     /// (`100 × elapsed / 7 days`), in signed whole percent.
     pub pace_percent: i32,
+    /// The latest sample's utilization, the one `pace_percent` compares
+    /// with the even pace. Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_percent: Option<u8>,
+    /// Per position, Monday first: Unix seconds of the day's first sample
+    /// in the window; `null` without one. Empty from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_sample_at: Vec<Option<u64>>,
+    /// Per position, Monday first: Unix seconds of the day's last sample
+    /// in the window; `null` without one. Empty from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_sample_at: Vec<Option<u64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

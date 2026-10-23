@@ -44,9 +44,12 @@ pub(super) type DailyUseLabelsByProvider = Vec<(String, DailyUseLabels)>;
 pub(super) struct DailyUseLabels {
     /// The weekday initial of each position.
     pub(super) initials: Vec<char>,
-    /// `partial: no sample before 09:15` where the day's use is only its
-    /// own growth after a day without samples.
-    pub(super) partial: Vec<Option<String>>,
+    /// Each position's hover text: its date, its use against the daily
+    /// share and when it was sampled.
+    pub(super) days: Vec<String>,
+    /// The pace's hover text: the use and the elapsed share it compares,
+    /// and the reset.
+    pub(super) pace: String,
 }
 
 #[derive(Debug, Default)]
@@ -174,8 +177,8 @@ fn local_offset_at(at: i64) -> i64 {
 }
 
 /// The weekday initial of each daily use position, from its day's start in
-/// the local offset of that date, and the local time a partial day's first
-/// sample was taken at.
+/// the local offset of that date, and the hover text of each position and
+/// of the pace, with times in the local offset of each instant.
 fn daily_use_labels(
     report: Option<&UsageReport>,
     local_offset_at: impl Fn(i64) -> i64,
@@ -184,6 +187,7 @@ fn daily_use_labels(
         let at = i64::try_from(at).unwrap_or(i64::MAX);
         at.saturating_add(local_offset_at(at))
     };
+    let clock = |at: Option<u64>| at.and_then(|at| local_hour_minute(local(at)));
     report
         .into_iter()
         .flat_map(|report| &report.providers)
@@ -194,26 +198,163 @@ fn daily_use_labels(
                 .iter()
                 .map(|&start| weekday_initial(local(start)))
                 .collect();
-            let partial = daily_use
-                .partial_from
+            let at = |times: &[Option<u64>], index: usize| times.get(index).copied().flatten();
+            let days = daily_use
+                .days
                 .iter()
-                .map(|from| {
-                    from.and_then(|from| local_hour_minute(local(from)))
-                        .map(|time| format!("partial: no sample before {time}"))
+                .enumerate()
+                .map(|(index, used)| {
+                    let date = daily_use
+                        .day_starts
+                        .get(index)
+                        .and_then(|&start| local_date(local(start)))
+                        .unwrap_or_else(|| "?".into());
+                    day_tooltip(DayFacts {
+                        date: &date,
+                        used: *used,
+                        today: daily_use.current_day.map(usize::from) == Some(index),
+                        partial_from: clock(at(&daily_use.partial_from, index)),
+                        first_sample: clock(at(&daily_use.first_sample_at, index)),
+                        last_sample: clock(at(&daily_use.last_sample_at, index)),
+                    })
                 })
                 .collect();
+            let resets = i64::try_from(daily_use.resets_at).unwrap_or(i64::MAX);
+            let reset = local_date_time(local(daily_use.resets_at))
+                .map(|time| format!("{time} {}", zone_label(local_offset_at(resets))))
+                .unwrap_or_else(|| "?".into());
+            let pace = pace_tooltip(
+                daily_use.pace_percent,
+                daily_use.used_percent,
+                &reset,
+                &provider.label,
+            );
             Some((
                 provider.provider.clone(),
-                DailyUseLabels { initials, partial },
+                DailyUseLabels {
+                    initials,
+                    days,
+                    pace,
+                },
             ))
         })
         .collect()
+}
+
+/// What a day's hover text says, in local time.
+struct DayFacts<'a> {
+    /// `Wed 22 Oct`.
+    date: &'a str,
+    used: Option<i16>,
+    today: bool,
+    /// The day's first sample after a day without samples, `16:40`.
+    partial_from: Option<String>,
+    first_sample: Option<String>,
+    last_sample: Option<String>,
+}
+
+/// The weekly allowance's even share of one day, in percent.
+const DAILY_SHARE_PERCENT: f64 = 100.0 / 7.0;
+
+/// One to two lines: the day's use in percent of the weekly allowance and
+/// the multiple of the daily share, which the bar caps, and its samples.
+fn day_tooltip(day: DayFacts<'_>) -> String {
+    let date = if day.today {
+        format!("Today, {}", day.date)
+    } else {
+        day.date.to_owned()
+    };
+    let Some(used) = day.used else {
+        return format!("{date}: no samples\nuse unknown, not 0%");
+    };
+    let used_text = percent_text(f64::from(used));
+    if let Some(from) = day.partial_from {
+        return format!(
+            "{date}: at least {used_text} observed\nsamples from {from}; earlier use unknown"
+        );
+    }
+    let multiple = f64::from(used) / DAILY_SHARE_PERCENT;
+    let share = format!("{multiple:.1}x the daily share");
+    if day.today {
+        let last = day
+            .last_sample
+            .map(|last| format!("; last sample {last}"))
+            .unwrap_or_default();
+        return format!("{date}: {used_text} so far\n{share}{last}");
+    }
+    let samples = match (day.first_sample, day.last_sample) {
+        (Some(first), Some(last)) if first == last => format!("; sample {first}"),
+        (Some(first), Some(last)) => format!("; samples {first}-{last}"),
+        _ => String::new(),
+    };
+    format!(
+        "{date}: {used_text} of the weekly allowance\n{share} ({}){samples}",
+        percent_text(DAILY_SHARE_PERCENT)
+    )
+}
+
+/// `-8 percentage points: 17% used vs 25% elapsed`, then the reset and
+/// where the numbers come from.
+fn pace_tooltip(pace: i32, used: Option<u8>, reset: &str, source: &str) -> String {
+    let compared = match used {
+        Some(used) => format!(
+            "{used}% used vs {}% elapsed",
+            i32::from(used).saturating_sub(pace)
+        ),
+        None => "against an even pace".into(),
+    };
+    format!(
+        "{pace:+} percentage points: {compared}\nresets {reset}; source: {source} usage endpoint"
+    )
+}
+
+/// `34%`, `14.3%`: one decimal unless whole.
+fn percent_text(percent: f64) -> String {
+    let tenths = (percent * 10.0).round();
+    if tenths % 10.0 == 0.0 {
+        format!("{}%", tenths / 10.0)
+    } else {
+        format!("{:.1}%", tenths / 10.0)
+    }
+}
+
+/// `UTC+1`, `UTC-3:30`, `UTC` for an offset in seconds.
+fn zone_label(offset_secs: i64) -> String {
+    let sign = if offset_secs < 0 { '-' } else { '+' };
+    let minutes = offset_secs.unsigned_abs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "UTC".into(),
+        (hours, 0) => format!("UTC{sign}{hours}"),
+        (hours, minutes) => format!("UTC{sign}{hours}:{minutes:02}"),
+    }
 }
 
 /// `09:15` for local seconds since the epoch.
 fn local_hour_minute(local: i64) -> Option<String> {
     let local = time::OffsetDateTime::from_unix_timestamp(local).ok()?;
     Some(format!("{:02}:{:02}", local.hour(), local.minute()))
+}
+
+/// `Wed 22 Oct` for local seconds since the epoch.
+fn local_date(local: i64) -> Option<String> {
+    let local = time::OffsetDateTime::from_unix_timestamp(local).ok()?;
+    let weekday = local.weekday().to_string();
+    let month = local.month().to_string();
+    Some(format!(
+        "{} {} {}",
+        weekday.get(..3).unwrap_or(&weekday),
+        local.day(),
+        month.get(..3).unwrap_or(&month)
+    ))
+}
+
+/// `Fri 30 Oct 21:00` for local seconds since the epoch.
+fn local_date_time(local: i64) -> Option<String> {
+    Some(format!(
+        "{} {}",
+        local_date(local)?,
+        local_hour_minute(local)?
+    ))
 }
 
 /// `M`, `T`, `W`, … for local seconds since the epoch.
@@ -358,7 +499,7 @@ fn footer_height(report: &UsageReport) -> u16 {
 
 /// The bars and the weekday initials under a provider's row.
 const DAILY_USE_ROWS: u16 = 2;
-/// Bar heights from the lowest to the largest bucket of the window.
+/// Bar heights from the lowest to a full bar, twice the daily share.
 const DAILY_USE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Column of the two-letter provider code, and of the short and weekly window cells.
@@ -425,10 +566,13 @@ pub(super) fn render_usage_footer(
     }
 }
 
-/// One bar per weekday under the provider's windows, Monday first, today
-/// highlighted, an unknown day `·` and a partial day dim with a tooltip
-/// saying so, then the use against an even pace; under them each day's
-/// weekday initial.
+/// One bar per weekday under the provider's windows, Monday first, on a
+/// fixed scale where a full bar is twice the daily share: within the share
+/// in the normal colour, over it yellow, over twice it a full bar in bold
+/// red. Today is highlighted, an unknown day is `·`, a sampled day without
+/// use a space and a partial day dim; then the use against an even pace.
+/// Under them each day's weekday initial. Every day and the pace have a
+/// tooltip with the numbers.
 #[allow(clippy::too_many_arguments)] // The footer's render inputs, passed through.
 fn render_daily_use(
     buffer: &mut Buffer,
@@ -439,41 +583,48 @@ fn render_daily_use(
     palette: &Palette,
     hits: &mut ShellHitMap,
 ) {
-    let largest = daily_use
-        .days
-        .iter()
-        .flatten()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .max(0);
+    let today_style = Style::default()
+        .fg(palette.accent)
+        .add_modifier(Modifier::BOLD);
     let mut x = area.x.saturating_add(SHORT_WINDOW_COLUMN);
     for (index, day) in daily_use.days.iter().enumerate() {
         let current = daily_use.current_day.map(usize::from) == Some(index);
-        let partial = labels
-            .and_then(|labels| labels.partial.get(index))
-            .and_then(Option::as_ref)
-            .filter(|_| day.is_some());
-        let (glyph, color) = match day {
-            Some(used) if partial.is_some() => (daily_use_bar(*used, largest), palette.overlay0),
-            Some(used) => (daily_use_bar(*used, largest), palette.overlay1),
-            None => ('·', palette.overlay0),
+        let partial = day.is_some()
+            && daily_use
+                .partial_from
+                .get(index)
+                .is_some_and(Option::is_some);
+        let (glyph, mut style) = match day {
+            Some(used) => {
+                let used = f64::from(*used);
+                let style = match DailyUseLevel::of(used) {
+                    DailyUseLevel::Within if current => today_style,
+                    DailyUseLevel::Within if partial => Style::default().fg(palette.overlay0),
+                    DailyUseLevel::Within => Style::default().fg(palette.overlay1),
+                    DailyUseLevel::Over => Style::default().fg(palette.yellow),
+                    DailyUseLevel::FarOver => Style::default()
+                        .fg(palette.red)
+                        .add_modifier(Modifier::BOLD),
+                };
+                (daily_use_bar(used), style)
+            }
+            None if current => ('·', today_style),
+            None => ('·', Style::default().fg(palette.overlay0)),
         };
-        let mut style = if current {
-            Style::default()
-                .fg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color)
-        };
-        if let Some(text) = partial {
+        if current {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if partial {
             style = style.add_modifier(Modifier::DIM);
+        }
+        if let Some(text) = labels.and_then(|labels| labels.days.get(index)) {
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect: Rect::new(x, area.y, 1, 1),
                 id: format!("usage:{provider_id}:day:{index}"),
                 text: text.clone(),
                 bg: None,
                 starts_at_target: false,
+                multiline: true,
             });
         }
         let mut glyph_buffer = [0; 4];
@@ -496,36 +647,83 @@ fn render_daily_use(
             area.right(),
             initial.encode_utf8(&mut glyph_buffer),
             if current {
-                style
+                today_style
             } else {
                 Style::default().fg(palette.overlay0)
             },
         );
         x = x.saturating_add(1);
     }
+    let pace = pace_label(daily_use.pace_percent);
+    let pace_x = x.saturating_add(1);
     put_segment(
         buffer,
-        x.saturating_add(1),
+        pace_x,
         area.y,
         area.right(),
-        &format!("{:+}% vs pace", daily_use.pace_percent),
+        &pace,
         Style::default().fg(if daily_use.pace_percent > 0 {
             palette.yellow
         } else {
             palette.overlay0
         }),
     );
+    if let Some(labels) = labels.filter(|_| pace_x < area.right()) {
+        let width = display_width(&pace).min(area.right() - pace_x);
+        hits.tooltips.push(super::tooltip::TooltipTarget {
+            rect: Rect::new(pace_x, area.y, width, 1),
+            id: format!("usage:{provider_id}:pace"),
+            text: labels.pace.clone(),
+            bg: None,
+            starts_at_target: false,
+            multiline: true,
+        });
+    }
 }
 
-/// The bar for `used` points against the window's largest day; no use,
-/// or a drop, is the lowest bar.
-fn daily_use_bar(used: i16, largest: i16) -> char {
-    if used <= 0 || largest <= 0 {
-        return DAILY_USE_BARS[0];
+/// `-8pp vs pace`: the latest use less an even pace, in percentage points.
+fn pace_label(pace_percent: i32) -> String {
+    format!("{pace_percent:+}pp vs pace")
+}
+
+/// A day's use against the weekly allowance's even daily share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DailyUseLevel {
+    /// Up to the share.
+    Within,
+    /// Over the share, up to twice it.
+    Over,
+    /// Over twice the share.
+    FarOver,
+}
+
+impl DailyUseLevel {
+    fn of(used: f64) -> Self {
+        let multiple = used / DAILY_SHARE_PERCENT;
+        if multiple > 2.0 + SCALE_EPSILON {
+            Self::FarOver
+        } else if multiple > 1.0 + SCALE_EPSILON {
+            Self::Over
+        } else {
+            Self::Within
+        }
     }
-    let steps = DAILY_USE_BARS.len() as i32;
-    let level = (i32::from(used) * steps + i32::from(largest) - 1) / i32::from(largest);
-    DAILY_USE_BARS[usize::try_from(level.clamp(1, steps) - 1).unwrap_or(0)]
+}
+
+/// Absorbs float rounding at the scale's exact steps.
+const SCALE_EPSILON: f64 = 1e-9;
+
+/// The bar for `used` percent of the weekly allowance on a fixed scale:
+/// 0 to twice the daily share over the eight heights, so the share itself
+/// is a half bar. Any use shows at least the lowest bar; no use, or a drop,
+/// is a space; above twice the share the bar stays full.
+fn daily_use_bar(used: f64) -> char {
+    if used <= 0.0 {
+        return ' ';
+    }
+    let steps = DAILY_USE_BARS.len() as f64;
+    let level = (used / (2.0 * DAILY_SHARE_PERCENT) * steps - SCALE_EPSILON).ceil();
+    DAILY_USE_BARS[(level.clamp(1.0, steps) as usize) - 1]
 }
 
 /// Hovering a row's code (and its `!` mark) names the vendor: `AN Anthropic`.
@@ -553,6 +751,7 @@ fn provider_code_tooltip(
         text,
         bg: None,
         starts_at_target: false,
+        multiline: false,
     }
 }
 
@@ -1178,6 +1377,9 @@ mod tests {
             current_day,
             pace_percent: pace,
             partial_from: Vec::new(),
+            used_percent: None,
+            first_sample_at: Vec::new(),
+            last_sample_at: Vec::new(),
         }
     }
 
@@ -1233,7 +1435,7 @@ mod tests {
             vec![
                 "─".repeat(26),
                 " AN   2% 47m   12% 6d".to_owned(),
-                "    ·█▂▁·▄▁ +4% vs pace".to_owned(),
+                "    ·▃▁ ·▂▁ +4pp vs pace".to_owned(),
                 "    MTWTFSS".to_owned(),
                 " OA  87% 47m  100% 6d".to_owned(),
             ]
@@ -1257,7 +1459,7 @@ mod tests {
         };
         // An hour west of UTC, the Monday 00:00 UTC day starts on Sunday evening.
         let rows = buffer_rows(&render_with_offset(&report, 26, |_| -3_600));
-        assert_eq!(rows[2], "    ███████ -3% vs pace");
+        assert_eq!(rows[2], "    ▁▁▁▁▁▁▁ -3pp vs pace");
         assert_eq!(rows[3], "    SMTWTFS");
     }
 
@@ -1274,16 +1476,12 @@ mod tests {
             enabled: true,
             providers: vec![claude],
         };
-        assert_eq!(
-            daily_use_labels(Some(&report), cet),
-            vec![(
-                "claude".to_owned(),
-                DailyUseLabels {
-                    initials: "MTWTFSS".chars().collect(),
-                    partial: Vec::new(),
-                }
-            )]
-        );
+        let labels = daily_use_labels(Some(&report), cet);
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].0, "claude");
+        assert_eq!(labels[0].1.initials, "MTWTFSS".chars().collect::<Vec<_>>());
+        // Sunday 25 Oct, the day the clocks go back, is still that Sunday.
+        assert!(labels[0].1.days[6].starts_with("Today, Sun 25 Oct: "));
         // Sunday evening's offset alone would put every midnight on the day before.
         assert_eq!(
             daily_use_labels(Some(&report), |_| 3_600)[0].1.initials,
@@ -1311,8 +1509,8 @@ mod tests {
         // In local time, an hour east of UTC.
         let labels = daily_use_labels(Some(&report), |_| 3_600);
         assert_eq!(
-            labels[0].1.partial[2].as_deref(),
-            Some("partial: no sample before 10:15")
+            labels[0].1.days[2],
+            "Wed 21 Oct: at least 3% observed\nsamples from 10:15; earlier use unknown"
         );
         let area = Rect::new(0, 0, 26, footer_height(&report));
         let mut buffer = Buffer::empty(area);
@@ -1327,29 +1525,166 @@ mod tests {
             &palette,
             &mut hits,
         );
-        assert_eq!(buffer_rows(&buffer)[2], "    ··▅█··· +0% vs pace");
+        assert_eq!(buffer_rows(&buffer)[2], "    ··▁▂··· +0pp vs pace");
         // Wednesday is dim; Thursday, today, counted from Wednesday, is not.
         assert_eq!(buffer[(6, 2)].fg, palette.overlay0);
         assert!(buffer[(6, 2)].modifier.contains(Modifier::DIM));
         assert!(!buffer[(7, 2)].modifier.contains(Modifier::DIM));
-        let partial = hits
+        let days = hits
             .tooltips
             .iter()
             .filter(|tooltip| tooltip.id.contains(":day:"))
             .collect::<Vec<_>>();
-        assert_eq!(partial.len(), 1);
-        assert_eq!(partial[0].rect, Rect::new(6, 2, 1, 1));
-        assert_eq!(partial[0].text, "partial: no sample before 10:15");
+        // Every day has its numbers on hover, one cell each.
+        assert_eq!(days.len(), 7);
+        assert_eq!(days[2].rect, Rect::new(6, 2, 1, 1));
+        assert_eq!(days[2].text, labels[0].1.days[2]);
+        assert!(days.iter().all(|day| day.multiline));
+        let pace = hits
+            .tooltips
+            .iter()
+            .find(|tooltip| tooltip.id == "usage:claude:pace")
+            .unwrap();
+        assert_eq!(pace.rect, Rect::new(12, 2, 12, 1));
+        assert_eq!(pace.text, labels[0].1.pace);
     }
 
     #[test]
-    fn daily_use_bars_scale_to_the_largest_day() {
-        assert_eq!(daily_use_bar(0, 0), '▁');
-        assert_eq!(daily_use_bar(-2, 5), '▁');
-        assert_eq!(daily_use_bar(1, 40), '▁');
-        assert_eq!(daily_use_bar(20, 40), '▄');
-        assert_eq!(daily_use_bar(39, 40), '█');
-        assert_eq!(daily_use_bar(40, 40), '█');
+    fn daily_use_bars_use_a_fixed_scale_where_a_full_bar_is_twice_the_daily_share() {
+        let share = 100.0 / 7.0;
+        assert_eq!(daily_use_bar(0.0), ' ');
+        assert_eq!(daily_use_bar(-2.0), ' ');
+        // Any use shows.
+        assert_eq!(daily_use_bar(0.1), '▁');
+        assert_eq!(daily_use_bar(1.0), '▁');
+        assert_eq!(daily_use_bar(0.5 * share), '▂');
+        // The share is a half bar.
+        assert_eq!(daily_use_bar(share), '▄');
+        assert_eq!(daily_use_bar(14.0), '▄');
+        assert_eq!(daily_use_bar(15.0), '▅');
+        assert_eq!(daily_use_bar(1.5 * share), '▆');
+        assert_eq!(daily_use_bar(2.0 * share), '█');
+        assert_eq!(daily_use_bar(5.0 * share), '█');
+    }
+
+    #[test]
+    fn daily_use_colours_follow_the_daily_share() {
+        let share = 100.0 / 7.0;
+        assert_eq!(DailyUseLevel::of(0.0), DailyUseLevel::Within);
+        assert_eq!(DailyUseLevel::of(0.5 * share), DailyUseLevel::Within);
+        assert_eq!(DailyUseLevel::of(share), DailyUseLevel::Within);
+        assert_eq!(DailyUseLevel::of(1.5 * share), DailyUseLevel::Over);
+        assert_eq!(DailyUseLevel::of(2.0 * share), DailyUseLevel::Over);
+        assert_eq!(DailyUseLevel::of(5.0 * share), DailyUseLevel::FarOver);
+
+        // 10% within, 20% over, 40% far over, and today 20% over.
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(daily_use(
+            vec![Some(10), Some(20), Some(40), Some(20), None, None, None],
+            Some(3),
+            -5,
+        ));
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        let buffer = render_with_offset(&report, 26, |_| 0);
+        let palette = Palette::catppuccin();
+        assert_eq!(buffer_rows(&buffer)[2], "    ▃▆█▆··· -5pp vs pace");
+        assert_eq!(buffer[(4, 2)].fg, palette.overlay1);
+        assert_eq!(buffer[(5, 2)].fg, palette.yellow);
+        assert!(!buffer[(5, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(6, 2)].fg, palette.red);
+        assert!(buffer[(6, 2)].modifier.contains(Modifier::BOLD));
+        // Today keeps the warning colour, in bold, and its initial the accent.
+        assert_eq!(buffer[(7, 2)].fg, palette.yellow);
+        assert!(buffer[(7, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(7, 3)].fg, palette.accent);
+        assert!(buffer[(7, 3)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(5, 3)].fg, palette.overlay0);
+    }
+
+    #[test]
+    fn daily_use_tooltips_give_the_numbers() {
+        let mut week = daily_use(
+            vec![Some(9), None, Some(34), Some(9), Some(14), None, None],
+            Some(3),
+            -8,
+        );
+        let hour = 3_600;
+        let day = 86_400;
+        week.partial_from = vec![
+            Some(MONDAY + 16 * hour + 40 * 60),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        week.first_sample_at = vec![
+            Some(MONDAY + 16 * hour + 40 * 60),
+            None,
+            Some(MONDAY + 2 * day + 8 * hour + 12 * 60),
+            Some(MONDAY + 3 * day + 9 * hour),
+            Some(MONDAY + 4 * day + 9 * hour),
+            None,
+            None,
+        ];
+        week.last_sample_at = vec![
+            Some(MONDAY + 20 * hour),
+            None,
+            Some(MONDAY + 2 * day + 23 * hour + 40 * 60),
+            Some(MONDAY + 3 * day + 14 * hour + 32 * 60),
+            Some(MONDAY + 4 * day + 9 * hour),
+            None,
+            None,
+        ];
+        week.used_percent = Some(17);
+        let mut claude = windowed("claude", "Claude", 2, 12);
+        claude.daily_use = Some(week);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude],
+        };
+        let labels = &daily_use_labels(Some(&report), |_| 0)[0].1;
+        assert_eq!(
+            labels.days,
+            vec![
+                "Mon 19 Oct: at least 9% observed\nsamples from 16:40; earlier use unknown",
+                "Tue 20 Oct: no samples\nuse unknown, not 0%",
+                "Wed 21 Oct: 34% of the weekly allowance\n2.4x the daily share (14.3%); samples 08:12-23:40",
+                "Today, Thu 22 Oct: 9% so far\n0.6x the daily share; last sample 14:32",
+                "Fri 23 Oct: 14% of the weekly allowance\n1.0x the daily share (14.3%); sample 09:00",
+                "Sat 24 Oct: no samples\nuse unknown, not 0%",
+                "Sun 25 Oct: no samples\nuse unknown, not 0%",
+            ]
+        );
+        assert_eq!(
+            labels.pace,
+            "-8 percentage points: 17% used vs 25% elapsed\nresets Mon 26 Oct 00:00 UTC; source: Claude usage endpoint"
+        );
+        // The reset in the zone of that instant.
+        assert!(daily_use_labels(Some(&report), |_| 3_600)[0]
+            .1
+            .pace
+            .ends_with("resets Mon 26 Oct 01:00 UTC+1; source: Claude usage endpoint"));
+        assert!(daily_use_labels(Some(&report), |_| -(3 * 3_600 + 1_800))[0]
+            .1
+            .pace
+            .contains("UTC-3:30"));
+    }
+
+    #[test]
+    fn the_pace_is_labelled_in_percentage_points() {
+        assert_eq!(pace_label(-8), "-8pp vs pace");
+        assert_eq!(pace_label(4), "+4pp vs pace");
+        assert_eq!(pace_label(0), "+0pp vs pace");
+        // An older server sends no utilization.
+        assert_eq!(
+            pace_tooltip(3, None, "Mon 26 Oct 00:00 UTC", "Claude"),
+            "+3 percentage points: against an even pace\nresets Mon 26 Oct 00:00 UTC; source: Claude usage endpoint"
+        );
     }
 
     #[test]
