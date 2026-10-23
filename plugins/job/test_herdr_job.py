@@ -1748,7 +1748,15 @@ class WaitAgentTests(unittest.TestCase):
                     pass  # EOF: the stub exits
 
         gone = [1, "", json.dumps({"error": {"code": "agent_not_found", "message": "no agent"}}) + "\n"]
-        with patch.dict(os.environ, {"STUB_LINGER": "pane get"}), patch.object(time, "sleep", stdlib_sleep):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"STUB_LINGER": "pane get"}))
+            stack.enter_context(patch.object(time, "sleep", stdlib_sleep))
+            # Python 3.15 waits for a child with a timeout through kqueue or
+            # pidfd and sleeps only in its documented fallback, polling
+            # waitpid; take that path, the one whose sleep must not count.
+            for name in ("_CAN_USE_KQUEUE", "_CAN_USE_PIDFD_OPEN"):
+                if hasattr(subprocess, name):
+                    stack.enter_context(patch.object(subprocess, name, False))
             code, _, calls = self.run_wait([gone])
         self.assertEqual((code, len(calls), self.sleeps), (3, 1, []))
         self.assertTrue(reaped, "the reap loop never slept")
