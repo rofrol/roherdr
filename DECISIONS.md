@@ -2464,3 +2464,24 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   This replaces the proposed Rust change (t-h2iol5sp). Not decided: why
   `coordinator ready` and `coordinator handoff --successor` are two steps
   (three tenures were frozen on 2026-10-23: bend-wasm, bend, herdr-bend).
+
+## A stopped todo chain notifies only when no coordinator goes on (t-wl3p3pr7, 2026-10-23)
+
+- The user, 2026-10-12, saw the toast "t-rlk6fbrp approved; no next item
+  started" and took it for the supervisor. Round of 2026-10-12 (sol, MiMo,
+  DeepSeek): a stop with a live coordinator is recorded on the run and
+  shown in the sidebar only; it notifies only when no coordinator is alive
+  to continue the chain; chains pick their agent; every notice names its
+  source.
+- Landed 2026-10-23 in four slices: the stop notice is held while the
+  run's owner pane is there and sent once when it closes or its agent
+  exits (r-4h4bbmbj); a coordinator handoff moves held notices to the
+  successor, and every worker notice title leads with its source
+  (`todo run <id>:`, `todo queue <repo>:`, `worker <name> (<id>):`,
+  `coordinator <id>:`) (r-bgbctzdi); `todo queue on --agent --model`
+  (r-2v5o4s25); a stopped run shows `run r-x · stopped · <reason>` under
+  its coordinator's space until acknowledged (`todo.ack_stop`, `herdr todo
+  ack-stop`), which also settles its notice (r-gj3emu6x, attempt 2).
+- Runs stopped before that change are marked acknowledged by a store
+  migration: 90 of them would otherwise have appeared at once.
+- `todo resume --next-agent/--next-model` existed already.

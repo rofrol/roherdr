@@ -55,53 +55,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     that herdr reconciles at named events, so a timed-out report is
     recovered, for every hook.
 
-- [ ] A stopped todo chain is not a notification, and `--next` picks the next [t-wl3p3pr7]
-  run's agent (the user, 2026-10-12, a screenshot: "did the supervisor open
-  a notification again? ask the models": the toast was the todo driver's
-  "t-rlk6fbrp approved; no next item started", which fires on every
-  `--stop-reason`; the coordinator uses it often only because `--next`
-  cannot choose pi or Claude). Round of 2026-10-12 (sol, MiMo, DeepSeek
-  agreeing): (1) a stop with a live coordinator is recorded on the run and
-  the sidebar only; it notifies only when no coordinator is alive to
-  continue the chain; (2) `--next-agent <claude|pi|pi-anthropic>` (and
-  queue mode's equivalent) so chains continue across agents; (3) every
-  notification names its source subsystem and run or agent
-  ("todo run r-...", "agent ... asks"), so nothing reads as the
-  supervisor; an agent blocked on the user's question keeps notifying once
-  per block.
-  Checked 2026-10-23 against the code: `--next-agent` on `todo resume` is
-  done (`src/cli/todo.rs`); open are the stop notice (part 1), queue mode's
-  agent choice, the sidebar line for a stop and source names on the other
-  worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
-  `coordinator_handoff.rs`). In flight: slice 1 (the stop notice only when
-  the coordinator is gone, named `todo run <id>:`), run `r-4h4bbmbj`.
-  Slice 1 landed 2026-10-23 (run r-4h4bbmbj): the stop notice is held while
-  the run's owner pane is there and sent once when it closes or its agent
-  exits (or at herdr start), titled `todo run <id>: ...`. Open: a coordinator
-  handoff (the old pane exits, the successor lives) still sends it, since only
-  the owner pane is checked, not the coordination tenure (`owner_coordinator`);
-  queue mode's agent choice; the sidebar line for a stop; source names on the
-  other worker notices (`queue.rs`, `supervisor/lifecycle.rs`,
-  `coordinator_handoff.rs`).
-  In flight: slice 2 (a handoff carries held stop notices; source names on
-  the other worker notices), run `r-bgbctzdi`.
-  Slice 2 landed 2026-10-23 (run r-bgbctzdi): a coordinator handoff moves done
-  runs with a held stop notice to the successor, and every `notify_user`
-  title leads with its source (`todo run <id>:`, `todo queue <repo>:`,
-  `worker <name> (<id>):`, `coordinator <id>:`). Open: queue mode's agent
-  choice (`todo queue on` has no agent option; its runs use
-  `[workers] default_agent`), and the sidebar line for a stopped run.
-  In flight: slice 3 (`todo queue on --agent/--model`), run `r-2v5o4s25`.
-  Slice 3 landed 2026-10-23 (run r-2v5o4s25): `herdr todo queue on --agent
-  <claude|pi|pi-anthropic> --model <provider/model>` is stored with the queue
-  (migration on `todo_queues`), shown in `todo queue status` and passed to
-  every run the queue starts and to its usage gate. Open: the sidebar line
-  for a stopped run (its stop reason shown where the run shows).
-  In flight: slice 4 (a stopped run shows its reason in the coordinator's
-  space until acknowledged; also covers part of t-rht4pyff), run `r-ckvko5jj`.
-  Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
-  `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
-
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
