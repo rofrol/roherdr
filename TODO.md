@@ -11,6 +11,54 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The coordinator's tab shows its context size in tokens (the user, [t-gpnmlys3]
+  2026-10-12: "on the coordinator's tab I want to see how many tokens its
+  context has; ask the models").
+  Round 20261012-205835-a0b3 (sol, MiMo, DeepSeek agreeing; all Timing:
+  none; decided by the coordinator):
+  - The number: the latest completed request's input context, normalized
+    per agent (Claude: input + cache creation + cache read, since its
+    `input_tokens` excludes cache traffic; pi's provider may already
+    include cache in input, never add blindly), output excluded. Shown as
+    `ctx 312k` with a hover/help text "input of the last request, not
+    cost or cumulative"; exact integers kept for the cap. No percentage
+    until the model's window is a known fact.
+  - The server's shared transcript reader (persisted cursor keyed by
+    session and transcript identity, reconciled on transcript writes,
+    startup, handoff and turn end) stores `last_request_input_tokens` with
+    its provenance (session id, request sequence) on the agent's state,
+    exposed in the JSON API and an agent-updated event; computed for
+    every supported agent, shown first on the coordinator's tab line
+    beside the crown (TUI decides placement and colour). Not a metadata
+    badge with expiry. No file I/O in render.
+  - After `/clear`, resume of another session, a handoff or a rewritten
+    transcript the value becomes unknown until the new session's first
+    completed request; unknown is shown as unknown, never 0. Mid-turn it
+    stays "last request".
+  - This is step 1 of [t-2k3ima2h]: the cap consumes the same fact, so
+    this item lands before the cap's thresholds.
+  Asked again by the user 2026-10-23: "I cannot see how full my context
+  window is [the coordinator said its harness does not show it]; fix it;
+  ask the models". Measured the same day from the coordinator's own
+  transcript: 420,522 input tokens on its last request, so its window is
+  over 200k. Round 20261023-144933-e938 (sol, MiMo, DeepSeek, Argon),
+  decided by the coordinator, adding to the 2026-10-12 decisions:
+  - Tokens always (`ctx 420k`, "as of the last request"); a percentage
+    only with a window from a named source: first a fact Claude Code
+    records (check its transcript and state files; not known to exist),
+    then a user setting labelled user-set, then a repository table keyed
+    by the exact model id and variant (plan, 1M beta) with the vendor
+    source and date. An unknown model or variant shows no percentage; a
+    reading above the table's window proves the table wrong for that
+    session and withholds it.
+  - `herdr agent context <pane> --json`: tokens, window, percent, the
+    provenance of both, the request it is as of, and a status of
+    over, under or unknown; unknown never counts as under 70%.
+  - The 70% handoff becomes mechanical through the cap item
+    (t-2k3ima2h): herdr checks at the turn-end event and tells or stops
+    the coordinator, instead of the coordinator remembering to look.
+  Decided by the user 2026-10-23 (d-cnqqvt3r): next, before t-eu3egeam.
+
 - [ ] The letta, qodercli and qwen hooks silently drop a session report that takes over a second (found by the coordinator 2026-10-18 while landing [t-claehqkg]
   t-nwxujise, whose install's `just check` failed on
   `integration::tests::letta_session_hook_is_silent_and_encodes_default_conversation`
@@ -2791,53 +2839,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     ladder and automatic analysis come after the trial's numbers.
   (The "reviewed" state above is [t-ktz7l3hl].)
 
-- [ ] The coordinator's tab shows its context size in tokens (the user, [t-gpnmlys3]
-  2026-10-12: "on the coordinator's tab I want to see how many tokens its
-  context has; ask the models").
-  Round 20261012-205835-a0b3 (sol, MiMo, DeepSeek agreeing; all Timing:
-  none; decided by the coordinator):
-  - The number: the latest completed request's input context, normalized
-    per agent (Claude: input + cache creation + cache read, since its
-    `input_tokens` excludes cache traffic; pi's provider may already
-    include cache in input, never add blindly), output excluded. Shown as
-    `ctx 312k` with a hover/help text "input of the last request, not
-    cost or cumulative"; exact integers kept for the cap. No percentage
-    until the model's window is a known fact.
-  - The server's shared transcript reader (persisted cursor keyed by
-    session and transcript identity, reconciled on transcript writes,
-    startup, handoff and turn end) stores `last_request_input_tokens` with
-    its provenance (session id, request sequence) on the agent's state,
-    exposed in the JSON API and an agent-updated event; computed for
-    every supported agent, shown first on the coordinator's tab line
-    beside the crown (TUI decides placement and colour). Not a metadata
-    badge with expiry. No file I/O in render.
-  - After `/clear`, resume of another session, a handoff or a rewritten
-    transcript the value becomes unknown until the new session's first
-    completed request; unknown is shown as unknown, never 0. Mid-turn it
-    stays "last request".
-  - This is step 1 of [t-2k3ima2h]: the cap consumes the same fact, so
-    this item lands before the cap's thresholds.
-  Asked again by the user 2026-10-23: "I cannot see how full my context
-  window is [the coordinator said its harness does not show it]; fix it;
-  ask the models". Measured the same day from the coordinator's own
-  transcript: 420,522 input tokens on its last request, so its window is
-  over 200k. Round 20261023-144933-e938 (sol, MiMo, DeepSeek, Argon),
-  decided by the coordinator, adding to the 2026-10-12 decisions:
-  - Tokens always (`ctx 420k`, "as of the last request"); a percentage
-    only with a window from a named source: first a fact Claude Code
-    records (check its transcript and state files; not known to exist),
-    then a user setting labelled user-set, then a repository table keyed
-    by the exact model id and variant (plan, 1M beta) with the vendor
-    source and date. An unknown model or variant shows no percentage; a
-    reading above the table's window proves the table wrong for that
-    session and withholds it.
-  - `herdr agent context <pane> --json`: tokens, window, percent, the
-    provenance of both, the request it is as of, and a status of
-    over, under or unknown; unknown never counts as under 70%.
-  - The 70% handoff becomes mechanical through the cap item
-    (t-2k3ima2h): herdr checks at the turn-end event and tells or stops
-    the coordinator, instead of the coordinator remembering to look.
-
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
   Checked (user 2026-10-10: "maybe test these open-source projects hands-on? ask the models"; round 20261010-115231-6369, sol + MiMo + DeepSeek): all three pick vibe-kanban (Rust + SQLite + worktrees, its restart marks orphans Failed) and mini-swe-agent (cheap baseline); LangGraph or Restate optional; skip Temporal, Inngest and the OpenHands resolver (heavy infra, documented semantics). Scenarios, same toy repo and fixed prompts (a scripted fake model where supported): success; kill the orchestrator mid-task and restart; kill the agent process; an agent stuck on a silent command; an agent asking a question (restart while it waits); a failed check then retry. Record state rows before and after, resume/duplicate/mark-failed, what the user sees, leftover processes and worktrees, cost, manual steps. Safety: a VM (not a container: agents run arbitrary shell and scan the environment), no host mounts, SSH agent, credentials or real remotes (a local bare repo), egress only to the model API, a spend-capped throwaway key (needs the user), snapshots. Estimate 6-10 h for the two.
@@ -3837,6 +3838,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   cell, also while the agent works; background work shows as a mark after
   the name (e.g. `◐2`), as sol, MiMo and DeepSeek proposed.
 
+- [ ] The Items list gives run outcomes their own glyphs, not the agent's [t-k6qmauth]
+  blocked `◉` (the user, 2026-10-23, a screenshot of Items with red `◉`
+  on "14 runs · last failed" and "1 run · last record incomplete": "do
+  blocked items have the same icon as tabs that show a menu of answers?
+  ask the models"). Checked: `src/client/shell/worker_items.rs` maps a
+  failed run, a degraded record, a failed verify and a history "blocked"
+  event to `AgentStatus::Blocked`, drawn like an agent waiting on the
+  user. Round 20261023-144755-250b (sol, MiMo, DeepSeek, Argon, all
+  agreeing on the split), decided by the coordinator: an item outcome
+  enum of its own; failed red `!` (as failed job squares; sol, MiMo,
+  Argon; DeepSeek wanted `✗`, too close to Symbols' blocked `×`); record
+  incomplete a dim `◌`, never red; the blocked glyph only while a run of
+  the item waits on the user now (a question or a review), and a past
+  "blocked" event shows in the history text only; the legend splits live
+  agent states from run outcomes; tests that Items never builds
+  `AgentStatus::Blocked` for history and that every style keeps them
+  apart.
+  Decided by the user 2026-10-23 (d-gxj3yyoz): approved, at the end of
+  the queue.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4276,24 +4297,6 @@ Items agents add. Not approved until the user moves them up.
   `Wait-Job -Timeout 1` leaves the job running and loses the report. A
   first PowerShell client of the server needs the Windows transport of
   `HERDR_SOCKET_PATH` (a Unix socket or a named pipe) settled first.
-
-- [ ] The Items list gives run outcomes their own glyphs, not the agent's [t-k6qmauth]
-  blocked `◉` (the user, 2026-10-23, a screenshot of Items with red `◉`
-  on "14 runs · last failed" and "1 run · last record incomplete": "do
-  blocked items have the same icon as tabs that show a menu of answers?
-  ask the models"). Checked: `src/client/shell/worker_items.rs` maps a
-  failed run, a degraded record, a failed verify and a history "blocked"
-  event to `AgentStatus::Blocked`, drawn like an agent waiting on the
-  user. Round 20261023-144755-250b (sol, MiMo, DeepSeek, Argon, all
-  agreeing on the split), decided by the coordinator: an item outcome
-  enum of its own; failed red `!` (as failed job squares; sol, MiMo,
-  Argon; DeepSeek wanted `✗`, too close to Symbols' blocked `×`); record
-  incomplete a dim `◌`, never red; the blocked glyph only while a run of
-  the item waits on the user now (a question or a review), and a past
-  "blocked" event shows in the history text only; the legend splits live
-  agent states from run outcomes; tests that Items never builds
-  `AgentStatus::Blocked` for history and that every style keeps them
-  apart.
 
 ## Needs a decision
 
