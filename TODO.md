@@ -58,6 +58,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
   `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
 
+- [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
+  2026-10-23: "when I hover the mouse over a space's name, the whole name
+  should show too, as it does for a tab's name; ask the models"). Checked:
+  a cut tab label gets a tooltip (`src/client/shell/space_tabs.rs`, the
+  `TooltipTarget` with `line.label`); the space name drawn in
+  `src/client/shell/sidebar.rs` has none.
+
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
   last result per binary, so a test that passes only on a retry counts as
