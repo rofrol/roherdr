@@ -92,6 +92,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   when `has_log`; a run in `attention` (its worker working) has no step
   log, so the click returns without any feedback, although the worker's
   log exists (`herdr worker log <id>`).
+  Round 20261023-134030-cb30 (sol, MiMo, DeepSeek, Argon), checked against
+  `open_run_log` and `handle_todo_open_log` (`src/app/api/workers.rs`),
+  decided by the coordinator:
+  - The silent return is the bug (all four): every click opens a view or
+    shows an error, never nothing.
+  - What opens, resolved on the server at click time from the run record
+    (never from the client's snapshot): the current worker's journal
+    (`herdr worker log --follow`) during start/attention, a frozen one
+    with "worker exited" when it has exited, the current attempt's worker
+    after a retry; the step's log during verify, install and push when it
+    has one; else the run details (step, status, reason, stop reason,
+    worker id). The popup's title names what it shows and the step. One
+    view per click (sol, MiMo, DeepSeek); Argon's single stream that
+    follows the run across steps is noted for later.
+  - A new advertised method (e.g. `todo.open_run`), not a new meaning for
+    `todo.open_log` (MiMo; AGENTS.md "Stable client endpoint contract":
+    never change an advertised method's meaning). A new client on a
+    server without it calls `todo.open_log` as now and opens the run
+    details with the reason on `todo_run_no_log` or a refusal (all four).
+  - Tests: a server table per step (exited worker, retry); a client table
+    over steps × `has_log` × waiting that every click opens a popup; the
+    old-server fallback; a step change between snapshot and click.
 
 - [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
   2026-10-23: "when I hover the mouse over a space's name, the whole name
