@@ -35,6 +35,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Correction 2026-10-23: the lang-for-ai `?` turned out to be the tab's
   status icon (an answered question that stayed), recorded in t-exksqhhc;
   the unknown window there is real but was not that `?`.
+  In flight 2026-10-23: run `r-6ymh3gib` (continues r-dbsdbze2).
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
