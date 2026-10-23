@@ -6,7 +6,7 @@ the coordination tenure and its handoff, one item's run through
 coordinator's decision at an item boundary.
 
 **These proofs establish properties of this model only.** `TodoWorkflow.lean`
-was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328` and `20261023-135828-a549`) from `AGENTS.md`,
+was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328`, `20261023-135828-a549`, `20261023-140629-1d9c`, `20261023-142050-c4f5` and `20261023-143108-0292`) from `AGENTS.md`,
 `DECISIONS.md`, `.herdr/checks.toml`, the CLI help and the global `todo` and
 `handoff` skills. It is not extracted from the Rust code, and nothing checks
 that the code still matches it. The Rust code and its tests are the source of
@@ -32,8 +32,15 @@ Over any sequence of events, not just one step:
   (`landing_is_trap`, `landing_stays`).
 - No run from preflight reaches a fourth attempt
   (`attempts_bounded_from_preflight`).
-- A question a worker asks is never lost: it stays an open obligation, goes
-  to the user, or is answered and acknowledged (`question_never_lost`).
+- A question a worker asks is never lost: its number stays an open
+  obligation, goes to the user, or is answered and acknowledged
+  (`question_never_lost`).
+- At most one run holds the worker slot, from admission until its commit is
+  cherry-picked (`one_worker`).
+- Obligation numbers stay fresh: a new one never reuses a number that is
+  open, escalated or handled (`seqs_fresh`).
+- Neither origin's nor master's history is ever rewritten
+  (`origin_only_grows`, `master_only_grows`).
 
 For single steps:
 
@@ -42,16 +49,28 @@ For single steps:
   exclusive and only an allowed taker (not the frozen pane, and the named
   successor when there is one) can win it, so a wrong claim cannot block the
   handoff; only the named successor that won the claim acks; after the
-  frozen pane is gone only the claimant takes over.
-- A refused admission waits for the same run's attach.
+  frozen pane is gone only the claimant takes over; a successor or claimant
+  whose pane closes is forgotten, so the note can be claimed again.
+- A refused admission waits for the same run's attach; a run id is never
+  reused, and an item with an unfinished run is never launched again.
+- A push goes through only as a fast-forward; one that is not changes
+  nothing and waits as `push_failed` (a diverged origin is the user's to
+  resolve; no rebase is modelled). The same commit never lands twice, on
+  master or on origin.
 - The supervisor: obligations are numbered, and answers, escalations and
   acknowledgements name the number; every worker event wakes the owner and
   blocks its stop until acknowledged; an unanswered question cannot be
-  acknowledged away;
-  when the owner goes away every unanswered question reaches the user.
-- The coordinator dispatches only from its own pane holding an unfrozen tenure.
+  acknowledged away; a stopped worker that exits by itself goes on to verify;
+  when the owner goes away every unanswered question reaches the user, no
+  obligation is left that only the gone owner could acknowledge, and later
+  worker questions go straight to the user (`gone_owner_not_woken`).
+- The coordinator dispatches only from its own pane holding an unfrozen
+  tenure, and stops when the queue is empty.
 
-Assumed, not proved: run and item identity, branch heads and ancestry.
+Assumed, not proved: the content of the cherry-picked commit (herdr's verify
+checks it), what the user does with an escalated question, and the composition of the parts (`Tenure`, `Repo`, `Git` and
+`Watch` are separate machines, so a frozen tenure stopping worker starts is
+not proved across them).
 
 ## Where it maps to the code
 
@@ -121,13 +140,14 @@ flowchart TD
   HO --> TZ
 
   subgraph R["One item's run (herdr todo run) — Run.step"]
-    P["preflight: checks.toml, operations.toml, disk"] -->|ok| G{"usage gate"}
+    P["preflight: checks.toml, operations.toml, disk; refused for an item with an unfinished run"] -->|ok| G{"usage gate"}
     P -->|refused| B(["blocked"])
     G -->|refuses| AR(["admission refused, run id kept"])
     AR -->|"attach the same run id"| G
-    G -->|admits| W["worker working, attempt n (folder slot)"]
+    G -->|admits| W["worker working, attempt n (the one folder slot)"]
     W -->|"WORKER-DONE or WORKER-BLOCKED"| S["stopping"]
     S -->|exited| V{"herdr worker verify"}
+    SA -->|exited| V
     S -->|still_alive| SA(["still alive"])
     SA -->|force-stop| V
     V -->|unavailable| VU(["unavailable"])
@@ -146,7 +166,7 @@ flowchart TD
     E -->|fail| EF(["todo_failed"])
     EF -->|retry-todo| E
     EF -->|skip-todo| PU
-    E -->|ok| PU["push: fast-forward only"]
+    E -->|ok| PU["push: only if origin is a prefix of master"]
     PU -->|fail| PF(["push_failed"])
     PF -->|retry-push| PU
     PU -->|ok| DONE(["done"])
