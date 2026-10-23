@@ -2561,3 +2561,18 @@ The user's decisions of 2026-10-23 on the global `todo` and `handoff` skills
   and growth during a gap in no day; weekday initials from each date's own
   offset (`local_utc_offset_at` in `src/platform/`); bars and the pace
   under AN.
+
+## The documented Claude context windows (t-7wklad42, 2026-10-23)
+
+- Follow-up of t-gpnmlys3, whose vendor table landed empty because Claude
+  Code records no window. The user chose to check the documentation
+  (d-73qhdgqp). The worker's sandbox blocks Anthropic's site, so the
+  coordinator read https://platform.claude.com/docs/en/models/overview on
+  2026-10-23: `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`
+  and `claude-haiku-5-5` each have a 1M-token context window, one window
+  per model, no separate variant.
+- Landed (run r-6ymh3gib, attempt 2): those four entries in
+  `src/context_window.rs` with the URL and the date; the user setting
+  `[agents] context_window` still wins. The tab already shows `ctx 187k`
+  without a percent when only the window is unknown and `ctx ?` only for
+  unknown tokens (the lang-for-ai `?` was the status icon, t-exksqhhc).

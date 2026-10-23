@@ -59,32 +59,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   remaining allowance per remaining day instead of the even share
   (MiMo, DeepSeek, Argon).
 
-- [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
-  of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
-  Claude Code records no window). Decided by the user 2026-10-23
-  (d-73qhdgqp): check the documentation; the worker looks the windows up in
-  Anthropic's model documentation and adds each current Claude model's
-  entry with the URL and the date checked, a 1M variant as its own
-  variant; a value it cannot cite stays out. This session measured over
-  497k input tokens on `claude-opus-5-5`, so a 200k entry for it would be
-  withheld as wrong.
-  Reported 2026-10-23 by the lang-for-ai coordinator for the user ("why
-  does herdr show a `?` for this pane"): pane wDC:pBN runs
-  `claude-opus-5-5` with 187,415 input tokens and window provenance
-  `unknown` ("no source knows the window of claude-opus-5-5"); so does
-  w17:p31. Expected: a known window for current Claude models, and where
-  it stays unknown, a label on the tab that says why instead of a bare
-  `?`; the 70% handoff check needs the window. Also seen the same day on
-  the herdr coordinator's pane: "the transcript names no model for the
-  request" although the transcript's assistant message has `model:
-  claude-opus-5-5` (the reading was taken before the install of
-  b82e0a467; check that a reading after it names the model, and fix the
-  reader if not).
-  Correction 2026-10-23: the lang-for-ai `?` turned out to be the tab's
-  status icon (an answered question that stayed), recorded in t-exksqhhc;
-  the unknown window there is real but was not that `?`.
-  In flight 2026-10-23: run `r-6ymh3gib` (continues r-dbsdbze2).
-
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
   new package; much less code than all of herdr; then various TUIs, GUIs
