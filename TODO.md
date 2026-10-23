@@ -1877,41 +1877,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `-f -`) and say it in the consult and openrouter SKILL.md files.
   Approved by the user 2026-10-09 ("zgoda jest").
 
-- [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
-  2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
-  built: "but a new state is also needed: there is a question, but the
-  agent is still working or has delegated something and work goes on").
-  Since f2c56a2e an open question persists while the agent works, and the
-  `?` mark and the working/`◔` marks compete for one glyph. Want one
-  combined mark (both facts visible at once: an open question for the user
-  and the agent working, or its own background work or worker running),
-  with the status legend entry and the tooltip naming both. Same item:
-  the screenshot's tab line showed an answered question first ("Zwolnisz
-  19 GiB?", the space was freed): check why it stayed (asked before the
-  install of f2c56a2e, or the submit path did not clear it) and fix it;
-  the line shows the newest open question.
-  Asked again by the user 2026-10-23: "roherdr lacks a state where a tab
-  waits with a question while something works in the background in herdr
-  jobs etc.; ask the models". Checked 2026-10-23: `tab_state` in
-  `src/client/shell/space_tabs.rs` picks one `AgentMark` in order
-  `AwaitsReply`, `Waits` (a todo wait), `WaitsOnJob`/`WaitsOnIdleJob`,
-  `BackgroundWork`, so an open question hides every background mark.
-  Round 20261023-132830-d448 (sol, MiMo, DeepSeek, Argon), checked
-  against `agent_mark`/`agent_icon` in `src/client/shell.rs` and
-  `tab_state` in `src/client/shell/space_tabs.rs`. All four: a question
-  and background work are two independent facts, not one new glyph (a
-  one-cell combination is unlearnable across the Dots, Symbols and
-  Shapes styles, colour alone fails colour-blind users, animation costs
-  render work); the `?` must never be hidden, also while the agent is
-  Working (today `AwaitsReply` needs Idle/Done, for a tab Done); count
-  only running work: wait edges whose target runs, running nested jobs,
-  the agent's background shells, owned workers and todo runs, read from
-  the snapshot, never discovered in render; tooltip names both facts
-  ("reply requested · 2 jobs running"); the space row shows the question
-  and the work apart. Tests: the full matrix (question × status ×
-  each background source × style), an invariant that `?` always shows.
-  They differ on placement (asked the user, below).
-
 - [ ] Wake a coordinator when an external reply arrives (the owner via the [t-22gwwmer]
   roguix-vps coordinator, 2026-10-11: "why is nothing happening here?
   report it to the herdr coordinator"). roguix-vps waits on RackNerd
@@ -3643,6 +3608,44 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-dboichuo): when the consult round
   ends, its helper jobs fold into one summary at the caller; a failure
   stays in that summary until acknowledged.
+
+- [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
+  2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
+  built: "but a new state is also needed: there is a question, but the
+  agent is still working or has delegated something and work goes on").
+  Since f2c56a2e an open question persists while the agent works, and the
+  `?` mark and the working/`◔` marks compete for one glyph. Want one
+  combined mark (both facts visible at once: an open question for the user
+  and the agent working, or its own background work or worker running),
+  with the status legend entry and the tooltip naming both. Same item:
+  the screenshot's tab line showed an answered question first ("Zwolnisz
+  19 GiB?", the space was freed): check why it stayed (asked before the
+  install of f2c56a2e, or the submit path did not clear it) and fix it;
+  the line shows the newest open question.
+  Asked again by the user 2026-10-23: "roherdr lacks a state where a tab
+  waits with a question while something works in the background in herdr
+  jobs etc.; ask the models". Checked 2026-10-23: `tab_state` in
+  `src/client/shell/space_tabs.rs` picks one `AgentMark` in order
+  `AwaitsReply`, `Waits` (a todo wait), `WaitsOnJob`/`WaitsOnIdleJob`,
+  `BackgroundWork`, so an open question hides every background mark.
+  Round 20261023-132830-d448 (sol, MiMo, DeepSeek, Argon), checked
+  against `agent_mark`/`agent_icon` in `src/client/shell.rs` and
+  `tab_state` in `src/client/shell/space_tabs.rs`. All four: a question
+  and background work are two independent facts, not one new glyph (a
+  one-cell combination is unlearnable across the Dots, Symbols and
+  Shapes styles, colour alone fails colour-blind users, animation costs
+  render work); the `?` must never be hidden, also while the agent is
+  Working (today `AwaitsReply` needs Idle/Done, for a tab Done); count
+  only running work: wait edges whose target runs, running nested jobs,
+  the agent's background shells, owned workers and todo runs, read from
+  the snapshot, never discovered in render; tooltip names both facts
+  ("reply requested · 2 jobs running"); the space row shows the question
+  and the work apart. Tests: the full matrix (question × status ×
+  each background source × style), an invariant that `?` always shows.
+  They differ on placement (asked the user, below).
+  Decided by the user 2026-10-23 (d-v54muzs4): `?` stays in the status
+  cell, also while the agent works; background work shows as a mark after
+  the name (e.g. `◐2`), as sol, MiMo and DeepSeek proposed.
 
 ## Proposed
 
