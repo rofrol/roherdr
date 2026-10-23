@@ -3743,6 +3743,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a wait marker and the times and drop the row (MiMo, DeepSeek); and
   whether the counts hide while the squares are unfolded (sol, DeepSeek,
   Argon) or always show (MiMo).
+  Decided by the user 2026-10-23 (d-gqaxmd65): unfolded, the waited-on
+  job shows as its square with a wait marker and its times (`↳◒
+  14:18→14:20`), no separate wait row; the counts show only while folded.
 
 - [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
   2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
