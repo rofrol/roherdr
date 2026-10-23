@@ -49,6 +49,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   buckets are calendar days in local time from Monday, and the reset's
   position follows from `resets_at`; the first day's use is measured from
   the window's start (0 % at the reset) instead of being unknown.
+  Blocked 2026-10-23: run r-jqgfs3ej approved (event 281148) stopped at
+  the cherry-pick with "the landing worktree ... has uncommitted changes"
+  (11 files under `src/client/shell/` and a new `todo_flow.rs`, another
+  session's work, the Lean model session herdr-67, asked to move them to
+  a worktree); event 281697 offers only abort. The worker's commit
+  f70dcd7aa stays on its branch; once the checkout is clean, a new run
+  brings it in.
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
