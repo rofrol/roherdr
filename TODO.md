@@ -42,6 +42,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-xsfejmv4): per-day use as bars,
   always under AN, today highlighted, the pace as a number beside them
   (`+4% vs pace`).
+  Decided by the user 2026-10-23: "the 7-day window is fixed; Monday is
+  always the first position". So the open question of slice 1 is settled
+  (a fixed window, not rolling), and slice 2: the chart's first position
+  is always Monday, then Tuesday through Sunday, today highlighted;
+  buckets are calendar days in local time from Monday, and the reset's
+  position follows from `resets_at`; the first day's use is measured from
+  the window's start (0 % at the reset) instead of being unknown.
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
