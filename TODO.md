@@ -91,6 +91,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - `--stop-reason` stays the user-facing stop; a coordinator never
     acknowledges for the user (`ack-stop` means a person saw it).
   Decided by the user 2026-10-23 (d-q32vnu3m): approved, as the next item.
+  In flight 2026-10-23: run `r-o7bhmarv`.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
