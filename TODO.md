@@ -80,6 +80,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   still reopen the last focused job (`last_group_tabs`)? All four warn
   that hiding the focused job and keeping that reopen means a click opens
   a job drawn nowhere.
+  Decided by the user 2026-10-23 (d-xsaodkfg): a fold hides every square,
+  the focused job's too; the parent line gets no marker; a click on the
+  parent opens the parent (no reopening of its last job).
 
 - [ ] A cut space name shows whole on hover, like a tab name (the user, [t-g7knthts]
   2026-10-23: "when I hover the mouse over a space's name, the whole name
