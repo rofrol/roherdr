@@ -97,6 +97,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the failing-first shell tests (diverged origin, abort after cherry-pick,
   a crash between an effect and its acknowledgement), the cli-reference
   docs; then `approve_landing` and the no-push case in the core.
+  In flight 2026-10-23: slice 2, run r-xnft343u. Attempt 1 (commit
+  2101931) refused after review round 20261023-230513-039b (sol, MiMo,
+  DeepSeek, Argon): the pick moved shared master before the verify, the
+  restore reset without a compare-and-swap and found commits by subject,
+  the verify verified the attempt branch when the switch failed, an
+  unparsable landing JSON fell back silently; attempt 2 verifies the
+  synthetic integration first and lands it with a compare-and-swap (the
+  review is the run's attempt-2 task). The Lean session (herdr-67's
+  successor) is to be told that the landing order is verify, then pick.
 
 - [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
   "increase the default sidebar width to 36"). Found in review of
