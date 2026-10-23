@@ -11,6 +11,26 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The weekly chart's bars use a fixed daily scale, a full bar is the [t-f5katvlq]
+  even daily share, and a day can go over it (follow-up of t-tpcxnvxd,
+  closed 2026-10-23; the user, a screenshot of `AN 14% 2h5m 17% 5d6h`,
+  bars `····_··`, today F: "it is Friday, F; the use is a tiny dash; assume
+  100% [a full bar] is 14% for a day, and it can go above that; ask the
+  models"). Today the bars scale to the week's largest day. Round
+  20261023-195524-ffbd (sol, MiMo, DeepSeek, Argon), decided by the
+  coordinator:
+  - A full bar `█` is 100/7 % of the weekly allowance (exact, not 14);
+    any sampled use above zero shows at least `▁`; `·` stays "no sample",
+    and a sampled day with no use shows its own mark (a space).
+  - The pace stays, labelled in percentage points (`-8pp vs pace`) and
+    computed continuously over the window ending at `resets_at` (sol,
+    Argon); DeepSeek's "the pace is wrong" is dismissed: 17 % used with
+    5 d 6 h left is 25 % elapsed, so -8 pp is right.
+  - Note (sol, Argon): this window resets on another weekday than Monday
+    (5 d 6 h left on a Friday evening); Monday-first is the user's
+    decision and stays.
+  - Over the share: asked the user, below.
+
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
   Claude Code records no window). Decided by the user 2026-10-23
