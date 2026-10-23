@@ -4402,6 +4402,26 @@ Items agents add. Not approved until the user moves them up.
   diagnosis goes here. The fix needs a test that fails on the current
   code (an admission made after the handoff import survives the old
   server's exit).
+  Diagnosis (herdr-67, round 20261023-191036-f01a, sol, MiMo, DeepSeek,
+  Argon, checked against the store; the coordinator confirmed the bind
+  code): `usage_admissions` has no row with holder `run:r-hgke3x5g:1` (nor
+  worker w591), while neighbours exist (`run:r-dbsdbze2:2` by the old
+  server pid 64048, a `worker.run:` row by the new pid 74738).
+  `bind_admission` (`src/workers/store.rs`) is `UPDATE ... WHERE holder =
+  ?1 AND released_ms IS NULL` and returns `Ended` when no row changes, so
+  a missing row reads as "ended", and `lifecycle.rs` then blames a handoff
+  reconciliation. The old server had exited 51 s before the run (log:
+  "live handoff completed; old server exiting"), and
+  `retire_unrecorded_admission` only updates, never deletes, so the
+  handoff-exit theory (three models) does not fit the store; MiMo's
+  reading does: the run's admission row was never recorded, or recorded
+  under another holder key. Next: find where a run's admission is
+  recorded before the bind (its holder key, whether the write can be
+  skipped or go to another store); make the bind tell "no row" from
+  "released" so the error names the real case. Tests: a run start whose
+  admission row is absent is not reported as a handoff retirement; record
+  then bind for a run holder on a server started with `--handoff-import`
+  binds.
 
 ## Needs a decision
 
