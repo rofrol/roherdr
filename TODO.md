@@ -3769,6 +3769,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Tests: two coordinators; every sort mode; folded and quiet-folded
     owner with an asking run; owner closed; handoff; takeover; an owner
     filtered out; every run exactly once.
+  The user asked 2026-10-23 whether a handoff should re-parent the
+  coordinator's child tabs to the successor. Checked: `start_successor`
+  (`src/app/api/coordinators.rs`) opens the successor as a split in the
+  same tab. Round 20261023-144434-4460 (sol, MiMo, DeepSeek, Argon, all
+  agreeing): a planned handoff moves nothing, since rows are grouped by
+  the owner pane's tab, which stays (group by the resolved tab id, never
+  the pane id); a takeover from another tab moves only the taken runs'
+  rows; job tabs keep the `parent_tab_id` of the tab that started them
+  and never move to the taker.
 
 - [ ] A state for "a question waits for you, and work goes on" (user, [t-exksqhhc]
   2026-10-11, screenshot of try-roguix: `?` with `bg:1` while its worker
