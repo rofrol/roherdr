@@ -6649,6 +6649,17 @@
         "TodoQueueSetParams": {
           "description": "`todo.queue_set`: turns a repository's queue mode on or pauses it. On,\nthe server starts the top item of \"Next, in order\" that is not blocked\nas `todo.draft_run` would whenever no run of the repository is active, no\nescalation is pending and the usage gate admits; it looks again only on\nits own events: a run ended (done, blocked or aborted), an escalation was\nanswered, the server started, the mode was set. Turning it on also clears\na pause of the circuit breaker.",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerAgentChoice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent of every run the queue starts (`on` only), as\n`todo.draft_run`'s `agent`; `[workers] default_agent` when absent.\nTurning the queue on again replaces it."
+            },
             "cwd": {
               "description": "A directory in the repository.",
               "type": "string"
@@ -6665,6 +6676,13 @@
             },
             "mode": {
               "$ref": "#/schemas/request/$defs/TodoQueueMode"
+            },
+            "model": {
+              "description": "The pi model (`provider/model`) of every run the queue starts (`on`\nonly), as `todo.draft_run`'s `model`; the pi worker's default when\nabsent. Turning the queue on again replaces it.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "owner_pane_id": {
               "description": "The pane that owns the runs the queue starts; the CLI sends its\n`HERDR_PANE_ID`.",
@@ -20649,6 +20667,17 @@
         "TodoQueueInfo": {
           "description": "A repository's queue as `todo.queue_set` and `todo.queue_status` reply.",
           "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerAgentChoice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent the last `queue on` named for the queue's runs; absent for\n`[workers] default_agent`."
+            },
             "blocked_items": {
               "description": "Items of \"Next, in order\" the queue skips: their attempt cap was\nreached with their current text.",
               "items": {
@@ -20671,6 +20700,13 @@
             },
             "mode": {
               "$ref": "#/schemas/success_response/$defs/TodoQueueMode"
+            },
+            "model": {
+              "description": "The pi model the last `queue on` named for the queue's runs; absent\nfor the pi worker's default.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "owner_pane_id": {
               "type": [
@@ -22030,6 +22066,26 @@
             "admitted_ms"
           ],
           "type": "object"
+        },
+        "WorkerAgentChoice": {
+          "description": "The agent a caller may choose for a worker or run: `WorkerAgent` plus the\nAnthropic API credits path (pi through herdr's credit proxy). Used by\noptional fields and `[workers] default_agent`; `WorkerAgent` keeps its\nshape.",
+          "oneOf": [
+            {
+              "const": "claude",
+              "description": "Claude Code on the subscription.",
+              "type": "string"
+            },
+            {
+              "const": "pi",
+              "description": "Headless pi on the ChatGPT plan.",
+              "type": "string"
+            },
+            {
+              "const": "pi-anthropic",
+              "description": "Headless pi on the Anthropic API credits.",
+              "type": "string"
+            }
+          ]
         },
         "WorkerAttentionReason": {
           "description": "Why `worker.wait` with `until: attention` returned.",

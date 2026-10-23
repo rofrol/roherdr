@@ -237,6 +237,7 @@ const USAGE: &str = "usage:
       Stop the repository's chain: the coordinator that runs finishes its
       item, and no next one starts.
   herdr todo queue on|pause|status [--repo DIR] [--reason TEXT]
+                   [--agent claude|pi|pi-anthropic] [--model PROVIDER/MODEL]
       Queue mode: herdr's server drives the queue of DIR's (default: the
       current directory's) repository. on (kept across restarts): whenever
       no run of the repository is active, no escalation is pending and the
@@ -245,10 +246,12 @@ const USAGE: &str = "usage:
       --draft would, owned by this pane, its checks, install and push with
       this shell's environment (kept in memory only; after a cold restart the
       queue pauses with \"environment needed\" and a notification until on is
-      run again from a shell). It looks again only on its own events: a run
-      ended, an escalation was answered, the server started, the mode was
-      set, and, while the usage gate stops it, the usage poller published a
-      new reading; never on a timer. An approval of a queue run (its own
+      run again from a shell), its agent and pi model from on's --agent and
+      --model as todo run --draft takes them (without them [workers]
+      default_agent and its defaults; on again replaces them). It looks
+      again only on its own events: a run ended, an escalation was answered,
+      the server started, the mode was set, and, while the usage gate stops
+      it, the usage poller published a new reading; never on a timer. An approval of a queue run (its own
       review's, or todo resume's without --keep-open) closes its item. An
       item the queue ran 2 times with the
       same text is blocked until its text changes; 3 consecutive queue runs
@@ -745,12 +748,18 @@ fn next_run(
     }))
 }
 
-/// `todo run <item> --draft`: the item only (`--auto-review` and
-/// `--auto-answer` are implied, and allowed); the server drafts the rest.
-fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String> {
-    let (_, rest) = take_switch(rest, "--auto-review")?;
-    let (_, rest) = take_switch(&rest, "--auto-answer")?;
-    let (agent, rest) = take_string_option(&rest, "--agent")?;
+/// The agent, the model and the other args [`take_agent_and_model`] gives.
+type AgentAndModel = (
+    Option<crate::api::schema::WorkerAgentChoice>,
+    Option<String>,
+    Vec<String>,
+);
+
+/// `--agent <claude|pi|pi-anthropic>` and `--model <provider/model>` (a pi
+/// model, refused with an agent that takes its own) out of `args`, for
+/// `run --draft` and `queue on`.
+fn take_agent_and_model(args: &[String]) -> Result<AgentAndModel, String> {
+    let (agent, rest) = take_string_option(args, "--agent")?;
     let (model, rest) = take_string_option(&rest, "--model")?;
     let agent = agent
         .as_deref()
@@ -769,6 +778,15 @@ fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String
                 .into(),
         );
     }
+    Ok((agent, model, rest))
+}
+
+/// `todo run <item> --draft`: the item only (`--auto-review` and
+/// `--auto-answer` are implied, and allowed); the server drafts the rest.
+fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String> {
+    let (_, rest) = take_switch(rest, "--auto-review")?;
+    let (_, rest) = take_switch(&rest, "--auto-answer")?;
+    let (agent, model, rest) = take_agent_and_model(&rest)?;
     let item = match rest.as_slice() {
         [item] if !item.starts_with("--") => item.clone(),
         _ => {
@@ -1091,12 +1109,16 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "queue" => {
             let (repo, rest) = take_string_option(rest, "--repo")?;
             let (reason, rest) = take_string_option(&rest, "--reason")?;
+            let (agent, model, rest) = take_agent_and_model(&rest)?;
             let action = match rest.as_slice() {
                 [action] => action.as_str(),
                 _ => return Err("queue takes on, pause or status, and --repo".into()),
             };
             if reason.is_some() && action != "pause" {
                 return Err("only queue pause takes --reason".into());
+            }
+            if (agent.is_some() || model.is_some()) && action != "on" {
+                return Err("only queue on takes --agent and --model".into());
             }
             let dir = match repo {
                 Some(dir) => std::path::PathBuf::from(dir),
@@ -1116,6 +1138,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                     owner_pane_id: pane,
                     workspace_id: super::target::caller_workspace_id(),
                     env,
+                    agent,
+                    model: model.clone(),
                 })
             };
             match action {
@@ -2092,6 +2116,74 @@ mod tests {
             &["queue", "on", "--reason", "x"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn queue_on_takes_the_agent_and_pi_model_of_its_runs() {
+        use crate::api::schema::WorkerAgentChoice;
+        let Ok(Some(Method::TodoQueueSet(on))) = parse(&args(&[
+            "queue",
+            "on",
+            "--agent",
+            "pi",
+            "--model",
+            "deepseek/deepseek-flash",
+        ])) else {
+            panic!("queue on with an agent did not parse");
+        };
+        assert_eq!(on.mode, TodoQueueMode::On);
+        assert_eq!(on.agent, Some(WorkerAgentChoice::Pi));
+        assert_eq!(on.model.as_deref(), Some("deepseek/deepseek-flash"));
+        let Ok(Some(Method::TodoQueueSet(credits))) =
+            parse(&args(&["queue", "on", "--agent", "pi-anthropic"]))
+        else {
+            panic!("queue on --agent pi-anthropic did not parse");
+        };
+        assert_eq!(
+            (credits.agent, credits.model),
+            (Some(WorkerAgentChoice::PiAnthropic), None)
+        );
+        let Ok(Some(Method::TodoQueueSet(plain))) = parse(&args(&["queue", "on"])) else {
+            panic!("queue on did not parse");
+        };
+        assert_eq!((plain.agent, plain.model), (None, None));
+        for (bad, why) in [
+            (
+                &["queue", "on", "--agent", "gpt"][..],
+                "claude, pi or pi-anthropic",
+            ),
+            (
+                &[
+                    "queue",
+                    "on",
+                    "--agent",
+                    "claude",
+                    "--model",
+                    "deepseek/deepseek-flash",
+                ],
+                "Claude Code's own model",
+            ),
+            (
+                &[
+                    "queue",
+                    "on",
+                    "--agent",
+                    "pi-anthropic",
+                    "--model",
+                    "deepseek/deepseek-flash",
+                ],
+                "anthropic_api_model",
+            ),
+            (&["queue", "pause", "--agent", "pi"], "only queue on"),
+            (
+                &["queue", "status", "--model", "deepseek/deepseek-flash"],
+                "only queue on",
+            ),
+            (&["queue", "on", "--model"], "--model"),
+        ] {
+            let error = parse(&args(bad)).expect_err(&format!("{bad:?}"));
+            assert!(error.contains(why), "{bad:?}: {error}");
         }
     }
 

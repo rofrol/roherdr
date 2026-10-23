@@ -13709,6 +13709,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                         owner_session_id: None,
                         workspace_id: Some("ws-coordinator".into()),
                         env: Some(caller_env()),
+                        agent: None,
+                        model: None,
                     })
                     .unwrap()
             }
@@ -13857,6 +13859,99 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 );
             }
 
+            /// `queue on --agent pi --model deepseek/deepseek-flash` starts
+            /// the queue's runs with that agent and model and shows them in
+            /// its status; `queue on` again without them replaces them with
+            /// `[workers] default_agent`'s defaults.
+            #[test]
+            fn the_queue_starts_its_runs_with_the_agent_and_model_it_was_turned_on_with() {
+                const MODEL: &str = "deepseek/deepseek-flash";
+                let (fixture, repo) = queued("todo-queue-agent", &[ITEM], &[ESCALATE]);
+                fixture
+                    .supervisor
+                    .set_deepseek_usage_for_test(Ok(runs::deepseek_usage_for_test()));
+                let on = fixture
+                    .supervisor
+                    .todo_queue_set(TodoQueueSetParams {
+                        cwd: fixture.repo.display().to_string(),
+                        mode: TodoQueueMode::On,
+                        reason: None,
+                        owner_pane_id: Some("p-coordinator".into()),
+                        owner_session_id: None,
+                        workspace_id: Some("ws-coordinator".into()),
+                        env: Some(caller_env()),
+                        agent: Some(crate::api::schema::WorkerAgentChoice::Pi),
+                        model: Some(MODEL.into()),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    (on.agent, on.model.as_deref()),
+                    (Some(crate::api::schema::WorkerAgentChoice::Pi), Some(MODEL)),
+                    "{on:#?}"
+                );
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(runs.len(), 1, "{runs:#?}");
+                let run = fixture.supervisor.load_run(&runs[0].run_id).unwrap();
+                assert_eq!(run.finish.agent, Some(WorkerAgent::Pi));
+                assert_eq!(run.finish.model.as_deref(), Some(MODEL));
+                let created = run_events(&fixture, &runs[0].run_id, "run_created");
+                assert_eq!(created[0]["agent"], "pi");
+                assert_eq!(created[0]["model"], MODEL);
+                assert_eq!(created[0]["usage_gate"]["provider"], "deepseek");
+
+                // On again without them: the next runs take the default.
+                let again = set(&fixture, TodoQueueMode::On);
+                assert_eq!(
+                    (again.agent, again.model.as_deref()),
+                    (None, None),
+                    "{again:#?}"
+                );
+                let stored = store_of(&fixture.supervisor).queue(&repo).unwrap().unwrap();
+                assert_eq!((stored.agent, stored.model), (None, None));
+
+                // A model is a pi model, and only `on` takes them.
+                let refused = |mode, agent| {
+                    fixture
+                        .supervisor
+                        .todo_queue_set(TodoQueueSetParams {
+                            cwd: fixture.repo.display().to_string(),
+                            mode,
+                            reason: None,
+                            owner_pane_id: None,
+                            owner_session_id: None,
+                            workspace_id: None,
+                            env: None,
+                            agent,
+                            model: Some(MODEL.into()),
+                        })
+                        .is_err()
+                };
+                assert!(refused(
+                    TodoQueueMode::On,
+                    Some(crate::api::schema::WorkerAgentChoice::Claude)
+                ));
+                assert!(refused(TodoQueueMode::Paused, None));
+                assert_eq!(status(&fixture).mode, TodoQueueMode::On);
+            }
+
+            /// Without `--agent` and `--model` the queue's runs take
+            /// `[workers] default_agent` and no model of their own.
+            #[test]
+            fn the_queue_starts_its_runs_with_the_default_agent_without_one() {
+                let (fixture, repo) = queued("todo-queue-default-agent", &[ITEM], &[ESCALATE]);
+                let on = set(&fixture, TodoQueueMode::On);
+                assert_eq!((on.agent, on.model.as_deref()), (None, None), "{on:#?}");
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(runs.len(), 1, "{runs:#?}");
+                let run = fixture.supervisor.load_run(&runs[0].run_id).unwrap();
+                let expected = match runs::default_agent() {
+                    crate::api::schema::WorkerAgentChoice::Claude => None,
+                    _ => Some(WorkerAgent::Pi),
+                };
+                assert_eq!(run.finish.agent, expected);
+                assert_eq!(run.finish.model, None);
+            }
+
             #[test]
             fn the_runnable_state_counts_only_a_hand_driven_idle_repository_as_stalled() {
                 let runnable = |fixture: &Fixture| {
@@ -13882,6 +13977,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                         owner_session_id: None,
                         workspace_id: None,
                         env: None,
+                        agent: None,
+                        model: None,
                     })
                     .unwrap();
                 let paused = runnable(&fixture);
@@ -13944,6 +14041,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                         owner_session_id: None,
                         workspace_id: Some("ws-coordinator".into()),
                         env: Some(caller_env()),
+                        agent: None,
+                        model: None,
                     })
                     .unwrap();
                 assert_eq!(on.mode, TodoQueueMode::On, "{on:#?}");
@@ -14200,6 +14299,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                                 workspace: Some("ws-coordinator"),
                                 coordinator_id: None,
                             },
+                            None,
+                            None,
                             now_ms(),
                         )
                     })
@@ -14269,6 +14370,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                                 workspace: Some("ws-coordinator"),
                                 coordinator_id: None,
                             },
+                            None,
+                            None,
                             now_ms(),
                         )
                     })
@@ -14331,6 +14434,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                                 workspace: Some("ws-coordinator"),
                                 coordinator_id: None,
                             },
+                            None,
+                            None,
                             now_ms(),
                         )
                     })
@@ -14518,6 +14623,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                                 workspace: Some("ws-coordinator"),
                                 coordinator_id: None,
                             },
+                            None,
+                            None,
                             now_ms(),
                         )
                     })

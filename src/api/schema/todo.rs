@@ -934,6 +934,16 @@ pub struct TodoQueueSetParams {
     /// server's memory only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// The agent of every run the queue starts (`on` only), as
+    /// `todo.draft_run`'s `agent`; `[workers] default_agent` when absent.
+    /// Turning the queue on again replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::workers::WorkerAgentChoice>,
+    /// The pi model (`provider/model`) of every run the queue starts (`on`
+    /// only), as `todo.draft_run`'s `model`; the pi worker's default when
+    /// absent. Turning the queue on again replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// `todo.queue_status`: a repository's queue.
@@ -1111,6 +1121,14 @@ pub struct TodoQueueInfo {
     pub blocked_items: Vec<TodoQueueBlockedItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_pane_id: Option<String>,
+    /// The agent the last `queue on` named for the queue's runs; absent for
+    /// `[workers] default_agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::workers::WorkerAgentChoice>,
+    /// The pi model the last `queue on` named for the queue's runs; absent
+    /// for the pi worker's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// When the mode or the last evaluation was recorded (Unix
     /// milliseconds); 0 for a repository that never had queue mode.
     pub updated_ms: u64,

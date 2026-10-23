@@ -54,7 +54,7 @@ use tracing::warn;
 use super::{git, lock, step_name, store_error, todo_titles, Run, TODO_FILE};
 use crate::api::schema::{
     TodoQueueBlockedItem, TodoQueueInfo, TodoQueueMode, TodoQueueSetParams, TodoQueueStatus,
-    TodoRunParams, TodoRunStatus, TodoRunnableState,
+    TodoRunParams, TodoRunStatus, TodoRunnableState, WorkerAgentChoice,
 };
 use crate::workers::store::{QueueRun, RunOwner, StoredQueue};
 use crate::workers::{now_ms, repository_of, WorkerError, WorkerSupervisor};
@@ -292,6 +292,11 @@ fn queue_dir<'a>(repo: &'a str, queue: Option<&'a StoredQueue>) -> &'a str {
         .unwrap_or(repo)
 }
 
+/// The agent the last `queue on` named for the queue's runs.
+fn queue_agent(queue: &StoredQueue) -> Option<WorkerAgentChoice> {
+    queue.agent.as_deref().and_then(WorkerAgentChoice::parse)
+}
+
 fn mode_of(queue: Option<&StoredQueue>) -> TodoQueueMode {
     match queue.map(|queue| queue.mode.as_str()) {
         Some("on") => TodoQueueMode::On,
@@ -355,6 +360,22 @@ impl WorkerSupervisor {
         params: TodoQueueSetParams,
     ) -> Result<TodoQueueInfo, WorkerError> {
         let repo = self.queue_repo(&params.cwd)?;
+        if params.mode != TodoQueueMode::On && (params.agent.is_some() || params.model.is_some()) {
+            return Err(WorkerError::Invalid(
+                "only turning the queue on takes an agent and a model".into(),
+            ));
+        }
+        if params.model.is_some()
+            && matches!(
+                params.agent,
+                Some(WorkerAgentChoice::Claude | WorkerAgentChoice::PiAnthropic)
+            )
+        {
+            return Err(WorkerError::Invalid(
+                "the queue's model names a pi model; a Claude or pi-anthropic run takes its own"
+                    .into(),
+            ));
+        }
         let store = self.run_store()?;
         let at = now_ms();
         match params.mode {
@@ -370,8 +391,11 @@ impl WorkerSupervisor {
                     workspace: params.workspace_id.as_deref(),
                     coordinator_id: None,
                 };
+                let agent = params.agent.map(WorkerAgentChoice::as_str);
                 store
-                    .transaction(|tx| tx.queue_on(&repo, &worktree, &owner, at))
+                    .transaction(|tx| {
+                        tx.queue_on(&repo, &worktree, &owner, agent, params.model.as_deref(), at)
+                    })
                     .map_err(store_error)?;
                 match params.env {
                     Some(env) => lock(&QUEUE_ENV).insert(repo.clone(), env),
@@ -458,6 +482,8 @@ impl WorkerSupervisor {
             failures: queue.as_ref().map_or(0, |queue| queue.failures),
             blocked_items: blocked,
             owner_pane_id: queue.as_ref().and_then(|queue| queue.owner_pane.clone()),
+            agent: queue.as_ref().and_then(queue_agent),
+            model: queue.as_ref().and_then(|queue| queue.model.clone()),
             updated_ms: queue.as_ref().map_or(0, |queue| queue.updated_ms),
         })
     }
@@ -743,14 +769,14 @@ impl WorkerSupervisor {
             env: Some(env),
             ignore_usage: false,
             agent: None,
-            // A queued run keeps the pi worker's default model: the queue
-            // starts items with `[workers] default_agent`'s own defaults.
-            model: None,
+            // The agent and model the last `queue on` named; without them
+            // `[workers] default_agent` with its own defaults.
+            model: queue.model.clone(),
             auto_review: true,
             auto_answer: true,
             new_api: false,
         };
-        let choice = Self::choice_of(None, None);
+        let choice = Self::choice_of(None, queue_agent(&queue));
         #[cfg(test)]
         before_start(repo);
         match self.start_run_as(params, true, Some(&start), true, choice) {

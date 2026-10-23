@@ -879,6 +879,14 @@ ALTER TABLE usage_admissions ADD COLUMN tenure_epoch INTEGER;
     super::supervision::SUPERVISION_ANNOTATIONS_MIGRATION,
     super::supervision::SUPERVISION_FINDING_RULE_VERSION_MIGRATION,
     super::supervision::SUPERVISION_HOLD_EVENT_MIGRATION,
+    r#"
+-- The agent (`claude`, `pi` or `pi-anthropic`) and the pi model
+-- (`provider/model`) the last `todo queue on` named for the runs the queue
+-- starts. NULL when it named none, and for a queue recorded before: its runs
+-- use `[workers] default_agent` and its defaults.
+ALTER TABLE todo_queues ADD COLUMN agent TEXT;
+ALTER TABLE todo_queues ADD COLUMN model TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3805,6 +3813,12 @@ pub(super) struct StoredQueue {
     /// whose TODO.md, checks and branch its starts use; none for a queue
     /// turned on before queues stored it (the repository's checkout).
     pub(super) worktree: Option<String>,
+    /// The agent the last `queue on` named for the queue's runs (`claude`,
+    /// `pi` or `pi-anthropic`); none for `[workers] default_agent`.
+    pub(super) agent: Option<String>,
+    /// The pi model (`provider/model`) the last `queue on` named; none for
+    /// the pi worker's default.
+    pub(super) model: Option<String>,
 }
 
 /// A run the queue started (`todo_queue_runs`).
@@ -3821,7 +3835,7 @@ pub(super) struct QueueRun {
 }
 
 const QUEUE_COLUMNS: &str = "repo, mode, pause_reason, token, failures, status, reason, \
-owner_pane, owner_session, workspace, updated_ms, worktree";
+owner_pane, owner_session, workspace, updated_ms, worktree, agent, model";
 
 fn queue_from_row(row: &rusqlite::Row<'_>) -> StoreResult<StoredQueue> {
     Ok(StoredQueue {
@@ -3837,6 +3851,8 @@ fn queue_from_row(row: &rusqlite::Row<'_>) -> StoreResult<StoredQueue> {
         workspace: row.get(9)?,
         updated_ms: row.get::<_, i64>(10)? as u64,
         worktree: row.get(11)?,
+        agent: row.get(12)?,
+        model: row.get(13)?,
     })
 }
 
@@ -3868,30 +3884,36 @@ impl Tx<'_> {
         queue_of(self.tx, repo)
     }
 
-    /// Turns `repo`'s queue on from `worktree`, owned by `owner`: its pause
-    /// and its circuit breaker's count are cleared.
+    /// Turns `repo`'s queue on from `worktree`, owned by `owner`, its runs
+    /// started with `agent` and `model` (which replace the ones an earlier
+    /// `queue on` named): its pause and its circuit breaker's count are
+    /// cleared.
     pub(super) fn queue_on(
         &self,
         repo: &str,
         worktree: &str,
         owner: &RunOwner<'_>,
+        agent: Option<&str>,
+        model: Option<&str>,
         at_ms: u64,
     ) -> StoreResult<()> {
         self.tx.execute(
             "INSERT INTO todo_queues (repo, mode, pause_reason, token, failures, status, reason,
-                 owner_pane, owner_session, workspace, updated_ms, worktree)
-             VALUES (?1, 'on', NULL, 0, 0, NULL, NULL, ?2, ?3, ?4, ?5, ?6)
+                 owner_pane, owner_session, workspace, updated_ms, worktree, agent, model)
+             VALUES (?1, 'on', NULL, 0, 0, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (repo) DO UPDATE SET mode = 'on', pause_reason = NULL, failures = 0,
                  owner_pane = excluded.owner_pane, owner_session = excluded.owner_session,
                  workspace = excluded.workspace, updated_ms = excluded.updated_ms,
-                 worktree = excluded.worktree",
+                 worktree = excluded.worktree, agent = excluded.agent, model = excluded.model",
             params![
                 repo,
                 owner.pane_id,
                 owner.session_id,
                 owner.workspace,
                 at_ms as i64,
-                worktree
+                worktree,
+                agent,
+                model
             ],
         )?;
         Ok(())
@@ -4547,6 +4569,8 @@ mod tests {
                  DROP TABLE supervision_annotations;
                  ALTER TABLE supervision_findings DROP COLUMN rule_version;
                  ALTER TABLE supervision_holds DROP COLUMN expected_event;
+                 ALTER TABLE todo_queues DROP COLUMN agent;
+                 ALTER TABLE todo_queues DROP COLUMN model;
                  DROP INDEX events_by_worker_kind;
                  INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES
                      ('/a', 0, '{{\"state\": \"open\"}}', 40),
@@ -4558,7 +4582,7 @@ mod tests {
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 7
+                MIGRATIONS.len() - 8
             ))
             .unwrap();
         drop(store);
@@ -4635,7 +4659,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 38
+                MIGRATIONS.len() - 39
             ))
             .unwrap();
         drop(store);
@@ -4710,7 +4734,7 @@ mod tests {
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 27
+                MIGRATIONS.len() - 28
             ))
             .unwrap();
         drop(store);
