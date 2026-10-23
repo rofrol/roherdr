@@ -64,6 +64,30 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a cut tab label gets a tooltip (`src/client/shell/space_tabs.rs`, the
   `TooltipTarget` with `line.label`); the space name drawn in
   `src/client/shell/sidebar.rs` has none.
+  Round 20261023-131535-4df9 (sol, MiMo, Argon; DeepSeek failed on its
+  balance), decided by the coordinator, checked against the code:
+  - Text: the full value of the name token as the row shows it, cut or
+    not by its budget: the label, or for an indented worktree child
+    without a custom label the branch minus `worktree/` (sol, Argon; MiMo
+    wanted the label there, dismissed: a tab's tooltip shows its own shown
+    text too). Never the whole row's text.
+  - Only when that token is cut: `display_width(text) > budget` in
+    `src/ui/sidebar.rs` (where `truncate_end` cuts it), no allocation for
+    an uncut name; the text is cloned only for a cut one.
+  - Rect: the name token's drawn cells only, `starts_at_target: true` with
+    the row's fill, as `space_tabs.rs` does for a tab; it must not overlap
+    the name-line buttons or the job-count glyph targets (clip it, and
+    test the overlap); id `space-name:<workspace_id>`.
+  - Plumbing: the token renderer reports, next to the rows it already
+    builds, a small `Copy` record of the name token (row index, x, width,
+    cut) computed from the final span widths in terminal cells; the
+    caller registers the target. Render stays pure.
+  - Covers the expanded rows and the collapsed one-line row; a budget of 0
+    registers nothing; a name token on a later row works; CJK widths.
+  - Tests: renderer unit tests with narrow widths (plain, custom label,
+    worktree child, CJK, zero budget, uncut) asserting the record, and a
+    shell render test asserting the registered target and no overlap with
+    the buttons. The existing 450 ms dwell and 10 s hide stay as they are.
 
 - [ ] The counterfactual check ignores nextest's `flaky-result = "fail"` [t-rnazlej4]
   (review round 20261023-091914-a008, MiMo): the check judges a test by its
