@@ -30,6 +30,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     (5 d 6 h left on a Friday evening); Monday-first is the user's
     decision and stays.
   - Over the share: asked the user, below.
+  Decided by the user 2026-10-23 (d-mk2kl7ql, after seeing four variants
+  drawn in colour in a terminal tab): B, a full `█` in a warning colour
+  for a day over its share, yellow up to 2x, bold red above; "and on hover
+  there must be the percentages etc.; ask the models". Round
+  20261023-200511 (sol, MiMo, DeepSeek, Argon), decided by the
+  coordinator, tooltips of 1-3 short lines, wording like:
+  - a day: `Wed 22 Oct: 34.3% of the weekly allowance` / `2.4x the daily
+    share (14.3%); samples 08:12-23:40` (the uncapped multiple, since the
+    bar caps);
+  - a partial day: `Mon 20 Oct: at least 9.1% observed` / `samples from
+    16:40; earlier use unknown`;
+  - no samples: `Sun 26 Oct: no samples` / `use unknown, not 0%`;
+  - today: `Today, Fri 23 Oct: 8.6% so far` / `0.6x the daily share; last
+    sample 14:32`;
+  - the pace: `-8 percentage points: 17% used vs 25% elapsed` / `resets
+    <weekday date time> <time zone>; source: Claude usage endpoint`.
+  "% of the weekly allowance", never "of the week"; the time zone named in
+  the pace tooltip.
 
 - [ ] The context window table has the documented Claude windows (follow-up [t-7wklad42]
   of t-gpnmlys3, closed 2026-10-23: its vendor table landed empty, since
