@@ -3836,6 +3836,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Decided by the user 2026-10-23 (d-gxj3yyoz): approved, at the end of
   the queue.
 
+- [ ] Supervision evaluates its own-state predicates at the events that [t-vw57nblr]
+  change that state, not on its interval (the user delegated the decision
+  to the models 2026-10-23, "decide with the models"; consult round
+  20261023-152650-705e, sol, MiMo, DeepSeek, Argon agreeing; Rule 10 in
+  agent-kit 06eb8a0, v1.6.0). Supervision evaluates its predicates over
+  herdr's own state (CoordinatorIdle, WorkingAfterStop,
+  VerdictUndelivered, StoppedWithoutVerdict, UnaccountedAssignment) at the
+  events that change that state (pane turn report and state change,
+  verdict recording, assignment, startup, handoff), not on its interval.
+  The interval keeps only predicates over state produced outside herdr
+  that sends no event (delay: external polling: OS process state of a
+  hung agent and filesystem free space, plus the wall clock for
+  PredicateReviewDue), and findings from the interval wake no agent. Any
+  own-state predicate that only the interval catches today is filed as a
+  lost-event bug in its producer, consumer or acknowledgement path.
+  Source: `src/workers/supervision.rs`; the Lean model in
+  `docs/todo-workflow-model/` describes supervision.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
