@@ -58,6 +58,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
   `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
 
+- [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
+  the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
+  many tokens, or rather what percentage of the Claude subscription's
+  limit, a given space used within 1h, 6h, 24h, 7h [7 days meant: the
+  weekly window]; ask the models"). A narrower, visible slice of
+  [t-twmvyrnk]. Checked: Claude reports utilization only per account and
+  window (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`
+  in `src/usage/claude.rs`); per-space tokens are summed on demand from
+  transcripts by `herdr usage --workspace` (`src/usage/estimate.rs`, an
+  estimate, only sessions herdr still knows); no persistent ledger yet
+  (t-twmvyrnk, part 1).
+
 - [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
   clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
   ⊟ ◒3 ?10 ✉3`: "at the top of the spaces there is a bookmarks icon; I
