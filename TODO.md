@@ -4385,6 +4385,24 @@ Items agents add. Not approved until the user moves them up.
   first PowerShell client of the server needs the Windows transport of
   `HERDR_SOCKET_PATH` (a Unix socket or a named pipe) settled first.
 
+- [ ] A todo run started right after a live handoff is refused by the usage [t-imeqjd6g]
+  gate (reported 2026-10-23 by the Lean model session herdr-67, at the
+  user's request). The installed build changed at 18:26:18, the new server
+  started at 18:26:19 with `--handoff-import`, the old server (pid 64048)
+  was gone; run r-hgke3x5g (repo `.../scratchpad/flow-demo`, item
+  t-demoflow, owner pane wDH:p1, tenure c-xmyq4jcn) was created at
+  18:27:12.618 and blocked at step start at 18:27:12.884: "the usage
+  gate's admission for this start ended before worker w591 was named, so
+  this start holds no slot; it was not started"
+  (`src/workers/supervisor/lifecycle.rs`, `BindOutcome::Ended`). Suspect:
+  `reconcile_admissions_after_handoff` / `reconcile_handoff_admissions`
+  (`src/workers/runs/pending_usage.rs`) retiring an admission the new
+  server had just made, e.g. on the old server's exit event. Nothing was
+  spawned. The reporter's consult round on the cause is pending; its
+  diagnosis goes here. The fix needs a test that fails on the current
+  code (an admission made after the handoff import survives the old
+  server's exit).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
