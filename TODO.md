@@ -4072,7 +4072,31 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   called on every snapshot from `src/client/shell/state.rs:2368`) drops
   each folded id for which `still_quiet` / `tab_is_quiet`
   (`space_tabs.rs:540`, `:490`) is false in that one snapshot, for good.
-  Consult round pending; the cause is not verified yet.
+  Round 20261023-220230-a290 (sol, MiMo, DeepSeek, Argon, agreeing):
+  `release_unquiet_folds` treats "not provably quiet in this snapshot" as
+  "this tab stirred": one snapshot in which a folded tab's status is
+  `Unknown`, the tab is missing from a non-empty list, or a focus flag is
+  stale releases it for good, and render rechecks `still_quiet` too.
+  Verified by the coordinator: the marks `Waits` (`todo_runs::tab_wait`),
+  `WaitsOnJob`, `WaitsOnIdleJob` and `BackgroundWork`
+  (`src/client/shell.rs:231-276`) read only the tab's own panes, child
+  tabs and agent, so another tab's agent cannot set them; that candidate
+  is dismissed. Which transient snapshot the live case sends is not
+  verified. Fix (all four): keep `quiet_folds` as the user's intent and
+  release an id only on that tab's own positive event (its known status
+  leaves Idle: Working, Blocked, Done; its own awaiting reply, limit or
+  open question; its group's job running or failed; it or a job under it
+  gains focus; it is gone from a non-empty snapshot that still lists its
+  space); `Unknown` is no evidence and keeps the fold; render folds an
+  id while it is in the set and exists, without the `still_quiet`
+  recheck; no timer or debounce. Tests, failing on the current code:
+  folded idle A and C, working B; B changes while A and C are `Unknown`,
+  then Idle again: A and C stay folded and "2 idle" stays; A going
+  Blocked releases only A, for good (the existing test
+  `the_fold_button_puts_away_idle_agents_until_they_stir_and_never_folds_by_itself`
+  keeps passing). The worker also looks for where a full snapshot can carry
+  `Unknown` for an idle agent's tab (`src/server/client_shell.rs`, the
+  tab `agent_status`) and names it in its summary.
 
 ## Proposed
 
