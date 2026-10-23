@@ -144,6 +144,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   one Rust test. Full answer, with the signatures and the trace example:
   the Lean session's note, recorded in the task of slice 1.
 
+- [ ] Land the per-space TODO flow overlay from the Lean model session [t-le4ejymr]
+  (herdr-67, 2026-10-23): commit 001184e1b "feat: a per-space view of the
+  space's todo runs moving through the driver's steps" on branch
+  `feat/todo-flow` (worktree `../herdr-worktrees/todo-flow`, based on
+  a90113902; 13 files under `src/client/`, a new
+  `src/client/shell/todo_flow.rs`, a `⋔` button at the end of each space's
+  name line and a "TODO flow" item in the space's right-click menu open an
+  overlay of that space's todo runs from the snapshot; client only, no API
+  change; one test fix in `popup_focus_projection`). Decided by the user
+  2026-10-23 (d-arw6o6pv): yes, after the first slice of the transition
+  core. Through a todo run: the worker cherry-picks it onto its branch,
+  rebases if needed and keeps it one commit; the driver verifies, installs
+  and pushes. Tell herdr-67 when the installed herdr has it.
+
 - [ ] A coordinator hands off to a fresh session regularly (the user, [t-ic5rrxn3]
   2026-10-12: "replace this session with a fresh herdr coordinator, and make
   such a handoff regular"; the herdr coordinator's own session had cost
