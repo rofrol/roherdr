@@ -210,7 +210,7 @@ const QODERCLI_HOOK_ASSET: &str = if cfg!(windows) {
 } else {
     include_str!("assets/qodercli/herdr-agent-state.sh")
 };
-const QODERCLI_INTEGRATION_VERSION: u32 = 3;
+const QODERCLI_INTEGRATION_VERSION: u32 = 4;
 const QODERCLI_HOOK_EVENTS: [(&str, &str); 1] = [("SessionStart", "session")];
 const QWEN_HOOK_INSTALL_NAME: &str = if cfg!(windows) {
     "herdr-agent-session.ps1"
@@ -222,7 +222,7 @@ const QWEN_HOOK_ASSET: &str = if cfg!(windows) {
 } else {
     include_str!("assets/qwen/herdr-agent-session.sh")
 };
-const QWEN_INTEGRATION_VERSION: u32 = 1;
+const QWEN_INTEGRATION_VERSION: u32 = 2;
 const QWEN_HOOK_EVENTS: [(&str, &str); 1] = [("SessionStart", "session")];
 const LETTA_HOOK_INSTALL_NAME: &str = if cfg!(windows) {
     "herdr-agent-session.ps1"
@@ -234,7 +234,7 @@ const LETTA_HOOK_ASSET: &str = if cfg!(windows) {
 } else {
     include_str!("assets/letta/herdr-agent-session.sh")
 };
-const LETTA_INTEGRATION_VERSION: u32 = 1;
+const LETTA_INTEGRATION_VERSION: u32 = 2;
 const LETTA_HOOK_TIMEOUT_MS: u64 = 10_000;
 const QODERCLI_REMOVED_LIFECYCLE_HOOK_EVENTS: [(&str, &str); 12] = [
     ("SessionStart", "idle"),

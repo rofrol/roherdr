@@ -3699,7 +3699,9 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     assert!(settings.get("permissions").is_some());
     let hook_asset = fs::read_to_string(&installed.hook_path).unwrap();
     assert!(hook_asset.contains("HERDR_INTEGRATION_ID=qwen"));
-    assert!(hook_asset.contains("HERDR_INTEGRATION_VERSION=1"));
+    assert!(hook_asset.contains(&format!(
+        "HERDR_INTEGRATION_VERSION={QWEN_INTEGRATION_VERSION}"
+    )));
     assert!(hook_asset.contains("herdr:qwen"));
 
     install_qwen().unwrap();
@@ -3827,10 +3829,6 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
 #[cfg(unix)]
 #[test]
 fn letta_session_hook_is_silent_and_encodes_default_conversation() {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
-
     let _lock = integration_env_lock();
     let base = unique_base();
     let home = base.join("home");
@@ -3839,27 +3837,63 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     std::env::set_var("HOME", &home);
     let installed = install_letta().unwrap();
 
-    let capture = base.join("args.txt");
-    let fake_herdr = base.join("herdr");
-    fs::write(
-        &fake_herdr,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
-            capture.display()
-        ),
-    )
-    .unwrap();
-    let mut permissions = fs::metadata(&fake_herdr).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&fake_herdr, permissions).unwrap();
+    let server = StopCheckServer::start("worker");
+    let state = base.join("state");
+    let output = run_session_report_hook(
+        &installed.hook_path,
+        &server.path,
+        &state,
+        r#"{"event_type":"SessionStart","conversation_id":"default","agent_id":"agent-123","is_new_session":false}"#,
+    );
+    let requests = server.requests();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["method"], "pane.report_agent_session");
+    let mut params = requests[0]["params"].clone();
+    assert!(params["seq"].as_u64().is_some(), "{params}");
+    params.as_object_mut().unwrap().remove("seq");
+    assert_eq!(
+        params,
+        json!({
+            "pane_id": "w1:p2",
+            "source": "herdr:letta",
+            "agent": "letta",
+            "agent_session_id": "default:agent-123",
+            "session_start_source": "resume",
+        })
+    );
+    assert!(!state.join("herdr/hook-report-failures.jsonl").exists());
+
+    if let Some(home) = previous_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+/// Runs a SessionStart report hook (`<hook> session`) against `socket` with `input` on stdin
+/// and `state` as its `XDG_STATE_HOME`.
+#[cfg(unix)]
+fn run_session_report_hook(
+    hook: &Path,
+    socket: &Path,
+    state: &Path,
+    input: &str,
+) -> std::process::Output {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
 
     let mut child = Command::new("sh")
-        .arg(&installed.hook_path)
+        .arg(hook)
         .arg("session")
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "w1:p2")
-        .env("HERDR_SOCKET_PATH", "/tmp/herdr.sock")
-        .env("HERDR_BIN_PATH", &fake_herdr)
+        .env("HERDR_SOCKET_PATH", socket)
+        .env("XDG_STATE_HOME", state)
+        .env_remove("HERDR_BIN_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3869,26 +3903,112 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
         .stdin
         .take()
         .unwrap()
-        .write_all(
-            br#"{"event_type":"SessionStart","conversation_id":"default","agent_id":"agent-123","is_new_session":false}"#,
-        )
+        .write_all(input.as_bytes())
         .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    let args = fs::read_to_string(capture).unwrap();
-    assert!(args.contains("report-agent-session w1:p2"));
-    assert!(args.contains("--source herdr:letta --agent letta"));
-    assert!(args.contains("--agent-session-id default:agent-123"));
-    assert!(args.contains("--session-start-source resume"));
+    child.wait_with_output().unwrap()
+}
 
-    if let Some(home) = previous_home {
-        std::env::set_var("HOME", home);
-    } else {
-        std::env::remove_var("HOME");
+#[cfg(unix)]
+fn session_report_asset(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/integration/assets")
+        .join(path)
+}
+
+#[cfg(unix)]
+#[test]
+fn qodercli_and_qwen_session_hooks_report_over_the_socket() {
+    let _lock = integration_env_lock();
+    let cases = [
+        (
+            "qodercli/herdr-agent-state.sh",
+            r#"{"hook_event_name":"SessionStart","session_id":"s-1","source":"startup"}"#,
+            json!({"pane_id": "w1:p2", "source": "herdr:qodercli", "agent": "qodercli",
+                   "agent_session_id": "s-1"}),
+        ),
+        (
+            "qwen/herdr-agent-session.sh",
+            r#"{"hook_event_name":"SessionStart","session_id":"s-2","source":"resume"}"#,
+            json!({"pane_id": "w1:p2", "source": "herdr:qwen", "agent": "qwen",
+                   "agent_session_id": "s-2", "session_start_source": "resume"}),
+        ),
+    ];
+    for (asset, input, expected) in cases {
+        let base = unique_base();
+        let state = base.join("state");
+        let server = StopCheckServer::start("worker");
+        let output =
+            run_session_report_hook(&session_report_asset(asset), &server.path, &state, input);
+        let requests = server.requests();
+        assert!(output.status.success(), "{asset}: {output:?}");
+        assert!(output.stdout.is_empty(), "{asset}: {output:?}");
+        assert!(output.stderr.is_empty(), "{asset}: {output:?}");
+        assert_eq!(requests.len(), 1, "{asset}: {requests:?}");
+        assert_eq!(
+            requests[0]["method"], "pane.report_agent_session",
+            "{asset}"
+        );
+        let mut params = requests[0]["params"].clone();
+        assert!(params["seq"].as_u64().is_some(), "{asset}: {params}");
+        params.as_object_mut().unwrap().remove("seq");
+        assert_eq!(params, expected, "{asset}");
+        assert!(
+            !state.join("herdr/hook-report-failures.jsonl").exists(),
+            "{asset}"
+        );
+        let _ = fs::remove_dir_all(base);
     }
-    let _ = fs::remove_dir_all(base);
+}
+
+#[cfg(unix)]
+#[test]
+fn session_report_hooks_record_a_refused_connection_silently() {
+    let _lock = integration_env_lock();
+    let cases = [
+        (
+            "letta",
+            "letta/herdr-agent-session.sh",
+            r#"{"conversation_id":"c-1","agent_id":"a-1","is_new_session":true}"#,
+        ),
+        (
+            "qodercli",
+            "qodercli/herdr-agent-state.sh",
+            r#"{"session_id":"s-1"}"#,
+        ),
+        (
+            "qwen",
+            "qwen/herdr-agent-session.sh",
+            r#"{"session_id":"s-2"}"#,
+        ),
+    ];
+    for (hook, asset, input) in cases {
+        let base = unique_base();
+        fs::create_dir_all(&base).unwrap();
+        let state = base.join("state");
+        // A socket file nothing listens on any more: connecting to it is refused. Short:
+        // a Unix socket path holds at most 104 bytes on macOS.
+        let socket = std::env::temp_dir().join(format!("hrf-{}-{hook}.sock", std::process::id()));
+        let _ = fs::remove_file(&socket);
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+
+        let output = run_session_report_hook(&session_report_asset(asset), &socket, &state, input);
+        assert!(output.status.success(), "{hook}: {output:?}");
+        assert!(output.stdout.is_empty(), "{hook}: {output:?}");
+        assert!(output.stderr.is_empty(), "{hook}: {output:?}");
+        let log = fs::read_to_string(state.join("herdr/hook-report-failures.jsonl")).unwrap();
+        let lines: Vec<Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1, "{hook}: {log}");
+        assert_eq!(lines[0]["hook"], hook);
+        assert_eq!(lines[0]["pane"], "w1:p2");
+        assert_eq!(lines[0]["method"], "pane.report_agent_session");
+        assert_eq!(lines[0]["error"], "ConnectionRefusedError", "{hook}: {log}");
+        assert!(lines[0]["time"].as_str().is_some(), "{hook}: {log}");
+        let _ = fs::remove_file(&socket);
+        let _ = fs::remove_dir_all(base);
+    }
 }
 
 #[test]
