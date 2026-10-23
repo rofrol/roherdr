@@ -58,6 +58,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Run `r-ckvko5jj` was aborted (its paths missed `src/protocol/wire.rs` and
   `src/app/api/waits.rs`); slice 4 runs again as `r-gj3emu6x`.
 
+- [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
+  clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
+  ⊟ ◒3 ?10 ✉3`: "at the top of the spaces there is a bookmarks icon; I
+  just clicked it and it disappeared; ask the models"). Checked:
+  `render_header_indicators` (`src/client/shell/sidebar.rs`) drops the
+  header buttons that do not fit, Bookmarks first, then Working, then
+  History; the History label (`notification_log_button`,
+  `src/client/shell/notification_log.rs`) grows with the unread count, so
+  a wider neighbour (`✉3`, `?10`) can push the clicked button out.
+
 - [ ] A clicked job square is no longer pinned under its folded tab line [t-5r7ujawk]
   (the user, 2026-10-23: "the herdr job square must no longer be pinned
   when I click it and fold the jobs; ask the models"). Checked: since
