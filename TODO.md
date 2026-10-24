@@ -11,6 +11,73 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The driver runs the model review of an implementation itself, before [t-4tpfl4if]
+  landing (the user, 2026-10-24: "shouldn't the consultations before a
+  task and the evaluation of the implementation by the models be run
+  deterministically by the supervisor? ask the models"). Round
+  20261024-125222-f08b (sol, MiMo, DeepSeek, Argon): yes for the
+  post-implementation review (all four), as a `herdr todo run` step
+  between verify and landing; the pre-task consult mechanically triggered
+  by item labels or risk paths (sol, MiMo, DeepSeek; Argon would keep it
+  with the coordinator). Deterministic: the trigger (a risk predicate:
+  the landing driver, the TODO writer, install/push, git and store state,
+  check definitions, protocol/API; or an item label; not diff size
+  alone), the brief built by code (the item, the task, the full diff,
+  the touched functions in full, the checks' output, earlier findings),
+  dispatch to the consult set, a findings ledger bound to the commit, and
+  a gate: every finding accepted (with a fix or evidence) or dismissed
+  with a file:line reason before landing, a changed commit voids the
+  dispositions; a model that fails is recorded as missing, never as an
+  approval. The judgment (is a finding real) stays with the coordinator
+  or the user. Measure: confirmed findings per round, escaped defects
+  (reverts and fix commits on reviewed items), cost per round. Today's
+  evidence: the slice-2 review rounds found an unsafe reset and an
+  overwritten TODO edit after the worker reported done.
+  Decided by the user 2026-10-24 (d-bolenqzs): yes, queue it, and design
+  the whole process: where the pre-task consult and the post-task review
+  are stored and how they reach the agent. Round 20261024-125755-9585
+  (sol, MiMo, DeepSeek, Argon): the worker store (SQLite) is the record,
+  not scratch files: tables for rounds, verbatim answers with model and
+  cost, structured findings, and the coordinator's dispositions, keyed by
+  run, attempt and commit; the consult stats link by round id. The driver
+  runs both steps and emits an event for each (pre-task after the usage
+  gate and before the worker starts: on every item (sol, DeepSeek) or on
+  items marked for it (MiMo); post-task after the checks pass, against
+  the exact candidate commit (MiMo would put it before verify)); the
+  coordinator records a disposition for every finding and resumes. The
+  worker gets a frozen task packet: the item verbatim, the accepted
+  dispositions verbatim as binding requirements, a digest of the rest as
+  non-binding, never the raw answers; on a blocked review the retry's
+  task carries the accepted findings verbatim as a checklist and the
+  worker reports evidence per finding. Landing needs completed reviews,
+  no finding without a disposition, accepted ones resolved, and the
+  reviewed commit unchanged. Kept locally (the repository is public):
+  raw prompts and answers, rejected findings, ratings and costs;
+  committed: code, the TODO note and DECISIONS.md entries for lasting
+  decisions, citing round ids.
+  The user, 2026-10-24: "with this queue now, there must also be Lean code
+  and two kinds of diagrams in Mermaid; ask the models". Round
+  20261024-130041-33dc (sol, MiMo, DeepSeek, Argon): in the same commit as
+  the gate (the README rule; DeepSeek would do the model first as its own
+  item), `docs/todo-workflow-model/` gets: a `stateDiagram-v2` of one
+  item's run (draft, usage gate, pre-task consult with each model
+  answered or missing, worker, checks, post-implementation review,
+  dispositions, the blocked-review edge back to the worker with the
+  accepted findings, a changed commit voiding the review, escalation as a
+  blocking state, landing) and a `sequenceDiagram` of the actors (queue
+  server, driver, the four models, worker store, worker, coordinator,
+  user), both rendered to SVG as the README says; and `TodoWorkflow.lean`
+  gains the consult, review and escalation phases, per-model outcomes,
+  findings, dispositions and the reviewed commit, with theorems: landing
+  implies every finding of the reviewed commit has a disposition and the
+  accepted ones are resolved; a missing model never counts as an
+  approval; a new commit voids the review; the queue runs at most one
+  item; an unanswered escalation stops the queue and the worker.
+  Decided by the user 2026-10-24 (d-txaqnqoy): when a model does not
+  answer, the gate goes on with those that answered: the missing model is
+  recorded and shown, never counts as an approval, and does not block as
+  long as at least 3 of the 4 answered.
+
 - [ ] The Lean workflow model covers what the coordinator fence and the [t-lckz54j4]
   landing items implement (the user, 2026-10-23, same rounds as the
   landing item above). Scope: tenure epoch and pane generation, effect
@@ -3710,73 +3777,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
   run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
 
-- [ ] The driver runs the model review of an implementation itself, before [t-4tpfl4if]
-  landing (the user, 2026-10-24: "shouldn't the consultations before a
-  task and the evaluation of the implementation by the models be run
-  deterministically by the supervisor? ask the models"). Round
-  20261024-125222-f08b (sol, MiMo, DeepSeek, Argon): yes for the
-  post-implementation review (all four), as a `herdr todo run` step
-  between verify and landing; the pre-task consult mechanically triggered
-  by item labels or risk paths (sol, MiMo, DeepSeek; Argon would keep it
-  with the coordinator). Deterministic: the trigger (a risk predicate:
-  the landing driver, the TODO writer, install/push, git and store state,
-  check definitions, protocol/API; or an item label; not diff size
-  alone), the brief built by code (the item, the task, the full diff,
-  the touched functions in full, the checks' output, earlier findings),
-  dispatch to the consult set, a findings ledger bound to the commit, and
-  a gate: every finding accepted (with a fix or evidence) or dismissed
-  with a file:line reason before landing, a changed commit voids the
-  dispositions; a model that fails is recorded as missing, never as an
-  approval. The judgment (is a finding real) stays with the coordinator
-  or the user. Measure: confirmed findings per round, escaped defects
-  (reverts and fix commits on reviewed items), cost per round. Today's
-  evidence: the slice-2 review rounds found an unsafe reset and an
-  overwritten TODO edit after the worker reported done.
-  Decided by the user 2026-10-24 (d-bolenqzs): yes, queue it, and design
-  the whole process: where the pre-task consult and the post-task review
-  are stored and how they reach the agent. Round 20261024-125755-9585
-  (sol, MiMo, DeepSeek, Argon): the worker store (SQLite) is the record,
-  not scratch files: tables for rounds, verbatim answers with model and
-  cost, structured findings, and the coordinator's dispositions, keyed by
-  run, attempt and commit; the consult stats link by round id. The driver
-  runs both steps and emits an event for each (pre-task after the usage
-  gate and before the worker starts: on every item (sol, DeepSeek) or on
-  items marked for it (MiMo); post-task after the checks pass, against
-  the exact candidate commit (MiMo would put it before verify)); the
-  coordinator records a disposition for every finding and resumes. The
-  worker gets a frozen task packet: the item verbatim, the accepted
-  dispositions verbatim as binding requirements, a digest of the rest as
-  non-binding, never the raw answers; on a blocked review the retry's
-  task carries the accepted findings verbatim as a checklist and the
-  worker reports evidence per finding. Landing needs completed reviews,
-  no finding without a disposition, accepted ones resolved, and the
-  reviewed commit unchanged. Kept locally (the repository is public):
-  raw prompts and answers, rejected findings, ratings and costs;
-  committed: code, the TODO note and DECISIONS.md entries for lasting
-  decisions, citing round ids.
-  The user, 2026-10-24: "with this queue now, there must also be Lean code
-  and two kinds of diagrams in Mermaid; ask the models". Round
-  20261024-130041-33dc (sol, MiMo, DeepSeek, Argon): in the same commit as
-  the gate (the README rule; DeepSeek would do the model first as its own
-  item), `docs/todo-workflow-model/` gets: a `stateDiagram-v2` of one
-  item's run (draft, usage gate, pre-task consult with each model
-  answered or missing, worker, checks, post-implementation review,
-  dispositions, the blocked-review edge back to the worker with the
-  accepted findings, a changed commit voiding the review, escalation as a
-  blocking state, landing) and a `sequenceDiagram` of the actors (queue
-  server, driver, the four models, worker store, worker, coordinator,
-  user), both rendered to SVG as the README says; and `TodoWorkflow.lean`
-  gains the consult, review and escalation phases, per-model outcomes,
-  findings, dispositions and the reviewed commit, with theorems: landing
-  implies every finding of the reviewed commit has a disposition and the
-  accepted ones are resolved; a missing model never counts as an
-  approval; a new commit voids the review; the queue runs at most one
-  item; an unanswered escalation stops the queue and the worker.
-  Decided by the user 2026-10-24 (d-txaqnqoy): when a model does not
-  answer, the gate goes on with those that answered: the missing model is
-  recorded and shown, never counts as an approval, and does not block as
-  long as at least 3 of the 4 answered.
-
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4397,6 +4397,10 @@ user needs to decide or do.
   coordinator pane (wR:p376), cutover 2026-10-24; t-ydd2vlwe was moved
   after its prerequisite t-ofobwsra so the queue does not draft the crate
   first. This item is the trial in progress, not a work item for the queue.
+  Decided by the user 2026-10-24 (d-a2fjdzhr; round 20261024-130625-dcff:
+  all four models would adopt the queue only after the review gate):
+  the review gate goes first; the 20 items count only from its landing,
+  so the sample does not mix two review systems.
 
 - [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
   session (the user, 2026-10-23, same decision; round
