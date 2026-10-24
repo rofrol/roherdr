@@ -11,6 +11,25 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The queue works as the user designed it, described by the Lean model [t-gt2pdx2r]
+  (the user, 2026-10-24: "There is to be a queue, described by Lean. The
+  supervisor starts an agent to examine the TODO if the TODO is dirty.
+  Once the agent has examined it, it is closed. A new agent session for
+  the first item of the TODO. If the context overflows, handoff. And the
+  agent asks me when something is unclear." And: "and also an analysis of
+  what to do before, with the models, and then an analysis of the
+  implementation by the models"). Per item, in order: (1) if TODO.md is
+  dirty, the supervisor starts an analysis agent over it (t-ctxfxkwf),
+  applies its verdicts, and that agent is closed; (2) a pre-task analysis
+  with the models of what to do (the pre-task step of t-4tpfl4if); (3) a
+  new agent session for the first item; when its context overflows, it
+  hands off to a fresh session; (4) the post-implementation analysis by
+  the models (the review step of t-4tpfl4if); (5) landing. The agent asks
+  the user whenever something is unclear. This replaces an item the
+  coordinator wrote the same day from another session's paraphrase ("in
+  queue mode technical decisions do not fall back to the user"), which
+  the user rejected. Design gaps: round pending.
+
 - [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
   (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
   without it the trial's 35% criterion cannot be judged): `draft_task`
@@ -3786,27 +3805,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     (3) the subagent definition; (4) the output-size hook (an agent
     configuration change: the hook patch is approved by the user whole
     before it is applied); (5) the trial report.
-
-- [ ] In queue mode the queue works on by itself: technical decisions and [t-tw5cdkei]
-  consult rounds do not fall back to the user (the user, 2026-10-24, in
-  the lang-for-ai session, relayed by its coordinator: "that is not how
-  the queue was supposed to work, that you sit and wait for me; report it
-  to the herdr coordinator"). Observed in lang-for-ai: the model's
-  `consult_skipped_iff` makes an item without a decided round newer than
-  its target paths wait on the user ("with no coordinator nobody runs a
-  consult round"), so decisions the coordinator used to settle with a
-  round go to the user; that repository's AGENTS.md (afaa842) wrote that
-  rule down; drafts' questions land in the user's `?` list. Expected: a
-  draft's technical question (ordering, splitting, a prerequisite, a
-  design choice) is answered without the user: by a consult round the
-  queue runs (the pre-task step of t-4tpfl4if) or by the chat session,
-  which holds the tenure, running the round and answering the draft by
-  retry; only what the global rules reserve for the user (their data,
-  money, access, product decisions, actions only they can take) reaches
-  the `?` list. Covers part (3) of the Proposed "Queue readiness and
-  routing" item; change `consult_skipped_iff` and its README text in the
-  same commit; until it lands, the chat session answers drafts this way by
-  hand (told to lang-for-ai's coordinator 2026-10-24).
 
 ## Proposed
 
