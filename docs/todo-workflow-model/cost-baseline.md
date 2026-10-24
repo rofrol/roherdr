@@ -36,7 +36,7 @@ Sonnet's cache-read price equals Opus's.
 
 Known gaps: coordinator sessions under pi are not counted; the worker
 journals cover every repository, so the worker cost per done run ($8.09)
-is an upper bound; `herdr todo run` lines without a literal item id are
+is an upper bound (the script now reads this repository's records only); `herdr todo run` lines without a literal item id are
 missed by the session filter. Item t-j2ayjqdl (turn kinds and every
 worker's usage) replaces these estimates with recorded numbers.
 
@@ -66,7 +66,7 @@ plus t-j2ayjqdl's per-turn numbers.
 
 | Measure | Baseline | After |
 |---|---|---|
-| Coordinator cost per done run | $4.89 | |
+| Coordinator cost per landed item (`coordinator_cost_per_landed_item`; baseline: per done run) | $4.89 | |
 | Coordinator mean context per call | ~490k | |
 | Worker cost per run (mean) | $2.73 | |
 | Worker runs per item | 2.16 | |
@@ -75,6 +75,16 @@ plus t-j2ayjqdl's per-turn numbers.
 ## The script
 
 `measure.py` next to this file. Run it from the repository root; it reads
-herdr's worker journals (`~/.local/state/herdr/workers/`), this
-repository's Claude Code transcripts (`~/.claude/projects/<repository
-path>/`), `herdr worker runs` and `herdr todo runs`, and prints JSON.
+the worker run records of `herdr worker records --repo .` (with the window
+as `--since`/`--until`), or the JSON of that command saved in a file given
+with `--records FILE`, and the Claude Code transcripts of this repository's
+sessions (`~/.claude/projects/<repository path>/`) that start a `herdr todo
+run` for a literal item id; `--workers-only` leaves the transcripts out. It
+prints one JSON object: the worker runs and their cost as each run's agent
+reported it (`worker_runs_cost_unknown` counts the runs without one, never
+priced at 0), `items_landed` (the items `herdr todo run` landed in the
+window), `worker_cost_per_landed_item`, the per-item breakdown, and the
+coordinator fields, `coordinator_cost_per_landed_item` among them. The
+baseline above was measured by an earlier version, which read herdr's
+worker journals of every repository and divided by the done `todo run`s
+(`todo_runs_done`, `*_per_done_run`).
