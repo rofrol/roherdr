@@ -382,7 +382,7 @@ impl Translator {
                     .to_owned(),
             );
         }
-        Out::Record(json!({
+        let mut record = json!({
             "type": "assistant",
             "message": {
                 "role": "assistant",
@@ -390,7 +390,12 @@ impl Translator {
                 "content": content,
                 "stop_reason": message["stopReason"],
             },
-        }))
+        });
+        // The reply's usage, which the worker's status adds to its run's.
+        if let Some(usage) = super::usage::pi_message_usage(message) {
+            record["herdr_usage"] = usage;
+        }
+        Out::Record(record)
     }
 
     /// The turn's `result`, from what the turn left; the next turn starts
@@ -561,6 +566,8 @@ mod tests {
                  "arguments": {"command": "ls"}}]}});
         let assistant = record(translator.output(&call));
         assert_eq!(assistant["type"], "assistant");
+        // A reply without pi's usage carries none.
+        assert_eq!(assistant.get("herdr_usage"), None);
         assert_eq!(
             assistant["message"]["content"],
             json!([{"type": "tool_use", "id": "call-1", "name": "bash",
@@ -593,6 +600,27 @@ mod tests {
         // The next turn starts without the last one's text.
         let next = record(translator.output(&json!({"type": "agent_settled"})));
         assert_eq!(next["result"], Value::Null);
+    }
+
+    /// pi's `AssistantMessage` usage (pi-ai 1.3.0 `types.d.ts`: `input`,
+    /// `output`, `cacheRead`, `cacheWrite`, `cost.total`) is kept on the
+    /// recorded reply, named by `provider/model` as the worker's model is.
+    #[test]
+    fn a_replys_usage_is_kept_in_the_shape_of_claudes_per_model_usage() {
+        let mut translator = Translator::default();
+        let reply = json!({"type": "message_end", "message": {"role": "assistant",
+            "provider": "openai-codex", "model": "gpt-6.1-sol", "stopReason": "stop",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input": 100, "output": 20, "cacheRead": 50, "cacheWrite": 0,
+                "totalTokens": 170, "cost": {"input": 0.1, "output": 0.2, "cacheRead": 0.01,
+                "cacheWrite": 0.0, "total": 0.31}}}});
+        let assistant = record(translator.output(&reply));
+        assert_eq!(
+            assistant["herdr_usage"],
+            json!({"model": "openai-codex/gpt-6.1-sol", "input_tokens": 100,
+                "output_tokens": 20, "cache_read_input_tokens": 50,
+                "cache_creation_input_tokens": 0, "cost_usd": 0.31})
+        );
     }
 
     #[test]

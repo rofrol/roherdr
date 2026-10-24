@@ -258,7 +258,7 @@ pub(super) struct Attempt {
 
 /// An attempt's decision as `attempts.review_decision` holds it.
 pub(super) const APPROVE: &str = "approve";
-const RETRY: &str = "retry";
+pub(super) const RETRY: &str = "retry";
 const ABORT: &str = "abort";
 
 /// What a run does after its cherry-pick, stored with it (`runs.finish`):

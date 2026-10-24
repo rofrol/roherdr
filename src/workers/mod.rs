@@ -62,6 +62,7 @@ pub(crate) mod todo_editor;
 mod todo_titles;
 pub(crate) mod transcript;
 mod types;
+mod usage;
 mod verify;
 
 pub(crate) use coordinators::coordinators;
@@ -84,7 +85,7 @@ pub(crate) use types::{
 };
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -105,6 +106,9 @@ use crate::api::schema::{
     WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunsParams,
     WorkerStartParams, WorkerState, WorkerVerification, WorkerVerifyParams,
     WorkerWaitDrainedParams, WorkerWaitUntil,
+};
+use crate::api::schema::{
+    WorkerAttemptKind, WorkerLandedItem, WorkerRunRecord, WorkerRunRecordsParams, WorkerVerdict,
 };
 use crate::platform::Signal;
 

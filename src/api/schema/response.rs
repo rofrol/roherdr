@@ -36,8 +36,9 @@ use super::todo::{
 };
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerEvent, WorkerEventsSnapshot, WorkerGatedRun,
-    WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerObligation, WorkerQuestion,
-    WorkerQuestionDetail, WorkerRun, WorkerTranscript, WorkerVerification,
+    WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerLandedItem, WorkerObligation,
+    WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerRunRecord, WorkerTranscript,
+    WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -132,6 +133,14 @@ pub enum ResponseResult {
         items: Vec<WorkerItemRuns>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unassigned: Vec<WorkerRun>,
+    },
+    /// `worker.run_records`' reply: the worker runs, the first started
+    /// first, the commits `todo.run` landed, the first landed first, and how
+    /// many distinct items those landed.
+    WorkerRunRecords {
+        records: Vec<WorkerRunRecord>,
+        landed: Vec<WorkerLandedItem>,
+        items_landed: u32,
     },
     /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
     WorkerVerification {

@@ -133,6 +133,8 @@ pub enum Method {
     /// The workers' runs, grouped by the TODO item given at start.
     #[serde(rename = "worker.runs")]
     WorkerRuns(WorkerRunsParams),
+    #[serde(rename = "worker.run_records")]
+    WorkerRunRecords(WorkerRunRecordsParams),
     /// Hands a question its owner will not answer to the user: it becomes a
     /// loud `?` question.
     #[serde(rename = "worker.escalate")]

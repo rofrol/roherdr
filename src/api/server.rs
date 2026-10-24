@@ -1319,6 +1319,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerDrain(_) => "worker.drain",
         Method::WorkerWaitDrained(_) => "worker.wait_drained",
         Method::WorkerRuns(_) => "worker.runs",
+        Method::WorkerRunRecords(_) => "worker.run_records",
         Method::WorkerEscalate(_) => "worker.escalate",
         Method::WorkerVerify(_) => "worker.verify",
         Method::WorkerOpenLog(_) => "worker.open_log",

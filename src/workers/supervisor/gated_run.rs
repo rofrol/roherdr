@@ -13,8 +13,7 @@
 
 use super::super::*;
 use crate::api::schema::{
-    WorkerGatedRun, WorkerGatedRunOutcome, WorkerGatedRunParams, WorkerModelUsage, WorkerQuestion,
-    WorkerTurnResult,
+    WorkerGatedRun, WorkerGatedRunOutcome, WorkerGatedRunParams, WorkerQuestion, WorkerTurnResult,
 };
 
 /// The latch a test sets for the window between `worker.run`'s tenure
@@ -221,7 +220,13 @@ impl WorkerSupervisor {
             exited?;
             return Ok(None);
         }
-        let (usage, total_cost_usd) = journal_usage(&self.journal_path(&worker_id));
+        // Its status folded the usage in at each `result` event.
+        let (usage, total_cost_usd) = self.with_entry(&worker_id, |entry| {
+            (
+                entry.status.usage.clone().unwrap_or_default(),
+                entry.status.cost_usd,
+            )
+        })?;
         let (outcome, message) = outcome_of(&ended);
         Ok(Some(WorkerGatedRun {
             worker_id,
@@ -458,60 +463,4 @@ fn outcome_of(ended: &TurnEnd) -> (WorkerGatedRunOutcome, String) {
             },
         ),
     }
-}
-
-/// The usage per model and the total cost the CLI's `result` events in the
-/// journal at `path` report, summed. A journal that cannot be read reports
-/// none.
-fn journal_usage(path: &Path) -> (Vec<WorkerModelUsage>, Option<f64>) {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) => {
-            warn!(%error, path = %path.display(), "worker.run cannot read the worker's journal");
-            return (Vec::new(), None);
-        }
-    };
-    let mut usage: Vec<WorkerModelUsage> = Vec::new();
-    let mut total_cost_usd: Option<f64> = None;
-    for line in text.lines() {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let event = &record["event"];
-        if record["dir"] != "out" || event["type"] != "result" {
-            continue;
-        }
-        if let Some(cost) = event["total_cost_usd"].as_f64() {
-            *total_cost_usd.get_or_insert(0.0) += cost;
-        }
-        let Some(models) = event["modelUsage"].as_object() else {
-            continue;
-        };
-        for (model, counts) in models {
-            let index = match usage.iter().position(|entry| &entry.model == model) {
-                Some(index) => index,
-                None => {
-                    usage.push(WorkerModelUsage {
-                        model: model.clone(),
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_read_input_tokens: 0,
-                        cache_creation_input_tokens: 0,
-                        cost_usd: None,
-                    });
-                    usage.len() - 1
-                }
-            };
-            let entry = &mut usage[index];
-            let count = |key: &str| counts[key].as_u64().unwrap_or(0);
-            entry.input_tokens += count("inputTokens");
-            entry.output_tokens += count("outputTokens");
-            entry.cache_read_input_tokens += count("cacheReadInputTokens");
-            entry.cache_creation_input_tokens += count("cacheCreationInputTokens");
-            if let Some(cost) = counts["costUSD"].as_f64() {
-                *entry.cost_usd.get_or_insert(0.0) += cost;
-            }
-        }
-    }
-    (usage, total_cost_usd)
 }

@@ -29,7 +29,9 @@
 //! `initialize` request registered for that tool, whose command is the
 //! words; the result is its answer as JSON, or `unregistered`) and
 //! `hook-bg <tool> <words...>` (the same with `run_in_background: true`)
-//! and `usage` (a `result/success` with `modelUsage` and `total_cost_usd`).
+//! and `usage` (a `result/success` with `modelUsage` and `total_cost_usd`)
+//! and `usage-commit <file> <subject...>` (`commit`, its result with that
+//! usage).
 //! A message with `Review of attempt N:` lines (a todo run's later attempt)
 //! is chosen by the line after the last one instead.
 #![cfg(unix)]
@@ -60,6 +62,8 @@ def result(subtype="success", is_error=False, reason="completed", text="ok"):
           "session_id": "stub-session"})
 
 emit({"type": "system", "subtype": "init", "session_id": "stub-session",
+      "model": sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv
+               else "stub-default-model",
       "herdr_env": sorted(k for k in os.environ if k.startswith("HERDR_")),
       "cwd": os.getcwd(),
       "cache_env": {k: os.environ.get(k) for k in
@@ -68,7 +72,13 @@ emit({"type": "system", "subtype": "init", "session_id": "stub-session",
 ignore_term = False
 hooks = {}
 
-def commit(path, subject, amend=False, text="change\n"):
+USAGE = {"total_cost_usd": 0.25,
+         "modelUsage": {"stub-model": {"inputTokens": 10, "outputTokens": 5,
+                                       "cacheReadInputTokens": 3,
+                                       "cacheCreationInputTokens": 2,
+                                       "costUSD": 0.25}}}
+
+def commit(path, subject, amend=False, text="change\n", usage=False):
     with open(path, "a") as f:
         f.write(text)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
@@ -78,7 +88,12 @@ def commit(path, subject, amend=False, text="change\n"):
                    check=True)
     sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                          check=True).stdout.strip()
-    result(text="committed\nWORKER-DONE " + sha + " | summary")
+    if usage:
+        emit(dict({"type": "result", "subtype": "success", "is_error": False,
+                   "terminal_reason": "completed", "session_id": "stub-session",
+                   "result": "committed\nWORKER-DONE " + sha + " | summary"}, **USAGE))
+    else:
+        result(text="committed\nWORKER-DONE " + sha + " | summary")
 
 def read():
     line = sys.stdin.readline()
@@ -138,13 +153,11 @@ while True:
     if command == "finish":
         result()
     elif command == "usage":
-        emit({"type": "result", "subtype": "success", "is_error": False,
-              "terminal_reason": "completed", "result": "final text",
-              "session_id": "stub-session", "total_cost_usd": 0.25,
-              "modelUsage": {"stub-model": {"inputTokens": 10, "outputTokens": 5,
-                                            "cacheReadInputTokens": 3,
-                                            "cacheCreationInputTokens": 2,
-                                            "costUSD": 0.25}}})
+        emit(dict({"type": "result", "subtype": "success", "is_error": False,
+                   "terminal_reason": "completed", "result": "final text",
+                   "session_id": "stub-session"}, **USAGE))
+    elif command == "usage-commit":
+        commit(words[1], " ".join(words[2:]), usage=True)
     elif command in ("hook", "hook-bg"):
         result(text=hook_callback(words[1], " ".join(words[2:]), command == "hook-bg"))
     elif command == "done":
@@ -7867,6 +7880,140 @@ mod todo_runs {
                 .code(),
             "todo_run_not_found"
         );
+    }
+
+    #[test]
+    fn a_landed_items_workers_are_recorded_with_usage_attempt_and_verdict() {
+        use crate::api::schema::{WorkerAttemptKind, WorkerRunRecordsParams};
+        let fixture = todo_repo("todo-run-records");
+        let run = fixture
+            .supervisor
+            .todo_run(params(
+                &fixture,
+                &format!("usage-commit a.txt {SUBJECT}"),
+                "b",
+            ))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (failed, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
+        resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::Retry,
+            Some(&format!("amend b.txt {SUBJECT}")),
+        )
+        .unwrap();
+        let (done, finished) = approve_to_done_after(&fixture, &run.run_id, failed.event_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+
+        let all = WorkerRunRecordsParams {
+            item: Some(ITEM.into()),
+            ..WorkerRunRecordsParams::default()
+        };
+        let (records, landed, items_landed) = fixture.supervisor.run_records(&all).unwrap();
+        assert_eq!(records.len(), 2, "{records:#?}");
+        let (first, retry) = (&records[0], &records[1]);
+        assert_eq!(first.todo_run_id.as_deref(), Some(run.run_id.as_str()));
+        assert_eq!(
+            (first.attempt, first.attempt_kind, first.verdict),
+            (
+                Some(1),
+                Some(WorkerAttemptKind::First),
+                Some(WorkerVerdict::Failed)
+            )
+        );
+        assert_eq!(first.agent.as_deref(), Some("claude"));
+        // The model Claude reported at its start (the stub's default).
+        assert_eq!(first.model.as_deref(), Some("stub-default-model"));
+        assert_eq!(first.cost_usd, Some(0.25));
+        let usage = first.usage.as_ref().unwrap();
+        assert_eq!(
+            (
+                usage[0].input_tokens,
+                usage[0].cache_creation_input_tokens,
+                usage[0].cache_read_input_tokens,
+                usage[0].output_tokens
+            ),
+            (10, 2, 3, 5)
+        );
+        assert_eq!(
+            (retry.attempt, retry.attempt_kind, retry.verdict),
+            (
+                Some(2),
+                Some(WorkerAttemptKind::RetryAfterVerify),
+                Some(WorkerVerdict::Verified)
+            )
+        );
+        // Its agent reported no usage: unknown, never 0.
+        assert_eq!((&retry.usage, retry.cost_usd), (&None, None));
+        assert_eq!(landed.len(), 1, "{landed:#?}");
+        assert_eq!(landed[0].todo_run_id, run.run_id);
+        assert_eq!(landed[0].attempt, 2);
+        assert_eq!(Some(landed[0].landed_sha.clone()), finished.picked);
+        assert_eq!(items_landed, 1);
+        // A window after the landing holds neither.
+        let later = WorkerRunRecordsParams {
+            since_ms: Some(landed[0].landed_ms + 1),
+            ..all.clone()
+        };
+        let (none, landed_later, count) = fixture.supervisor.run_records(&later).unwrap();
+        assert!(none.is_empty() && landed_later.is_empty() && count == 0);
+
+        // measure.py reads the records as the CLI prints them, and the
+        // item's worker cost is the sum of its runs' known costs.
+        let reply = serde_json::json!({
+            "id": "cli:worker:records",
+            "result": crate::api::schema::ResponseResult::WorkerRunRecords {
+                records: records.clone(),
+                landed: landed.clone(),
+                items_landed,
+            },
+        });
+        let file = fixture.root.join("records.json");
+        std::fs::write(&file, reply.to_string()).unwrap();
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/todo-workflow-model/measure.py");
+        let output = std::process::Command::new("python3")
+            .arg(&script)
+            .args(["--records", &file.display().to_string(), "--workers-only"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let measured: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let item = &measured["items"][ITEM];
+        let known: f64 = records.iter().filter_map(|record| record.cost_usd).sum();
+        assert_eq!(
+            item["worker_cost_usd"].as_f64(),
+            Some(known),
+            "{measured:#}"
+        );
+        assert_eq!(item["worker_runs"], 2);
+        assert_eq!(item["worker_runs_cost_unknown"], 1);
+        assert_eq!(item["landed"], true);
+        assert_eq!(measured["items_landed"], 1);
+        assert_eq!(measured["worker_runs"], 2);
+    }
+
+    /// The review after `after`, approved, to the run's end.
+    fn approve_to_done_after(
+        fixture: &Fixture,
+        run_id: &str,
+        after: i64,
+    ) -> (TodoRunEvent, TodoRunInfo) {
+        let (review, _) = wait(fixture, run_id, Some(after));
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        resume(fixture, run_id, review.event_id, TodoAction::Approve, None).unwrap();
+        wait(fixture, run_id, Some(review.event_id))
     }
 
     #[test]
@@ -17607,8 +17754,12 @@ def read():
     return json.loads(line)
 
 def reply(text, stop="stop", error=None):
-    message = {"role": "assistant", "model": model_id, "stopReason": stop,
-               "content": [{"type": "text", "text": text}]}
+    # pi-ai's AssistantMessage: provider, model and usage.
+    message = {"role": "assistant", "provider": provider, "model": model_id, "stopReason": stop,
+               "content": [{"type": "text", "text": text}],
+               "usage": {"input": 10, "output": 5, "cacheRead": 3, "cacheWrite": 2,
+                         "totalTokens": 20, "cost": {"input": 0.1, "output": 0.1,
+                         "cacheRead": 0.025, "cacheWrite": 0.025, "total": 0.25}}}
     if error:
         message["errorMessage"] = error
     emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": text}})
@@ -17801,6 +17952,31 @@ while True:
         let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
         assert_eq!(worker.state, WorkerState::Failed, "{worker:#?}");
         assert_eq!(reply(&worker), "429 usage limit reached");
+        // Each of its four replies reported pi's usage, which its record
+        // adds up under the model that ran.
+        let (records, _, _) = fixture
+            .supervisor
+            .run_records(&crate::api::schema::WorkerRunRecordsParams::default())
+            .unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.worker_id == id)
+            .unwrap();
+        assert_eq!(record.agent.as_deref(), Some("pi"));
+        assert_eq!(record.model.as_deref(), Some(pi::DEFAULT_MODEL));
+        let usage = record.usage.as_ref().unwrap();
+        assert_eq!(usage.len(), 1, "{usage:?}");
+        assert_eq!(usage[0].model, pi::DEFAULT_MODEL);
+        assert_eq!(
+            (
+                usage[0].input_tokens,
+                usage[0].output_tokens,
+                usage[0].cache_read_input_tokens,
+                usage[0].cache_creation_input_tokens
+            ),
+            (40, 20, 12, 8)
+        );
+        assert_eq!(record.cost_usd, Some(1.0));
 
         fixture.supervisor.stop(&id).unwrap();
         fixture.wait(&id, WorkerWaitUntil::Exit);

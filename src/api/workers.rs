@@ -35,6 +35,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerDrain(_)
             | Method::WorkerWaitDrained(_)
             | Method::WorkerRuns(_)
+            | Method::WorkerRunRecords(_)
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
             | Method::WorkerQuestion(_)
@@ -265,6 +266,14 @@ fn handle_immediate(
         Method::WorkerRuns(params) => {
             let (items, unassigned) = supervisor.runs(&params)?;
             return Ok(ResponseResult::WorkerRuns { items, unassigned });
+        }
+        Method::WorkerRunRecords(params) => {
+            let (records, landed, items_landed) = supervisor.run_records(&params)?;
+            return Ok(ResponseResult::WorkerRunRecords {
+                records,
+                landed,
+                items_landed,
+            });
         }
         Method::WorkerVerify(params) => {
             return Ok(ResponseResult::WorkerVerification {

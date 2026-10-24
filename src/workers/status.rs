@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{item_coordinators, store, string_field};
+use super::{item_coordinators, pi, store, string_field, usage};
 use crate::api::schema::{
-    WorkerAttentionReason, WorkerHeldOutput, WorkerInfo, WorkerQuestion, WorkerQuestionState,
-    WorkerRun, WorkerRunOutcome, WorkerSettledQuestion, WorkerState, WorkerToolCall,
-    WorkerTurnResult, WorkerVerification,
+    WorkerAttentionReason, WorkerHeldOutput, WorkerInfo, WorkerModelUsage, WorkerQuestion,
+    WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerSettledQuestion, WorkerState,
+    WorkerToolCall, WorkerTurnResult, WorkerVerification,
 };
 
 /// What a journal line records.
@@ -196,6 +196,17 @@ pub(super) struct Status {
     pub(super) held_output: Option<WorkerHeldOutput>,
     /// The `seq` of the latest `tool_output_held` event.
     pub(super) held_output_seq: Option<i64>,
+    /// The agent that runs it (`started`'s `agent`): `claude`, `pi`, or
+    /// `pi-anthropic` for pi on the Anthropic API credits. None for a worker
+    /// whose `started` named none.
+    pub(super) agent: Option<String>,
+    /// The model the agent reported at its start (`system/init`'s `model`).
+    pub(super) ran_model: Option<String>,
+    /// Its usage per model so far ([`usage`]); None while the agent has
+    /// reported none.
+    pub(super) usage: Option<Vec<WorkerModelUsage>>,
+    /// Its cost so far in US dollars; None while unknown.
+    pub(super) cost_usd: Option<f64>,
 }
 
 /// Where a worker's broker serves it, and what a server that re-attaches
@@ -308,6 +319,10 @@ impl Status {
             open_tool_calls: Vec::new(),
             held_output: None,
             held_output_seq: None,
+            agent: None,
+            ran_model: None,
+            usage: None,
+            cost_usd: None,
         }
     }
 
@@ -692,6 +707,17 @@ impl Status {
                 self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
                 self.owner_coordinator =
                     event["owner"]["coordinator_id"].as_str().map(str::to_owned);
+                self.agent = string_field(event, "agent").map(|agent| {
+                    let credits = self
+                        .model
+                        .as_deref()
+                        .is_some_and(|model| model.starts_with(pi::ANTHROPIC_PREFIX));
+                    if agent == "pi" && credits {
+                        "pi-anthropic".to_owned()
+                    } else {
+                        agent
+                    }
+                });
                 self.item = string_field(event, "item");
                 self.item_title = string_field(event, "item_title");
                 self.repo = string_field(event, "repo");
@@ -865,6 +891,9 @@ impl Status {
                     if let Some(session_id) = string_field(event, "session_id") {
                         self.session_id = Some(session_id);
                     }
+                    if let Some(model) = string_field(event, "model") {
+                        self.ran_model = Some(model);
+                    }
                     if self.state == WorkerState::Starting {
                         self.state = WorkerState::Working;
                     }
@@ -897,6 +926,7 @@ impl Status {
                 }
             }
             (Direction::Out, "assistant") => {
+                self.add_reply_usage(event);
                 self.open_tool_calls.extend(
                     event["message"]["content"]
                         .as_array()
@@ -947,6 +977,7 @@ impl Status {
                         .unwrap_or_default(),
                 };
                 self.state = turn_end_state(&result);
+                self.take_result_usage(event);
                 for sha in result
                     .text
                     .as_deref()
@@ -964,6 +995,40 @@ impl Status {
                 self.last_result = Some(result);
             }
             _ => {}
+        }
+    }
+
+    /// Adds one pi model reply's usage (its translated `assistant` event's
+    /// `herdr_usage`). pi on the API credits prices its custom model at
+    /// nothing, so its cost stays unknown there.
+    fn add_reply_usage(&mut self, event: &Value) {
+        let Some(mut reply) = event
+            .get("herdr_usage")
+            .and_then(|reply| serde_json::from_value::<WorkerModelUsage>(reply.clone()).ok())
+        else {
+            return;
+        };
+        if self.agent.as_deref() == Some("pi-anthropic") {
+            reply.cost_usd = None;
+        }
+        let run = self.usage.get_or_insert_with(Vec::new);
+        usage::add(run, &reply);
+        self.cost_usd = usage::total_cost(run);
+    }
+
+    /// Takes Claude's cumulative usage from a turn's `result`: the session's
+    /// so far, which replaces the run's. A `result` whose cost is the
+    /// credit ledger's spend for a whole `todo.run` (`credit_accounting`)
+    /// says nothing about this worker's.
+    fn take_result_usage(&mut self, event: &Value) {
+        if event.get("credit_accounting").is_some() {
+            return;
+        }
+        if let Some(models) = usage::claude_result_usage(event) {
+            self.usage = Some(models);
+        }
+        if let Some(cost) = event.get("total_cost_usd").and_then(Value::as_f64) {
+            self.cost_usd = Some(cost);
         }
     }
 
@@ -1180,5 +1245,60 @@ mod tests {
             status.degraded.as_deref(),
             Some("output continuity not proven: lines 2..=4 are missing")
         );
+    }
+
+    /// A pi worker's replies add up, by model; on the API credits its cost
+    /// stays unknown, since pi prices the proxy's model at nothing. Its
+    /// `result` carries no usage, and the credit ledger's run-wide spend on
+    /// it says nothing about this worker.
+    #[test]
+    fn a_pi_workers_replies_add_up_and_its_cost_on_the_credits_stays_unknown() {
+        let reply = |output: u64| {
+            json!({"type": "assistant", "message": {"content": []}, "herdr_usage": {
+                "model": "openai-codex/gpt-6.1-sol", "input_tokens": 10,
+                "output_tokens": output, "cache_read_input_tokens": 4,
+                "cache_creation_input_tokens": 0, "cost_usd": 0.25}})
+        };
+        let mut status = Status::new("w1".into());
+        status.apply(
+            Direction::Herdr,
+            &json!({"type": "started", "agent": "pi", "model": "openai-codex/gpt-6.1-sol"}),
+        );
+        assert_eq!(status.agent.as_deref(), Some("pi"));
+        assert_eq!((status.usage.clone(), status.cost_usd), (None, None));
+        status.apply(Direction::Out, &reply(5));
+        status.apply(Direction::Out, &reply(7));
+        status.apply(
+            Direction::Out,
+            &json!({"type": "result", "subtype": "success", "result": "ok"}),
+        );
+        let usage = status.usage.clone().unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(
+            (
+                usage[0].input_tokens,
+                usage[0].output_tokens,
+                usage[0].cost_usd
+            ),
+            (20, 12, Some(0.5))
+        );
+        assert_eq!(status.cost_usd, Some(0.5));
+
+        let mut credits = Status::new("w2".into());
+        credits.apply(
+            Direction::Herdr,
+            &json!({"type": "started", "agent": "pi",
+                "model": "herdr-anthropic/claude-sonnet-5-5"}),
+        );
+        assert_eq!(credits.agent.as_deref(), Some("pi-anthropic"));
+        credits.apply(Direction::Out, &reply(5));
+        credits.apply(
+            Direction::Out,
+            &json!({"type": "result", "subtype": "success", "total_cost_usd": 9.0,
+                "credit_accounting": {"spent_usd": 9.0, "worker": "r-1"}}),
+        );
+        assert_eq!(credits.usage.as_ref().unwrap()[0].output_tokens, 5);
+        assert_eq!(credits.usage.as_ref().unwrap()[0].cost_usd, None);
+        assert_eq!(credits.cost_usd, None);
     }
 }

@@ -162,6 +162,79 @@ impl WorkerSupervisor {
         Ok((items, unassigned))
     }
 
+    /// Each worker run's model, usage and outcome against its item, the
+    /// first started first, and the commits `todo.run` landed from the runs
+    /// that ended `done`, with how many distinct items they landed: the
+    /// trial's records ([`WorkerRunRecordsParams`]). The usage comes from
+    /// each worker's status, written at the event that reported it; the
+    /// attempt and its verdict from the driver's `attempts`.
+    pub(crate) fn run_records(
+        &self,
+        params: &WorkerRunRecordsParams,
+    ) -> Result<(Vec<WorkerRunRecord>, Vec<WorkerLandedItem>, u32), WorkerError> {
+        if let Some(item) = &params.item {
+            check_item_id(item)?;
+        }
+        let repo = params
+            .repo
+            .as_ref()
+            .map(|dir| repository_of(Path::new(dir)).unwrap_or_else(|| dir.clone()));
+        let in_window = |ms: Option<u64>| match (ms, params.since_ms, params.until_ms) {
+            (_, None, None) => true,
+            (None, _, _) => false,
+            (Some(ms), since, until) => {
+                since.is_none_or(|since| ms >= since) && until.is_none_or(|until| ms < until)
+            }
+        };
+        let store = self.run_store()?;
+        let attempts = store.attempts_by_worker().map_err(runs::store_error)?;
+        let mut records = Vec::new();
+        {
+            let registry = lock(&self.shared.registry);
+            for entry in registry.workers.values() {
+                let status = &entry.status;
+                if (repo.is_some() && status.repo != repo)
+                    || (params.item.is_some() && status.item != params.item)
+                    || !in_window(status.started_ms)
+                {
+                    continue;
+                }
+                let attempt = attempts.get(&status.worker_id);
+                records.push(WorkerRunRecord {
+                    worker_id: status.worker_id.clone(),
+                    item: status.item.clone(),
+                    repo: status.repo.clone(),
+                    started_ms: status.started_ms,
+                    ended_ms: status.ended_ms,
+                    agent: status.agent.clone(),
+                    model: status.ran_model.clone().or_else(|| status.model.clone()),
+                    usage: status.usage.clone(),
+                    cost_usd: status.cost_usd,
+                    todo_run_id: attempt.map(|attempt| attempt.run_id.clone()),
+                    attempt: attempt.map(|attempt| attempt.attempt),
+                    attempt_kind: attempt.map(attempt_kind),
+                    verdict: attempt
+                        .and_then(|attempt| attempt.verdict.as_deref())
+                        .map(verdict),
+                });
+            }
+        }
+        let landed = store
+            .landed(
+                repo.as_deref(),
+                params.item.as_deref(),
+                params.since_ms,
+                params.until_ms,
+            )
+            .map_err(runs::store_error)?;
+        let items: HashSet<(&str, &str)> = landed
+            .iter()
+            .map(|landing| (landing.repo.as_str(), landing.item.as_str()))
+            .collect();
+        let items_landed = items.len().try_into().unwrap_or(u32::MAX);
+        Ok((records, landed, items_landed))
+    }
+
     /// Checks the worker's commit in its directory ([`verify::verify`]) and
     /// records the verdict as its `verification` event, which its run then
     /// shows. Blocks while a command runs, as long as it takes. A second
@@ -426,4 +499,28 @@ impl Drop for VerifyClaim {
     fn drop(&mut self) {
         lock(&VERIFYING).retain(|claimed| *claimed != self.0);
     }
+}
+
+/// Why an attempt's worker ran: the first attempt, or a retry after the
+/// previous attempt's verify did not pass or its review asked for one.
+fn attempt_kind(attempt: &store::WorkerAttempt) -> WorkerAttemptKind {
+    if attempt.attempt <= 1 {
+        return WorkerAttemptKind::First;
+    }
+    if !attempt.has_previous {
+        return WorkerAttemptKind::Unknown;
+    }
+    match (
+        attempt.previous_verdict.as_deref(),
+        attempt.previous_decision.as_deref(),
+    ) {
+        (Some(verdict), _) if verdict != "verified" => WorkerAttemptKind::RetryAfterVerify,
+        (_, Some(runs::RETRY)) => WorkerAttemptKind::RetryAfterReview,
+        _ => WorkerAttemptKind::Unknown,
+    }
+}
+
+/// A verdict as `attempts.verification` stores it.
+fn verdict(text: &str) -> WorkerVerdict {
+    serde_json::from_value(Value::String(text.to_owned())).unwrap_or(WorkerVerdict::Unknown)
 }

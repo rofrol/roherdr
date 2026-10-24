@@ -7756,6 +7756,44 @@
           ],
           "type": "object"
         },
+        "WorkerRunRecordsParams": {
+          "description": "`worker.run_records`: each worker run's model, usage and outcome against\nits TODO item, and the items `todo.run` landed. `worker.runs` keeps its\nshape; the CLI's `worker runs` adds these records to its runs.",
+          "properties": {
+            "item": {
+              "description": "Only the runs and landings of this item (`t-abcd2345`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "Only those in this repository: a directory in it, or the path `repo`\nshows.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "since_ms": {
+              "description": "Only the runs started and the commits landed at or after this time,\nin Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "until_ms": {
+              "description": "Only those before this time, in Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "WorkerRunsParams": {
           "description": "Lists the workers' runs grouped by the TODO item they worked on.",
           "properties": {
@@ -8958,6 +8996,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerRunsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.run_records",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerRunRecordsParams"
             }
           },
           "required": [
@@ -17169,6 +17223,39 @@
               "type": "object"
             },
             {
+              "description": "`worker.run_records`' reply: the worker runs, the first started\nfirst, the commits `todo.run` landed, the first landed first, and how\nmany distinct items those landed.",
+              "properties": {
+                "items_landed": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "landed": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerLandedItem"
+                  },
+                  "type": "array"
+                },
+                "records": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerRunRecord"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "worker_run_records",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "records",
+                "landed",
+                "items_landed"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.verify`'s reply: the verdict herdr decided and its evidence.",
               "properties": {
                 "type": {
@@ -22396,6 +22483,31 @@
             }
           ]
         },
+        "WorkerAttemptKind": {
+          "description": "Why a `todo.run` attempt's worker ran.",
+          "oneOf": [
+            {
+              "const": "first",
+              "description": "The run's first attempt.",
+              "type": "string"
+            },
+            {
+              "const": "retry_after_verify",
+              "description": "A retry after the previous attempt's verify did not pass.",
+              "type": "string"
+            },
+            {
+              "const": "retry_after_review",
+              "description": "A retry the previous attempt's review asked for.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A later attempt whose cause the records do not show, or a kind this\nclient does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerAttentionReason": {
           "description": "Why `worker.wait` with `until: attention` returned.",
           "oneOf": [
@@ -22766,7 +22878,7 @@
               ]
             },
             "total_cost_usd": {
-              "description": "The `total_cost_usd` of the CLI's `result` events, summed, when any\nreported it.",
+              "description": "The run's cost: Claude's `total_cost_usd` (cumulative over the\nsession) from its latest `result`, or the sum of pi's per-reply\ncosts, when reported.",
               "format": "double",
               "type": [
                 "number",
@@ -22775,7 +22887,7 @@
             },
             "usage": {
               "default": [],
-              "description": "Usage per model; empty when the agent's CLI reports none (pi).",
+              "description": "Usage per model; empty when the agent's CLI reports none.",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/WorkerModelUsage"
               },
@@ -23176,6 +23288,43 @@
           ],
           "type": "object"
         },
+        "WorkerLandedItem": {
+          "description": "One commit `todo.run` landed for an item, from a run that ended `done`.",
+          "properties": {
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "item": {
+              "type": "string"
+            },
+            "landed_ms": {
+              "description": "Unix milliseconds of the cherry-pick.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "landed_sha": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "todo_run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item",
+            "repo",
+            "todo_run_id",
+            "attempt",
+            "landed_sha",
+            "landed_ms"
+          ],
+          "type": "object"
+        },
         "WorkerLateAnswer": {
           "description": "An answer a former owner sent after the worker moved to another tenure\n(`worker.answer_as`): refused, never applied, kept for the new owner.",
           "properties": {
@@ -23218,7 +23367,7 @@
           "type": "object"
         },
         "WorkerModelUsage": {
-          "description": "One model's usage over a `worker.run`, as the worker's journal records\nit (the `modelUsage` of the CLI's `result` events, summed).",
+          "description": "One model's usage over a worker run: Claude's cumulative `modelUsage`\nfrom its latest `result` event, or pi's per-reply usage added up.",
           "properties": {
             "cache_creation_input_tokens": {
               "format": "uint64",
@@ -23607,6 +23756,128 @@
               "type": "string"
             }
           ]
+        },
+        "WorkerRunRecord": {
+          "description": "One worker run (one worker process) as the trial measures it. A value the\nrecords do not hold is `null`, never 0.",
+          "properties": {
+            "agent": {
+              "default": null,
+              "description": "`claude`, `pi`, or `pi-anthropic` (pi on the Anthropic API credits).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempt": {
+              "default": null,
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "attempt_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerAttemptKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cost_usd": {
+              "default": null,
+              "description": "The run's cost in US dollars; `null` when the agent reported none\n(pi on the API credits, whose spend the credit ledger keeps per\n`todo.run`, not per worker).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "ended_ms": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "item": {
+              "default": null,
+              "description": "The TODO item it worked on.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "default": null,
+              "description": "The model that ran: the one the agent reported at its start, else\nthe one it was started with.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_ms": {
+              "default": null,
+              "description": "Unix milliseconds of its start and of its exit or loss.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "todo_run_id": {
+              "default": null,
+              "description": "The `todo.run` and attempt the worker ran for; `null` for a worker\nstarted on its own.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "usage": {
+              "default": null,
+              "description": "Usage per model over the whole run, written at each turn's end\n(Claude's cumulative `modelUsage`) or each model reply (pi); `null`\nwhen the agent reported none.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerModelUsage"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "verdict": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerdict"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The verdict of the driver's verify of that attempt, once it ran."
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
         },
         "WorkerSettledQuestion": {
           "description": "A question that is no longer open.",

@@ -8,7 +8,7 @@
 //! handoff) may write the same database; each worker's rows are written only
 //! by the server that runs it.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -20,7 +20,8 @@ use super::runs::{Attempt, Landing, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{
     CoordinatorOverride, CoordinatorWouldDeny, HistoryEvent, HistoryEventKind, TodoLanding,
-    TodoLandingSource, TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult,
+    TodoLandingSource, TodoRunInfo, TodoRunStatus, TodoStep, WorkerLandedItem, WorkerState,
+    WorkerTurnResult,
 };
 
 /// The database file, inside the session's worker directory.
@@ -915,6 +916,60 @@ CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
         AND (step != 'abort'
             OR CASE WHEN json_valid(landing)
                 THEN json_extract(landing, '$.core.pending') END IS NOT NULL);
+"#,
+    r#"
+-- Each worker run's agent (`claude`, `pi`, or `pi-anthropic` for pi on the
+-- Anthropic API credits), the model it reported at its start
+-- (`system/init`'s `model`), its usage per model (`WorkerModelUsage` as a
+-- JSON array) and its cost in US dollars, written with the event that
+-- reports them: Claude's `result` (its `modelUsage` and `total_cost_usd`
+-- cover the session so far) and pi's translated `assistant` reply
+-- (`herdr_usage`, added up). NULL while unknown, never 0. Workers recorded
+-- before are filled from their `started`, `system/init` and last `result`
+-- events; a `result` whose cost is the credit ledger's for a whole run
+-- (`credit_accounting`) says nothing about its worker. Their pi replies
+-- carried no usage, so their usage stays unknown.
+ALTER TABLE workers ADD COLUMN agent TEXT;
+ALTER TABLE workers ADD COLUMN ran_model TEXT;
+ALTER TABLE workers ADD COLUMN usage TEXT;
+ALTER TABLE workers ADD COLUMN cost_usd REAL;
+UPDATE workers SET agent = (SELECT CASE
+        WHEN json_extract(e.body, '$.agent') = 'pi'
+            AND substr(coalesce(json_extract(e.body, '$.model'), ''), 1, 16) = 'herdr-anthropic/'
+        THEN 'pi-anthropic' ELSE json_extract(e.body, '$.agent') END
+    FROM events e
+    WHERE e.worker_id = workers.id AND e.direction = 'herdr' AND e.type = 'started'
+      AND json_valid(e.body)
+    ORDER BY e.seq LIMIT 1);
+UPDATE workers SET ran_model = (SELECT json_extract(e.body, '$.model') FROM events e
+    WHERE e.worker_id = workers.id AND e.direction = 'out' AND e.type = 'system'
+      AND CASE WHEN json_valid(e.body) THEN json_extract(e.body, '$.subtype') = 'init'
+          AND json_type(e.body, '$.model') = 'text' END
+    ORDER BY e.seq DESC LIMIT 1);
+CREATE TEMP TABLE claude_results AS
+SELECT e.worker_id, e.seq, e.body FROM events e
+WHERE e.direction = 'out' AND e.type = 'result'
+  AND CASE WHEN json_valid(e.body)
+      THEN json_extract(e.body, '$.credit_accounting') IS NULL END;
+UPDATE workers SET usage = (
+    SELECT json_group_array(json_object(
+        'model', m.key,
+        'input_tokens', coalesce(json_extract(m.value, '$.inputTokens'), 0),
+        'output_tokens', coalesce(json_extract(m.value, '$.outputTokens'), 0),
+        'cache_read_input_tokens', coalesce(json_extract(m.value, '$.cacheReadInputTokens'), 0),
+        'cache_creation_input_tokens',
+            coalesce(json_extract(m.value, '$.cacheCreationInputTokens'), 0),
+        'cost_usd', json_extract(m.value, '$.costUSD')))
+    FROM json_each((SELECT json_extract(r.body, '$.modelUsage') FROM claude_results r
+        WHERE r.worker_id = workers.id AND json_type(r.body, '$.modelUsage') = 'object'
+        ORDER BY r.seq DESC LIMIT 1)) m)
+WHERE EXISTS (SELECT 1 FROM claude_results r
+    WHERE r.worker_id = workers.id AND json_type(r.body, '$.modelUsage') = 'object');
+UPDATE workers SET cost_usd = (SELECT json_extract(r.body, '$.total_cost_usd')
+    FROM claude_results r
+    WHERE r.worker_id = workers.id AND json_type(r.body, '$.total_cost_usd') IN ('real', 'integer')
+    ORDER BY r.seq DESC LIMIT 1);
+DROP TABLE claude_results;
 "#,
 ];
 
@@ -2063,7 +2118,7 @@ impl Tx<'_> {
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
                     :ended_mid_turn, :item_title, :verification, :takeover_id,
                     :owner_coordinator_id, :broker, :broker_seq, :continuity_gap,
-                    :coordinates, :end_by_owner)
+                    :coordinates, :end_by_owner, :agent, :ran_model, :usage, :cost_usd)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -2140,6 +2195,13 @@ impl Tx<'_> {
                 ":continuity_gap": status.continuity_gap,
                 ":coordinates": status.coordinates,
                 ":end_by_owner": status.end_by_owner,
+                ":agent": status.agent,
+                ":ran_model": status.ran_model,
+                ":usage": status
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| serde_json::to_string(usage).ok()),
+                ":cost_usd": status.cost_usd,
             },
         )?;
         Ok(())
@@ -3092,6 +3154,80 @@ impl Store {
         rows.collect()
     }
 
+    /// Each `todo.run` attempt's worker with its run, its attempt, its own
+    /// verify verdict and the previous attempt's verdict and decision, which
+    /// say why it ran; by worker id.
+    pub(super) fn attempts_by_worker(&self) -> StoreResult<HashMap<String, WorkerAttempt>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT a.worker_id, a.run_id, a.attempt,
+                 CASE WHEN json_valid(a.verification)
+                     THEN json_extract(a.verification, '$.verdict') END,
+                 p.attempt IS NOT NULL,
+                 CASE WHEN json_valid(p.verification)
+                     THEN json_extract(p.verification, '$.verdict') END,
+                 p.review_decision
+             FROM attempts a
+             LEFT JOIN attempts p ON p.run_id = a.run_id AND p.attempt = a.attempt - 1
+             WHERE a.worker_id IS NOT NULL
+             ORDER BY a.run_id, a.attempt",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                WorkerAttempt {
+                    run_id: row.get(1)?,
+                    attempt: row.get(2)?,
+                    verdict: row.get(3)?,
+                    has_previous: row.get(4)?,
+                    previous_verdict: row.get(5)?,
+                    previous_decision: row.get(6)?,
+                },
+            ))
+        })?;
+        rows.collect()
+    }
+
+    /// The commits `todo.run` landed from the runs that ended `done`, the
+    /// first landed first: of `repo` and `item` when given, landed in
+    /// `[since_ms, until_ms)`.
+    pub(super) fn landed(
+        &self,
+        repo: Option<&str>,
+        item: Option<&str>,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
+    ) -> StoreResult<Vec<WorkerLandedItem>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT l.item, r.repo, l.run_id, l.attempt, l.landed_sha, l.ts
+             FROM landings l JOIN runs r ON r.id = l.run_id
+             WHERE r.status = 'done'
+               AND (?1 IS NULL OR r.repo = ?1) AND (?2 IS NULL OR l.item = ?2)
+               AND (?3 IS NULL OR l.ts >= ?3) AND (?4 IS NULL OR l.ts < ?4)
+             ORDER BY l.ts, l.landed_sha",
+        )?;
+        let rows = statement.query_map(
+            params![
+                repo,
+                item,
+                since_ms.map(|ms| ms as i64),
+                until_ms.map(|ms| ms as i64)
+            ],
+            |row| {
+                Ok(WorkerLandedItem {
+                    item: row.get(0)?,
+                    repo: row.get(1)?,
+                    todo_run_id: row.get(2)?,
+                    attempt: row.get(3)?,
+                    landed_sha: row.get(4)?,
+                    landed_ms: row.get::<_, i64>(5)? as u64,
+                })
+            },
+        )?;
+        rows.collect()
+    }
+
     /// The commits a run landed, by attempt.
     pub(super) fn landings_of_run(&self, run_id: &str) -> StoreResult<Vec<(u32, String)>> {
         let conn = lock(&self.conn);
@@ -3101,6 +3237,20 @@ impl Store {
         let rows = statement.query_map([run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect()
     }
+}
+
+/// A `todo.run` attempt as its worker's run record names it
+/// ([`Store::attempts_by_worker`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkerAttempt {
+    pub(super) run_id: String,
+    pub(super) attempt: u32,
+    /// The verdict of its verify, once the driver recorded one.
+    pub(super) verdict: Option<String>,
+    /// The previous attempt is recorded, with its verdict and decision.
+    pub(super) has_previous: bool,
+    pub(super) previous_verdict: Option<String>,
+    pub(super) previous_decision: Option<String>,
 }
 
 /// One row of `attempts`.
@@ -3713,7 +3863,7 @@ stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinishe
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
 ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker, broker_seq, \
-continuity_gap, coordinates, end_by_owner";
+continuity_gap, coordinates, end_by_owner, agent, ran_model, usage, cost_usd";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -3778,6 +3928,10 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.continuity_gap = row.get(46)?;
     status.coordinates = row.get(47)?;
     status.end_by_owner = row.get(48)?;
+    status.agent = row.get(49)?;
+    status.ran_model = row.get(50)?;
+    status.usage = json(51)?.and_then(|value| serde_json::from_value(value).ok());
+    status.cost_usd = row.get(52)?;
     Ok(status)
 }
 
@@ -4178,8 +4332,12 @@ mod tests {
                      paths, check_name, check_argv, picked, created_ms, updated_ms, finish)
                  VALUES ('r-install1', '/other', 't-abcd2345', 'install', 'waiting', 1, 'task',
                      'feat: x', '[]', 'ok', '[]', 'p2', 1, 1, '{{}}');
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 1
+                MIGRATIONS.len() - 2
             ))
             .unwrap();
         drop(store);
@@ -4666,6 +4824,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Writes each event with the worker's row as it is after it, as the
+    /// supervisor does in one transaction.
+    fn record_all(store: &Store, worker_id: &str, events: &[(Direction, Value)]) -> Status {
+        let mut status = Status::new(worker_id.to_owned());
+        for (direction, event) in events {
+            status.apply(*direction, event);
+            store
+                .transaction(|tx| {
+                    let seq = tx.event(&EventRow {
+                        worker_id,
+                        direction: *direction,
+                        record: &Recorded::Event(event),
+                        ts_ms: 1,
+                    })?;
+                    tx.worker(&status, seq)
+                })
+                .unwrap();
+        }
+        status
+    }
+
+    /// Claude's `result` reports the session's usage so far: the row holds
+    /// the latest, written with that event, and a worker recorded before the
+    /// columns gets the same from its events. A result whose cost is the
+    /// credit ledger's for a whole run, and a pi worker's, leave its cost
+    /// unknown, never 0.
+    #[test]
+    fn a_runs_usage_is_written_at_its_result_and_filled_for_older_rows() {
+        let dir = scratch("run-usage");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        let usage = |output: u64, cost: f64| {
+            json!({"type": "result", "subtype": "success", "total_cost_usd": cost,
+                "modelUsage": {"claude-opus-5-5": {"inputTokens": 10, "outputTokens": output,
+                "cacheReadInputTokens": 100, "cacheCreationInputTokens": 20, "costUSD": cost}}})
+        };
+        let claude = [
+            (
+                Direction::Herdr,
+                json!({"type": "started", "cwd": "/repo", "agent": "claude"}),
+            ),
+            (
+                Direction::Out,
+                json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5"}),
+            ),
+            (Direction::Out, usage(5, 0.5)),
+            (Direction::Out, usage(8, 0.75)),
+        ];
+        let pi_credits = [
+            (
+                Direction::Herdr,
+                json!({"type": "started", "cwd": "/repo", "agent": "pi",
+                    "model": "herdr-anthropic/claude-sonnet-5-5"}),
+            ),
+            (
+                Direction::Out,
+                json!({"type": "result", "subtype": "success", "total_cost_usd": 3.0,
+                    "credit_accounting": {"spent_usd": 3.0, "worker": "r-1"}}),
+            ),
+        ];
+        let written = record_all(&store, "w1", &claude);
+        record_all(&store, "w2", &pi_credits);
+        record_all(
+            &store,
+            "w3",
+            &[(Direction::Herdr, json!({"type": "started", "cwd": "/repo"}))],
+        );
+        let check = |store: &Store| {
+            let one = store.load("w1").unwrap().unwrap();
+            assert_eq!(one.agent.as_deref(), Some("claude"));
+            assert_eq!(one.ran_model.as_deref(), Some("claude-opus-5-5"));
+            assert_eq!(one.cost_usd, Some(0.75));
+            assert_eq!(one.usage, written.usage);
+            let usage = one.usage.unwrap();
+            assert_eq!(usage.len(), 1, "{usage:?}");
+            assert_eq!(
+                (
+                    usage[0].input_tokens,
+                    usage[0].cache_creation_input_tokens,
+                    usage[0].cache_read_input_tokens,
+                    usage[0].output_tokens,
+                    usage[0].cost_usd
+                ),
+                (10, 20, 100, 8, Some(0.75))
+            );
+            let two = store.load("w2").unwrap().unwrap();
+            assert_eq!(two.agent.as_deref(), Some("pi-anthropic"));
+            assert_eq!((two.usage, two.cost_usd), (None, None));
+            let three = store.load("w3").unwrap().unwrap();
+            assert_eq!(
+                (three.agent, three.ran_model, three.usage, three.cost_usd),
+                (None, None, None, None)
+            );
+        };
+        check(&store);
+        // A database from before the columns.
+        store
+            .connection()
+            .execute_batch(&format!(
+                "ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(store);
+        check(&Store::open(&path).unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn the_attention_columns_are_filled_from_the_events_of_older_rows() {
         let dir = scratch("attention-columns");
@@ -4760,6 +5030,10 @@ mod tests {
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -4811,8 +5085,12 @@ mod tests {
                      ('openai:/b', 0, '{{\"state\": \"open\"}}', 50);
                  ALTER TABLE todo_queues DROP COLUMN worktree;
                  ALTER TABLE todo_chains DROP COLUMN worktree;
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 10
+                MIGRATIONS.len() - 11
             ))
             .unwrap();
         drop(store);
@@ -4888,8 +5166,12 @@ mod tests {
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 41
+                MIGRATIONS.len() - 42
             ))
             .unwrap();
         drop(store);
@@ -4964,8 +5246,12 @@ mod tests {
                  DROP TABLE tenure_steps;
                  DROP TABLE tenure_pending_ends;
                  DROP INDEX events_by_worker_kind;
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 30
+                MIGRATIONS.len() - 31
             ))
             .unwrap();
         drop(store);
@@ -5069,8 +5355,12 @@ mod tests {
             .connection()
             .execute_batch(&format!(
                 "{UNDO_RUN_LANDING}
+                 ALTER TABLE workers DROP COLUMN agent;
+                 ALTER TABLE workers DROP COLUMN ran_model;
+                 ALTER TABLE workers DROP COLUMN usage;
+                 ALTER TABLE workers DROP COLUMN cost_usd;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 2
+                MIGRATIONS.len() - 3
             ))
             .unwrap();
         drop(store);

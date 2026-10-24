@@ -163,8 +163,8 @@ pub enum WorkerGatedRunOutcome {
     Unknown,
 }
 
-/// One model's usage over a `worker.run`, as the worker's journal records
-/// it (the `modelUsage` of the CLI's `result` events, summed).
+/// One model's usage over a worker run: Claude's cumulative `modelUsage`
+/// from its latest `result` event, or pi's per-reply usage added up.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerModelUsage {
     pub model: String,
@@ -187,11 +187,12 @@ pub struct WorkerGatedRun {
     /// The final assistant text of the turn, when the CLI sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Usage per model; empty when the agent's CLI reports none (pi).
+    /// Usage per model; empty when the agent's CLI reports none.
     #[serde(default)]
     pub usage: Vec<WorkerModelUsage>,
-    /// The `total_cost_usd` of the CLI's `result` events, summed, when any
-    /// reported it.
+    /// The run's cost: Claude's `total_cost_usd` (cumulative over the
+    /// session) from its latest `result`, or the sum of pi's per-reply
+    /// costs, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
     /// The usage gate's decision that admitted the run, as `todo.run`
@@ -326,6 +327,100 @@ pub struct WorkerRun {
     /// The latest `worker.verify` of its work; absent when none ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<WorkerVerification>,
+}
+
+/// `worker.run_records`: each worker run's model, usage and outcome against
+/// its TODO item, and the items `todo.run` landed. `worker.runs` keeps its
+/// shape; the CLI's `worker runs` adds these records to its runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerRunRecordsParams {
+    /// Only the runs and landings of this item (`t-abcd2345`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Only those in this repository: a directory in it, or the path `repo`
+    /// shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Only the runs started and the commits landed at or after this time,
+    /// in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
+    /// Only those before this time, in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<u64>,
+}
+
+/// Why a `todo.run` attempt's worker ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerAttemptKind {
+    /// The run's first attempt.
+    First,
+    /// A retry after the previous attempt's verify did not pass.
+    RetryAfterVerify,
+    /// A retry the previous attempt's review asked for.
+    RetryAfterReview,
+    /// A later attempt whose cause the records do not show, or a kind this
+    /// client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One worker run (one worker process) as the trial measures it. A value the
+/// records do not hold is `null`, never 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerRunRecord {
+    pub worker_id: String,
+    /// The TODO item it worked on.
+    #[serde(default)]
+    pub item: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Unix milliseconds of its start and of its exit or loss.
+    #[serde(default)]
+    pub started_ms: Option<u64>,
+    #[serde(default)]
+    pub ended_ms: Option<u64>,
+    /// `claude`, `pi`, or `pi-anthropic` (pi on the Anthropic API credits).
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The model that ran: the one the agent reported at its start, else
+    /// the one it was started with.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Usage per model over the whole run, written at each turn's end
+    /// (Claude's cumulative `modelUsage`) or each model reply (pi); `null`
+    /// when the agent reported none.
+    #[serde(default)]
+    pub usage: Option<Vec<WorkerModelUsage>>,
+    /// The run's cost in US dollars; `null` when the agent reported none
+    /// (pi on the API credits, whose spend the credit ledger keeps per
+    /// `todo.run`, not per worker).
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// The `todo.run` and attempt the worker ran for; `null` for a worker
+    /// started on its own.
+    #[serde(default)]
+    pub todo_run_id: Option<String>,
+    #[serde(default)]
+    pub attempt: Option<u32>,
+    #[serde(default)]
+    pub attempt_kind: Option<WorkerAttemptKind>,
+    /// The verdict of the driver's verify of that attempt, once it ran.
+    #[serde(default)]
+    pub verdict: Option<WorkerVerdict>,
+}
+
+/// One commit `todo.run` landed for an item, from a run that ended `done`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerLandedItem {
+    pub item: String,
+    pub repo: String,
+    pub todo_run_id: String,
+    pub attempt: u32,
+    pub landed_sha: String,
+    /// Unix milliseconds of the cherry-pick.
+    pub landed_ms: u64,
 }
 
 /// Herdr checks a worker's commit and decides its verdict, instead of the

@@ -5,13 +5,13 @@ use crate::api::schema::{
     WorkerAnswerFromPaneParams, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
     WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
     WorkerGatedRunParams, WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams,
-    WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams, WorkerStartChoiceParams,
-    WorkerStartParams, WorkerTarget, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams,
-    WorkerWaitUntil,
+    WorkerObligationsParams, WorkerPromptParams, WorkerRunRecordsParams, WorkerRunsParams,
+    WorkerStartChoiceParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
+    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|run|status|list|runs|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
+    "usage: herdr worker <start|run|status|list|runs|records|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--agent claude|pi|pi-anthropic]
                      [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
@@ -75,13 +75,27 @@ const USAGE: &str =
     worker start refuses).
   herdr worker status <worker_id>
   herdr worker list
-  herdr worker runs [--item ID] [--repo DIR]
+  herdr worker runs [--item ID] [--repo DIR] [--text]
     Every worker's run (one worker process; prompts add turns to it) grouped
     by its TODO item and repository: start and end, outcome, turns, the
     commits its WORKER-DONE lines named, questions, journal and its latest
     verification. Runs started without --item are listed as unassigned. --repo DIR keeps the runs of
     DIR's repository. The run that landed a commit is found with
-    herdr todo runs --commit SHA.
+    herdr todo runs --commit SHA. Each run also carries its record from
+    worker records (agent, model, usage, cost_usd, todo_run_id, attempt,
+    attempt_kind, verdict) when the server keeps them. --text prints one
+    line per run instead of JSON.
+  herdr worker records [--item ID] [--repo DIR] [--since MS] [--until MS]
+    Each worker run's record, the first started first: worker_id, item,
+    repo, started_ms, ended_ms, agent (claude, pi or pi-anthropic), model
+    (the one that ran), usage (per model: input, cache-write, cache-read and
+    output tokens and cost_usd), cost_usd, and for a herdr todo run's worker
+    its todo_run_id, attempt, attempt_kind (first, retry_after_verify,
+    retry_after_review) and the verdict of the driver's verify. A value
+    that is not known is null, never 0. Then landed: each commit herdr todo
+    run landed from a run that ended done, and items_landed, the number of
+    distinct items they landed. --since and --until (Unix milliseconds)
+    keep the runs started and the commits landed in [since, until).
   herdr worker wait <worker_id> [--exit | --attention [--after SEQ]]
     Returns at the end of the turn, or with --exit when the process ended.
     --attention returns at once or at the first of a pending question, a
@@ -178,6 +192,7 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
         Some("log") => return run_log(&args[1..]),
         Some("wait-drained") => return run_wait_drained(&args[1..]),
         Some("run") => return run_gated(&args[1..]),
+        Some("runs") => return run_runs(&args[1..]),
         _ => {}
     }
     let method = match parse_worker_args(args) {
@@ -239,6 +254,169 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
             _ => 3,
         },
     )
+}
+
+/// A `--repo DIR` as the server resolves it: absolute.
+fn absolute_dir(dir: Option<String>) -> Result<Option<String>, String> {
+    dir.map(|dir| {
+        std::path::absolute(&dir)
+            .map(|dir| dir.display().to_string())
+            .map_err(|error| error.to_string())
+    })
+    .transpose()
+}
+
+/// `herdr worker runs`: `worker.runs`' reply with each run's record from
+/// `worker.run_records` added ([`add_records`]), as JSON or with `--text`
+/// one line per run. A server without the records answers the runs alone.
+fn run_runs(args: &[String]) -> std::io::Result<i32> {
+    let text = args.iter().any(|arg| arg == "--text");
+    let mut words = vec!["runs".to_owned()];
+    words.extend(args.iter().filter(|arg| *arg != "--text").cloned());
+    let params = match parse_worker_args(&words) {
+        Ok(Some(Method::WorkerRuns(params))) => params,
+        // `runs` parses to nothing else.
+        Ok(_) => return Ok(2),
+        Err(message) => {
+            eprintln!("{message}");
+            eprintln!("{USAGE}");
+            return Ok(2);
+        }
+    };
+    let mut response = super::send_request(&Request {
+        id: "cli:worker:runs".into(),
+        method: Method::WorkerRuns(params.clone()),
+    })?;
+    if response.get("error").is_none() {
+        let records = super::send_request(&Request {
+            id: "cli:worker:records".into(),
+            method: Method::WorkerRunRecords(WorkerRunRecordsParams {
+                item: params.item,
+                repo: params.repo,
+                ..WorkerRunRecordsParams::default()
+            }),
+        })?;
+        add_records(&mut response, &records);
+    }
+    if !text || response.get("error").is_some() {
+        return super::print_response(&response);
+    }
+    print!("{}", runs_text(&response["result"]));
+    Ok(0)
+}
+
+/// The record fields `worker runs` adds to each run.
+const RECORD_FIELDS: &[&str] = &[
+    "agent",
+    "model",
+    "usage",
+    "cost_usd",
+    "todo_run_id",
+    "attempt",
+    "attempt_kind",
+    "verdict",
+];
+
+/// Adds to each run in `worker.runs`' reply the fields of its record in
+/// `worker.run_records`' reply (an error leaves the runs as they are).
+fn add_records(runs: &mut serde_json::Value, records: &serde_json::Value) {
+    let Some(records) = records["result"]["records"].as_array() else {
+        return;
+    };
+    let by_worker: HashMap<&str, &serde_json::Value> = records
+        .iter()
+        .filter_map(|record| Some((record["worker_id"].as_str()?, record)))
+        .collect();
+    let fill = |list: Option<&mut serde_json::Value>| {
+        let runs = list.and_then(|list| list.as_array_mut());
+        for run in runs.into_iter().flatten() {
+            let Some(record) = run["worker_id"].as_str().and_then(|id| by_worker.get(id)) else {
+                continue;
+            };
+            for field in RECORD_FIELDS {
+                run[*field] = record[*field].clone();
+            }
+        }
+    };
+    let result = &mut runs["result"];
+    if let Some(items) = result
+        .get_mut("items")
+        .and_then(|items| items.as_array_mut())
+    {
+        for item in items {
+            fill(item.get_mut("runs"));
+        }
+    }
+    fill(result.get_mut("unassigned"));
+}
+
+/// `worker runs --text`: per item a header, then one line per run with its
+/// outcome, agent and model, tokens, cost, attempt and verdict; `?` where a
+/// value is unknown.
+fn runs_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    let unknown = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => "?".to_owned(),
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let line = |run: &serde_json::Value| {
+        let tokens = match run["usage"].as_array() {
+            Some(models) => {
+                let sum = |key: &str| -> u64 {
+                    models.iter().filter_map(|model| model[key].as_u64()).sum()
+                };
+                format!(
+                    "in {} cw {} cr {} out {}",
+                    sum("input_tokens"),
+                    sum("cache_creation_input_tokens"),
+                    sum("cache_read_input_tokens"),
+                    sum("output_tokens")
+                )
+            }
+            None => "tokens ?".to_owned(),
+        };
+        let cost = match run["cost_usd"].as_f64() {
+            Some(cost) => format!("${cost:.2}"),
+            None => "$?".to_owned(),
+        };
+        let attempt = match run["todo_run_id"].as_str() {
+            Some(run_id) => format!(
+                "  {run_id} attempt {} ({}) verdict {}",
+                unknown(&run["attempt"]),
+                unknown(&run["attempt_kind"]),
+                unknown(&run["verdict"])
+            ),
+            None => String::new(),
+        };
+        format!(
+            "  {}  {}  {}/{}  {tokens}  {cost}{attempt}\n",
+            unknown(&run["worker_id"]),
+            unknown(&run["outcome"]),
+            unknown(&run["agent"]),
+            unknown(&run["model"]),
+        )
+    };
+    for item in result["items"].as_array().into_iter().flatten() {
+        let title = item["title"]
+            .as_str()
+            .map(|title| format!("  {title}"))
+            .unwrap_or_default();
+        out.push_str(&format!("{}{title}\n", unknown(&item["item"])));
+        for run in item["runs"].as_array().into_iter().flatten() {
+            out.push_str(&line(run));
+        }
+    }
+    if let Some(runs) = result["unassigned"]
+        .as_array()
+        .filter(|runs| !runs.is_empty())
+    {
+        out.push_str("unassigned\n");
+        for run in runs {
+            out.push_str(&line(run));
+        }
+    }
+    out
 }
 
 /// `herdr worker run`'s exit status for an outcome other than `ended`.
@@ -557,14 +735,34 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             if !rest.is_empty() {
                 return Err("runs takes only --item and --repo".into());
             }
-            let repo = repo
-                .map(|dir| {
-                    std::path::absolute(&dir)
-                        .map(|dir| dir.display().to_string())
-                        .map_err(|error| error.to_string())
-                })
-                .transpose()?;
-            Method::WorkerRuns(WorkerRunsParams { item, repo })
+            Method::WorkerRuns(WorkerRunsParams {
+                item,
+                repo: absolute_dir(repo)?,
+            })
+        }
+        "records" => {
+            let (item, rest) = take_string_option(rest, "--item")?;
+            let (repo, rest) = take_string_option(&rest, "--repo")?;
+            let (since, rest) = take_string_option(&rest, "--since")?;
+            let (until, rest) = take_string_option(&rest, "--until")?;
+            if !rest.is_empty() {
+                return Err("records takes only --item, --repo, --since and --until".into());
+            }
+            let millis = |flag: &str, value: Option<String>| {
+                value
+                    .map(|value| {
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| format!("{flag} takes Unix milliseconds, not {value}"))
+                    })
+                    .transpose()
+            };
+            Method::WorkerRunRecords(WorkerRunRecordsParams {
+                item,
+                repo: absolute_dir(repo)?,
+                since_ms: millis("--since", since)?,
+                until_ms: millis("--until", until)?,
+            })
         }
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
@@ -1877,6 +2075,91 @@ mod tests {
         ] {
             assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn parses_records_with_a_window_in_milliseconds() {
+        assert_eq!(
+            parse_worker_args(&args(&[
+                "records",
+                "--item",
+                "t-abcd2345",
+                "--repo",
+                "/repo",
+                "--since",
+                "1000",
+                "--until",
+                "2000",
+            ])),
+            Ok(Some(Method::WorkerRunRecords(WorkerRunRecordsParams {
+                item: Some("t-abcd2345".into()),
+                repo: Some("/repo".into()),
+                since_ms: Some(1000),
+                until_ms: Some(2000),
+            })))
+        );
+        assert_eq!(
+            parse_worker_args(&args(&["records"])),
+            Ok(Some(Method::WorkerRunRecords(
+                WorkerRunRecordsParams::default()
+            )))
+        );
+        for bad in [
+            &["records", "--since", "2026-10-24"][..],
+            &["records", "w1"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `worker runs` adds each run's record by worker id; unknown values
+    /// stay null and read `?` in the text.
+    #[test]
+    fn runs_carry_their_records_as_json_and_text() {
+        let mut runs = serde_json::json!({"id": "cli:worker:runs", "result": {
+            "type": "worker_runs",
+            "items": [{"item": "t-abcd2345", "title": "Do it", "runs": [
+                {"worker_id": "w1", "outcome": "finished", "turns": 1, "questions": 0},
+                {"worker_id": "w2", "outcome": "running", "turns": 0, "questions": 0}]}],
+            "unassigned": [{"worker_id": "w3", "outcome": "exited", "turns": 1,
+                "questions": 0}]}});
+        let records = serde_json::json!({"id": "cli:worker:records", "result": {
+            "type": "worker_run_records", "landed": [], "items_landed": 0, "records": [
+                {"worker_id": "w1", "agent": "claude", "model": "claude-opus-5-5",
+                 "usage": [{"model": "claude-opus-5-5", "input_tokens": 1, "output_tokens": 2,
+                    "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4,
+                    "cost_usd": 0.5}],
+                 "cost_usd": 0.5, "todo_run_id": "r-1", "attempt": 1,
+                 "attempt_kind": "first", "verdict": "verified"},
+                {"worker_id": "w3", "agent": "pi", "model": null, "usage": null,
+                 "cost_usd": null, "todo_run_id": null, "attempt": null,
+                 "attempt_kind": null, "verdict": null}]}});
+        add_records(&mut runs, &records);
+        let first = &runs["result"]["items"][0]["runs"][0];
+        assert_eq!(first["cost_usd"], 0.5);
+        assert_eq!(first["attempt_kind"], "first");
+        assert_eq!(first["usage"][0]["output_tokens"], 2);
+        // A run without a record is left as it was.
+        assert_eq!(runs["result"]["items"][0]["runs"][1].get("cost_usd"), None);
+        let unassigned = &runs["result"]["unassigned"][0];
+        assert_eq!(unassigned["agent"], "pi");
+        assert_eq!(unassigned["cost_usd"], serde_json::Value::Null);
+        assert_eq!(
+            runs_text(&runs["result"]),
+            "t-abcd2345  Do it\n\
+             \x20 w1  finished  claude/claude-opus-5-5  in 1 cw 4 cr 3 out 2  $0.50  r-1 \
+             attempt 1 (first) verdict verified\n\
+             \x20 w2  running  ?/?  tokens ?  $?\n\
+             unassigned\n\
+             \x20 w3  exited  pi/?  tokens ?  $?\n"
+        );
+        // An error from an older server adds nothing.
+        let before = runs.clone();
+        add_records(
+            &mut runs,
+            &serde_json::json!({"error": {"code": "unknown_method"}}),
+        );
+        assert_eq!(runs, before);
     }
 
     #[test]

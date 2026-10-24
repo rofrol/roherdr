@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Coordinator and worker cost of the TODO pipeline at list prices.
+"""Coordinator and worker cost of the TODO pipeline.
 
 Usage: python3 measure.py [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-Run from the repository root. Reads herdr's worker journals and the Claude
-Code transcripts of this repository's sessions; prints one JSON object.
+                          [--records FILE] [--workers-only]
+Run from the repository root. Reads herdr's worker run records
+(`herdr worker records --repo .`, or FILE holding that command's JSON) and
+the Claude Code transcripts of this repository's sessions (at list prices);
+prints one JSON object. Each worker run's cost is the one its agent
+reported; a run whose cost is unknown is counted, never priced at 0. The
+denominator is the exact number of items `herdr todo run` landed in the
+window (`items_landed`). --workers-only leaves out the transcripts.
 """
 import argparse, datetime, glob, json, os, re, statistics, subprocess
 
@@ -19,35 +25,44 @@ def family(model):
 def ts(day):
     return datetime.datetime.fromisoformat(day).timestamp() if day else None
 
-def find_result(o):
-    if isinstance(o, dict):
-        if o.get("type") == "result" and "total_cost_usd" in o:
-            return o
-        for v in o.values():
-            r = find_result(v)
-            if r:
-                return r
-    return None
+def ms(t):
+    return None if t is None else int(t * 1000)
 
-def workers(lo, hi):
-    runs = []
-    for f in glob.glob(os.path.expanduser("~/.local/state/herdr/workers/w*.jsonl")):
-        m = os.path.getmtime(f)
-        if (lo and m < lo) or (hi and m >= hi):
+def records(lo, hi, path):
+    """`herdr worker records`' reply: from FILE, else from the CLI."""
+    if path:
+        text = open(path).read()
+    else:
+        args = ["herdr", "worker", "records", "--repo", "."]
+        if lo is not None:
+            args += ["--since", str(ms(lo))]
+        if hi is not None:
+            args += ["--until", str(ms(hi))]
+        text = subprocess.run(args, capture_output=True, text=True, check=True).stdout
+    return json.loads(text)["result"]
+
+def workers(result):
+    """Per item: its worker runs, their known cost, how many have none, and
+    whether it landed; and every run's known cost."""
+    items = {}; costs = []; unknown = 0
+    landed = {l["item"] for l in result.get("landed", [])}
+    for r in result.get("records", []):
+        cost = r.get("cost_usd")
+        if cost is None:
+            unknown += 1
+        else:
+            costs.append(cost)
+        if not r.get("item"):
             continue
-        cost = 0.0; n = 0
-        for line in open(f, errors="ignore"):
-            if "total_cost_usd" not in line:
-                continue
-            try:
-                r = find_result(json.loads(line))
-            except ValueError:
-                continue
-            if r:
-                n += 1; cost += r.get("total_cost_usd") or 0
-        if n:
-            runs.append(cost)
-    return runs
+        it = items.setdefault(r["item"], {"worker_runs": 0, "worker_cost_usd": 0.0,
+                                          "worker_runs_cost_unknown": 0,
+                                          "landed": r["item"] in landed})
+        it["worker_runs"] += 1
+        if cost is None:
+            it["worker_runs_cost_unknown"] += 1
+        else:
+            it["worker_cost_usd"] += cost
+    return items, costs, unknown
 
 def coordinators(lo, hi):
     root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
@@ -87,39 +102,33 @@ def coordinators(lo, hi):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since"); ap.add_argument("--until")
+    ap.add_argument("--records"); ap.add_argument("--workers-only", action="store_true")
     a = ap.parse_args()
     lo, hi = ts(a.since), ts(a.until)
-    w = workers(lo, hi)
-    c, items, calls, ctx = coordinators(lo, hi)
+    result = records(lo, hi, a.records)
+    items, w, unknown = workers(result)
+    landed = result.get("items_landed")
+    per = [it["worker_runs"] for it in items.values()]
     out = {
-        "worker_runs": len(w),
+        "worker_runs": len(w) + unknown,
+        "worker_runs_cost_unknown": unknown,
         "worker_cost_median": round(statistics.median(w), 2) if w else None,
         "worker_cost_mean": round(statistics.mean(w), 2) if w else None,
-        "coordinator_items_started": items,
-        "coordinator_cost": round(c, 2),
-        "coordinator_cost_per_item": round(c / items, 2) if items else None,
-        "coordinator_calls_per_item": round(calls / items, 1) if items else None,
-        "coordinator_mean_context": int(statistics.mean(ctx)) if ctx else None,
+        "worker_runs_per_item_mean": round(statistics.mean(per), 2) if per else None,
+        "items_landed": landed,
+        "worker_cost_per_landed_item": round(sum(w) / landed, 2) if landed else None,
+        "items": items,
     }
-    runs = subprocess.run(["herdr", "worker", "runs", "--repo", "."], capture_output=True, text=True)
-    try:
-        its = [i for i in json.loads(runs.stdout)["result"]["items"] if i.get("item")]
-        per = [len(i["runs"]) for i in its]
-        out["worker_runs_per_item_mean"] = round(statistics.mean(per), 2) if per else None
-    except (ValueError, KeyError):
-        out["worker_runs_per_item_mean"] = None
-    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
-                          text=True, check=True).stdout.strip()
-    tr = subprocess.run(["herdr", "todo", "runs"], capture_output=True, text=True)
-    try:
-        done = [r for r in json.loads(tr.stdout)["result"]["runs"]
-                if r.get("repo") == root and r.get("status") == "done"
-                and (not lo or r["created_ms"] / 1000 >= lo) and (not hi or r["created_ms"] / 1000 < hi)]
-        out["todo_runs_done"] = len(done)
-        out["coordinator_cost_per_done_run"] = round(c / len(done), 2) if done else None
-        out["worker_cost_per_done_run"] = round(sum(w) / len(done), 2) if done else None
-    except (ValueError, KeyError):
-        out["todo_runs_done"] = None
+    if not a.workers_only:
+        c, started, calls, ctx = coordinators(lo, hi)
+        out.update({
+            "coordinator_items_started": started,
+            "coordinator_cost": round(c, 2),
+            "coordinator_cost_per_item": round(c / started, 2) if started else None,
+            "coordinator_calls_per_item": round(calls / started, 1) if started else None,
+            "coordinator_mean_context": int(statistics.mean(ctx)) if ctx else None,
+            "coordinator_cost_per_landed_item": round(c / landed, 2) if landed else None,
+        })
     print(json.dumps(out, indent=2))
 
 if __name__ == "__main__":
