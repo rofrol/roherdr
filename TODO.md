@@ -4295,6 +4295,33 @@ Items agents add. Not approved until the user moves them up.
   announced, or restore it when the commit fails; a test with a hook
   failing the commit.
 
+- [ ] Clean up the repository's run leftovers (the user, 2026-10-24: "will [t-akojcf5t]
+  cleanup be needed ... in this repo too? ask the models"; round
+  20261024-130625-dcff). 95 local `todo/*` branches remain (17 merged into
+  master; landed attempts were cherry-picked, so git does not see the
+  rest as merged): delete a run's branches only when its run record shows
+  it landed (its picked commit on master) or ended and its commits are not
+  needed for the trial's rework audit; keep aborted and blocked attempts
+  until the queue trial (t-ftnvhl7h) is evaluated. Worktrees:
+  `herdr-worktrees/todo-flow` (its item t-le4ejymr landed) can go;
+  `contract-pin` and `worktree-from-pane` only after their owners are
+  known; keep `clean-check` and the worker slot. Preferably a driver
+  command that lists and prunes by run record rather than a hand-run
+  `git branch -D`.
+
+- [ ] After the queue is adopted, cut the coordinator procedure from the [t-ng5zimb3]
+  agent instructions (round 20261024-130625-dcff, all four): the global
+  rules' "Working through TODO.md", the `todo` skill and AGENTS.md's
+  `herdr todo run` / headless worker / pi delegation sections shrink to
+  queue operation, escalation handling and pointers to the CLI's help;
+  keep the chat session's safety rules (authorization, destructive
+  actions, credentials, other sessions' changes, Rule 10, the question
+  format, handoff, install and worktree safety, private details); the
+  `consult` skill stays for ad-hoc questions while its review trigger
+  moves into the driver's gate. Archive finished TODO entries only after
+  the trial (runs refer to items). One reviewed change per file, the
+  global rules through the dotfiles repository's own process.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
