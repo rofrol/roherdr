@@ -3262,3 +3262,21 @@ TODO-deferred.md.
   large separable investigations. Measure: cache-read tokens per message,
   handoffs per landed item, total tokens across agents per item, and
   rework from detail a summary dropped.
+
+## The Lean workflow model covers what the coordinator fence and the
+
+Landed by herdr's TODO queue: run r-lfxizcyh, attempt 1, `docs: the lean workflow model covers the coordinator fence and landing, with replayed traces` (c8cb6fcf4ce9), approved by the server's review.
+
+Review note: Zatwierdzam. Weryfikacja serwera przeszła w całości: lint, tests, docs-contract i windows-lint są zielone. Błędy uprawnień, które worker miał w sandboksie, nie mają więc znaczenia.
+
+Zakres pozycji jest pokryty:
+- `Landing` odwzorowuje `core::step` i `core::reconcile`.
+- Twierdzenia nie używają `sorry`. Obejmują fence (epoch i pane generation), zwalnianie slotu tylko po pushu albo abort, landing dopiero po `verified` na zintegrowanym drzewie, push dopiero po landingu, crash między efektem a jego potwierdzeniem oraz `ack_applies_once`.
+- Sześć śladów JSON jest w repozytorium. Odtwarza je `lean_model_traces_replay` w `cargo nextest`, czyli pod `just check`.
+- Kod produkcyjny jest bez zmian. Zmienił się tylko moduł testów w `core.rs`.
+
+Kolejność landingu w modelu (najpierw verify na zintegrowanym drzewie, potem cherry-pick, CAS) idzie za kodem, a nie za brzmieniem pozycji. Zadanie tego właśnie wymaga.
+
+Do zrobienia poza tą próbą:
+- Zaktualizowano diagramy mermaid w README, ale `todo-workflow.svg` nie jest wyrenderowany na nowo, bo w sandboksie nie było `mmdc`. Trzeba go przerenderować poleceniem z README.
+- Prawdziwe tenure epoch i pane generation jeszcze nie docierają do rdzenia: shell zawsze podaje fence `(0, 0)` i nigdy nie wysyła `adopt`. To zostaje na t-ic5rrxn3 i README mówi o tym wprost.

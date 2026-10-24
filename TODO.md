@@ -11,17 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The Lean workflow model covers what the coordinator fence and the [t-lckz54j4]
-  landing items implement (the user, 2026-10-23, same rounds as the
-  landing item above). Scope: tenure epoch and pane generation, effect
-  acknowledgements (an effect may succeed before its acknowledgement
-  persists), landing order cherry-pick, verify on the integrated tree,
-  push, slot release; export JSON traces of the main transitions. Exit:
-  `lean docs/todo-workflow-model/TodoWorkflow.lean` passes and the
-  committed traces are replayed by a Rust test under `just check`.
-  2026-10-23: `PerItem` (the target per-item design) was added to the
-  model with its proofs; keep it in step with this item's changes.
-
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
