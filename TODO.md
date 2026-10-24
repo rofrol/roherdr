@@ -57,7 +57,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   account's 5 h and 7-day limit percentages with their reset times show
   apart.
 
-- [ ] What each project costs, parts 2 and 4: per TODO item and the report [t-z6duqr7z]
+- [ ] What each project costs, parts 2-4: per TODO item, money and the report [t-z6duqr7z]
   (the remainder of t-twmvyrnk, whose part 1, the persistent ledger, landed
   2026-10-24 in run r-3hdjreit, 59248ce89; the queue's approval closed the
   whole item although the coordinator had split it, so the rest is
@@ -72,9 +72,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   4. `herdr usage report` (spaces x days, `--by todo`, `--json`) and a TUI
      Usage view rendering the same query (spaces x days, drill into
      models and items).
-  Part 3 (money) waits for the user's figures ("Needs a decision"). Also
+  Part 3 (money) is decided below. Also
   from part 1's review: the first read of a session's transcript runs
   whole and synchronously in the event loop.
+  3. Money, decided 2026-10-24 (the user: "decide with the models on the
+     money view"; d-3f2ow4bm; round 20261024-145041-6ed4, sol, MiMo,
+     DeepSeek, Argon agreeing): per project and month, separately and
+     never summed: the share of each plan's capacity ("38% of your Claude
+     weekly windows this month"; per provider, from measured
+     denominators); actual cash from recorded metered charges (API credits
+     through herdr's proxy, DeepSeek, OpenRouter; balance changes alone
+     are not charges); and, only when the user set that plan's monthly fee
+     in a local config setting (never in the repository, never guessed),
+     the attributed subscription cost labelled "attributed, not
+     incremental". No API-equivalent (list-price) value line. Never a
+     total blending cash and attributed cost.
 
 - [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
   clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
@@ -4423,10 +4435,6 @@ user needs to decide or do.
   (t-ic5rrxn3) remain; the verify on a synthetic integration commit is a
   scope refinement to record (MiMo). Kept open; its remainder is those
   Proposed items.
-
-- [ ] [t-tm4ruxnn] For the money view of t-twmvyrnk (part 3): what are your monthly plan fees and which metered sources count as cash spend?
-  Options: I give the figures (Claude plan fee, ChatGPT plan fee; metered: API credits via the proxy, DeepSeek, OpenRouter) | Show only shares of plan capacity and metered cash, no attributed subscription cost | Drop the money view
-  Checked: part 3 of the original t-twmvyrnk text (share of plan capacity as the headline; metered spend as actual cash; allocated subscription cost labelled "attributed, not incremental"; list-price equivalent muted); the queue draft d-yosljize found the fees are not in the repository.
 
 ### Needs you to act or watch
 
