@@ -3777,6 +3777,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
   run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
 
+- [ ] A process for read-heavy subagents (the user, 2026-10-24: "this [t-6xmexxff]
+  needs some plan for the subagent in this case; how to make a process of
+  it? plan with the models"; follows round 20261024-134537-9e7a in
+  DECISIONS.md, "Folding subagents into one loop"). Plan round pending.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4341,11 +4346,6 @@ Items agents add. Not approved until the user moves them up.
   headless session change its effort between turns, and measure it on the
   golden set (the Proposed evals item) against one effort throughout:
   cost per landed item and items that used to pass and now fail.
-
-- [ ] A process for read-heavy subagents (the user, 2026-10-24: "this [t-6xmexxff]
-  needs some plan for the subagent in this case; how to make a process of
-  it? plan with the models"; follows round 20261024-134537-9e7a in
-  DECISIONS.md, "Folding subagents into one loop"). Plan round pending.
 
 ## Needs a decision
 
