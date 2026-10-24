@@ -38,7 +38,7 @@ class RoundTests(unittest.TestCase):
         self.write_config(["sol", "mimo", "deepseek"])
         self.brief = d / "brief.txt"
         self.brief.write_text("Is this design sound?\n")
-        self.env = {k: v for k, v in os.environ.items() if k not in ("PI_MODEL", "CONSULT_ROUND", "HERDR_SOCKET_PATH")}
+        self.env = {k: v for k, v in os.environ.items() if k not in ("PI_MODEL", "CONSULT_ROUND")}
         self.env.update(CONSULT_MODELS=str(self.config), CONSULT_LOG=str(d / "log.jsonl"), MARK_DIR=str(d))
         # A stand-in `ps`: consult.py walks the process ancestry to find the calling harness, so the tests answer
         # with a canned table (empty by default: no harness, the fallback rows) instead of the suite's own ancestry.

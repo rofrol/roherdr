@@ -51,24 +51,6 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, ver
     except (OSError, subprocess.SubprocessError):
         pass
 
-def run_in_herdr_job(model):
-    """Re-run in its own herdr-job tab, so the user can watch it (see in_herdr_job.sh)."""
-    import shutil
-    if os.environ.get("CONSULT_IN_JOB") or not os.environ.get("HERDR_SOCKET_PATH") or not shutil.which("herdr-job"):
-        return
-    wrap = CONSULT_DIR / "in_herdr_job.sh"
-    label = "deepseek " + model.removeprefix("deepseek-")  # the model shows in the tab name
-    os.execv(str(wrap), [str(wrap), label, str(Path(__file__).resolve()), *sys.argv[1:]])
-
-def live_output():
-    """The herdr-job tab, for reasoning the caller should not get; None outside a job."""
-    if not os.environ.get("HERDR_JOB_TTY"):
-        return None
-    try:
-        return open(os.environ["HERDR_JOB_TTY"], "w")
-    except OSError:
-        return None
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("prompt", nargs="*")
@@ -80,15 +62,11 @@ def main():
                    help="hard limit in seconds for the whole request (default 420)")
     p.add_argument("--show-reasoning", action="store_true")
     a = p.parse_args()
-    run_in_herdr_job(a.model)
 
     prompt = " ".join(a.prompt)
     # stdin only via -f -: a background job can inherit an open stdin that never sends EOF.
     for f in a.file:
-        if f == "-" and os.environ.get("CONSULT_STDIN"):  # saved by in_herdr_job.sh
-            text = Path(os.environ["CONSULT_STDIN"]).read_text(errors="replace")
-        else:
-            text = sys.stdin.read() if f == "-" else Path(f).read_text(errors="replace")
+        text = sys.stdin.read() if f == "-" else Path(f).read_text(errors="replace")
         prompt += f"\n\n--- {'stdin' if f == '-' else f} ---\n{text}"
     if not prompt.strip():
         sys.exit("Empty prompt")
@@ -110,7 +88,6 @@ def main():
 
     start = time.monotonic()
     reasoning, content, finish, usage, fingerprint, error_kind = [], [], None, None, "", ""
-    live = live_output()
     try:
         with urllib.request.urlopen(req, timeout=min(120, a.timeout)) as r:
             for raw in r:
@@ -127,9 +104,6 @@ def main():
                     delta = choice.get("delta") or {}
                     if delta.get("reasoning_content"):
                         reasoning.append(delta["reasoning_content"])
-                        if live:
-                            live.write(f"\x1b[2m{delta['reasoning_content']}\x1b[0m")
-                            live.flush()
                     if delta.get("content"):
                         content.append(delta["content"])
                     finish = choice.get("finish_reason") or finish
@@ -146,9 +120,6 @@ def main():
         signal.alarm(0)
 
     answer = "".join(content)
-    if live:
-        live.write("\n\n--- answer ---\n")
-        live.close()
     log_call(a.model, "ok" if finish in ("stop", None) else "error", time.monotonic() - start, len(prompt), len(answer),
              usage, model_version(a.model, base_url), fingerprint, error_kind, f"finish_reason {finish}")
     if a.show_reasoning and reasoning:

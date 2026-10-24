@@ -37,7 +37,7 @@ print(json.dumps({"subtype":"success", "is_error":mode == "error",
 ''')
             cli.chmod(0o755)
             log = root / "log.jsonl"
-            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", CONSULT_IN_JOB="1",
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                        CLAUDE_CONSULT_MODEL="claude-sonnet-5-5",
                        CONSULT_LOG=str(log), CONSULT_ROUND="test-round", CAPTURE=str(root / "capture"), FAKE_MODE=mode)
             result = subprocess.run([sys.executable, str(HELPER), *extra, "question"],
@@ -89,7 +89,7 @@ print(json.dumps({"subtype":"success", "is_error":mode == "error",
 
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "log.jsonl"
-            env = {"CONSULT_IN_JOB": "1", "CLAUDE_CONSULT_MODEL": "claude-sonnet-5-5",
+            env = {"CLAUDE_CONSULT_MODEL": "claude-sonnet-5-5",
                    "CONSULT_LOG": str(log), "CONSULT_ROUND": "test-round"}
             with mock.patch.dict(os.environ, env), mock.patch.object(helper, "run_claude", runner), \
                     mock.patch.object(sys, "argv", [str(HELPER), "-t", "7", "question"]), \

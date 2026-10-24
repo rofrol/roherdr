@@ -4,7 +4,6 @@
 # -r: run Codex in the current git repo (read-only), so it can read files and git history itself.
 set -euo pipefail
 consult_dir="$(dirname "$(realpath "$0")")/../consult-stats"  # the skills live side by side, wherever they are linked from
-orig=("$@")  # for the herdr-job re-run, once the model is known
 model="${GPT_MODEL:-sol}"; effort=""; files=(); repo=""
 while getopts "m:e:f:r" o; do
   case $o in m) model=$OPTARG;; e) effort=$OPTARG;; f) files+=("$OPTARG");; r) repo=1;; *) exit 2;; esac
@@ -14,9 +13,6 @@ shift $((OPTIND-1))
 case $effort in high|xhigh) echo "Effort $effort is disabled; use the default, low or medium" >&2; exit 2;; esac
 # Sol reasons at medium unless -e says otherwise (the user, 2026-10-11); other models keep Codex's default.
 case $model in sol|gpt-6.1-sol) effort=${effort:-medium};; esac
-if [ -z "${CONSULT_IN_JOB:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && command -v herdr-job >/dev/null; then
-  exec "$consult_dir"/in_herdr_job.sh "gpt $model/${effort:-default}" "$0" ${orig[@]+"${orig[@]}"}  # watch it in its own herdr tab
-fi
 case $model in
   astra|luna) model="gpt-6-$model";;  # gpt-6-astra, gpt-6-luna
   sol) model=gpt-6.1-sol;;            # newest Sol; the older gpt-6-sol needs its full id
@@ -27,7 +23,6 @@ prompt="$*"
 # stdin only via -f -: a background job can inherit an open stdin that never sends EOF.
 for f in ${files[@]+"${files[@]}"}; do
   [ "$f" = - ] && label=stdin || label=$f
-  if [ "$f" = - ] && [ -n "${CONSULT_STDIN:-}" ]; then f=$CONSULT_STDIN; fi  # saved by in_herdr_job.sh
   prompt="$prompt"$'\n\n'"--- $label ---"$'\n'"$(cat "$f")"
 done
 # Regex match instead of ${prompt//[[:space:]]/}: the substitution is quadratic in bash and hangs on long prompts.
@@ -73,10 +68,8 @@ export CODEX_HOME="$tmp/home"
 args=(exec --json --ignore-user-config --ephemeral --skip-git-repo-check -s read-only -C "$cwd" -m "$model" -o "$out"
       -c model_provider=pi -c "$provider")
 [ -n "$effort" ] && args+=(-c "model_reasoning_effort=\"$effort\"")
-# Codex's progress (stderr) goes to the herdr-job tab when there is one, its JSON events (with usage) to
-# $tmp/events, the answer to $out.
-progress=${HERDR_JOB_TTY:-/dev/null}
-if ! printf '%s' "$prompt" | codex "${args[@]}" - 2>&1 >"$tmp/events" | tee "$tmp/err" >"$progress"; then
+# Codex's progress (stderr) goes to $tmp/err, its JSON events (with usage) to $tmp/events, the answer to $out.
+if ! printf '%s' "$prompt" | codex "${args[@]}" - 2>"$tmp/err" >"$tmp/events"; then
   cat "$tmp/err" >&2
   # With --json Codex reports API errors (e.g. 401) only as events, not on stderr.
   jq -r 'select(.type == "turn.failed" or .type == "error") | .error.message // .message // empty' "$tmp/events" 2>/dev/null |

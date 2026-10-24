@@ -158,15 +158,6 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, ver
         pass
 
 
-def run_in_herdr_job(model):
-    import shutil
-    if os.environ.get("CONSULT_IN_JOB") or not os.environ.get("HERDR_SOCKET_PATH") or not shutil.which("herdr-job"):
-        return
-    wrap = CONSULT_DIR / "in_herdr_job.sh"
-    label = "openrouter " + model.split("/")[-1]
-    os.execv(str(wrap), [str(wrap), label, str(Path(__file__).resolve()), *sys.argv[1:]])
-
-
 def generation_identity(base_url, tok, gen_id):
     """OpenRouter's post-hoc metadata for one generation: who actually served it. Empty when it cannot be read."""
     req = urllib.request.Request(base_url + "/generation?id=" + urllib.parse.quote(gen_id),
@@ -208,7 +199,6 @@ def main():
             reject("--vet-file needs --out")
         Path(a.out).write_text(check_file(a.vet_file))
         return
-    run_in_herdr_job(a.model)
     a.model, a.provider = resolve_model(a.model, a.provider)
 
     prompt = " ".join(a.prompt)
@@ -219,8 +209,7 @@ def main():
             label, _, path = f.partition("=")
             text = read_staged(path)
         elif f == "-":
-            text = (Path(os.environ["CONSULT_STDIN"]).read_text(errors="replace")
-                    if os.environ.get("CONSULT_STDIN") else sys.stdin.read())
+            text = sys.stdin.read()
             label = "stdin"
         else:
             text = check_file(f)
@@ -256,7 +245,7 @@ def main():
             "messages": [{"role": "system", "content": a.system}, {"role": "user", "content": prompt}]}
     req = urllib.request.Request(base_url + "/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
-                                          "X-Title": "herdr-consult"})
+                                          "X-Title": "consult"})
 
     def on_alarm(*_):
         raise Deadline

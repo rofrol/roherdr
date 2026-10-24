@@ -68,8 +68,7 @@ sed "s#@HOME@#$HOME#g" "$SKILL_DIR/sandbox.sb" > "$STAGE/sandbox.sb"
 # Run from the clean staging dir: the repo cwd is read-denied, so os.getcwd() there would EPERM.
 cd "$STAGE"
 
-# CONSULT_IN_JOB=1 skips the herdr-job re-exec (the staged copy has no in_herdr_job sibling wiring to rely on).
 # No exec: the EXIT trap removes this run's staging directory afterwards, keeping the script's exit code.
 sandbox-exec -f "$STAGE/sandbox.sb" \
-  /usr/bin/env OPENROUTER_BEARER="$TOK" CONSULT_IN_JOB=1 \
+  /usr/bin/env OPENROUTER_BEARER="$TOK" \
   /usr/bin/python3 "$STAGE/openrouter/ask_openrouter_raw.py" ${ARGS[@]+"${ARGS[@]}"}

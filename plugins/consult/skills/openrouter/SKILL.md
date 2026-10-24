@@ -55,8 +55,7 @@ to Google AI Studio; `wonder` = `meta/muse-wonder`, pinned to Meta), `--provider
 stdin; `--allow-files` is still accepted but no longer needed), `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
 `OPENROUTER_TIMEOUT`. Answers can take a few minutes — use a Bash timeout of 600000.
 
-Inside herdr the script runs in its own herdr-job tab (no notification) so the user can watch it; the pre-send
-payload summary is printed there.
+The pre-send payload summary goes to stderr.
 
 ## When to use it
 

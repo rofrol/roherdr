@@ -127,8 +127,7 @@ reset time the error names, switch to another one, and tell the user which is
 unavailable and until when instead of quietly changing the round.
 
 
-Each skill's `SKILL.md` has the details. Inside herdr every call runs in its
-own [herdr-job](../job/README.md) tab, so you can watch it.
+Each skill's `SKILL.md` has the details.
 
 ## Install
 

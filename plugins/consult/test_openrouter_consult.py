@@ -112,7 +112,7 @@ class CheckFileTests(unittest.TestCase):
 
 class CliGateTests(unittest.TestCase):
     def run_helper(self, args, cwd):
-        env = dict(os.environ, CONSULT_IN_JOB="1")  # skip the herdr-job re-exec
+        env = dict(os.environ)
         return subprocess.run([sys.executable, str(HELPER), *args], cwd=cwd,
                               capture_output=True, text=True, env=env, timeout=20)
 

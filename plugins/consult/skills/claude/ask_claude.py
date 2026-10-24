@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Consult Claude via Claude Code, with usage logging and Herdr-job visibility."""
+"""Consult Claude via Claude Code, with usage logging."""
 import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,14 +23,10 @@ def main():
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("Timeout must be positive")
-    if not os.environ.get("CONSULT_IN_JOB") and os.environ.get("HERDR_SOCKET_PATH") and shutil.which("herdr-job"):
-        wrapper = CONSULT_DIR / "in_herdr_job.sh"
-        os.execv(str(wrapper), [str(wrapper), f"claude {args.model}", str(Path(__file__).resolve()), *sys.argv[1:]])
     prompt = " ".join(args.prompt)
     for name in args.file:
         if name == "-":
-            saved = os.environ.get("CONSULT_STDIN")
-            text = Path(saved).read_text() if saved else sys.stdin.read()
+            text = sys.stdin.read()
         else:
             text = Path(name).read_text()
         prompt += f"\n\n--- {'stdin' if name == '-' else name} ---\n{text}"
