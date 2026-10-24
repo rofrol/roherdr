@@ -592,7 +592,7 @@ cleanly as `pty_exhausted` below 64 free PTYs and reports `server.pty_usage`
 (5de0c204, cca46c1f). The agent rule "one wait command per wait, no retry
 loop around herdr-job; on a failing wait check status once and report;
 bound every loop" is in ~/.claude/CLAUDE.md (dotfiles 082d7ab) and Rule 10
-of ~/personal_projects/agent-kit/AGENTS.md (7151ac3), 2026-10-09.
+of ~/personal_projects/agents.md/AGENTS.md (7151ac3; now ~/personal_projects/agent-kit), 2026-10-09.
 
 ## Agent accounts and usage limits
 
