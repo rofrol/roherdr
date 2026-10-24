@@ -3240,3 +3240,10 @@ TODO-deferred.md.
   agent's reasoning effort after the plan. For herdr: a candidate for the
   queue's per-item agent, measured like the rest (the Proposed item on
   per-phase effort).
+- A sixth reply, https://x.com/_jaxvoss/status/2113916621408350533 (in
+  Polish): subagents not split off by force but used where the work would
+  clog the main context: log analysis, searching files and code, deploy
+  analysis, talking to Jira or Azure DevOps. For herdr: the article's
+  "context bloat" exception; the coordinator's own consult digests and the
+  item's agent reading large logs fit it (a subagent returns a summary,
+  the main loop keeps the decision).
