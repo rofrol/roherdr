@@ -1429,7 +1429,7 @@ impl Default for WorktreesConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            sidebar_width: 32,
+            sidebar_width: 36,
             sidebar_min_width: 18,
             sidebar_max_width: 44,
             sidebar_start_collapsed: false,
@@ -1917,7 +1917,7 @@ cjk_ime_agents = ["claude", "codex"]
     #[test]
     fn sidebar_bounds_default_and_parse() {
         let default_config = Config::default();
-        assert_eq!(default_config.ui.sidebar_width, 32);
+        assert_eq!(default_config.ui.sidebar_width, 36);
         assert_eq!(default_config.ui.sidebar_min_width, 18);
         assert_eq!(default_config.ui.sidebar_max_width, 44);
         assert_eq!(

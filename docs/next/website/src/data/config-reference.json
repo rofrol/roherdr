@@ -1024,7 +1024,7 @@
         {
           "key": "ui.sidebar_width",
           "type": "integer",
-          "default": "32",
+          "default": "36",
           "description": "Default expanded sidebar width in columns. A width set by dragging the divider replaces it."
         },
         {

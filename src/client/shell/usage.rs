@@ -350,7 +350,7 @@ fn days_at_next_boundary(starts_at: u64, now_unix: u64) -> u64 {
     (now_unix.saturating_sub(starts_at) / SECONDS_PER_DAY + 1).min(WINDOW_DAYS)
 }
 
-/// `+9.6pp to 01:04`, or `3.1pp over at 01:04`: the even pace at the end
+/// `+9.6pp to 01:04`, or `3.1pp over 01:04`: the even pace at the end
 /// of `days` window days less `used` percent, to the tenth.
 fn target_label(used: u8, days: u64, clock: &str) -> String {
     let target = 100.0 * days as f64 / WINDOW_DAYS as f64;
@@ -358,7 +358,7 @@ fn target_label(used: u8, days: u64, clock: &str) -> String {
     if tenths >= 0.0 {
         format!("+{:.1}pp to {clock}", tenths / 10.0)
     } else {
-        format!("{:.1}pp over at {clock}", -tenths / 10.0)
+        format!("{:.1}pp over {clock}", -tenths / 10.0)
     }
 }
 
@@ -581,21 +581,25 @@ pub(super) fn render_usage_footer(
         &"─".repeat(area.width as usize),
         Style::default().fg(palette.surface_dim),
     );
+    // Only the last row leaves the toggle's columns free; the hit rect never
+    // covers the toggle.
     let content_width = area.width.saturating_sub(SIDEBAR_TOGGLE_RESERVE);
     hits.usage_footer = Rect::new(area.x, area.y, content_width, area.height);
+    let row_rect = |row: u16| {
+        let width = if row.saturating_add(1) >= area.bottom() {
+            content_width
+        } else {
+            area.width
+        };
+        Rect::new(area.x, row, width, 1)
+    };
 
     let mut row = area.y + 1;
     for provider in &report.providers {
         if row >= area.bottom() {
             break;
         }
-        render_provider_row(
-            buffer,
-            Rect::new(area.x, row, content_width, 1),
-            provider,
-            now_unix,
-            palette,
-        );
+        render_provider_row(buffer, row_rect(row), provider, now_unix, palette);
         hits.tooltips
             .push(provider_code_tooltip(area.x, row, provider));
         row += 1;
@@ -607,7 +611,8 @@ pub(super) fn render_usage_footer(
                     .map(|(_, labels)| labels);
                 render_daily_use(
                     buffer,
-                    Rect::new(area.x, row, content_width, DAILY_USE_ROWS),
+                    row_rect(row),
+                    row_rect(row + 1),
                     &provider.provider,
                     daily_use,
                     labels,
@@ -628,12 +633,14 @@ pub(super) fn render_usage_footer(
 /// use a space and a partial day dim; then the use against an even pace and
 /// the even-pace target at the next window-day boundary, each shown whole
 /// or not at all. Under them each day's weekday initial. Both rows start at
-/// the area's left edge. Every day and the pace have a tooltip with the
-/// numbers.
+/// the short window's column; `area` is the bars row and `initials_area` the
+/// row under it, each as wide as the footer leaves it. Every day and the pace
+/// have a tooltip with the numbers.
 #[allow(clippy::too_many_arguments)] // The footer's render inputs, passed through.
 fn render_daily_use(
     buffer: &mut Buffer,
     area: Rect,
+    initials_area: Rect,
     provider_id: &str,
     daily_use: &UsageDailyUse,
     labels: Option<&DailyUseLabels>,
@@ -644,7 +651,7 @@ fn render_daily_use(
     let today_style = Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::BOLD);
-    let mut x = area.x;
+    let mut x = area.x.saturating_add(SHORT_WINDOW_COLUMN);
     for (index, day) in daily_use.days.iter().enumerate() {
         let current = daily_use.current_day.map(usize::from) == Some(index);
         let partial = day.is_some()
@@ -701,8 +708,8 @@ fn render_daily_use(
         put_segment(
             buffer,
             x,
-            area.y.saturating_add(1),
-            area.right(),
+            initials_area.y,
+            initials_area.right(),
             initial.encode_utf8(&mut glyph_buffer),
             if current {
                 today_style
@@ -1509,18 +1516,18 @@ mod tests {
             vec![
                 "─".repeat(26),
                 " AN   2% 47m   12% 6d".to_owned(),
-                "·▃▁ ·▂▁ +4pp".to_owned(),
-                "MTWTFSS".to_owned(),
+                "    ·▃▁ ·▂▁ +4pp".to_owned(),
+                "    MTWTFSS".to_owned(),
                 " OA  87% 47m  100% 6d".to_owned(),
             ]
         );
         let palette = Palette::catppuccin();
         // Today, Sunday, is highlighted in both rows.
-        assert_eq!(buffer[(6, 2)].fg, palette.accent);
-        assert_eq!(buffer[(6, 3)].fg, palette.accent);
-        assert_eq!(buffer[(5, 2)].fg, palette.overlay1);
+        assert_eq!(buffer[(10, 2)].fg, palette.accent);
+        assert_eq!(buffer[(10, 3)].fg, palette.accent);
+        assert_eq!(buffer[(9, 2)].fg, palette.overlay1);
         // An unknown day is dim, never a bar.
-        assert_eq!(buffer[(0, 2)].fg, palette.overlay0);
+        assert_eq!(buffer[(4, 2)].fg, palette.overlay0);
     }
 
     #[test]
@@ -1533,8 +1540,8 @@ mod tests {
         };
         // An hour west of UTC, the Monday 00:00 UTC day starts on Sunday evening.
         let rows = buffer_rows(&render_with_offset(&report, 26, |_| -3_600));
-        assert_eq!(rows[2], "▁▁▁▁▁▁▁ -3pp");
-        assert_eq!(rows[3], "SMTWTFS");
+        assert_eq!(rows[2], "    ▁▁▁▁▁▁▁ -3pp");
+        assert_eq!(rows[3], "    SMTWTFS");
     }
 
     #[test]
@@ -1599,11 +1606,11 @@ mod tests {
             &palette,
             &mut hits,
         );
-        assert_eq!(buffer_rows(&buffer)[2], "··▁▂··· +0pp");
+        assert_eq!(buffer_rows(&buffer)[2], "    ··▁▂··· +0pp");
         // Wednesday is dim; Thursday, today, counted from Wednesday, is not.
-        assert_eq!(buffer[(2, 2)].fg, palette.overlay0);
-        assert!(buffer[(2, 2)].modifier.contains(Modifier::DIM));
-        assert!(!buffer[(3, 2)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(6, 2)].fg, palette.overlay0);
+        assert!(buffer[(6, 2)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(7, 2)].modifier.contains(Modifier::DIM));
         let days = hits
             .tooltips
             .iter()
@@ -1611,7 +1618,7 @@ mod tests {
             .collect::<Vec<_>>();
         // Every day has its numbers on hover, one cell each.
         assert_eq!(days.len(), 7);
-        assert_eq!(days[2].rect, Rect::new(2, 2, 1, 1));
+        assert_eq!(days[2].rect, Rect::new(6, 2, 1, 1));
         assert_eq!(days[2].text, labels[0].1.days[2]);
         assert!(days.iter().all(|day| day.multiline));
         let pace = hits
@@ -1619,7 +1626,7 @@ mod tests {
             .iter()
             .find(|tooltip| tooltip.id == "usage:claude:pace")
             .unwrap();
-        assert_eq!(pace.rect, Rect::new(8, 2, 4, 1));
+        assert_eq!(pace.rect, Rect::new(12, 2, 4, 1));
         assert_eq!(pace.text, labels[0].1.pace);
     }
 
@@ -1664,18 +1671,18 @@ mod tests {
         };
         let buffer = render_with_offset(&report, 26, |_| 0);
         let palette = Palette::catppuccin();
-        assert_eq!(buffer_rows(&buffer)[2], "▃▆█▆··· -5pp");
-        assert_eq!(buffer[(0, 2)].fg, palette.overlay1);
-        assert_eq!(buffer[(1, 2)].fg, palette.yellow);
-        assert!(!buffer[(1, 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(2, 2)].fg, palette.red);
-        assert!(buffer[(2, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer_rows(&buffer)[2], "    ▃▆█▆··· -5pp");
+        assert_eq!(buffer[(4, 2)].fg, palette.overlay1);
+        assert_eq!(buffer[(5, 2)].fg, palette.yellow);
+        assert!(!buffer[(5, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(6, 2)].fg, palette.red);
+        assert!(buffer[(6, 2)].modifier.contains(Modifier::BOLD));
         // Today keeps the warning colour, in bold, and its initial the accent.
-        assert_eq!(buffer[(3, 2)].fg, palette.yellow);
-        assert!(buffer[(3, 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(3, 3)].fg, palette.accent);
-        assert!(buffer[(3, 3)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(1, 3)].fg, palette.overlay0);
+        assert_eq!(buffer[(7, 2)].fg, palette.yellow);
+        assert!(buffer[(7, 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(7, 3)].fg, palette.accent);
+        assert!(buffer[(7, 3)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(5, 3)].fg, palette.overlay0);
     }
 
     #[test]
@@ -1801,14 +1808,17 @@ mod tests {
     fn under_pace_the_row_shows_what_is_left_to_the_next_day_boundary() {
         // A day and five hours in: the next boundary is two days in, where
         // even pace is 28.6%; 19% used leaves 9.6 points.
-        let (buffer, hits) = render_target(Some(19), -7, 86_400 + 5 * 3_600, 32);
-        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp · +9.6pp to 01:04");
+        let (buffer, hits) = render_target(Some(19), -7, 86_400 + 5 * 3_600, 34);
+        assert_eq!(
+            buffer_rows(&buffer)[2],
+            "    ▁▁▁▁▁▁▁ -7pp · +9.6pp to 01:04"
+        );
         let palette = Palette::catppuccin();
-        assert_eq!(buffer[(8, 2)].fg, palette.overlay0);
-        assert_eq!(buffer[(29, 2)].fg, palette.overlay0);
+        assert_eq!(buffer[(12, 2)].fg, palette.overlay0);
+        assert_eq!(buffer[(33, 2)].fg, palette.overlay0);
         let tooltip = pace_tooltip_of(&hits);
         // Exactly the printed text.
-        assert_eq!(tooltip.rect, Rect::new(8, 2, 22, 1));
+        assert_eq!(tooltip.rect, Rect::new(12, 2, 22, 1));
         assert_eq!(
             tooltip.text,
             "-7 percentage points: 19% used vs 26% elapsed\n\
@@ -1820,41 +1830,63 @@ mod tests {
 
     #[test]
     fn over_pace_the_row_shows_how_far_over_the_next_day_boundary_it_is() {
-        let (buffer, hits) = render_target(Some(31), 2, 86_400 + 20 * 3_600, 36);
+        let (buffer, hits) = render_target(Some(31), 2, 86_400 + 20 * 3_600, 35);
         assert_eq!(
             buffer_rows(&buffer)[2],
-            "▁▁▁▁▁▁▁ +2pp · 2.4pp over at 01:04"
+            "    ▁▁▁▁▁▁▁ +2pp · 2.4pp over 01:04"
         );
         let palette = Palette::catppuccin();
-        assert_eq!(buffer[(8, 2)].fg, palette.yellow);
-        assert_eq!(buffer[(29, 2)].fg, palette.yellow);
-        assert_eq!(pace_tooltip_of(&hits).rect, Rect::new(8, 2, 26, 1));
+        assert_eq!(buffer[(12, 2)].fg, palette.yellow);
+        assert_eq!(buffer[(34, 2)].fg, palette.yellow);
+        assert_eq!(pace_tooltip_of(&hits).rect, Rect::new(12, 2, 23, 1));
     }
 
     #[test]
     fn without_the_used_percent_the_row_shows_only_the_pace() {
         let (buffer, hits) = render_target(None, -7, 86_400, 40);
-        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp");
+        assert_eq!(buffer_rows(&buffer)[2], "    ▁▁▁▁▁▁▁ -7pp");
         let tooltip = pace_tooltip_of(&hits);
-        assert_eq!(tooltip.rect, Rect::new(8, 2, 4, 1));
+        assert_eq!(tooltip.rect, Rect::new(12, 2, 4, 1));
         assert!(!tooltip.text.contains("target"));
     }
 
     #[test]
     fn a_narrow_row_drops_the_target_whole_and_then_the_pace() {
         // One column short of the target: only the pace, and its tooltip.
-        let (buffer, hits) = render_target(Some(19), -7, 86_400, 31);
-        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -7pp");
+        let (buffer, hits) = render_target(Some(19), -7, 86_400, 33);
+        assert_eq!(buffer_rows(&buffer)[2], "    ▁▁▁▁▁▁▁ -7pp");
         let tooltip = pace_tooltip_of(&hits);
-        assert_eq!(tooltip.rect, Rect::new(8, 2, 4, 1));
+        assert_eq!(tooltip.rect, Rect::new(12, 2, 4, 1));
         assert!(!tooltip.text.contains("target"));
         // One column short of the pace: no text and no tooltip.
-        let (buffer, hits) = render_target(Some(19), -7, 86_400, 13);
-        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁");
+        let (buffer, hits) = render_target(Some(19), -7, 86_400, 15);
+        assert_eq!(buffer_rows(&buffer)[2], "    ▁▁▁▁▁▁▁");
         assert!(hits
             .tooltips
             .iter()
             .all(|tooltip| tooltip.id != "usage:claude:pace"));
+    }
+
+    #[test]
+    fn both_target_rows_fit_in_a_default_width_sidebar() {
+        let sidebar_width = crate::config::Config::default().ui.sidebar_width;
+        let sidebar = Rect::new(0, 0, sidebar_width, 40);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![windowed("claude", "Claude", 2, 12)],
+        };
+        let (_, usage_area) = split_spaces_and_footer(sidebar, Some(&report));
+        // A day and two hours in, the target at the next boundary is
+        // 28.6%: 22% used is under it, 31% over it.
+        for (used, pace, row) in [
+            (22, -4, "    ▁▁▁▁▁▁▁ -4pp · +6.6pp to 01:04"),
+            (31, 2, "    ▁▁▁▁▁▁▁ +2pp · 2.4pp over 01:04"),
+        ] {
+            let (buffer, hits) =
+                render_target(Some(used), pace, 86_400 + 2 * 3_600, usage_area.width);
+            assert_eq!(buffer_rows(&buffer)[2], row);
+            assert!(pace_tooltip_of(&hits).text.contains("target"));
+        }
     }
 
     #[test]
@@ -1870,9 +1902,13 @@ mod tests {
         assert_eq!(target_label(80, 7, "01:04"), "+20.0pp to 01:04");
         assert_eq!(target_label(19, 2, "01:04"), "+9.6pp to 01:04");
         assert_eq!(target_label(100, 7, "01:04"), "+0.0pp to 01:04");
+        assert_eq!(target_label(31, 2, "01:04"), "2.4pp over 01:04");
         // The last day ends at the reset, in the zone of that instant.
         let (buffer, _) = render_target(Some(80), -6, 6 * day + 3 * 3_600, 40);
-        assert_eq!(buffer_rows(&buffer)[2], "▁▁▁▁▁▁▁ -6pp · +20.0pp to 01:04");
+        assert_eq!(
+            buffer_rows(&buffer)[2],
+            "    ▁▁▁▁▁▁▁ -6pp · +20.0pp to 01:04"
+        );
         let mut week = daily_use(vec![None; 7], None, 0);
         week.starts_at = MONDAY + 3_840;
         week.resets_at = week.starts_at + 7 * day;
@@ -2032,6 +2068,24 @@ mod tests {
         let rows = footer_text(&report, 20);
 
         assert!(rows[1].chars().count() <= 18, "{:?}", rows[1]);
+    }
+
+    #[test]
+    fn only_the_footers_last_row_keeps_the_toggle_columns_free() {
+        let width = 35;
+        let (buffer, hits) = render_target(Some(31), 2, 86_400 + 20 * 3_600, width);
+        let last = buffer.area.bottom() - 1;
+        // The bars row is not the last one: its text runs into the toggle's columns.
+        assert_eq!(last, 3);
+        assert_eq!(buffer[(width - 1, 2)].symbol(), "4");
+        // The last row and the click target leave them free.
+        for x in width - SIDEBAR_TOGGLE_RESERVE..width {
+            assert_eq!(buffer[(x, last)].symbol(), " ");
+        }
+        assert_eq!(
+            hits.usage_footer,
+            Rect::new(0, 0, width - SIDEBAR_TOGGLE_RESERVE, buffer.area.height)
+        );
     }
 
     #[test]

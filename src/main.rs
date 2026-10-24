@@ -249,7 +249,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 [ui]
 # Default sidebar width in columns. It never scales with content; dragging the
 # divider stores a width that replaces this one.
-# sidebar_width = 32
+# sidebar_width = 36
 
 # Minimum sidebar width when expanded (columns)
 # sidebar_min_width = 18
