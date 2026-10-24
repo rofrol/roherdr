@@ -11,156 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
-  "the coordinator/worker code, the whole control, could be extracted as a
-  new package; much less code than all of herdr; then various TUIs, GUIs
-  could connect to it; analyse with the models"). Facts: `src/workers/` is
-  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
-  platform layer at 60 places (process groups, sessions, start tokens), API
-  schema types and thread helpers; herdr reaches into it from API handlers,
-  the coordinator tab role, takeover tabs, the live handoff and the client
-  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
-  - the boundary is real but not yet clean: generic orchestration (store,
-    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
-    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
-    takeover, coordinator as a tab role, sidebar, Items popup, live
-    handoff); coordinator authority must not depend on tab identity;
-  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
-    to import nothing from herdr, linked into herdr's server (still the
-    only daemon and API host); platform needs behind ports the crate owns
-    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
-    herdr implementing them, fakes in tests; decide whether Windows is in
-    scope for those ports (MiMo);
-  - a separate daemon only when a second client must run without herdr
-    (a third long-lived process next to the server and the brokers would
-    multiply recovery paths now);
-  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
-    events with sequence numbers, replay and snapshots, capabilities (e.g.
-    takeover); version the envelope, not a two-day-old schema; a web client
-    needs an authenticated gateway, not the local socket;
-  - when: after the driver's first slice lands (churn), together with the
-    planned split of `src/workers/mod.rs` [t-ofobwsra].
-  Approved by the user 2026-10-08 ("add it to the TODO"): after the
-  driver's first slice [t-s3oaxcki].
-  User 2026-10-08: "one could even design the protocol and make an
-  implementation in Odin etc.": so the protocol is specified language-
-  neutrally (a written spec plus JSON schemas for commands, events and
-  receipts, and a conformance test suite any implementation runs against
-  a socket), not defined by the Rust types; the Rust crate is the reference
-  implementation, and a second one (Odin or another language) is possible
-  once the spec and the conformance tests exist.
-  Approved 2026-10-23 by the user (same rounds as t-ic5rrxn3's fence
-  addition): its orchestrator-core starts with a pure transition core,
-  step(state, event) -> (state, effects), effects as data run by a thin
-  shell; the Lean traces of the Lean model item join its conformance
-  suite. Move only the transitions the fence and landing items touch at
-  first; the full move of the about 35 imperative `info.step` assignments
-  waits for the question on Bend versus the Rust core ("Needs a
-  decision"). Keep its existing prerequisites (driver's first slice,
-  t-ofobwsra). Not queued as redundant: a separate characterization item
-  (folded into the fence and landing items as failing-first tests) and a
-  Bend decision document (t-54d2offk already decides the retirement).
-  Decided 2026-10-23 with the Lean model's session (round
-  20261023-163335-20b0, sol, DeepSeek, Argon; MiMo would keep the order
-  but write both fixes transition-shaped), after the user suspended Bend
-  (d-nazchk2s): a narrow slice of this item comes first and t-cmjqsat2
-  and t-ic5rrxn3 are implemented through it; not the whole move of the
-  about 35 `info.step` sites and not the crate yet (the driver's first
-  slice and t-ofobwsra do not gate this slice). Slice 1: a pure
-  `src/workers/runs/core.rs` (no I/O, async, tracing or store), `step(&
-  CoreState, &Input) -> Result<(CoreState, Vec<CoreEffect>), Rejection>`
-  with a fence (tenure epoch, pane generation) on every input; events are
-  the landing actions and the effect acknowledgements, effects are data
-  (cherry-pick, verify on the integrated tree, install, TODO edit, push,
-  restore branch, release slot, emit); `runs.rs` and `runs/finish.rs`
-  stay a thin shell that runs effects and feeds acknowledgements back;
-  state, cursor and effect intents persist in one store transaction; a
-  trace format v1 (JSON under `tests/fixtures/todo-traces/`) replayed by
-  one Rust test. Full answer, with the signatures and the trace example:
-  the Lean session's note, recorded in the task of slice 1.
-  In flight 2026-10-23: slice 1 of the transition core with the landing
-  (t-cmjqsat2), run `r-qllfvm6w` (continues r-ulhwynwg).
-  Slice 1 landed 2026-10-23 (run r-qllfvm6w): the pure landing core
-  `src/workers/runs/core.rs` (fence guard, landing with verify on the
-  integrated tree, degraded skips, abort paths, `ReleaseSlot` only after
-  `PushAcked`, a diverged origin blocks for the user, reconcile from the
-  observed git state), trace format v1 with 7 fixtures under
-  `tests/fixtures/todo-traces/` replayed by `traces_replay`. Not wired yet:
-  nothing in production calls it. Deviations from the Lean session's plan,
-  accepted by the coordinator: `Cleanup` is its own effect acknowledged by
-  `cleaned_up` (after `push_acked` the effects are `release_slot` and
-  `cleanup`); an `adopt` event (a newer fence takes over), a `pick_failed`
-  acknowledgement (a conflict ends `blocked`), a `cursor` in the state. Next,
-  slice 2: route the shell's landing through `core::step` with the store
-  migration (state, cursor and effect intents in one transaction), the
-  verify-after-cherry-pick order, reconcile at startup and handoff from git,
-  the failing-first shell tests (diverged origin, abort after cherry-pick,
-  a crash between an effect and its acknowledgement), the cli-reference
-  docs; then `approve_landing` and the no-push case in the core.
-  In flight 2026-10-23: slice 2, run r-xnft343u. Attempt 1 (commit
-  2101931) refused after review round 20261023-230513-039b (sol, MiMo,
-  DeepSeek, Argon): the pick moved shared master before the verify, the
-  restore reset without a compare-and-swap and found commits by subject,
-  the verify verified the attempt branch when the switch failed, an
-  unparsable landing JSON fell back silently; attempt 2 verifies the
-  synthetic integration first and lands it with a compare-and-swap (the
-  review is the run's attempt-2 task). The Lean session (herdr-67's
-  successor) is to be told that the landing order is verify, then pick.
-  2026-10-24: run r-xnft343u aborted after attempt 3 (14db1a1; round
-  20261024-004600-8c78: sol and DeepSeek abort, Argon land, MiMo timed
-  out): `step_todo` read `HEAD:TODO.md` before taking the commit's parent,
-  so another session's TODO edit could be overwritten (verified). Its
-  branches are kept; run r-3csypteo builds on attempt 3 with that fix, the
-  crash gap between `update-ref` and `read-tree` in `move_branch`, and
-  the abort loop when a restore cannot be planned (to be checked).
-  Slice 2 landed 2026-10-24 (run r-3csypteo, on top of r-xnft343u's attempt
-  3): the landing runs through `core::step` in `src/workers/runs/landing.rs`;
-  the order is verify a synthetic integration commit in the folder slot,
-  then land it with a guarded fast-forward (a moved head re-verifies, at
-  most 3 times, then stops for the user); the landed and TODO commits carry
-  `Herdr-Item`/`Herdr-Run` from creation and are found only by them; restore
-  moves the branch by `update-ref` compare-and-swap; state, cursor and
-  effect intent in the `runs.landing` column (new migration, `json_valid`
-  guards; an unparsable landing fails closed and can still be aborted);
-  reconcile from git at startup and handoff. Reviews: rounds
-  20261023-230513-039b, 20261024-000859-5d7b, 20261024-004600-8c78.
-  Remaining: `approve_landing` and the no-push case in the core, the
-  tenure fence wiring (t-ic5rrxn3), the Proposed item on the landing's
-  remaining crash and race windows; tell the Lean session (herdr-67's
-  successor) that the landing order is verify, then land.
-  Slice 3 landed 2026-10-24 (run r-csaq5smh): the owner's landing approval
-  in the home-directory repository is a core attention (`approve_landing`
-  names the commit; a moved branch raises the review again; abort ends it;
-  runs recorded before keep the old path), and a run with no push
-  destination feeds a skipped push (`push_skipped` in `todo status`; abort
-  after it takes the commit off the branch, by revert when other commits
-  sit on top). Review round 20261024-101432-bd1d: DeepSeek's reset claim and
-  Argon's legacy-approval and restore_to claims were checked against the
-  code and are false (restore_plan reverts under others' commits; a legacy
-  approval wait has no landing state, so it takes the old path); MiMo timed
-  out. Remaining of this item: the tenure fence (t-ic5rrxn3) and the crate.
-
-- [ ] Trial queue mode with one Opus agent per item, and fill [t-ftnvhl7h]
-  in the cost comparison (the user, 2026-10-23: "there will be only one
-  agent, no workers", "save the table of estimates in the repo, then
-  compare after the new cheaper model"; round 20261023-221441-3128;
-  carries out the trial decided 2026-10-12, d-amwperuu). `herdr todo
-  queue on`: the server starts `todo run --draft` for the top item, one
-  implementing agent per item, `draft_task` and `review_run` on Opus, no
-  coordinator LLM; the chat session only talks with the user and answers
-  escalations. Only Opus, for the agent and the calls (decided by the user
-  2026-10-23: "not ten items with Opus, then fifteen with Sonnet; only
-  Opus"), over about 20 items.
-  Measure per landed item: cost from t-2tvx7res's records and
-  `docs/todo-workflow-model/measure.py --since <cutover>`, attempts,
-  review verdicts, rework (amended or reverted commits, follow-up items),
-  questions to the user; fill the "After the cheaper model" table in
-  docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
-  least 35% lower with no rise in rework or interventions; otherwise ask
-  the user with the numbers. Lost against the coordinator: consult
-  rounds (an escalation to the user replaces them) and cross-item
-  judgment (t-ctxfxkwf).
-
 - [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
   session (the user, 2026-10-23, same decision; round
   20261023-215510-0b94). herdr keeps each item's content hash as of the
@@ -1557,6 +1407,135 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `runs.rs` 3987, `store.rs` 3813, `tests.rs` 12786 (split later the same
   way if step 2 needs it). Next: step 2, the per-module review with the
   models against T3 Code.
+
+- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
+  "the coordinator/worker code, the whole control, could be extracted as a
+  new package; much less code than all of herdr; then various TUIs, GUIs
+  could connect to it; analyse with the models"). Facts: `src/workers/` is
+  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
+  platform layer at 60 places (process groups, sessions, start tokens), API
+  schema types and thread helpers; herdr reaches into it from API handlers,
+  the coordinator tab role, takeover tabs, the live handoff and the client
+  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
+  - the boundary is real but not yet clean: generic orchestration (store,
+    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
+    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
+    takeover, coordinator as a tab role, sidebar, Items popup, live
+    handoff); coordinator authority must not depend on tab identity;
+  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
+    to import nothing from herdr, linked into herdr's server (still the
+    only daemon and API host); platform needs behind ports the crate owns
+    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
+    herdr implementing them, fakes in tests; decide whether Windows is in
+    scope for those ports (MiMo);
+  - a separate daemon only when a second client must run without herdr
+    (a third long-lived process next to the server and the brokers would
+    multiply recovery paths now);
+  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
+    events with sequence numbers, replay and snapshots, capabilities (e.g.
+    takeover); version the envelope, not a two-day-old schema; a web client
+    needs an authenticated gateway, not the local socket;
+  - when: after the driver's first slice lands (churn), together with the
+    planned split of `src/workers/mod.rs` [t-ofobwsra].
+  Approved by the user 2026-10-08 ("add it to the TODO"): after the
+  driver's first slice [t-s3oaxcki].
+  User 2026-10-08: "one could even design the protocol and make an
+  implementation in Odin etc.": so the protocol is specified language-
+  neutrally (a written spec plus JSON schemas for commands, events and
+  receipts, and a conformance test suite any implementation runs against
+  a socket), not defined by the Rust types; the Rust crate is the reference
+  implementation, and a second one (Odin or another language) is possible
+  once the spec and the conformance tests exist.
+  Approved 2026-10-23 by the user (same rounds as t-ic5rrxn3's fence
+  addition): its orchestrator-core starts with a pure transition core,
+  step(state, event) -> (state, effects), effects as data run by a thin
+  shell; the Lean traces of the Lean model item join its conformance
+  suite. Move only the transitions the fence and landing items touch at
+  first; the full move of the about 35 imperative `info.step` assignments
+  waits for the question on Bend versus the Rust core ("Needs a
+  decision"). Keep its existing prerequisites (driver's first slice,
+  t-ofobwsra). Not queued as redundant: a separate characterization item
+  (folded into the fence and landing items as failing-first tests) and a
+  Bend decision document (t-54d2offk already decides the retirement).
+  Decided 2026-10-23 with the Lean model's session (round
+  20261023-163335-20b0, sol, DeepSeek, Argon; MiMo would keep the order
+  but write both fixes transition-shaped), after the user suspended Bend
+  (d-nazchk2s): a narrow slice of this item comes first and t-cmjqsat2
+  and t-ic5rrxn3 are implemented through it; not the whole move of the
+  about 35 `info.step` sites and not the crate yet (the driver's first
+  slice and t-ofobwsra do not gate this slice). Slice 1: a pure
+  `src/workers/runs/core.rs` (no I/O, async, tracing or store), `step(&
+  CoreState, &Input) -> Result<(CoreState, Vec<CoreEffect>), Rejection>`
+  with a fence (tenure epoch, pane generation) on every input; events are
+  the landing actions and the effect acknowledgements, effects are data
+  (cherry-pick, verify on the integrated tree, install, TODO edit, push,
+  restore branch, release slot, emit); `runs.rs` and `runs/finish.rs`
+  stay a thin shell that runs effects and feeds acknowledgements back;
+  state, cursor and effect intents persist in one store transaction; a
+  trace format v1 (JSON under `tests/fixtures/todo-traces/`) replayed by
+  one Rust test. Full answer, with the signatures and the trace example:
+  the Lean session's note, recorded in the task of slice 1.
+  In flight 2026-10-23: slice 1 of the transition core with the landing
+  (t-cmjqsat2), run `r-qllfvm6w` (continues r-ulhwynwg).
+  Slice 1 landed 2026-10-23 (run r-qllfvm6w): the pure landing core
+  `src/workers/runs/core.rs` (fence guard, landing with verify on the
+  integrated tree, degraded skips, abort paths, `ReleaseSlot` only after
+  `PushAcked`, a diverged origin blocks for the user, reconcile from the
+  observed git state), trace format v1 with 7 fixtures under
+  `tests/fixtures/todo-traces/` replayed by `traces_replay`. Not wired yet:
+  nothing in production calls it. Deviations from the Lean session's plan,
+  accepted by the coordinator: `Cleanup` is its own effect acknowledged by
+  `cleaned_up` (after `push_acked` the effects are `release_slot` and
+  `cleanup`); an `adopt` event (a newer fence takes over), a `pick_failed`
+  acknowledgement (a conflict ends `blocked`), a `cursor` in the state. Next,
+  slice 2: route the shell's landing through `core::step` with the store
+  migration (state, cursor and effect intents in one transaction), the
+  verify-after-cherry-pick order, reconcile at startup and handoff from git,
+  the failing-first shell tests (diverged origin, abort after cherry-pick,
+  a crash between an effect and its acknowledgement), the cli-reference
+  docs; then `approve_landing` and the no-push case in the core.
+  In flight 2026-10-23: slice 2, run r-xnft343u. Attempt 1 (commit
+  2101931) refused after review round 20261023-230513-039b (sol, MiMo,
+  DeepSeek, Argon): the pick moved shared master before the verify, the
+  restore reset without a compare-and-swap and found commits by subject,
+  the verify verified the attempt branch when the switch failed, an
+  unparsable landing JSON fell back silently; attempt 2 verifies the
+  synthetic integration first and lands it with a compare-and-swap (the
+  review is the run's attempt-2 task). The Lean session (herdr-67's
+  successor) is to be told that the landing order is verify, then pick.
+  2026-10-24: run r-xnft343u aborted after attempt 3 (14db1a1; round
+  20261024-004600-8c78: sol and DeepSeek abort, Argon land, MiMo timed
+  out): `step_todo` read `HEAD:TODO.md` before taking the commit's parent,
+  so another session's TODO edit could be overwritten (verified). Its
+  branches are kept; run r-3csypteo builds on attempt 3 with that fix, the
+  crash gap between `update-ref` and `read-tree` in `move_branch`, and
+  the abort loop when a restore cannot be planned (to be checked).
+  Slice 2 landed 2026-10-24 (run r-3csypteo, on top of r-xnft343u's attempt
+  3): the landing runs through `core::step` in `src/workers/runs/landing.rs`;
+  the order is verify a synthetic integration commit in the folder slot,
+  then land it with a guarded fast-forward (a moved head re-verifies, at
+  most 3 times, then stops for the user); the landed and TODO commits carry
+  `Herdr-Item`/`Herdr-Run` from creation and are found only by them; restore
+  moves the branch by `update-ref` compare-and-swap; state, cursor and
+  effect intent in the `runs.landing` column (new migration, `json_valid`
+  guards; an unparsable landing fails closed and can still be aborted);
+  reconcile from git at startup and handoff. Reviews: rounds
+  20261023-230513-039b, 20261024-000859-5d7b, 20261024-004600-8c78.
+  Remaining: `approve_landing` and the no-push case in the core, the
+  tenure fence wiring (t-ic5rrxn3), the Proposed item on the landing's
+  remaining crash and race windows; tell the Lean session (herdr-67's
+  successor) that the landing order is verify, then land.
+  Slice 3 landed 2026-10-24 (run r-csaq5smh): the owner's landing approval
+  in the home-directory repository is a core attention (`approve_landing`
+  names the commit; a moved branch raises the review again; abort ends it;
+  runs recorded before keep the old path), and a run with no push
+  destination feeds a skipped push (`push_skipped` in `todo status`; abort
+  after it takes the commit off the branch, by revert when other commits
+  sit on top). Review round 20261024-101432-bd1d: DeepSeek's reset claim and
+  Argon's legacy-approval and restore_to claims were checked against the
+  code and are false (restore_plan reverts under others' commits; a legacy
+  approval wait has no landing state, so it takes the old path); MiMo timed
+  out. Remaining of this item: the tenure fence (t-ic5rrxn3) and the crate.
 
 - [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08: [t-dklsfhg4]
   "maybe it's time for the TODO to be in an SQL database? ask the models";
@@ -4256,3 +4235,29 @@ user needs to decide or do.
 ### Decide
 
 ### Needs you to act or watch
+
+- [ ] Trial queue mode with one Opus agent per item, and fill [t-ftnvhl7h]
+  in the cost comparison (the user, 2026-10-23: "there will be only one
+  agent, no workers", "save the table of estimates in the repo, then
+  compare after the new cheaper model"; round 20261023-221441-3128;
+  carries out the trial decided 2026-10-12, d-amwperuu). `herdr todo
+  queue on`: the server starts `todo run --draft` for the top item, one
+  implementing agent per item, `draft_task` and `review_run` on Opus, no
+  coordinator LLM; the chat session only talks with the user and answers
+  escalations. Only Opus, for the agent and the calls (decided by the user
+  2026-10-23: "not ten items with Opus, then fifteen with Sonnet; only
+  Opus"), over about 20 items.
+  Measure per landed item: cost from t-2tvx7res's records and
+  `docs/todo-workflow-model/measure.py --since <cutover>`, attempts,
+  review verdicts, rework (amended or reverted commits, follow-up items),
+  questions to the user; fill the "After the cheaper model" table in
+  docs/todo-workflow-model/cost-baseline.md. Adopt if cost per item is at
+  least 35% lower with no rise in rework or interventions; otherwise ask
+  the user with the numbers. Lost against the coordinator: consult
+  rounds (an escalation to the user replaces them) and cross-item
+  judgment (t-ctxfxkwf).
+  Decided by the user 2026-10-24 (d-y6w4tkwg): start the trial now; the
+  queue was turned on with `herdr todo queue on --agent claude` from the
+  coordinator pane (wR:p376), cutover 2026-10-24; t-ydd2vlwe was moved
+  after its prerequisite t-ofobwsra so the queue does not draft the crate
+  first. This item is the trial in progress, not a work item for the queue.
