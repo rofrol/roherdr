@@ -3685,6 +3685,51 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
   run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
 
+- [ ] The driver runs the model review of an implementation itself, before [t-4tpfl4if]
+  landing (the user, 2026-10-24: "shouldn't the consultations before a
+  task and the evaluation of the implementation by the models be run
+  deterministically by the supervisor? ask the models"). Round
+  20261024-125222-f08b (sol, MiMo, DeepSeek, Argon): yes for the
+  post-implementation review (all four), as a `herdr todo run` step
+  between verify and landing; the pre-task consult mechanically triggered
+  by item labels or risk paths (sol, MiMo, DeepSeek; Argon would keep it
+  with the coordinator). Deterministic: the trigger (a risk predicate:
+  the landing driver, the TODO writer, install/push, git and store state,
+  check definitions, protocol/API; or an item label; not diff size
+  alone), the brief built by code (the item, the task, the full diff,
+  the touched functions in full, the checks' output, earlier findings),
+  dispatch to the consult set, a findings ledger bound to the commit, and
+  a gate: every finding accepted (with a fix or evidence) or dismissed
+  with a file:line reason before landing, a changed commit voids the
+  dispositions; a model that fails is recorded as missing, never as an
+  approval. The judgment (is a finding real) stays with the coordinator
+  or the user. Measure: confirmed findings per round, escaped defects
+  (reverts and fix commits on reviewed items), cost per round. Today's
+  evidence: the slice-2 review rounds found an unsafe reset and an
+  overwritten TODO edit after the worker reported done.
+  Decided by the user 2026-10-24 (d-bolenqzs): yes, queue it, and design
+  the whole process: where the pre-task consult and the post-task review
+  are stored and how they reach the agent. Round 20261024-125755-9585
+  (sol, MiMo, DeepSeek, Argon): the worker store (SQLite) is the record,
+  not scratch files: tables for rounds, verbatim answers with model and
+  cost, structured findings, and the coordinator's dispositions, keyed by
+  run, attempt and commit; the consult stats link by round id. The driver
+  runs both steps and emits an event for each (pre-task after the usage
+  gate and before the worker starts: on every item (sol, DeepSeek) or on
+  items marked for it (MiMo); post-task after the checks pass, against
+  the exact candidate commit (MiMo would put it before verify)); the
+  coordinator records a disposition for every finding and resumes. The
+  worker gets a frozen task packet: the item verbatim, the accepted
+  dispositions verbatim as binding requirements, a digest of the rest as
+  non-binding, never the raw answers; on a blocked review the retry's
+  task carries the accepted findings verbatim as a checklist and the
+  worker reports evidence per finding. Landing needs completed reviews,
+  no finding without a disposition, accepted ones resolved, and the
+  reviewed commit unchanged. Kept locally (the repository is public):
+  raw prompts and answers, rejected findings, ratings and costs;
+  committed: code, the TODO note and DECISIONS.md entries for lasting
+  decisions, citing round ids.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4203,29 +4248,6 @@ Items agents add. Not approved until the user moves them up.
   announced, or restore it when the commit fails; a test with a hook
   failing the commit.
 
-- [ ] The driver runs the model review of an implementation itself, before [t-4tpfl4if]
-  landing (the user, 2026-10-24: "shouldn't the consultations before a
-  task and the evaluation of the implementation by the models be run
-  deterministically by the supervisor? ask the models"). Round
-  20261024-125222-f08b (sol, MiMo, DeepSeek, Argon): yes for the
-  post-implementation review (all four), as a `herdr todo run` step
-  between verify and landing; the pre-task consult mechanically triggered
-  by item labels or risk paths (sol, MiMo, DeepSeek; Argon would keep it
-  with the coordinator). Deterministic: the trigger (a risk predicate:
-  the landing driver, the TODO writer, install/push, git and store state,
-  check definitions, protocol/API; or an item label; not diff size
-  alone), the brief built by code (the item, the task, the full diff,
-  the touched functions in full, the checks' output, earlier findings),
-  dispatch to the consult set, a findings ledger bound to the commit, and
-  a gate: every finding accepted (with a fix or evidence) or dismissed
-  with a file:line reason before landing, a changed commit voids the
-  dispositions; a model that fails is recorded as missing, never as an
-  approval. The judgment (is a finding real) stays with the coordinator
-  or the user. Measure: confirmed findings per round, escaped defects
-  (reverts and fix commits on reviewed items), cost per round. Today's
-  evidence: the slice-2 review rounds found an unsafe reset and an
-  overwritten TODO edit after the worker reported done.
-
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -4265,6 +4287,14 @@ user needs to decide or do.
   record `degraded`, effect intents persist and reconcile at startup and
   handoff, with hook-forced fault tests. Close it as done?
   Options: Close it as done by slices 2 and 3 (Recommended) | Keep it open for the remaining windows in "Proposed"
+  2026-10-24, asked by the user ("I don't know, ask the models"), round
+  20261024-125755-3203 (sol, MiMo, DeepSeek, Argon, agreeing): not done;
+  the Exit criterion is not met while abort during an in-flight effect,
+  the crash windows in "Proposed" (the landing's remaining crash and race
+  windows; the lock file of a failed end write) and the tenure fence
+  (t-ic5rrxn3) remain; the verify on a synthetic integration commit is a
+  scope refinement to record (MiMo). Kept open; its remainder is those
+  Proposed items.
 
 ### Needs you to act or watch
 
