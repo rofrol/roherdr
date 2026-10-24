@@ -128,6 +128,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tenure fence wiring (t-ic5rrxn3), the Proposed item on the landing's
   remaining crash and race windows; tell the Lean session (herdr-67's
   successor) that the landing order is verify, then land.
+  Slice 3 landed 2026-10-24 (run r-csaq5smh): the owner's landing approval
+  in the home-directory repository is a core attention (`approve_landing`
+  names the commit; a moved branch raises the review again; abort ends it;
+  runs recorded before keep the old path), and a run with no push
+  destination feeds a skipped push (`push_skipped` in `todo status`; abort
+  after it takes the commit off the branch, by revert when other commits
+  sit on top). Review round 20261024-101432-bd1d: DeepSeek's reset claim and
+  Argon's legacy-approval and restore_to claims were checked against the
+  code and are false (restore_plan reverts under others' commits; a legacy
+  approval wait has no landing state, so it takes the old path); MiMo timed
+  out. Remaining of this item: the tenure fence (t-ic5rrxn3) and the crate.
 
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
