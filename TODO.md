@@ -11,6 +11,17 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A queue run's approval closes its item only when the run covered the [t-jk2gdyab]
+  whole item (follow-up of t-ftnvhl7h, 2026-10-24): run r-3hdjreit landed
+  part 1 of t-twmvyrnk after the coordinator answered its draft "split;
+  this run does part 1 only", and the approval moved the whole item into
+  DECISIONS.md, dropping parts 2-4 (restored by hand). When a draft answer
+  or the task scopes the run to part of the item, the approval appends a
+  note to the item and keeps it open (as `--note` does), and the queue
+  does not start the same item again until its text changes. Code:
+  `src/workers/runs/queue.rs` and the review's close path; a test with a
+  scoped draft answer.
+
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
@@ -45,6 +56,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tokens and its share of all Claude tokens in herdr per window; the
   account's 5 h and 7-day limit percentages with their reset times show
   apart.
+
+- [ ] What each project costs, parts 2 and 4: per TODO item and the report [t-z6duqr7z]
+  (the remainder of t-twmvyrnk, whose part 1, the persistent ledger, landed
+  2026-10-24 in run r-3hdjreit, 59248ce89; the queue's approval closed the
+  whole item although the coordinator had split it, so the rest is
+  restored here; the user, 2026-10-12: "a summary of how many tokens each
+  herdr space used, over time, maybe per TODO item"; rounds
+  20261012-140238-ec7f and the next).
+  2. Per TODO item: worker runs exact (their sessions, all attempts; the
+     ledger does not count headless worker sessions yet); the
+     coordinator's usage shown separately, an optional "during this run"
+     column labelled as an overlap estimate, never summed into the item;
+     unattributed usage shown so totals reconcile.
+  4. `herdr usage report` (spaces x days, `--by todo`, `--json`) and a TUI
+     Usage view rendering the same query (spaces x days, drill into
+     models and items).
+  Part 3 (money) waits for the user's figures ("Needs a decision"). Also
+  from part 1's review: the first read of a session's transcript runs
+  whole and synchronously in the event loop.
 
 - [ ] The bookmarks button in the spaces header does not vanish when [t-niqpy2sa]
   clicked (the user, 2026-10-23, a screenshot of the header `⇅ manual ⌕ ‹ ›
@@ -4393,6 +4423,10 @@ user needs to decide or do.
   (t-ic5rrxn3) remain; the verify on a synthetic integration commit is a
   scope refinement to record (MiMo). Kept open; its remainder is those
   Proposed items.
+
+- [ ] [t-tm4ruxnn] For the money view of t-twmvyrnk (part 3): what are your monthly plan fees and which metered sources count as cash spend?
+  Options: I give the figures (Claude plan fee, ChatGPT plan fee; metered: API credits via the proxy, DeepSeek, OpenRouter) | Show only shares of plan capacity and metered cash, no attributed subscription cost | Drop the money view
+  Checked: part 3 of the original t-twmvyrnk text (share of plan capacity as the headline; metered spend as actual cash; allocated subscription cost labelled "attributed, not incremental"; list-price equivalent muted); the queue draft d-yosljize found the fees are not in the repository.
 
 ### Needs you to act or watch
 
