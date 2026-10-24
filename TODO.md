@@ -22,6 +22,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `src/workers/runs/queue.rs` and the review's close path; a test with a
   scoped draft answer.
 
+- [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
+  (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
+  without it the trial's 35% criterion cannot be judged): `draft_task`
+  and `review_run` calls, including drafts that asked a question and runs
+  that were aborted, are recorded against the item and run (model,
+  tokens, cost; unknown is null) and shown by `herdr worker records`;
+  `measure.py` adds them to the cost per landed item.
+
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
   many tokens, or rather what percentage of the Claude subscription's
@@ -4388,6 +4396,19 @@ Items agents add. Not approved until the user moves them up.
   golden set (the Proposed evals item) against one effort throughout:
   cost per landed item and items that used to pass and now fail.
 
+- [ ] Queue readiness and routing (follow-ups of t-ftnvhl7h, round [t-gbkstg2j]
+  20261024-151528-003e): (1) an item can name the items it waits for
+  (`blocked_by` in its text, checked by `todo_edit`), and the queue skips
+  a blocked item before calling `draft_task`, without counting a failure
+  (today 3 of 6 starts were drafts that only found the item not ready);
+  (2) an abort and the TODO change that explains it reach the queue
+  together: the queue does not restart an item whose run the coordinator
+  just aborted until the TODO changed or the coordinator says go (today
+  it restarted t-eu3egeam before the reorder was committed); (3) a
+  draft's question goes to the coordinator first and reaches the user's
+  `?` list only when the coordinator forwards it, so user interventions
+  are counted correctly.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -4472,6 +4493,13 @@ user needs to decide or do.
   once): measure them apart: the first 10 queue items run without the
   review gate (from t-lckz54j4, run r-lfxizcyh), the gate is the 11th item,
   and the items after it are measured with the gate.
+  2026-10-24, status round 20261024-151528-003e (sol, MiMo, DeepSeek,
+  Argon): not yet measurable: in 6 starts, 2 landed, 1 in progress, 3
+  aborted drafts (2 items not ready, 1 restart race), one partly done item
+  closed whole; draft and review call costs unrecorded. All four: restart
+  the counted 10 after the partial-close fix and the cost records (and,
+  per sol and DeepSeek, readiness and routing). Coordinator practice until
+  then: pause the queue, commit the TODO change, then abort.
 
 - [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
   session (the user, 2026-10-23, same decision; round
