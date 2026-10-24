@@ -3318,3 +3318,19 @@ Worker potwierdził przyczynę: to ścieżka (a), czyli licznik zyskujący cyfr�
 Do wiadomości, bez blokowania:
 - Przy skrajnie wąskim nagłówku przycisk otwartej listy ustępuje przed Asking. To rozsądny wybór przy dwóch wymaganiach „nigdy nie znika”, które się wykluczają.
 - Przycisk, który pojawi się, gdy kursor jest nad nagłówkiem (np. pierwszy ◐), wejdzie dopiero po wyjściu kursora z wiersza. Worker sam to zgłosił.
+
+## A queue run's approval closes its item only when the run covered the
+
+Landed by herdr's TODO queue: run r-d6sfpvd3, attempt 1, `fix: a queue run's approval closes its item only when the run covered the whole item` (046fddeb6701), approved by the server's review.
+
+Review note: Zatwierdzam. Serwer zweryfikował commit 046fddeb6 i wszystkie checki przeszły: workers, tests, lint i windows-lint. Błędy z sandboksa, o których pisze worker, w tej weryfikacji się nie powtórzyły.
+
+Diff robi to, o co prosi item:
+- Zakres zapisuje się w nowym polu `RunFinish.scope`. Ustawia je odpowiedź koordynatora albo użytkownika na pytanie draftu, a także zadanie draftu, gdy wskazuje numerowaną część („part 2”).
+- Obie ścieżki akceptacji, auto-review kolejki i `todo resume --action approve`, korzystają z funkcji `queue_approval`. Przy przebiegu częściowym dopisują notatkę do itemu zamiast go zamykać.
+- Kolejka pomija item, dopóki jego tekst pasuje do zapisanych skrótów w `partial_digests`. Powód pominięcia widać w `blocked_items`.
+- Stare rekordy dalej się wczytują, bo nowe pola mają wartości domyślne (serde default). W kodzie produkcyjnym nie ma `unwrap()`, a logowanie idzie przez `tracing`.
+
+Testy obejmują trzy przypadki: odpowiedź na pytanie draftu zawężoną do części 1, ponowne uruchomienie po edycji tekstu itemu, kiedy przebieg całości zamyka item (to jest też test regresji), oraz akceptację przez koordynatora.
+
+Diff nie trafia w żadną pozycję z checklisty.

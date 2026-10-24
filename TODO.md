@@ -11,17 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A queue run's approval closes its item only when the run covered the [t-jk2gdyab]
-  whole item (follow-up of t-ftnvhl7h, 2026-10-24): run r-3hdjreit landed
-  part 1 of t-twmvyrnk after the coordinator answered its draft "split;
-  this run does part 1 only", and the approval moved the whole item into
-  DECISIONS.md, dropping parts 2-4 (restored by hand). When a draft answer
-  or the task scopes the run to part of the item, the approval appends a
-  note to the item and keeps it open (as `--note` does), and the queue
-  does not start the same item again until its text changes. Code:
-  `src/workers/runs/queue.rs` and the review's close path; a test with a
-  scoped draft answer.
-
 - [ ] The usage footer's weekly percent shows the even-pace target at the [t-imrkydso]
   next window-day boundary next to it (the user, 2026-10-24, with a
   screenshot of `AN 7% 3h30m 39% 4d10h` / `·····▒█· +2pp · +3.9pp to
