@@ -3777,6 +3777,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
   run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
 
+- [ ] Analyse with the models what the post [t-6umi4jgp]
+  https://x.com/Xudong07452910/status/2113800139005460534 means for herdr
+  (the user, 2026-10-24: "to the TODO, analyse with the models"). Round
+  pending.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
