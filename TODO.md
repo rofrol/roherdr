@@ -3769,7 +3769,41 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
 - [ ] A process for read-heavy subagents (the user, 2026-10-24: "this [t-6xmexxff]
   needs some plan for the subagent in this case; how to make a process of
   it? plan with the models"; follows round 20261024-134537-9e7a in
-  DECISIONS.md, "Folding subagents into one loop"). Plan round pending.
+  DECISIONS.md, "Folding subagents into one loop").
+  Plan, round 20261024-135021-7001 (sol, MiMo, DeepSeek, Argon; MiMo's
+  claim of an inner round of its own is unverified and not used):
+  - A read-only subagent definition with a fixed contract
+    (`.claude/agents/<name>.md`: Read, Grep, Glob; Opus at first so only
+    the delegation changes): input one question, scope (paths, log
+    window) and the source revision; output at most about 2K tokens of
+    numbered facts, each with a `file:line` or log-line range and the
+    quoted line, what was searched with no hits, and the path of a raw
+    evidence file written atomically under the ignored `.local/` (the
+    repository is public). A fact without a citation is unusable.
+  - The main loop re-reads the cited lines (a bounded read, at most about
+    5 citations per question) before it acts on them.
+  - Enforced by mechanism, not prose: a hook on tool outputs that stores
+    an output above a threshold as an evidence file and returns its path
+    and size (sol, MiMo, Argon; DeepSeek: a Stop hook that refuses the
+    turn end when a large eligible output was neither delegated nor
+    cited). Thresholds proposed range from 8K to 40K tokens: set it from
+    the measured distribution of tool-output sizes (step 1), not a guess.
+  - Delegate code search, log and benchmark analysis, facts from worker
+    logs; never diff review, checking claims against the source, consult
+    findings, decisions, TODO or handoff writes.
+  - Trial on the coordinator first (its cache-read cost per message is
+    the largest; queue agents are short-lived), 10-20 landed items against
+    a matched baseline: cache-read tokens per message, handoffs per landed
+    item, total tokens across all agents per item (cache writes and
+    verification re-reads included), rework from a dropped detail. Adopt
+    at about 15-20% fewer total tokens per item with no rise in handoffs
+    or rework; else revise or drop.
+  - Steps, one commit each: (1) herdr records each tool output's size
+    and the cache reads per message from the transcripts at turn end (an
+    event, no timer); (2) the contract and evidence writer with tests;
+    (3) the subagent definition; (4) the output-size hook (an agent
+    configuration change: the hook patch is approved by the user whole
+    before it is applied); (5) the trial report.
 
 ## Proposed
 
