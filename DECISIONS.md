@@ -3185,3 +3185,11 @@ TODO-deferred.md.
   original test passed 40/40 under load. The install of r-o6hgvr6b was
   skipped for this (`install_skipped`); this run's install brings both.
   The failed-commit window is in "Proposed".
+
+## The cost baseline names measure.py's input (t-nmmjurv3, 2026-10-24)
+
+- Follow-up of t-2tvx7res: `cost-baseline.md` described the journal scan;
+  it now names `herdr worker records --repo .` (or `--records FILE`),
+  `--workers-only` and the `items_landed` / `*_cost_per_landed_item`
+  outputs, and says the baseline numbers were measured by the earlier
+  version (journals of every repository, per done run). Run r-h7x2bhzs.
