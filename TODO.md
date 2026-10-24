@@ -4342,6 +4342,11 @@ Items agents add. Not approved until the user moves them up.
   golden set (the Proposed evals item) against one effort throughout:
   cost per landed item and items that used to pass and now fail.
 
+- [ ] A process for read-heavy subagents (the user, 2026-10-24: "this [t-6xmexxff]
+  needs some plan for the subagent in this case; how to make a process of
+  it? plan with the models"; follows round 20261024-134537-9e7a in
+  DECISIONS.md, "Folding subagents into one loop"). Plan round pending.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
