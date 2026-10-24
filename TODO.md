@@ -22,6 +22,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `src/workers/runs/queue.rs` and the review's close path; a test with a
   scoped draft answer.
 
+- [ ] The usage footer's weekly percent shows the even-pace target at the [t-imrkydso]
+  next window-day boundary next to it (the user, 2026-10-24, with a
+  screenshot of `AN 7% 3h30m 39% 4d10h` / `·····▒█· +2pp · +3.9pp to
+  02:00`, pasted into the lang-for-ai session by mistake and relayed from
+  there: "do this next: instead of 39% it should be 39% (x% at 2:00 am),
+  i.e. what usage should be at that 02:00 under the rule of 1/7 of the
+  weekly percent per day; ask the models"). x = 100 x days / 7 with
+  `days_at_next_boundary` (`src/client/shell/usage.rs`, `target_label`
+  computes it already), clamped to 100. Round 20261024-153233-7381 (sol,
+  MiMo, DeepSeek, Argon, run by the lang-for-ai coordinator): a 24-hour
+  `02:00` like the rest of the footer; never wrap the footer, drop the
+  addition whole when the row is too narrow; omit it when the next
+  boundary is the reset (MiMo, DeepSeek, Argon) or show `(100% at reset)`
+  (sol). The full `39% (42.9% at 02:00)` does not fit the 35 columns of a
+  default sidebar's row 1 (about 42 with the 5-hour part); open questions
+  d-ny6umip3 (form and precision) and d-t63wh7gu (line 2). The chart
+  redesign (t-b7f4w4je) replaces line 2 later.
+
 - [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
   (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
   without it the trial's 35% criterion cannot be judged): `draft_task`
