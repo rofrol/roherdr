@@ -7,6 +7,7 @@ mod coordinators;
 mod env;
 mod integrations;
 mod layouts;
+mod ledger;
 mod panes;
 pub(crate) mod plugins;
 mod reports;
@@ -248,6 +249,10 @@ impl App {
 
         let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            // The session's last responses, while the pane still names it.
+            if let Some((ws_idx, _)) = self.find_pane(*pane_id) {
+                self.book_agent_usage(ws_idx, *pane_id);
+            }
             if self
                 .state
                 .popup_pane
@@ -737,6 +742,11 @@ impl App {
 
         if update.agent_name_changed {
             self.emit_pane_updated(update.ws_idx, update.pane_id);
+        }
+
+        if update.agent_released {
+            // The agent exited: its session's last responses.
+            self.book_agent_usage(update.ws_idx, update.pane_id);
         }
 
         if update.previous_agent_label != update.agent_label || update.agent_released {
@@ -1645,6 +1655,7 @@ impl App {
             }
             Method::UsageRead(params) => return self.handle_usage_read(request.id, params),
             Method::UsageSettings(_) => return self.handle_usage_settings(request.id),
+            Method::UsageLedger(params) => return self.handle_usage_ledger(request.id, params),
             Method::UsageSetEnabled(params) => {
                 return self.handle_usage_set(request.id, "enabled", params.enabled);
             }

@@ -16,10 +16,12 @@ mod gemini;
 mod http;
 mod keys;
 mod kimi;
+pub(crate) mod ledger;
 mod openai_api;
 mod openrouter;
 mod prices;
 mod samples;
+pub(crate) mod transcript;
 
 pub(crate) use keys::DEFAULT_AUTH_FILE;
 

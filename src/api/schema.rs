@@ -583,6 +583,8 @@ pub enum Method {
     UsageSetEnabled(UsageSetEnabledParams),
     #[serde(rename = "usage.set_provider")]
     UsageSetProvider(UsageSetProviderParams),
+    #[serde(rename = "usage.ledger")]
+    UsageLedger(UsageLedgerParams),
     #[serde(rename = "notification.list")]
     NotificationList(EmptyParams),
     #[serde(rename = "integration.install")]

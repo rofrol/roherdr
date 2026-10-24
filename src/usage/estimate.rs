@@ -18,7 +18,8 @@ use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
-use super::prices::{self, ModelPrice};
+use super::prices;
+use super::transcript::{self, reader_for, Reader, Tokens};
 
 /// Printed with every report.
 pub(crate) const ESTIMATE_LABEL: &str = "estimate, not the provider's bill";
@@ -418,42 +419,6 @@ impl Models {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct Tokens {
-    input: u64,
-    output: u64,
-    cache_write_5m: u64,
-    cache_write_1h: u64,
-    cache_read: u64,
-}
-
-impl Tokens {
-    fn cost(&self, price: &ModelPrice) -> f64 {
-        (self.input as f64 * price.input
-            + self.output as f64 * price.output
-            + self.cache_write_5m as f64 * price.cache_write_5m
-            + self.cache_write_1h as f64 * price.cache_write_1h
-            + self.cache_read as f64 * price.cache_read)
-            / 1_000_000.0
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Reader {
-    Claude,
-    Codex,
-    Pi,
-}
-
-fn reader_for(agent: &str) -> Option<Reader> {
-    match agent {
-        "claude" => Some(Reader::Claude),
-        "codex" => Some(Reader::Codex),
-        "pi" | "omp" => Some(Reader::Pi),
-        _ => None,
-    }
-}
-
 fn read_session(
     agent: &str,
     session: &SessionKey,
@@ -577,7 +542,7 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The transcripts of a Claude session's subagents, in `<session>/subagents/`.
-fn claude_subagents(session_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn claude_subagents(session_dir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     find_files(
         &session_dir.join("subagents"),
@@ -639,10 +604,6 @@ fn in_range(timestamp: Option<&Value>, since: Option<OffsetDateTime>) -> bool {
         .is_some_and(|time| time >= since)
 }
 
-fn number(value: &Value, key: &str) -> u64 {
-    value.get(key).and_then(Value::as_u64).unwrap_or(0)
-}
-
 /// Claude Code writes one line per content block of a response, each with
 /// the response's whole usage, so a response counts once by its message
 /// and request ids, across all transcripts read.
@@ -653,56 +614,18 @@ fn read_claude(
     models: &mut Models,
 ) {
     for_each_line(path, |line| {
-        if line.get("type").and_then(Value::as_str) != Some("assistant") {
+        let Some(usage) = transcript::claude_line(&line) else {
+            return;
+        };
+        if !in_range(line.get("timestamp"), since) {
             return;
         }
-        let Some(message) = line.get("message") else {
-            return;
-        };
-        let Some(usage) = message.get("usage") else {
-            return;
-        };
-        let model = message
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        if model == "<synthetic>" || !in_range(line.get("timestamp"), since) {
-            return;
-        }
-        let message_id = message.get("id").and_then(Value::as_str);
-        let request_id = line.get("requestId").and_then(Value::as_str);
-        let key = match (message_id, request_id) {
-            (None, None) => line
-                .get("uuid")
-                .and_then(Value::as_str)
-                .map(|uuid| format!("uuid:{uuid}")),
-            (message_id, request_id) => Some(format!(
-                "{}:{}",
-                message_id.unwrap_or(""),
-                request_id.unwrap_or("")
-            )),
-        };
-        if let Some(key) = key {
+        if let Some(key) = usage.response_key {
             if !seen_messages.insert(key) {
                 return;
             }
         }
-        let cache_write = number(usage, "cache_creation_input_tokens");
-        let (write_5m, write_1h) = match usage.get("cache_creation") {
-            Some(split) => {
-                let write_1h = number(split, "ephemeral_1h_input_tokens").min(cache_write);
-                (cache_write - write_1h, write_1h)
-            }
-            None => (cache_write, 0),
-        };
-        let tokens = Tokens {
-            input: number(usage, "input_tokens"),
-            output: number(usage, "output_tokens"),
-            cache_write_5m: write_5m,
-            cache_write_1h: write_1h,
-            cache_read: number(usage, "cache_read_input_tokens"),
-        };
-        models.add(model, tokens, None);
+        models.add(&usage.model, usage.tokens, None);
     });
 }
 
@@ -710,60 +633,15 @@ fn read_claude(
 /// event; each event counts the growth since the previous one, under the
 /// model of the turn it belongs to.
 fn read_codex(path: &Path, since: Option<OffsetDateTime>, models: &mut Models) {
-    let mut model = String::from("codex (model unknown)");
-    let mut previous = [0u64; 4];
+    let mut totals = transcript::CodexTotals::default();
     for_each_line(path, |line| {
-        let Some(payload) = line.get("payload") else {
+        let Some(usage) = totals.line(&line) else {
             return;
         };
-        if line.get("type").and_then(Value::as_str) == Some("turn_context") {
-            if let Some(name) = payload.get("model").and_then(Value::as_str) {
-                model = name.to_string();
-            }
+        if !in_range(line.get("timestamp"), since) {
             return;
         }
-        if payload.get("type").and_then(Value::as_str) != Some("token_count") {
-            return;
-        }
-        let Some(total) = payload
-            .get("info")
-            .and_then(|info| info.get("total_token_usage"))
-        else {
-            return;
-        };
-        let current = [
-            number(total, "input_tokens"),
-            number(total, "cached_input_tokens"),
-            number(total, "cache_write_input_tokens"),
-            number(total, "output_tokens"),
-        ];
-        // A smaller total starts a new count (a new process on the file).
-        let restarted = current
-            .iter()
-            .zip(previous)
-            .any(|(now, before)| *now < before);
-        let delta: Vec<u64> = if restarted {
-            current.to_vec()
-        } else {
-            current
-                .iter()
-                .zip(previous)
-                .map(|(now, before)| now - before)
-                .collect()
-        };
-        previous = current;
-        if delta.iter().all(|value| *value == 0) || !in_range(line.get("timestamp"), since) {
-            return;
-        }
-        // OpenAI counts cached and cache-written tokens inside the input.
-        let tokens = Tokens {
-            input: delta[0].saturating_sub(delta[1]).saturating_sub(delta[2]),
-            output: delta[3],
-            cache_write_5m: delta[2],
-            cache_write_1h: 0,
-            cache_read: delta[1],
-        };
-        models.add(&model, tokens, None);
+        models.add(&usage.model, usage.tokens, None);
     });
 }
 
@@ -771,37 +649,13 @@ fn read_codex(path: &Path, since: Option<OffsetDateTime>, models: &mut Models) {
 /// computed, used when herdr has no price for the model.
 fn read_pi(path: &Path, since: Option<OffsetDateTime>, models: &mut Models) {
     for_each_line(path, |line| {
-        if line.get("type").and_then(Value::as_str) != Some("message") {
-            return;
-        }
-        let Some(message) = line.get("message") else {
-            return;
-        };
-        if message.get("role").and_then(Value::as_str) != Some("assistant") {
-            return;
-        }
-        let Some(usage) = message.get("usage") else {
+        let Some(usage) = transcript::pi_line(&line) else {
             return;
         };
         if !in_range(line.get("timestamp"), since) {
             return;
         }
-        let model = message
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let tokens = Tokens {
-            input: number(usage, "input"),
-            output: number(usage, "output"),
-            cache_write_5m: number(usage, "cacheWrite"),
-            cache_write_1h: 0,
-            cache_read: number(usage, "cacheRead"),
-        };
-        let reported = usage
-            .get("cost")
-            .and_then(|cost| cost.get("total"))
-            .and_then(Value::as_f64);
-        models.add(model, tokens, reported);
+        models.add(&usage.model, usage.tokens, usage.reported_cost);
     });
 }
 

@@ -211,6 +211,8 @@ pub struct App {
     pub(crate) agent_contexts: crate::agent_context::ContextStore,
     /// The user's context windows by exact model id (`[agents] context_window`).
     pub(crate) context_windows: std::collections::BTreeMap<String, u64>,
+    /// The tokens every agent session used, kept after its pane closes.
+    pub(crate) usage_ledger: crate::usage::ledger::UsageLedger,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -715,6 +717,16 @@ impl App {
                     .then(crate::agent_context::ContextStore::default_dir),
             ),
             context_windows: config.agents.context_window.clone(),
+            usage_ledger: crate::usage::ledger::UsageLedger::open(
+                policy
+                    .persist_session
+                    .then(|| {
+                        crate::agent_context::ContextStore::default_dir()
+                            .join(crate::usage::ledger::LEDGER_FILE)
+                    })
+                    .as_deref(),
+                crate::assignments::now_ms(),
+            ),
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_refresh_spawn_retry_pending: false,
@@ -780,6 +792,7 @@ impl App {
         app.configure_window_title(&config.ui.window_title);
         app.refresh_restored_workspace_git_metadata();
         app.reconcile_agent_contexts();
+        app.book_agent_usage_at_start();
         Ok(app)
     }
 
@@ -845,6 +858,7 @@ impl App {
         app.refresh_restored_workspace_git_metadata();
         // The replaced server's cursors are on disk: go on where it stopped.
         app.reconcile_agent_contexts();
+        app.book_agent_usage_at_start();
         Ok(app)
     }
 

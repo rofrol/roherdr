@@ -1590,6 +1590,7 @@ impl App {
                 pane_id,
                 crate::agent_context::ContextEvent::Reconcile,
             );
+            self.book_agent_usage(ws_idx, pane_id);
         }
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
@@ -1618,6 +1619,9 @@ impl App {
         if let Err(message) = validate_optional_resume_argv(params.resume_argv.as_deref()) {
             return encode_error(id, "invalid_resume_argv", message);
         }
+        // The session the pane named until now (a `/clear`, a resume or a new session ends
+        // it): its last responses, before the report replaces its transcript.
+        self.book_agent_usage(ws_idx, pane_id);
         if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
             if params.turn_reports {
                 terminal.prompt_turns.mark_reporting(&agent_label);
@@ -1667,6 +1671,7 @@ impl App {
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         if applied && session_ref.is_some() {
+            self.book_agent_usage(ws_idx, pane_id);
             // A session start (a new or cleared session, a resume, a compaction) leaves the
             // context size unknown until its first request.
             self.reconcile_agent_context(
@@ -1800,6 +1805,7 @@ impl App {
                 pane_id,
                 crate::agent_context::ContextEvent::Reconcile,
             );
+            self.book_agent_usage(ws_idx, pane_id);
         }
         // A coordinator's turn report is a supervision sweep's event, and a boundary for the
         // findings' notices to it.

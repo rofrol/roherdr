@@ -316,3 +316,109 @@ impl ProviderUsage {
         }
     }
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerParams {
+    /// Only this space's aggregates; every space's when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// Tokens the server's persistent usage ledger recorded from the transcripts of the agent
+/// sessions it saw, kept after their panes close. Observed tokens, not a provider's bill.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerReport {
+    /// Unix seconds since which the ledger records: no session that ended before it is in
+    /// it, while a session it saw counts from its transcript's start. Absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_start: Option<u64>,
+    /// Unix seconds the rolling windows end at: the server's time of the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<u64>,
+    /// One entry per space with recorded usage.
+    #[serde(default)]
+    pub spaces: Vec<UsageLedgerSpace>,
+    /// Every space's tokens per rolling window, also with `workspace_id`, so a space's
+    /// share can be computed.
+    #[serde(default)]
+    pub windows: Vec<UsageLedgerWindow>,
+}
+
+/// Token counts by class.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerTokens {
+    /// Input tokens neither written to nor read from the prompt cache.
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerSpace {
+    /// Absent for usage recorded without a space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The space's current name; absent for a space the server no longer lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub tokens: UsageLedgerTokens,
+    /// Unix seconds of the space's earliest recorded response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_at: Option<u64>,
+    /// Per day, oldest first.
+    #[serde(default)]
+    pub days: Vec<UsageLedgerDay>,
+    /// Per agent and model, over all days.
+    #[serde(default)]
+    pub models: Vec<UsageLedgerModel>,
+    /// Per rolling window ending at `as_of`.
+    #[serde(default)]
+    pub windows: Vec<UsageLedgerWindow>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerDay {
+    /// `YYYY-MM-DD` in the server's local time at the response's time.
+    pub day: String,
+    #[serde(default)]
+    pub tokens: UsageLedgerTokens,
+    #[serde(default)]
+    pub models: Vec<UsageLedgerModel>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerModel {
+    /// The agent kind, such as `claude`, `codex` or `pi`.
+    pub agent: String,
+    /// The model id the transcript records.
+    pub model: String,
+    #[serde(default)]
+    pub tokens: UsageLedgerTokens,
+}
+
+/// Tokens of responses recorded within a rolling window.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerWindow {
+    /// `1h`, `6h`, `24h` or `7d`; clients ignore ids they do not know.
+    pub id: String,
+    /// The window's length in seconds.
+    pub seconds: u64,
+    #[serde(default)]
+    pub tokens: UsageLedgerTokens,
+    /// Per agent kind.
+    #[serde(default)]
+    pub agents: Vec<UsageLedgerAgentTokens>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageLedgerAgentTokens {
+    pub agent: String,
+    #[serde(default)]
+    pub tokens: UsageLedgerTokens,
+}

@@ -1498,6 +1498,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::UsageSettings(_) => "usage.settings",
         Method::UsageSetEnabled(_) => "usage.set_enabled",
         Method::UsageSetProvider(_) => "usage.set_provider",
+        Method::UsageLedger(_) => "usage.ledger",
         Method::NotificationList(_) => "notification.list",
         Method::IntegrationInstall(_) => "integration.install",
         Method::IntegrationUninstall(_) => "integration.uninstall",

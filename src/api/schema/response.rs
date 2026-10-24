@@ -520,6 +520,9 @@ pub enum ResponseResult {
     UsageSettings {
         settings: super::usage::UsageSettings,
     },
+    UsageLedger {
+        ledger: super::usage::UsageLedgerReport,
+    },
     NotificationList {
         notifications: Vec<super::NotificationRecord>,
     },

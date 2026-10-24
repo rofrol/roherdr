@@ -7116,6 +7116,18 @@
           ],
           "type": "object"
         },
+        "UsageLedgerParams": {
+          "properties": {
+            "workspace_id": {
+              "description": "Only this space's aggregates; every space's when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "UsageReadParams": {
           "properties": {
             "refresh": {
@@ -11868,6 +11880,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/UsageSetProviderParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "usage.ledger",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/UsageLedgerParams"
             }
           },
           "required": [
@@ -18948,6 +18976,22 @@
             },
             {
               "properties": {
+                "ledger": {
+                  "$ref": "#/schemas/success_response/$defs/UsageLedgerReport"
+                },
+                "type": {
+                  "const": "usage_ledger",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "ledger"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "notifications": {
                   "items": {
                     "$ref": "#/schemas/success_response/$defs/NotificationRecord"
@@ -22196,6 +22240,249 @@
               "type": "string"
             }
           ]
+        },
+        "UsageLedgerAgentTokens": {
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "tokens": {
+              "$ref": "#/schemas/success_response/$defs/UsageLedgerTokens",
+              "default": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 0,
+                "output": 0
+              }
+            }
+          },
+          "required": [
+            "agent"
+          ],
+          "type": "object"
+        },
+        "UsageLedgerDay": {
+          "properties": {
+            "day": {
+              "description": "`YYYY-MM-DD` in the server's local time at the response's time.",
+              "type": "string"
+            },
+            "models": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerModel"
+              },
+              "type": "array"
+            },
+            "tokens": {
+              "$ref": "#/schemas/success_response/$defs/UsageLedgerTokens",
+              "default": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 0,
+                "output": 0
+              }
+            }
+          },
+          "required": [
+            "day"
+          ],
+          "type": "object"
+        },
+        "UsageLedgerModel": {
+          "properties": {
+            "agent": {
+              "description": "The agent kind, such as `claude`, `codex` or `pi`.",
+              "type": "string"
+            },
+            "model": {
+              "description": "The model id the transcript records.",
+              "type": "string"
+            },
+            "tokens": {
+              "$ref": "#/schemas/success_response/$defs/UsageLedgerTokens",
+              "default": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 0,
+                "output": 0
+              }
+            }
+          },
+          "required": [
+            "agent",
+            "model"
+          ],
+          "type": "object"
+        },
+        "UsageLedgerReport": {
+          "description": "Tokens the server's persistent usage ledger recorded from the transcripts of the agent\nsessions it saw, kept after their panes close. Observed tokens, not a provider's bill.",
+          "properties": {
+            "as_of": {
+              "description": "Unix seconds the rolling windows end at: the server's time of the answer.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "coverage_start": {
+              "description": "Unix seconds since which the ledger records: no session that ended before it is in\nit, while a session it saw counts from its transcript's start. Absent when unknown.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "spaces": {
+              "default": [],
+              "description": "One entry per space with recorded usage.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerSpace"
+              },
+              "type": "array"
+            },
+            "windows": {
+              "default": [],
+              "description": "Every space's tokens per rolling window, also with `workspace_id`, so a space's\nshare can be computed.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerWindow"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "UsageLedgerSpace": {
+          "properties": {
+            "days": {
+              "default": [],
+              "description": "Per day, oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerDay"
+              },
+              "type": "array"
+            },
+            "first_at": {
+              "description": "Unix seconds of the space's earliest recorded response.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "label": {
+              "description": "The space's current name; absent for a space the server no longer lists.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "models": {
+              "default": [],
+              "description": "Per agent and model, over all days.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerModel"
+              },
+              "type": "array"
+            },
+            "tokens": {
+              "$ref": "#/schemas/success_response/$defs/UsageLedgerTokens",
+              "default": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 0,
+                "output": 0
+              }
+            },
+            "windows": {
+              "default": [],
+              "description": "Per rolling window ending at `as_of`.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerWindow"
+              },
+              "type": "array"
+            },
+            "workspace_id": {
+              "description": "Absent for usage recorded without a space.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "UsageLedgerTokens": {
+          "description": "Token counts by class.",
+          "properties": {
+            "cache_read": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cache_write": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input": {
+              "default": 0,
+              "description": "Input tokens neither written to nor read from the prompt cache.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "output": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "UsageLedgerWindow": {
+          "description": "Tokens of responses recorded within a rolling window.",
+          "properties": {
+            "agents": {
+              "default": [],
+              "description": "Per agent kind.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageLedgerAgentTokens"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "`1h`, `6h`, `24h` or `7d`; clients ignore ids they do not know.",
+              "type": "string"
+            },
+            "seconds": {
+              "description": "The window's length in seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tokens": {
+              "$ref": "#/schemas/success_response/$defs/UsageLedgerTokens",
+              "default": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 0,
+                "output": 0
+              }
+            }
+          },
+          "required": [
+            "id",
+            "seconds"
+          ],
+          "type": "object"
         },
         "UsageProviderSetting": {
           "properties": {
