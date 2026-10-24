@@ -556,6 +556,10 @@ pub struct TodoRunInfo {
     /// The target branch's commit `origin` has after the push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pushed: Option<String>,
+    /// Why the landing pushed nothing (the run names no push destination):
+    /// set once its push step was skipped; nothing was published then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_skipped: Option<String>,
     /// Merged branches of the run the cleanup kept because a worktree has
     /// them checked out (the folder slot); a later run's cleanup deletes
     /// them once the slot moved on.

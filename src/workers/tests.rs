@@ -7535,6 +7535,20 @@ mod todo_runs {
         assert!(note.contains("git reset --keep"), "{note}");
         // Nothing landed yet.
         assert_eq!(master_subjects(&fixture), ["ignore the state", "init"]);
+        // The landing's core waits for the owner's approval of the commit
+        // the event names.
+        let asked = fixture
+            .supervisor
+            .load_run(&run.run_id)
+            .unwrap()
+            .landing
+            .expect("the landing's core holds the approval");
+        assert_eq!(
+            serde_json::to_value(asked.core.attention).unwrap(),
+            "landing_approval"
+        );
+        assert_eq!(asked.core.owner_approval, landing.commits.last().cloned());
+        assert_eq!(asked.core.pending, None);
 
         let approve = |pane: Option<&str>| {
             fixture.supervisor.todo_resume(TodoResumeParams {
@@ -7571,6 +7585,20 @@ mod todo_runs {
             master_subjects(&fixture),
             [SUBJECT, "ignore the state", "init"]
         );
+        // The core took the approval and went on from it: the approved
+        // commit is the one the landing verified.
+        let landed = fixture
+            .supervisor
+            .load_run(&run.run_id)
+            .unwrap()
+            .landing
+            .unwrap();
+        assert_eq!(landed.core.owner_approval, landing.commits.last().cloned());
+        let verified = &run_events(&fixture, &run.run_id, "run_verify_intent")[0];
+        assert_eq!(
+            verified["commit"].as_str().map(str::to_owned),
+            landing.commits.last().cloned()
+        );
         // The owner's approval did not take the run over.
         assert_eq!(
             fixture
@@ -7581,6 +7609,81 @@ mod todo_runs {
                 .as_deref(),
             Some("p-coordinator")
         );
+    }
+
+    /// The run's branch moves while its owner is asked: the owner's
+    /// approval of the commit it saw lands nothing, and the coordinator
+    /// reviews the branch again; an abort of the approval ends the run with
+    /// nothing landed.
+    #[test]
+    fn a_landing_approval_after_the_branch_moved_is_reviewed_again() {
+        let home = crate::workers::home_repo::HomeForTest::set();
+        let fixture = todo_repo("todo-home-moved");
+        std::fs::write(fixture.repo.join(".gitignore"), "/target\n/.local/\n").unwrap();
+        git_in(&fixture.repo, &["commit", "-qam", "ignore the state"]);
+        home.at(&fixture.repo);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        let slot = fixture
+            .supervisor
+            .status(waiting.worker_id.as_deref().unwrap())
+            .unwrap()
+            .cwd;
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (landing, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(landing.kind, TodoEventKind::LandingApproval, "{landing:#?}");
+        // The branch moves after the owner was asked.
+        git_in(
+            Path::new(&slot),
+            &["commit", "-q", "--allow-empty", "-m", "moved"],
+        );
+        let moved = git_in(Path::new(&slot), &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                caller_pane_id: Some("p-owner".into()),
+                ..resume_params(&run.run_id, landing.event_id, TodoAction::ApproveLanding)
+            })
+            .unwrap();
+        let (again, info) = wait(&fixture, &run.run_id, Some(landing.event_id));
+        assert_eq!(again.kind, TodoEventKind::Review, "{again:#?}");
+        assert_eq!(
+            (info.step, info.status),
+            (TodoStep::Review, TodoRunStatus::Waiting)
+        );
+        assert_eq!(again.commits.last(), Some(&moved));
+        let error = again.error.clone().unwrap_or_default();
+        assert!(error.contains(&moved), "{error}");
+        assert_eq!(master_subjects(&fixture), ["ignore the state", "init"]);
+        assert!(run_events(&fixture, &run.run_id, "run_verify_intent").is_empty());
+
+        // Approved again, the owner is asked about the new commit; an abort
+        // of that ends the run, nothing landed.
+        resume(
+            &fixture,
+            &run.run_id,
+            again.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (asked, _) = wait(&fixture, &run.run_id, Some(again.event_id));
+        assert_eq!(asked.kind, TodoEventKind::LandingApproval, "{asked:#?}");
+        assert_eq!(asked.commits.last(), Some(&moved));
+        abort(&fixture, &run.run_id, asked.event_id);
+        assert_eq!(master_subjects(&fixture), ["ignore the state", "init"]);
     }
 
     #[test]
@@ -11445,6 +11548,56 @@ mod todo_runs {
         );
         assert_eq!(rev(&fork, "bootstrap"), fork_before);
         assert_eq!(rev(&origin, "main"), origin_before);
+        assert_eq!(
+            finished.push_skipped,
+            Some(events[0]["reason"].as_str().unwrap().to_owned())
+        );
+    }
+
+    /// A skipped push published nothing: an abort after it (its cleanup
+    /// halted) takes the run's commit off the branch as for a landing that
+    /// was never pushed, instead of keeping it as published.
+    #[test]
+    fn an_abort_after_a_skipped_push_takes_the_commit_off_the_branch() {
+        let fixture = todo_repo_on("todo-fork-no-push-abort", "main");
+        with_finish_on(&fixture, "main");
+        let (worktree, _) = fork_worktree(&fixture, false);
+        let before = rev(&worktree, "bootstrap");
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                cwd: worktree.display().to_string(),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The cleanup after the skipped push fails: the run halts there.
+        runs::fail_at(&run.repo, "cleanup");
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (blocked, halted) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        assert_eq!(halted.step, TodoStep::Cleanup);
+        assert_eq!(halted.pushed, None);
+        let reason = halted.push_skipped.clone().unwrap_or_default();
+        assert!(reason.contains("no single push destination"), "{reason}");
+        assert_eq!(
+            git_in(&worktree, &["log", "-1", "--format=%s", "bootstrap"]).trim(),
+            SUBJECT
+        );
+        let landing = fixture
+            .supervisor
+            .load_run(&run.run_id)
+            .unwrap()
+            .landing
+            .unwrap();
+        assert_eq!(landing.core.pushed, None);
+
+        let (aborted, info) = abort(&fixture, &run.run_id, blocked.event_id);
+        assert_eq!(aborted.kind, TodoEventKind::Aborted, "{aborted:#?}");
+        assert_eq!(info.status, TodoRunStatus::Aborted);
+        assert_eq!(rev(&worktree, "bootstrap"), before);
+        let restored = run_events(&fixture, &run.run_id, "run_restored");
+        assert_eq!(restored[0]["how"], "reset", "{restored:?}");
     }
 
     /// A destination branch the remote does not have: the push is refused,

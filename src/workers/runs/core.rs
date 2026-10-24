@@ -11,6 +11,14 @@
 //! as inputs, and persists the new state, the cursor and the pending effect
 //! intent together.
 //!
+//! In the repository rooted at the home directory the landing first waits
+//! for its owner's approval of the commit it names (`ask_landing_approval`,
+//! then `approve_landing`); a run whose branch moved meanwhile is reviewed
+//! again. A run that names no push destination skips the push
+//! (`push_skipped`): it goes on to the cleanup as after a push, but nothing
+//! was published, so an abort after it still takes its commits off the
+//! target branch.
+//!
 //! Every input carries the sender's fence (tenure epoch, pane generation).
 //! An input from an older fence is rejected without effects, and a newer
 //! fence must be adopted first, so two coordinators never both drive a run.
@@ -90,6 +98,10 @@ pub enum Attention {
     /// pending effect stays: it may have begun, so the abort settles it
     /// from git first.
     Halted,
+    /// The landing in the repository rooted at the home directory waits
+    /// for its owner's approval of [`CoreState::owner_approval`]: only
+    /// `approve_landing` and `abort` go on. Nothing was verified or landed.
+    LandingApproval,
 }
 
 /// How often one landing verifies again on a target branch's head that
@@ -146,6 +158,16 @@ pub struct CoreState {
     /// How often this landing verified again on a moved head.
     #[serde(default)]
     pub reverifies: u32,
+    /// The commit the owner's landing approval names: asked while the
+    /// attention is [`Attention::LandingApproval`], approved once the
+    /// landing goes on, which then verifies and lands that commit only.
+    #[serde(default)]
+    pub owner_approval: Option<String>,
+    /// Why the push was skipped (the run names no push destination): the
+    /// landing went on without publishing anything, so an abort still
+    /// takes the run's commits off the target branch.
+    #[serde(default)]
+    pub push_skipped: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +195,20 @@ pub enum CoreEvent {
     /// A newer tenure or pane takes the run over: the input's fence becomes
     /// the run's.
     Adopt,
+    /// At the landing's start, in the repository rooted at the home
+    /// directory: wait for the owner's approval of `commit`, the commit
+    /// that would land.
+    AskLandingApproval {
+        commit: String,
+    },
+    /// The owner approves landing `commit`; `branch_at` is the commit the
+    /// run's branch is at as the approval arrives. Both must be the asked
+    /// commit: a branch that moved is reviewed again, an approval of
+    /// another commit asks the owner again.
+    ApproveLanding {
+        commit: String,
+        branch_at: String,
+    },
     /// The shell stops the landing where it stands: the pending effect
     /// failed in a way no acknowledgement names, or may not run (the
     /// tenure that claimed the run no longer holds the repository).
@@ -201,6 +237,11 @@ pub enum CoreEvent {
     PushAcked {
         sha: String,
     },
+    /// The run names no push destination: nothing was pushed, for
+    /// `reason`.
+    PushSkipped {
+        reason: String,
+    },
     PushRejected {
         diverged: bool,
     },
@@ -221,7 +262,9 @@ impl CoreEvent {
             }
             Self::Installed | Self::InstallFailed => PendingEffect::Install,
             Self::Edited | Self::TodoFailed => PendingEffect::TodoEdit,
-            Self::PushAcked { .. } | Self::PushRejected { .. } => PendingEffect::Push,
+            Self::PushAcked { .. } | Self::PushSkipped { .. } | Self::PushRejected { .. } => {
+                PendingEffect::Push
+            }
             Self::BranchRestored => PendingEffect::RestoreBranch,
             Self::CleanedUp => PendingEffect::Cleanup,
             _ => return None,
@@ -348,6 +391,7 @@ fn acknowledged(mut n: CoreState, event: &CoreEvent) -> (CoreState, Vec<CoreEffe
         match event {
             CoreEvent::Picked { sha } => n.picked = Some(sha.clone()),
             CoreEvent::PushAcked { sha } => n.pushed = Some(sha.clone()),
+            CoreEvent::PushSkipped { reason } => n.push_skipped = Some(reason.clone()),
             _ => {}
         }
         // Settled: the abort goes on as one asked with nothing pending.
@@ -392,6 +436,14 @@ fn acknowledged(mut n: CoreState, event: &CoreEvent) -> (CoreState, Vec<CoreEffe
             effects.insert(0, CoreEffect::ReleaseSlot);
             (n, effects)
         }
+        // Nothing was published: the commit stays the run's to take off.
+        CoreEvent::PushSkipped { reason } => {
+            n.push_skipped = Some(reason.clone());
+            let (mut n, mut effects) = go(n, TodoStep::Cleanup, PendingEffect::Cleanup);
+            n.slot_held = false;
+            effects.insert(0, CoreEffect::ReleaseSlot);
+            (n, effects)
+        }
         CoreEvent::PushRejected { diverged: true } => stop(n, Attention::PushDiverged),
         CoreEvent::PushRejected { diverged: false } => {
             wait(n, Attention::PushFailed, TodoEventKind::PushFailed)
@@ -420,7 +472,20 @@ fn action(mut n: CoreState, event: &CoreEvent) -> Result<(CoreState, Vec<CoreEff
             return Err(Rejection::NotAllowed);
         }
         return match event {
-            CoreEvent::Approve => Ok(go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated)),
+            CoreEvent::Approve if n.attention.is_none() => {
+                Ok(go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated))
+            }
+            // The owner approves first; the run shows the landing's verify
+            // as its step meanwhile, as it did before the core decided it.
+            CoreEvent::AskLandingApproval { commit } if n.attention.is_none() => {
+                n.step = TodoStep::Verify;
+                n.owner_approval = Some(commit.clone());
+                Ok(wait(
+                    n,
+                    Attention::LandingApproval,
+                    TodoEventKind::LandingApproval,
+                ))
+            }
             // Nothing landed yet: the target branch was never touched.
             CoreEvent::Abort => Ok(aborted(n)),
             _ => Err(Rejection::NotAllowed),
@@ -428,6 +493,40 @@ fn action(mut n: CoreState, event: &CoreEvent) -> Result<(CoreState, Vec<CoreEff
     }
     if !landing {
         return Err(Rejection::NotInLanding);
+    }
+    if n.attention == Some(Attention::LandingApproval) {
+        if n.status != TodoRunStatus::Waiting || n.pending.is_some() {
+            return Err(Rejection::NotAllowed);
+        }
+        let asked = n.owner_approval.clone();
+        return match event {
+            // Nothing was verified or landed: the run just ends.
+            CoreEvent::Abort => Ok(aborted(n)),
+            // The branch moved since the approval was asked: the commit
+            // that would land is not the one the coordinator approved, so
+            // it is reviewed again, outside the landing.
+            CoreEvent::ApproveLanding { branch_at, .. } if asked.as_ref() != Some(branch_at) => {
+                n.step = TodoStep::Review;
+                n.attention = None;
+                Ok((
+                    n,
+                    vec![CoreEffect::Emit {
+                        event: TodoEventKind::Review,
+                    }],
+                ))
+            }
+            // An approval of another commit approves nothing: asked again.
+            CoreEvent::ApproveLanding { commit, .. } if asked.as_ref() != Some(commit) => Ok((
+                n,
+                vec![CoreEffect::Emit {
+                    event: TodoEventKind::LandingApproval,
+                }],
+            )),
+            CoreEvent::ApproveLanding { .. } => {
+                Ok(go(n, TodoStep::Verify, PendingEffect::VerifyIntegrated))
+            }
+            _ => Err(Rejection::NotAllowed),
+        };
     }
     if matches!(event, CoreEvent::Abort) && n.pushed.is_some() {
         // The published commit stays; the slot is already free.
@@ -643,6 +742,8 @@ mod tests {
             cursor: None,
             abort_requested: false,
             reverifies: 0,
+            owner_approval: None,
+            push_skipped: None,
         }
     }
 
@@ -1051,6 +1152,161 @@ mod tests {
         assert!(!e.contains(&CoreEffect::RestoreBranch));
     }
 
+    fn approve_landing(commit: &str, branch_at: &str) -> CoreEvent {
+        CoreEvent::ApproveLanding {
+            commit: commit.into(),
+            branch_at: branch_at.into(),
+        }
+    }
+
+    fn asked(commit: &str) -> CoreState {
+        let s = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        let (s, e) = apply(
+            &s,
+            "e1",
+            CoreEvent::AskLandingApproval {
+                commit: commit.into(),
+            },
+        );
+        assert_eq!(e, vec![emit(TodoEventKind::LandingApproval)]);
+        s
+    }
+
+    #[test]
+    fn the_owners_landing_approval_of_the_asked_commit_goes_on_to_the_verify() {
+        let s = asked("c1");
+        assert_eq!(
+            (s.step, s.status, s.attention, s.pending),
+            (
+                TodoStep::Verify,
+                TodoRunStatus::Waiting,
+                Some(Attention::LandingApproval),
+                None
+            )
+        );
+        assert_eq!(s.owner_approval.as_deref(), Some("c1"));
+        // Only the owner's approval or an abort answers it.
+        for event in [
+            CoreEvent::Approve,
+            CoreEvent::Verify,
+            CoreEvent::RetryPush,
+            CoreEvent::AskLandingApproval {
+                commit: "c1".into(),
+            },
+        ] {
+            assert_eq!(step(&s, &input("e2", event)), Err(Rejection::NotAllowed));
+        }
+        assert_eq!(
+            step(&s, &input("e2", verified("i"))),
+            Err(Rejection::UnexpectedAck)
+        );
+        let (s, e) = apply(&s, "e2", approve_landing("c1", "c1"));
+        assert_eq!(e, vec![CoreEffect::VerifyIntegrated]);
+        assert_eq!(
+            (s.step, s.status, s.attention, s.pending),
+            (
+                TodoStep::Verify,
+                TodoRunStatus::Running,
+                None,
+                Some(PendingEffect::VerifyIntegrated)
+            )
+        );
+        assert_eq!(s.owner_approval.as_deref(), Some("c1"));
+        // Approved once: a second approval does not apply.
+        assert_eq!(
+            step(&s, &input("e3", approve_landing("c1", "c1"))),
+            Err(Rejection::EffectInFlight)
+        );
+        // Outside the home directory's repository nothing asks the owner.
+        let plain = state(TodoStep::Review, TodoRunStatus::Waiting, None);
+        assert_eq!(
+            step(&plain, &input("e1", approve_landing("c1", "c1"))),
+            Err(Rejection::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn a_landing_approval_for_a_moved_or_other_commit_is_reviewed_again() {
+        let s = asked("c1");
+        // Another commit than the asked one: the owner is asked again.
+        let (again, e) = apply(&s, "e2", approve_landing("c0", "c1"));
+        assert_eq!(e, vec![emit(TodoEventKind::LandingApproval)]);
+        assert_eq!(
+            (again.step, again.status, again.attention, again.pending),
+            (
+                TodoStep::Verify,
+                TodoRunStatus::Waiting,
+                Some(Attention::LandingApproval),
+                None
+            )
+        );
+        // The branch moved since: the coordinator reviews it again,
+        // outside the landing, and nothing was verified or landed.
+        let (s, e) = apply(&s, "e3", approve_landing("c1", "c2"));
+        assert_eq!(e, vec![emit(TodoEventKind::Review)]);
+        assert_eq!(
+            (s.step, s.status, s.attention, s.pending),
+            (TodoStep::Review, TodoRunStatus::Waiting, None, None)
+        );
+        assert!(!in_landing(s.step));
+        assert_eq!((s.integrated.as_deref(), s.picked.as_deref()), (None, None));
+    }
+
+    #[test]
+    fn an_abort_while_the_owner_is_asked_ends_the_run_without_a_restore() {
+        let s = asked("c1");
+        let (s, e) = apply(&s, "e2", CoreEvent::Abort);
+        assert_eq!(
+            e,
+            vec![CoreEffect::ReleaseSlot, emit(TodoEventKind::Aborted)]
+        );
+        assert_eq!(
+            (s.step, s.status, s.attention),
+            (TodoStep::Abort, TodoRunStatus::Aborted, None)
+        );
+        assert_eq!(
+            step(&s, &input("e3", approve_landing("c1", "c1"))),
+            Err(Rejection::Terminal)
+        );
+    }
+
+    #[test]
+    fn a_skipped_push_goes_on_to_the_cleanup_without_publishing() {
+        let s = state(
+            TodoStep::Push,
+            TodoRunStatus::Running,
+            Some(PendingEffect::Push),
+        );
+        let skipped = CoreEvent::PushSkipped {
+            reason: "no destination".into(),
+        };
+        let (s, e) = apply(&s, "e1", skipped.clone());
+        assert_eq!(e, vec![CoreEffect::ReleaseSlot, CoreEffect::Cleanup]);
+        assert_eq!(
+            (s.step, s.pushed.as_deref(), s.push_skipped.as_deref()),
+            (TodoStep::Cleanup, None, Some("no destination"))
+        );
+        assert!(!s.slot_held);
+        assert_eq!(
+            step(&s, &input("e2", skipped)),
+            Err(Rejection::UnexpectedAck)
+        );
+        let (done, e) = apply(&s, "e2", CoreEvent::CleanedUp);
+        assert_eq!(e, vec![emit(TodoEventKind::Done)]);
+        assert_eq!(done.status, TodoRunStatus::Done);
+        // A cleanup that halts: the abort settles it, then restores the
+        // branch, since nothing was published.
+        let (s, _) = apply(&s, "e3", CoreEvent::Halted);
+        let (s, e) = apply(&s, "e4", CoreEvent::Abort);
+        assert_eq!(e, vec![CoreEffect::SettlePending]);
+        let (s, e) = apply(&s, "e5", CoreEvent::Cancelled);
+        assert_eq!(e, vec![CoreEffect::RestoreBranch]);
+        let (s, e) = apply(&s, "e6", CoreEvent::BranchRestored);
+        // The slot was released with the skipped push already.
+        assert_eq!(e, vec![emit(TodoEventKind::Aborted)]);
+        assert_eq!(s.status, TodoRunStatus::Aborted);
+    }
+
     #[test]
     fn a_core_state_written_before_the_integrated_field_still_reads() {
         let old: CoreState = serde_json::from_value(serde_json::json!({
@@ -1060,6 +1316,7 @@ mod tests {
         }))
         .expect("an older state reads");
         assert_eq!((old.integrated, old.abort_requested), (None, false));
+        assert_eq!((old.owner_approval, old.push_skipped), (None, None));
     }
 
     #[test]
@@ -1257,7 +1514,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect();
         paths.sort();
-        assert!(paths.len() >= 7, "expected the v1 traces, found {paths:?}");
+        assert!(paths.len() >= 12, "expected the v1 traces, found {paths:?}");
         for path in paths {
             let name = path.display().to_string();
             let text = std::fs::read_to_string(&path).expect("trace readable");

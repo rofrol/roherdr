@@ -7,9 +7,11 @@
 //!
 //! The landing starts once an approved attempt's worker stopped
 //! ([`WorkerSupervisor::start_landing`]): the approval is checked against
-//! the branch (a moved branch is reviewed again) and, in the repository
-//! rooted at the home directory, against its owner's approval; then the
-//! core takes `approve`. From there: the verify of the integrated tree (the
+//! the branch (a moved branch is reviewed again); then the core takes
+//! `approve`, or, in the repository rooted at the home directory,
+//! `ask_landing_approval` and waits for its owner's `approve_landing` of
+//! the commit it names (a branch that moved meanwhile is reviewed again).
+//! From there: the verify of the integrated tree (the
 //! approved commit picked onto the target branch's head as a commit of its
 //! own, checked in the folder slot, the target branch untouched), the
 //! landing of that verified tree on the target branch with the run's
@@ -116,6 +118,8 @@ impl Run {
                 cursor: None,
                 abort_requested: false,
                 reverifies: 0,
+                owner_approval: None,
+                push_skipped: None,
             },
             started: pending.is_some(),
             intent: None,
@@ -138,6 +142,7 @@ impl Run {
         self.info.status = state.status;
         self.info.picked = state.picked.clone();
         self.info.degraded = degraded_of(&state);
+        self.info.push_skipped = state.push_skipped.clone();
         let (started, intent) = match kept {
             Some(kept) if kept.core.pending == state.pending => (kept.started, kept.intent),
             _ => (false, None),
@@ -240,7 +245,7 @@ fn feed(run: &mut Run, event: CoreEvent) -> Result<Option<TodoEventKind>, String
 /// What a reconcile found of an effect a gone driver began.
 pub(super) enum Reconciliation {
     /// Done or failed, as git shows: its acknowledgement.
-    Ack(Reconcile),
+    Ack(Box<Reconcile>),
     /// Not done: it runs again (or, under an abort, is cancelled).
     Rerun,
     /// Git cannot show whether it was done now (origin cannot be read):
@@ -424,6 +429,44 @@ impl WorkerSupervisor {
                 event.error = Some(why);
                 event.commits = commits;
             }
+            TodoEventKind::LandingApproval => {
+                let commit = run
+                    .landing
+                    .as_ref()
+                    .and_then(|landing| landing.core.owner_approval.clone())
+                    .unwrap_or_default();
+                match self.landing_approval_event(run, &commit) {
+                    Ok(asked) => event = asked,
+                    Err(error) => {
+                        event.commits = vec![commit.clone()];
+                        event.error = Some(format!(
+                            "the patch of commit {commit} cannot be shown ({error}): read it \
+                             yourself before approve-landing, or abort the run"
+                        ));
+                    }
+                }
+            }
+            // The run's branch moved while its owner was asked: the commit
+            // that would land is reviewed again.
+            TodoEventKind::Review => {
+                let asked = run
+                    .landing
+                    .as_ref()
+                    .and_then(|landing| landing.core.owner_approval.clone())
+                    .unwrap_or_default();
+                if let (Some(branch), Some(base)) = (run.info.branch.clone(), run.info.base.clone())
+                {
+                    let repo = PathBuf::from(&run.info.repo);
+                    (event.diff_stat, event.commits) =
+                        super::branch_evidence(&repo, &base, &format!("refs/heads/{branch}"));
+                    let tip = event.commits.last().cloned().unwrap_or_default();
+                    event.error = Some(format!(
+                        "the owner's landing approval was asked for commit {asked}, but branch \
+                         {branch} is at {tip} now; nothing was verified or landed: review it \
+                         again"
+                    ));
+                }
+            }
             TodoEventKind::Done => {
                 event.commits = run
                     .info
@@ -464,12 +507,11 @@ impl WorkerSupervisor {
             return self.review_again(run, &repo, &branch, &base, &commit);
         }
         let landing_dir = run.landing_dir();
-        if super::super::home_repo::is_home_repository(&run.info.repo)
+        // A run that waited on its owner's approval before the core decided
+        // it carries that approval here.
+        let ask = super::super::home_repo::is_home_repository(&run.info.repo)
             && run.finish.landing_approved.as_deref() != Some(commit.as_str())
-            && !applied(&landing_dir, &commit)
-        {
-            return self.ask_landing_approval(run, &landing_dir, &commit);
-        }
+            && !applied(&landing_dir, &commit);
         // The run's fence is the one every input carries until the
         // coordinator tenure's epoch and pane generation are wired in.
         run.landing = Some(Landing {
@@ -490,16 +532,49 @@ impl WorkerSupervisor {
                 cursor: None,
                 abort_requested: false,
                 reverifies: 0,
+                owner_approval: None,
+                push_skipped: None,
             },
             started: false,
             intent: None,
         });
-        self.land(
-            run,
-            CoreEvent::Approve,
-            vec![json!({"type": "run_landing_started", "commit": commit, "base": base})],
-            None,
-        )
+        let started = json!({"type": "run_landing_started", "commit": commit, "base": base});
+        if ask {
+            // Landing in the home directory changes the user's live files:
+            // the landing waits on a `landing_approval` event with the
+            // whole patch and the backup and rollback note until its owner
+            // approves that commit; nothing is verified or landed yet.
+            return self.land(
+                run,
+                CoreEvent::AskLandingApproval { commit },
+                vec![started],
+                None,
+            );
+        }
+        self.land(run, CoreEvent::Approve, vec![started], None)
+    }
+
+    /// The commit the landing verifies and lands: the one its owner
+    /// approved in the repository rooted at the home directory, otherwise
+    /// the one the run's branch is at.
+    fn landing_commit(&self, run: &Run, branch: &str) -> Result<String, String> {
+        if let Some(approved) = run
+            .landing
+            .as_ref()
+            .and_then(|landing| landing.core.owner_approval.clone())
+        {
+            return Ok(approved);
+        }
+        Ok(git(
+            Path::new(&run.info.repo),
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{branch}^{{commit}}"),
+            ],
+        )?
+        .trim()
+        .to_owned())
     }
 
     /// Runs the effect the run's landing core waits for. One a driver began
@@ -539,7 +614,7 @@ impl WorkerSupervisor {
         &self,
         run: &mut Run,
         pending: PendingEffect,
-        reconciled: Reconcile,
+        reconciled: Box<Reconcile>,
     ) -> Result<(), String> {
         let mut notes = vec![json!({
             "type": "run_reconciled",
@@ -840,12 +915,12 @@ impl WorkerSupervisor {
             )));
         }
         Ok(match ack {
-            Some(event) => Reconciliation::Ack(Reconcile {
+            Some(event) => Reconciliation::Ack(Box::new(Reconcile {
                 event,
                 why,
                 result,
                 landed,
-            }),
+            })),
             None => Reconciliation::Rerun,
         })
     }
@@ -970,16 +1045,7 @@ impl WorkerSupervisor {
                 }),
             )?;
         }
-        let worker_commit = git(
-            Path::new(&run.info.repo),
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("refs/heads/{branch}^{{commit}}"),
-            ],
-        )?
-        .trim()
-        .to_owned();
+        let worker_commit = self.landing_commit(run, &branch)?;
         let repo = run.landing_dir();
         let target = run.target_branch().to_owned();
         let onto = run.target_commit()?;
@@ -1175,16 +1241,7 @@ impl WorkerSupervisor {
             .as_ref()
             .and_then(|landing| landing.core.integrated.clone())
             .ok_or("the landing has no verified commit")?;
-        let worker_commit = git(
-            Path::new(&run.info.repo),
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("refs/heads/{branch}^{{commit}}"),
-            ],
-        )?
-        .trim()
-        .to_owned();
+        let worker_commit = self.landing_commit(run, &branch)?;
         let target = run.target_branch().to_owned();
         run.target_commit()?;
         let repo = run.landing_dir();
@@ -2316,9 +2373,7 @@ fn revert_commit(repo: &Path, head: &str, commits: &[String], run: &Run) -> Resu
 /// abort after the push ends the run at once).
 pub(super) fn resume_landing(
     current: &mut Run,
-    action: TodoAction,
+    event: CoreEvent,
 ) -> Result<Option<TodoEventKind>, WorkerError> {
-    let event = landing_action(action)
-        .ok_or_else(|| WorkerError::Invalid(format!("the landing takes no {action:?}")))?;
     feed(current, event).map_err(WorkerError::Invalid)
 }

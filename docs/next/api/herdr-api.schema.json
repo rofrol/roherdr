@@ -21513,6 +21513,13 @@
               ],
               "description": "Where the run pushes the target branch, as git's configuration for\nthat branch named it at the preflight, or why it does not push.\nAbsent for a run recorded before runs stored it, which pushes to\n`origin`'s branch of the same name."
             },
+            "push_skipped": {
+              "description": "Why the landing pushed nothing (the run names no push destination):\nset once its push step was skipped; nothing was published then.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "pushed": {
               "description": "The target branch's commit `origin` has after the push.",
               "type": [

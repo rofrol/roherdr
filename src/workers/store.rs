@@ -2779,6 +2779,9 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             installed_build: finish.installed_build.clone(),
             todo_commit: finish.todo_commit.clone(),
             pushed: finish.pushed.clone(),
+            push_skipped: landing
+                .as_ref()
+                .and_then(|landing| landing.core.push_skipped.clone()),
             target_branch: finish.target_branch.clone(),
             landing_worktree: finish.landing_worktree.clone(),
             push: finish.push.clone(),

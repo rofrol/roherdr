@@ -274,6 +274,7 @@ mod tests {
             installed_build: None,
             todo_commit: None,
             pushed: None,
+            push_skipped: None,
             kept_branches: Vec::new(),
             next_item: None,
             next_run_id: None,

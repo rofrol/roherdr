@@ -1,0 +1,10 @@
+{"version":1,
+ "initial":{"step":"push","status":"running","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":"push","degraded":[],"picked":"p1"},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"push_skipped","reason":"the run names no push destination"}},
+   "expect":{"state":{"step":"cleanup","slot_held":false,"pushed":null,"push_skipped":"the run names no push destination"},
+             "effects":[{"kind":"release_slot"},{"kind":"cleanup"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"cleaned_up"}},
+   "expect":{"state":{"step":"done","status":"done","pending":null,"pushed":null},
+             "effects":[{"kind":"emit","event":"done"}]}}]}

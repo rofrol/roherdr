@@ -1,0 +1,15 @@
+{"version":1,
+ "initial":{"step":"review","status":"waiting","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":null,"degraded":[]},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"ask_landing_approval","commit":"c1"}},
+   "expect":{"state":{"step":"verify","status":"waiting","attention":"landing_approval","owner_approval":"c1"},
+             "effects":[{"kind":"emit","event":"landing_approval"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"approve_landing","commit":"c0","branch_at":"c1"}},
+   "expect":{"state":{"step":"verify","status":"waiting","attention":"landing_approval","pending":null},
+             "effects":[{"kind":"emit","event":"landing_approval"}]}},
+  {"input":{"id":"e3","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"approve_landing","commit":"c1","branch_at":"c2"}},
+   "expect":{"state":{"step":"review","status":"waiting","attention":null,"pending":null,"integrated":null,"picked":null},
+             "effects":[{"kind":"emit","event":"review"}]}},
+  {"input":{"id":"e4","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"approve_landing","commit":"c1","branch_at":"c1"}},
+   "expect":{"rejection":"not_allowed"}}]}

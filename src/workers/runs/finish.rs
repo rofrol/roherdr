@@ -607,17 +607,15 @@ impl WorkerSupervisor {
         let repo = run.landing_dir();
         let plan = Self::push_plan(run, &repo);
         let (Some(remote_name), Some(dst_ref)) = (plan.remote.clone(), plan.dst_ref.clone()) else {
-            // Nothing to push: the landing goes on as after a push, with the
-            // branch's commit as the one that stays.
-            let note = json!({
-                "type": "run_push_skipped",
-                "reason": plan
-                    .skipped
-                    .clone()
-                    .unwrap_or_else(|| "the run names no push destination".into()),
-            });
-            let sha = run.target_commit()?;
-            return self.land(run, CoreEvent::PushAcked { sha }, vec![note], None);
+            // Nothing to push: the landing goes on to its cleanup, and the
+            // core records that nothing was published (an abort after it
+            // still takes the run's commits off the branch).
+            let reason = plan
+                .skipped
+                .clone()
+                .unwrap_or_else(|| "the run names no push destination".into());
+            let note = json!({"type": "run_push_skipped", "reason": reason});
+            return self.land(run, CoreEvent::PushSkipped { reason }, vec![note], None);
         };
         let refused = CoreEvent::PushRejected { diverged: false };
         let Some(env) = lock(&RUN_ENV).get(&run.info.run_id).cloned() else {
@@ -760,6 +758,8 @@ impl WorkerSupervisor {
     /// with a change the target branch lacks (a rejected attempt) stays. Then the run
     /// is done.
     pub(super) fn step_cleanup(&self, run: &mut Run) -> Result<(), String> {
+        #[cfg(test)]
+        super::fails_at(&run.info.repo, "cleanup")?;
         let own: Vec<String> = (1..=run.info.attempt)
             .map(|attempt| super::branch_of(&run.info.item, &run.info.run_id, attempt))
             .collect();

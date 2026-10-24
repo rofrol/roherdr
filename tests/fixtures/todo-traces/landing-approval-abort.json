@@ -1,0 +1,12 @@
+{"version":1,
+ "initial":{"step":"review","status":"waiting","fence":{"tenure_epoch":4,"pane_generation":2},
+            "slot_held":true,"pending":null,"degraded":[]},
+ "steps":[
+  {"input":{"id":"e1","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"ask_landing_approval","commit":"c1"}},
+   "expect":{"state":{"step":"verify","status":"waiting","attention":"landing_approval"},
+             "effects":[{"kind":"emit","event":"landing_approval"}]}},
+  {"input":{"id":"e2","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"abort"}},
+   "expect":{"state":{"step":"abort","status":"aborted","attention":null,"slot_held":false,"picked":null},
+             "effects":[{"kind":"release_slot"},{"kind":"emit","event":"aborted"}]}},
+  {"input":{"id":"e3","fence":{"tenure_epoch":4,"pane_generation":2},"event":{"kind":"approve_landing","commit":"c1","branch_at":"c1"}},
+   "expect":{"rejection":"terminal"}}]}

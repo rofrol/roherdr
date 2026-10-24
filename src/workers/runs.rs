@@ -1119,6 +1119,32 @@ fn crashes_at(repo: &str, point: &str) -> Result<(), String> {
     }
 }
 
+/// Test only: a landing effect of a run of this repository fails once at a
+/// named point (`cleanup`), as a git failure there would: the driver halts
+/// the run.
+#[cfg(test)]
+static FAIL_AT: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+
+#[cfg(all(test, unix))]
+pub(super) fn fail_at(repo: &str, point: &'static str) {
+    lock(&FAIL_AT).push((repo.to_owned(), point));
+}
+
+#[cfg(test)]
+fn fails_at(repo: &str, point: &str) -> Result<(), String> {
+    let mut failures = lock(&FAIL_AT);
+    match failures
+        .iter()
+        .position(|(at, named)| at == repo && *named == point)
+    {
+        Some(index) => {
+            failures.remove(index);
+            Err(format!("a planned failure at {point}"))
+        }
+        None => Ok(()),
+    }
+}
+
 /// Test only: what a test does at a named point inside a landing effect of
 /// a run of this repository (`before_land`, `restore_planned`), once: the
 /// interleaving a concurrent session would make, forced at that point.
@@ -1823,7 +1849,11 @@ fn carry_commit(repo: &Path, base: &str, from: &str) -> Result<Result<String, St
 }
 
 /// A branch's commits since `base`, oldest first, and their diff stat.
-fn branch_evidence(repo: &Path, base: &str, branch: &str) -> (Option<String>, Vec<String>) {
+pub(super) fn branch_evidence(
+    repo: &Path,
+    base: &str,
+    branch: &str,
+) -> (Option<String>, Vec<String>) {
     let diff_stat = git(repo, &["diff", "--stat", base, branch])
         .ok()
         .map(|stat| stat.trim_end().to_owned())
@@ -2797,6 +2827,7 @@ impl WorkerSupervisor {
                 installed_build: None,
                 todo_commit: None,
                 pushed: None,
+                push_skipped: None,
                 kept_branches: Vec::new(),
                 next_item: None,
                 next_run_id: None,
@@ -3439,8 +3470,9 @@ impl WorkerSupervisor {
     /// its stop, `abort` takes the run to its abort step, which stops the
     /// worker and ends the run `aborted`. In the landing its core takes
     /// `verify`, the retries and skips of the install, the TODO edit and the
-    /// push, and `abort` (which takes a commit not pushed yet off the
-    /// target branch first). An event that is not the pending one (for a blocked run:
+    /// push, the owner's `approve-landing` in the repository rooted at the
+    /// home directory, and `abort` (which takes a commit not pushed yet off
+    /// the target branch first). An event that is not the pending one (for a blocked run:
     /// its `blocked` event, which takes only `abort`) is refused as stale.
     /// The environment it carries replaces the one the run's checks run
     /// with; none leaves them none.
@@ -3711,6 +3743,26 @@ impl WorkerSupervisor {
             | TodoAction::Abort
             | TodoAction::Unknown => {}
         }
+        // Where the run's branch is as its owner approves the landing: a
+        // branch that moved since the approval was asked is reviewed again.
+        let branch_at = match (params.action, run.info.branch.as_deref()) {
+            (TodoAction::ApproveLanding, Some(branch)) => Some(
+                git(
+                    Path::new(&run.info.repo),
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        &format!("refs/heads/{branch}^{{commit}}"),
+                    ],
+                )
+                .map_err(|error| {
+                    WorkerError::Invalid(format!("branch {branch} cannot be read: {error}"))
+                })?
+                .trim()
+                .to_owned(),
+            ),
+            _ => None,
+        };
         // Before the run moves on: a driver still waiting on the worker's
         // stop may reach the verify as soon as the resume is recorded.
         // A headless item coordinator's resume (no pane) of its tenure's
@@ -3813,10 +3865,16 @@ impl WorkerSupervisor {
                 // decides the run's next step; its state is read before the
                 // step below changes (a run recorded before the core has its
                 // state derived from that step).
-                let landing_event = if current.in_landing() {
-                    landing::landing_action(params.action)
-                } else {
-                    None
+                let landing_event = match params.action {
+                    _ if !current.in_landing() => None,
+                    // The owner's approval names the commit the event
+                    // showed; the core compares it, and where the branch is
+                    // now, with the commit it asked about.
+                    TodoAction::ApproveLanding => Some(core::CoreEvent::ApproveLanding {
+                        commit: reviewed.clone().unwrap_or_default(),
+                        branch_at: branch_at.clone().unwrap_or_default(),
+                    }),
+                    action => landing::landing_action(action),
                 };
                 let leaves_landing = params.action == TodoAction::Retry && current.in_landing();
                 if landing_event.is_some() || leaves_landing {
@@ -3878,6 +3936,9 @@ impl WorkerSupervisor {
                         current.current.commit = reviewed.clone();
                         current.current.base = current.info.base.clone();
                     }
+                    // The core takes the approval below; a run that waited
+                    // on its owner before the core decided that starts its
+                    // landing with the approval instead.
                     TodoAction::ApproveLanding => {
                         current.info.step = TodoStep::CherryPick;
                         current.finish.landing_approved = reviewed.clone();
@@ -3947,7 +4008,7 @@ impl WorkerSupervisor {
                     current.finish.restore_to = None;
                 }
                 let emitted = match landing_event {
-                    Some(_) => match landing::resume_landing(&mut current, params.action) {
+                    Some(event) => match landing::resume_landing(&mut current, event) {
                         Ok(emitted) => emitted,
                         Err(error) => return Ok(Err(error)),
                     },
@@ -5015,11 +5076,16 @@ impl WorkerSupervisor {
             .collect())
     }
 
-    /// Landing `commit` in the repository rooted at the home directory
-    /// changes the user's live files, so the run waits on a
-    /// `landing_approval` event with the whole patch and the backup and
-    /// rollback note until the owner approves it; nothing is picked yet.
-    fn ask_landing_approval(&self, run: &mut Run, repo: &Path, commit: &str) -> Result<(), String> {
+    /// The `landing_approval` event the landing's core raises in the
+    /// repository rooted at the home directory, whose live files landing
+    /// `commit` changes: the whole patch, and the backup and rollback note.
+    pub(super) fn landing_approval_event(
+        &self,
+        run: &Run,
+        commit: &str,
+    ) -> Result<TodoRunEvent, String> {
+        let landing_dir = run.landing_dir();
+        let repo = landing_dir.as_path();
         let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_owned();
         let patch = git(
             repo,
@@ -5045,9 +5111,7 @@ impl WorkerSupervisor {
             commit,
             &head,
         ));
-        run.info.status = TodoRunStatus::Waiting;
-        self.record_run_event(run, &event)?;
-        Ok(())
+        Ok(event)
     }
 
     /// The branch moved since the approval (or the approval named another
