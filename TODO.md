@@ -39,6 +39,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   default sidebar's row 1 (about 42 with the 5-hour part); open questions
   d-ny6umip3 (form and precision) and d-t63wh7gu (line 2). The chart
   redesign (t-b7f4w4je) replaces line 2 later.
+  Decided by the user 2026-10-24: d-ny6umip3 "39%→42.9% at 02:00", then,
+  since that needs about 39 of the default row's 35 columns, d-r2ii2j6c:
+  row 1 shows `39%→42.9%` (the weekly percent, an arrow, the even-pace
+  target at the next window-day boundary, one decimal, clamped to 100;
+  omitted when the next boundary is the reset), and the boundary's time
+  goes in the weekly percent's tooltip (e.g. `even pace at Sun 02:00:
+  42.9%`); d-t63wh7gu: line 2's `+3.9pp to 02:00` goes (the bars and the
+  initials stay until the chart redesign t-b7f4w4je). If even `→42.9%`
+  does not fit a narrower sidebar, it is dropped whole.
 
 - [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
   (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
