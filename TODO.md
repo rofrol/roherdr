@@ -37,6 +37,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   2026-10-24: moved before t-eu3egeam, whose queue draft (run r-ug4jmeiz,
   d-yzhuslhe) found it needs this item's part 1 (the persistent ledger)
   first, as its own text says; that draft was aborted.
+  2026-10-24, the coordinator's answer to the queue draft (run r-3hdjreit,
+  d-yosljize): split; that run does part 1 only (the persistent ledger and
+  its aggregates); parts 2-4 stay here for later runs; part 3 needs the
+  user's plan fees and metered-spend sources.
 
 - [ ] Each space shows its share of the Claude subscription's limit over [t-eu3egeam]
   the last 1 h, 6 h, 24 h and 7 days (the user, 2026-10-23: "show how
