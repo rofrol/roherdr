@@ -356,6 +356,19 @@ pub(super) struct RunFinish {
     /// review's approval closes the item.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) queued: bool,
+    /// The part of its item the run is scoped to, as a draft answer or its
+    /// drafted task said it ([`queue::scope_in_answer`],
+    /// [`queue::scope_in_task`]); none for a run of the whole item (and
+    /// every run recorded before runs stored it). A queue approval of a
+    /// scoped run appends a note to the item instead of closing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) scope: Option<String>,
+    /// The digests of the item's text ([`queue::item_digest`]) the queue
+    /// does not start the item again with, recorded by a queue approval of
+    /// a scoped run: the text the run claimed, and the text with the
+    /// approval's note appended. Empty for every other run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) partial_digests: Vec<String>,
     /// The repository's granted `prepare` as preflight read it from the
     /// base commit, with its grant: the grants the run runs with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3598,20 +3611,30 @@ impl WorkerSupervisor {
         self.check_after_close(&run, &params)?;
         // In queue mode an approval closes the item as the queue's own
         // review does, unless it keeps it open (a note, or keep_open): the
-        // queue then never runs an approved item again.
-        let queue_close = (params.action == TodoAction::Approve
+        // queue then never runs an approved item again. A run scoped to a
+        // part of the item notes that part on it instead, and the queue
+        // skips the item until its text changes.
+        let queue_approval = (params.action == TodoAction::Approve
             && params.note.is_none()
             && params.close.is_none()
             && !params.keep_open
             && (run.finish.queued || self.queue_is_on(&run.info.repo)))
         .then(|| {
-            queue::queue_close(
+            queue::queue_approval(
                 &run,
                 reviewed.as_deref(),
                 None,
                 "the coordinator (`herdr todo resume --action approve`)",
             )
         });
+        let (queue_close, queue_note) = match queue_approval {
+            Some(queue::QueueApproval::Close(close)) => (Some(close), None),
+            Some(queue::QueueApproval::Partial(note)) => (None, Some(note)),
+            None => (None, None),
+        };
+        let claimed_digest = queue_note
+            .is_some()
+            .then(|| queue::item_digest(&self.item_text_of(&run)));
         let mut note = None;
         let mut usage = None;
         match params.action {
@@ -3792,9 +3815,10 @@ impl WorkerSupervisor {
             "request_id": params.request_id,
             "env_sent": env.is_some(),
             "note": note,
-            "todo_note": params.note,
+            "todo_note": params.note.as_ref().or(queue_note.as_ref()),
             "close": params.close.as_ref().or(queue_close.as_ref()),
             "queue_close": queue_close.is_some(),
+            "queue_partial": queue_note.is_some(),
             "keep_open": params.keep_open,
             "next": params.next,
             "stop_reason": params.stop_reason,
@@ -3922,8 +3946,12 @@ impl WorkerSupervisor {
                     TodoAction::Answer => current.info.step = TodoStep::Attention,
                     TodoAction::Approve => {
                         current.info.step = TodoStep::Stop;
-                        current.finish.note = params.note.clone();
+                        current.finish.note = params.note.clone().or_else(|| queue_note.clone());
                         current.finish.close = params.close.clone().or_else(|| queue_close.clone());
+                        if let Some(digest) = &claimed_digest {
+                            current.finish.scope = queue::scope_of(&current);
+                            current.finish.partial_digests = vec![digest.clone()];
+                        }
                         current.finish.next = params.next.clone();
                         current.finish.stop_reason = params.stop_reason.clone();
                         current.finish.continue_self = params.continue_self;
@@ -3956,13 +3984,15 @@ impl WorkerSupervisor {
                     // slot); the restart then blocks the run.
                     TodoAction::Retry if kind == TodoEventKind::Draft => {
                         current.info.step = TodoStep::Draft;
+                        let text = params.task.as_deref().unwrap_or_default().trim();
                         let answer = auto_draft::answer_note(
                             params.event,
                             answered_body.as_ref(),
-                            params.task.as_deref().unwrap_or_default().trim(),
+                            text,
                             "coordinator",
                         );
                         tx.run_note(&current.info.run_id, &answer, now_ms())?;
+                        auto_draft::record_scope(&mut current, text);
                     }
                     TodoAction::Retry if kind == TodoEventKind::RetryConflict => {
                         current.info.step = TodoStep::Start;

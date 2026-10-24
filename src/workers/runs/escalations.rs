@@ -399,6 +399,7 @@ impl WorkerSupervisor {
                 }
                 let note = super::auto_draft::answer_note(*seq, Some(body), answer, "user");
                 tx.run_note(&current.info.run_id, &note, now_ms())?;
+                super::auto_draft::record_scope(&mut current, answer);
                 current.info.status = TodoRunStatus::Running;
                 current.info.step = TodoStep::Draft;
                 tx.run_event(

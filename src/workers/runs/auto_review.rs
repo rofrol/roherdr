@@ -1055,18 +1055,33 @@ impl WorkerSupervisor {
         commit: &str,
         note: Option<String>,
     ) -> Result<Outcome, String> {
-        // A queue run's own approval closes its item, so the queue moves on.
-        let close = run.finish.queued.then(|| {
-            super::queue::queue_close(run, Some(commit), note.as_deref(), "the server's review")
+        // A queue run's own approval closes its item, so the queue moves on;
+        // a run scoped to a part of the item notes that part on it instead,
+        // and the queue skips the item until its text changes.
+        let approval = run.finish.queued.then(|| {
+            super::queue::queue_approval(run, Some(commit), note.as_deref(), "the server's review")
         });
+        let (close, partial) = match approval {
+            Some(super::queue::QueueApproval::Close(close)) => (Some(close), None),
+            Some(super::queue::QueueApproval::Partial(partial)) => (None, Some(partial)),
+            None => (None, None),
+        };
+        let claimed_digest = partial
+            .is_some()
+            .then(|| super::queue::item_digest(&self.item_text_of(run)));
         let body = json!({
             "type": APPLIED, "event": seq, "decision_id": record.decision_id,
             "action": "approve", "note": note, "commit": commit, "base": record.base,
-            "close": close,
+            "close": close, "todo_note": partial,
         });
         self.apply_change(run, seq, record, &body, |current| {
             if current.finish.queued && current.finish.note.is_none() {
                 current.finish.close = close.clone();
+                if let (Some(partial), Some(digest)) = (&partial, &claimed_digest) {
+                    current.finish.note = Some(partial.clone());
+                    current.finish.scope = super::queue::scope_of(current);
+                    current.finish.partial_digests = vec![digest.clone()];
+                }
             }
             current.info.step = TodoStep::Stop;
             current.current.review_event = Some(seq);

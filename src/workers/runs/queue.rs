@@ -8,7 +8,10 @@
 //! [`super::auto_answer`]). An approval in queue mode, the run's own review's
 //! or a coordinator's `todo resume --action approve` (unless it keeps the
 //! item open), closes the item, so the queue moves on and never runs an
-//! approved item again.
+//! approved item again. A run that a draft answer or its task scoped to a
+//! part of the item ([`scope_in_answer`], [`scope_in_task`]) closes nothing:
+//! its approval appends a note to the item saying which part landed, and
+//! the queue skips the item until its text changes ([`partial_reason`]).
 //!
 //! It looks again only on herdr's own events, never on a timer: a run of the
 //! repository ended (done, blocked or aborted), an escalation was answered,
@@ -32,6 +35,8 @@
 //!   first) before it starts another;
 //! - an item the queue ran [`ITEM_ATTEMPTS`] times with the same text is
 //!   blocked, with the reason shown, until its text changes;
+//! - an item a part of which landed is skipped, with the reason shown,
+//!   until its text changes;
 //! - [`BREAKER`] consecutive queue runs that ended blocked or aborted pause
 //!   the queue with the reason and a notification;
 //! - the cost is bounded by the usage gate, read at every start.
@@ -49,7 +54,7 @@ use std::sync::Mutex;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::{git, lock, step_name, store_error, todo_titles, Run, TODO_FILE};
 use crate::api::schema::{
@@ -265,7 +270,7 @@ pub(crate) enum QueueStep {
 
 /// The digest of an item's text, which tells an edited item from the one
 /// the queue blocked.
-fn item_digest(text: &str) -> String {
+pub(super) fn item_digest(text: &str) -> String {
     let digest = Sha256::digest(text.as_bytes());
     digest[..8]
         .iter()
@@ -315,14 +320,15 @@ fn parse_status(status: Option<&str>) -> Option<TodoQueueStatus> {
     serde_json::from_value(json!(status?)).ok()
 }
 
-/// The items of "Next, in order" the queue skips, each with why: the queue
-/// ran it [`ITEM_ATTEMPTS`] times with its current text.
-fn blocked_items(todo: &str, runs: &[QueueRun]) -> Vec<TodoQueueBlockedItem> {
+/// The items of "Next, in order" the queue skips, each with why
+/// ([`skip_reason`]): a part of it landed with its current text, or the
+/// queue ran it [`ITEM_ATTEMPTS`] times with that text.
+fn blocked_items(todo: &str, queue_runs: &[QueueRun], runs: &[Run]) -> Vec<TodoQueueBlockedItem> {
     todo_titles::next_items(todo)
         .into_iter()
         .filter_map(|item| {
             let text = todo_titles::item_text(todo, &item).unwrap_or_default();
-            blocked_reason(&item, &item_digest(&text), runs)
+            skip_reason(&item, &item_digest(&text), queue_runs, runs)
                 .map(|reason| TodoQueueBlockedItem { item, reason })
         })
         .collect()
@@ -445,8 +451,9 @@ impl WorkerSupervisor {
         let queue = store.queue(&repo).map_err(store_error)?;
         let mode = mode_of(queue.as_ref());
         let runs = store.queue_runs(&repo).map_err(store_error)?;
+        let all_runs = store.runs(Some(&repo)).map_err(store_error)?;
         let blocked = todo_on_default(queue_dir(&repo, queue.as_ref()))
-            .map(|(_, todo)| blocked_items(&todo, &runs))
+            .map(|(_, todo)| blocked_items(&todo, &runs, &all_runs))
             .unwrap_or_default();
         let active = store.active_run(&repo).map_err(store_error)?;
         let (status, reason) = match (&active, &queue) {
@@ -516,13 +523,14 @@ impl WorkerSupervisor {
             .filter(|tenure| tenure.headless)
             .map(|tenure| tenure.id);
         let runs = store.queue_runs(&repo).map_err(store_error)?;
+        let all_runs = store.runs(Some(&repo)).map_err(store_error)?;
         let todo = todo_on_default(queue_dir(&repo, queue.as_ref()));
         let runnable_items: Vec<String> = match &todo {
             Ok((_, todo)) => todo_titles::next_items(todo)
                 .into_iter()
                 .filter(|item| {
                     let text = todo_titles::item_text(todo, item).unwrap_or_default();
-                    blocked_reason(item, &item_digest(&text), &runs).is_none()
+                    skip_reason(item, &item_digest(&text), &runs, &all_runs).is_none()
                 })
                 .collect(),
             Err(_) => Vec::new(),
@@ -683,16 +691,13 @@ impl WorkerSupervisor {
         }
         // A run at its abort step no longer claims the repository, but it
         // has not ended: its end, settled first, is the next event.
-        let unended = store
-            .runs(Some(repo))
-            .map_err(store_error)?
-            .into_iter()
-            .any(|run| {
-                matches!(
-                    run.info.status,
-                    TodoRunStatus::Running | TodoRunStatus::Waiting
-                )
-            });
+        let all_runs = store.runs(Some(repo)).map_err(store_error)?;
+        let unended = all_runs.iter().any(|run| {
+            matches!(
+                run.info.status,
+                TodoRunStatus::Running | TodoRunStatus::Waiting
+            )
+        });
         if unended {
             return Ok(QueueStep::Idle);
         }
@@ -730,8 +735,11 @@ impl WorkerSupervisor {
         for item in items {
             let text = todo_titles::item_text(&todo, &item).unwrap_or_default();
             let digest = item_digest(&text);
-            match blocked_reason(&item, &digest, &runs) {
-                Some(reason) => blocked.push(reason),
+            match skip_reason(&item, &digest, &runs, &all_runs) {
+                Some(reason) => {
+                    debug!(repo, item, %reason, "the todo queue skips an item");
+                    blocked.push(reason)
+                }
                 None => {
                     chosen = Some((item, digest));
                     break;
@@ -967,21 +975,158 @@ impl WorkerSupervisor {
     }
 }
 
-/// The closing decision an approval in queue mode records, `by` the one who
-/// approved (the queue's own review, or the coordinator): the item leaves
-/// "Next, in order" and `DECISIONS.md` gets what landed, titled by the item.
-pub(super) fn queue_close(run: &Run, commit: Option<&str>, note: Option<&str>, by: &str) -> String {
+/// What an approval in queue mode does with the run's item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum QueueApproval {
+    /// The run covered the whole item: this closing decision moves it into
+    /// `DECISIONS.md`.
+    Close(String),
+    /// The run covered a part of it: this note is appended to the item,
+    /// which stays open.
+    Partial(String),
+}
+
+/// What an approval in queue mode records, `by` the one who approved (the
+/// queue's own review, or the coordinator): for a run of the whole item a
+/// closing decision (the item leaves "Next, in order" and `DECISIONS.md`
+/// gets what landed, titled by the item); for a run scoped to a part of it
+/// ([`scope_of`]) a note on the item saying which part landed, since a close
+/// would drop the rest of the item.
+pub(super) fn queue_approval(
+    run: &Run,
+    commit: Option<&str>,
+    note: Option<&str>,
+    by: &str,
+) -> QueueApproval {
     let commit = commit
         .map(|commit| format!(" ({})", &commit[..commit.len().min(12)]))
         .unwrap_or_default();
-    let mut text = format!(
-        "Landed by herdr's TODO queue: run {}, attempt {}, `{}`{commit}, approved by {by}.",
+    let landed = format!(
+        "run {}, attempt {}, `{}`{commit}, approved by {by}",
         run.info.run_id, run.info.attempt, run.info.message,
     );
-    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
-        text.push_str(&format!("\n\nReview note: {note}"));
+    let note = note
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(|note| format!("\n\nReview note: {note}"))
+        .unwrap_or_default();
+    match scope_of(run) {
+        Some(scope) => QueueApproval::Partial(format!(
+            "Part landed by herdr's TODO queue: {landed}. Scope: {scope}\nThe item stays \
+             open; the queue runs it again once its text changes (describe the next part).{note}"
+        )),
+        None => QueueApproval::Close(format!("Landed by herdr's TODO queue: {landed}.{note}")),
     }
-    text
+}
+
+/// The part of its item `run` is scoped to: what a draft answer or its
+/// drafted task recorded, else what its task says (a run whose task the
+/// coordinator wrote). None for a run of the whole item.
+pub(super) fn scope_of(run: &Run) -> Option<String> {
+    run.finish
+        .scope
+        .clone()
+        .or_else(|| scope_in_task(&run.info.task))
+}
+
+/// The longest scope text a run records.
+const SCOPE_MAX: usize = 300;
+
+/// The text's words, lowercased, letters and digits only.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn is_number(word: &str) -> bool {
+    word.chars().all(|c| c.is_ascii_digit())
+        || matches!(
+            word,
+            "one" | "two" | "three" | "four" | "five" | "six" | "i" | "ii" | "iii" | "iv" | "v"
+        )
+}
+
+fn is_ordinal(word: &str) -> bool {
+    matches!(
+        word,
+        "first" | "second" | "third" | "fourth" | "fifth" | "1st" | "2nd" | "3rd" | "4th" | "5th"
+    )
+}
+
+/// Whether `words` name a numbered part of the item: "part 1", "parts 1-2",
+/// "the first part".
+fn names_part(words: &[String]) -> bool {
+    words.windows(2).any(|pair| {
+        (matches!(pair[0].as_str(), "part" | "parts") && is_number(&pair[1]))
+            || (is_ordinal(&pair[0]) && matches!(pair[1].as_str(), "part" | "half"))
+    })
+}
+
+/// Whether `words` name a step of the item or a split of it: "step 1",
+/// "phase 2", "the first step", "split".
+fn names_step_or_split(words: &[String]) -> bool {
+    words.iter().any(|word| word == "split")
+        || words.windows(2).any(|pair| {
+            (matches!(pair[0].as_str(), "step" | "phase" | "stage") && is_number(&pair[1]))
+                || (is_ordinal(&pair[0])
+                    && matches!(pair[1].as_str(), "step" | "phase" | "stage" | "slice"))
+        })
+}
+
+/// One line of at most [`SCOPE_MAX`] characters.
+fn scope_text(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(SCOPE_MAX) {
+        Some((at, _)) => format!("{}...", &line[..at]),
+        None => line,
+    }
+}
+
+/// The scope an answer to a draft's question gives its run, when it scopes
+/// it to a part of the item ("split; this run does part 1 only", "only the
+/// first step", "phase 2"): the answer itself, as one line. Detection leans
+/// to a scope: a run wrongly taken as partial only leaves a note on an item
+/// that stays open, a run wrongly taken as whole closes the item and drops
+/// the rest of it.
+pub(super) fn scope_in_answer(answer: &str) -> Option<String> {
+    let words = words(answer);
+    (names_part(&words) || names_step_or_split(&words)).then(|| scope_text(answer))
+}
+
+/// The scope a run's task gives it, when it names a numbered part of the
+/// item ("Part 2 of the item: ..."): the line that names it. Narrower than
+/// [`scope_in_answer`], since a task's "first step" or "split" usually
+/// describes the work, not the item.
+pub(super) fn scope_in_task(task: &str) -> Option<String> {
+    task.lines()
+        .find(|line| names_part(&words(line)))
+        .map(scope_text)
+}
+
+/// Why the queue does not start `item` again with the text whose digest is
+/// `digest`: a done run's approval landed a part of it with that text (the
+/// text it claimed, or that text with the approval's note).
+fn partial_reason(item: &str, digest: &str, runs: &[Run]) -> Option<String> {
+    let run = runs.iter().rev().find(|run| {
+        run.info.item == item
+            && run.info.status == TodoRunStatus::Done
+            && run.finish.partial_digests.iter().any(|done| done == digest)
+    })?;
+    Some(format!(
+        "run {} landed only a part of {item} ({}); edit the item in TODO.md to describe what \
+         is left, and the queue runs it again",
+        run.info.run_id,
+        run.finish.scope.as_deref().unwrap_or("a part")
+    ))
+}
+
+/// Why the queue skips `item` with the text whose digest is `digest`, when
+/// it does: a part of it landed with that text, or it ran
+/// [`ITEM_ATTEMPTS`] times with it.
+fn skip_reason(item: &str, digest: &str, queue_runs: &[QueueRun], runs: &[Run]) -> Option<String> {
+    partial_reason(item, digest, runs).or_else(|| blocked_reason(item, digest, queue_runs))
 }
 
 #[cfg(test)]
@@ -1017,5 +1162,52 @@ mod tests {
         assert_eq!(blocked_reason("t-a", "d2", &runs), None);
         let runs = vec![run("t-a", "d1", Some("aborted")), run("t-a", "d1", None)];
         assert_eq!(blocked_reason("t-a", "d1", &runs), None);
+    }
+
+    #[test]
+    fn an_answer_that_names_a_part_or_a_step_scopes_the_run() {
+        for answer in [
+            "split; this run does part 1 only",
+            "Part one now, the rest later",
+            "do parts 1-2",
+            "only the first step",
+            "the first part only",
+            "phase 2",
+            "Split it.",
+        ] {
+            assert_eq!(scope_in_answer(answer).as_deref(), Some(answer), "{answer}");
+        }
+        for whole in [
+            "yes",
+            "yes, as written",
+            "use a.txt",
+            "a part of the plan is fine",
+        ] {
+            assert_eq!(scope_in_answer(whole), None, "{whole}");
+        }
+        // One line, cut at SCOPE_MAX characters.
+        assert_eq!(
+            scope_in_answer("part 1:\n  the parser").as_deref(),
+            Some("part 1: the parser")
+        );
+        let long = format!("part 1 {}", "x".repeat(400));
+        let cut = scope_in_answer(&long).unwrap();
+        assert_eq!(cut.chars().count(), SCOPE_MAX + 3, "{cut}");
+    }
+
+    #[test]
+    fn only_a_numbered_part_in_a_task_scopes_the_run() {
+        assert_eq!(
+            scope_in_task("Add the parser.\nThis run does Part 2 of the item.\nTest it.")
+                .as_deref(),
+            Some("This run does Part 2 of the item.")
+        );
+        for whole in [
+            "As a first step, read queue.rs. Split the module in two.",
+            "commit a.txt feat: add a",
+            "Change only the part of the parser that reads tokens.",
+        ] {
+            assert_eq!(scope_in_task(whole), None, "{whole}");
+        }
     }
 }

@@ -16670,6 +16670,166 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 );
             }
 
+            /// Replaces the item's "Its text." on master with `text`, as the
+            /// user describing the next part would.
+            fn edit_item(fixture: &Fixture, text: &str) {
+                let path = fixture.repo.join("TODO.md");
+                let todo = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(todo.matches("Its text.").count(), 1, "{todo}");
+                std::fs::write(&path, todo.replace("Its text.", text)).unwrap();
+                git_in(&fixture.repo, &["commit", "-q", "-am", "docs: next part"]);
+            }
+
+            /// A run whose draft answer scopes it to part 1 (t-twmvyrnk's
+            /// loss: its approval closed the whole item): the queue's own
+            /// approval notes the part on the item, which stays open with
+            /// all its text, and nothing moves to DECISIONS.md. The queue
+            /// skips the item, saying why, until its text changes; then it
+            /// runs it again, and a run of the whole item closes it.
+            #[test]
+            fn a_partial_runs_approval_notes_the_part_and_keeps_the_item_open() {
+                let (fixture, repo) = queued("todo-queue-partial", &[ITEM], &[ESCALATE]);
+                set(&fixture, TodoQueueMode::On);
+                let waiting = wait_queue(&fixture, "the draft's question", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                let run_id = waiting.run_id.unwrap();
+                let (escalated, _) = wait(&fixture, &run_id, None);
+                assert_eq!(escalated.kind, TodoEventKind::Draft, "{escalated:#?}");
+                let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];
+                set_answers(
+                    &fixture,
+                    &answers.iter().map(String::as_str).collect::<Vec<_>>(),
+                );
+                const SCOPE: &str = "split; this run does part 1 only";
+                resume(
+                    &fixture,
+                    &run_id,
+                    escalated.event_id,
+                    TodoAction::Retry,
+                    Some(SCOPE),
+                )
+                .unwrap();
+                let skipped = wait_queue(&fixture, "the item skipped", |queue| {
+                    queue.status == TodoQueueStatus::Blocked
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done)]
+                );
+                assert_eq!(
+                    master_subjects(&fixture)[..2],
+                    [
+                        format!("docs(todo): note on {ITEM}").as_str(),
+                        "feat: add a"
+                    ]
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                for part in [
+                    &format!("Queued item 0 [{ITEM}]"),
+                    "Its text.",
+                    "Part landed by herdr's TODO queue",
+                    &format!("run {run_id}"),
+                    SCOPE,
+                    "approved by the server's review",
+                ] {
+                    assert!(todo.contains(part), "{part:?} not in {todo}");
+                }
+                let decisions = git_in(&fixture.repo, &["show", "master:DECISIONS.md"]);
+                assert!(
+                    !decisions.contains("Queued item 0") && !decisions.contains("Landed by"),
+                    "{decisions}"
+                );
+                let stored = fixture.supervisor.load_run(&run_id).unwrap();
+                assert_eq!(stored.finish.scope.as_deref(), Some(SCOPE));
+                assert_eq!(stored.finish.close, None);
+                assert_eq!(stored.finish.partial_digests.len(), 2, "{stored:#?}");
+                // Skipped, saying why; another event starts nothing.
+                assert_eq!(skipped.blocked_items.len(), 1, "{skipped:#?}");
+                assert_eq!(skipped.blocked_items[0].item, ITEM);
+                for reason in [&skipped.blocked_items[0].reason, &skipped.reason] {
+                    assert!(
+                        reason.contains("only a part") && reason.contains(&run_id),
+                        "{reason}"
+                    );
+                }
+                fixture.supervisor.queue_event(&repo);
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+
+                // The user describes the next part: the queue runs it, and
+                // the run of the whole rest closes the item.
+                let answers = [draft("b.txt", "feat: add b"), APPROVE.into()];
+                set_answers(
+                    &fixture,
+                    &answers.iter().map(String::as_str).collect::<Vec<_>>(),
+                );
+                edit_item(&fixture, "The rest: add b.");
+                fixture.supervisor.queue_event(&repo);
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done), (ITEM, TodoRunStatus::Done)]
+                );
+                assert_eq!(
+                    master_subjects(&fixture)[0],
+                    format!("docs(todo): close {ITEM}")
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                assert!(!todo.contains(ITEM), "{todo}");
+                let decisions = git_in(&fixture.repo, &["show", "master:DECISIONS.md"]);
+                assert!(
+                    decisions.contains("## Queued item 0")
+                        && decisions.contains("Landed by herdr's TODO queue"),
+                    "{decisions}"
+                );
+            }
+
+            /// A coordinator's approval in queue mode of a run whose task
+            /// names a part of the item notes the part instead of closing.
+            #[test]
+            fn a_coordinators_approval_of_a_partial_run_keeps_the_item_open() {
+                let task = serde_json::json!({
+                    "action": "draft",
+                    "task": "commit a.txt feat: add a\nPart 1 of the item only.",
+                    "message": "feat: add a", "paths": ["*.txt"], "checks": ["ok"],
+                })
+                .to_string();
+                let answers = [task.as_str(), ESCALATE];
+                let (fixture, repo) = queued("todo-queue-partial-manual", &[ITEM], &answers);
+                set(&fixture, TodoQueueMode::On);
+                let (run_id, review) = review_escalated(&fixture);
+                fixture
+                    .supervisor
+                    .todo_resume(resume_params(&run_id, review.event_id, TodoAction::Approve))
+                    .unwrap();
+                let skipped = wait_queue(&fixture, "the item skipped", |queue| {
+                    queue.status == TodoQueueStatus::Blocked
+                });
+                assert_eq!(skipped.blocked_items.len(), 1, "{skipped:#?}");
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done)]
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                for part in [
+                    "Its text.",
+                    "Part landed by herdr's TODO queue",
+                    "Scope: Part 1 of the item only.",
+                    "approved by the coordinator",
+                ] {
+                    assert!(todo.contains(part), "{part:?} not in {todo}");
+                }
+                let decisions = git_in(&fixture.repo, &["show", "master:DECISIONS.md"]);
+                assert!(!decisions.contains("Landed by"), "{decisions}");
+                let resumed = run_events(&fixture, &run_id, "run_resumed");
+                assert_eq!(
+                    (&resumed[0]["queue_close"], &resumed[0]["queue_partial"]),
+                    (&serde_json::json!(false), &serde_json::json!(true))
+                );
+            }
+
             #[test]
             fn a_usage_reading_wakes_a_queue_the_usage_gate_stopped() {
                 let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];

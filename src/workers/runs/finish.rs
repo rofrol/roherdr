@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde_json::json;
+use tracing::warn;
 
 use super::core::CoreEvent;
 use super::landing::{fast_forward, tree_with};
@@ -424,6 +425,26 @@ impl WorkerSupervisor {
         } else {
             (None, Vec::new())
         };
+        // A part of the item landed: the queue skips the item with the text
+        // that carries the part's note, too, until the user edits it.
+        if run.finish.note.is_some() && !run.finish.partial_digests.is_empty() {
+            let noted = git(
+                Path::new(&run.info.repo),
+                &["show", &format!("{commit}:{TODO_FILE}")],
+            )
+            .ok()
+            .and_then(|text| todo_titles::item_text(&text, &run.info.item));
+            match noted.map(|text| super::queue::item_digest(&text)) {
+                Some(digest) if !run.finish.partial_digests.contains(&digest) => {
+                    run.finish.partial_digests.push(digest);
+                }
+                Some(_) => {}
+                None => warn!(
+                    run = run.info.run_id,
+                    commit, "the noted item's text cannot be read from the TODO commit"
+                ),
+            }
+        }
         run.info.todo_commit = Some(commit.clone());
         json!({
             "type": "run_todo_committed",

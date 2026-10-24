@@ -615,6 +615,11 @@ impl WorkerSupervisor {
                 current.checks = registered.clone();
                 current.finish.contract_check = None;
                 current.finish.path_checks = path_checks.clone();
+                // A task that names a part of the item scopes the run to it,
+                // as an answer that does; an earlier answer's scope stays.
+                if current.finish.scope.is_none() {
+                    current.finish.scope = super::queue::scope_in_task(&task);
+                }
                 current.info.step = TodoStep::Start;
                 tx.run_event(&mut current, &body, false, now_ms())?;
                 Ok(Some(current))
@@ -731,6 +736,17 @@ pub(super) fn answer_note(event: i64, body: Option<&Value>, answer: &str, by: &s
         "type": ANSWER, "event": event, "decision_id": field(super::auto_review::ESCALATES),
         "question": field("question"), "options": field("options"), "answer": answer, "by": by,
     })
+}
+
+/// Records with the run the scope an answer to its draft's question gives
+/// it ([`super::queue::scope_in_answer`]), so that its approval in queue
+/// mode notes that part on the item instead of closing it. A scope recorded
+/// earlier stays: a later answer that names no part does not widen the run
+/// to the whole item.
+pub(super) fn record_scope(run: &mut Run, answer: &str) {
+    if run.finish.scope.is_none() {
+        run.finish.scope = super::queue::scope_in_answer(answer);
+    }
 }
 
 /// The choices a draft the model could not settle leaves the user.
