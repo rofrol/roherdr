@@ -3247,3 +3247,18 @@ TODO-deferred.md.
   "context bloat" exception; the coordinator's own consult digests and the
   item's agent reading large logs fit it (a subagent returns a summary,
   the main loop keeps the decision).
+- Asked by the user ("does a subagent make sense for us if a handoff happens
+  at a limit anyway?"), round 20261024-134537-9e7a (sol, MiMo, DeepSeek,
+  Argon, agreeing): they solve different problems. A handoff bounds the
+  context's lifetime growth (cost: the successor's warm-up and lost
+  working memory); a subagent bounds per-turn growth: every turn re-reads
+  the whole context from cache, so keeping a large one-off read out of it
+  saves on every later turn and makes handoffs rarer. Delegate when the
+  input is much larger than a verifiable answer (file:line, exact error
+  strings): code search, log and benchmark analysis, facts from worker
+  logs. Keep in the main loop: diff review and checking claims against
+  the source, consult findings, decisions, TODO and handoff writes. In
+  queue mode an item's agent is short-lived, so a subagent pays only for
+  large separable investigations. Measure: cache-read tokens per message,
+  handoffs per landed item, total tokens across agents per item, and
+  rework from detail a summary dropped.
