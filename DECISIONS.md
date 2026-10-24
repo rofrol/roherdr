@@ -3234,3 +3234,9 @@ TODO-deferred.md.
   for a critical step but cannot guarantee it, so mandatory checks belong
   in the system's design. That is the case for the driver's deterministic
   review gate over a prose consult rule.
+- A fifth reply, https://x.com/VectorQl/status/2113926600010178769: one
+  agent loop is boring but gets the job done; rather than Opus planning
+  and Sonnet coding (Opus then re-verifies Sonnet's work), lower the same
+  agent's reasoning effort after the plan. For herdr: a candidate for the
+  queue's per-item agent, measured like the rest (the Proposed item on
+  per-phase effort).

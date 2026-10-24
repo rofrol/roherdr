@@ -4333,6 +4333,15 @@ Items agents add. Not approved until the user moves them up.
   final diff. Not rubric-graded hill climbing: the ground truth is the
   registered checks and rework.
 
+- [ ] The queue's per-item agent plans at high reasoning effort and then [t-cxgjflc3]
+  implements at a lower one (from a reply to Anthropic's "when to fold
+  subagents" article, https://x.com/VectorQl/status/2113926600010178769:
+  one agent, lower the effort after the plan, instead of Opus planning and
+  Sonnet coding with Opus re-verifying). Check whether Claude Code lets a
+  headless session change its effort between turns, and measure it on the
+  golden set (the Proposed evals item) against one effort throughout:
+  cost per landed item and items that used to pass and now fail.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
