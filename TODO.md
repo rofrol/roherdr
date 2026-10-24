@@ -3651,6 +3651,31 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `src/client/shell/usage.rs` (the boundary's weekday and the even daily
   share are known there). Keep the tooltip's hit rect and the row as they
   are; update the tooltip tests.
+  Redesign decided by the user 2026-10-24 after rounds
+  20261024-123220-378f, 20261024-124102-412b, 20261024-124724-a82c and
+  20261024-125755-5048 (the `+1pp · +6.9pp` row read as two windows and
+  the `+` as good; mixed `%` and `pp`), with colour mockups in a terminal
+  tab (d-ubjiqdhl, d-3gzy2koo): the chart uses two-character day columns
+  (one space between them, after the indent): row 1 the day's bar (one
+  eighth-block glyph doubled, a full bar = 2x the even day of 14.3%, `··`
+  without samples); row 2 the day's use as a whole percent of the weekly
+  limit, right-aligned in 2 characters (`··` unknown, 99 cap, exact value
+  on hover); row 3 the weekday initial; colours per day by its multiple
+  of 14.3%: up to 1x normal, 1-1.5x yellow, over 1.5x red, unknown dim,
+  today bold with its initial in the accent colour and underlined. Under
+  them, in place of the pace text, one full-width week bar (variant 5):
+  the track 0-100% of the 7-day limit, filled to the use (green at or
+  under the elapsed share, yellow ahead of it, red past the next
+  window-day boundary's even-pace mark), with `┃` at the elapsed share
+  and `╎` at the next boundary's mark inside the unfilled track; it
+  scales to the row's width. Convention: `%` for levels, `pp` for
+  differences. The bar's tooltip, e.g.: `7-day limit: 36% used, 35% of
+  the week elapsed (1pp ahead of even pace)` / `By Sun 02:00 even pace is
+  42.9%: 6.9pp left to use` / `A plan, not a limit; the 5-hour limit is
+  separate` / `Resets Thu 29 Oct 01:00 CET · source: Claude usage
+  endpoint`; a day's tooltip: its date, `21% of the weekly limit`, `1.5x
+  an even day (14.3%)`, samples, `still filling` for today. The mockup
+  script: the coordinator's scratchpad `bar_mockups.py` (variant 5).
 
 - [ ] A pane's output shows through a sidebar tooltip (the user, 2026-10-24, [t-yqrng7aw]
   with a screenshot: "Imaging shows through the tooltip"). The usage
@@ -3747,6 +3772,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   accepted ones are resolved; a missing model never counts as an
   approval; a new commit voids the review; the queue runs at most one
   item; an unanswered escalation stops the queue and the worker.
+  Decided by the user 2026-10-24 (d-txaqnqoy): when a model does not
+  answer, the gate goes on with those that answered: the missing model is
+  recorded and shown, never counts as an approval, and does not block as
+  long as at least 3 of the 4 answered.
 
 ## Proposed
 
