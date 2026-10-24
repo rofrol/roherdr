@@ -6543,6 +6543,45 @@ mod todo_runs {
         abort(&fixture, &run.run_id, review.event_id);
     }
 
+    /// Whoever sees a run's end sees its lock gone: the driver is held right
+    /// after it published the end, before it goes on, and the lock file is
+    /// already removed then.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_has_let_go_of_its_lock_when_its_end_is_published() {
+        let fixture = todo_repo("todo-end-unlocked");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert!(fixture.supervisor.run_lock_path(&run.run_id).exists());
+        let (published, at_end) = std::sync::mpsc::channel();
+        let (go_on, held) = std::sync::mpsc::channel::<()>();
+        runs::hook_at(&run.repo, "end_published", move || {
+            let _ = published.send(());
+            // Goes on once the test has looked, or has failed.
+            let _ = held.recv();
+        });
+        fixture
+            .supervisor
+            .todo_resume(resume_params(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Abort,
+            ))
+            .unwrap();
+        at_end.recv().unwrap();
+        // The driver is held, so only the event, not its letting go.
+        let (aborted, _) = next_event(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(aborted.kind, TodoEventKind::Aborted, "{aborted:#?}");
+        assert!(!fixture.supervisor.run_lock_path(&run.run_id).exists());
+        drop(go_on);
+        let (ended, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(ended.event_id, aborted.event_id);
+        assert!(!fixture.supervisor.run_lock_path(&run.run_id).exists());
+    }
+
     fn usage_refusal(fixture: &Fixture) -> String {
         let refused = fixture
             .supervisor

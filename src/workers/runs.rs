@@ -4227,7 +4227,7 @@ impl WorkerSupervisor {
 
     /// The run's lock file, next to the store.
     pub(super) fn run_lock_path(&self, run_id: &str) -> PathBuf {
-        self.shared.dir.join(format!("run-{run_id}.lock"))
+        super::store::run_lock_file(&self.shared.dir, run_id)
     }
 
     /// Takes the run's lock, which the driving server holds while it
@@ -4382,7 +4382,10 @@ impl WorkerSupervisor {
                 );
                 if ended {
                     lock(&RUN_ENV).remove(run_id);
-                    // Ended: no driver needs its lock again.
+                    // Ended: no driver needs its lock again. The write that
+                    // ended it removed the file before it committed
+                    // ([`super::store::Store::transaction`]); a driver that
+                    // took the lock after that made it again.
                     let _ = std::fs::remove_file(self.run_lock_path(run_id));
                 }
                 if driving.release() {
@@ -4495,6 +4498,14 @@ impl WorkerSupervisor {
         activity::observe(&run.info, Some(&event), run.info.updated_ms);
         pending_usage::observe(run);
         announce();
+        // Test only: the end is published and the driver has not gone on.
+        #[cfg(test)]
+        if matches!(
+            run.info.status,
+            TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
+        ) {
+            run_hook(&run.info.repo, "end_published");
+        }
         Ok(seq)
     }
 

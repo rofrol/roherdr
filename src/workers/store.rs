@@ -8,8 +8,9 @@
 //! handoff) may write the same database; each worker's rows are written only
 //! by the server that runs it.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -983,6 +984,15 @@ pub(super) type StoreResult<T> = rusqlite::Result<T>;
 
 pub(super) struct Store {
     conn: Mutex<Connection>,
+    /// The directory of the runs' lock files ([`run_lock_file`]): the
+    /// store's own; none for a store in memory.
+    run_locks: Option<PathBuf>,
+}
+
+/// The lock file of the run `run_id` in `dir`, which the server that drives
+/// the run holds while it does.
+pub(super) fn run_lock_file(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("run-{run_id}.lock"))
 }
 
 /// One event as it is appended.
@@ -1056,11 +1066,21 @@ impl Store {
         migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            run_locks: path
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(Path::to_path_buf),
         })
     }
 
     /// Runs `write` in one write transaction: everything it wrote is
     /// committed, or nothing when it (or the commit) fails.
+    ///
+    /// A run it ends (done, blocked, aborted) lets go of its lock file
+    /// before the commit, so whoever reads the end finds the lock gone. A
+    /// commit that fails then leaves the run without its file while its
+    /// driver still holds the lock it opened, as a driver that goes on after
+    /// the end does.
     pub(super) fn transaction<T>(
         &self,
         write: impl FnOnce(&Tx<'_>) -> StoreResult<T>,
@@ -1069,7 +1089,16 @@ impl Store {
         // Immediate: the write lock is taken at the start, so the lock wait
         // applies; a deferred transaction upgraded later fails at once.
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let value = write(&Tx { tx: &tx })?;
+        let ended = RefCell::new(Vec::new());
+        let value = write(&Tx {
+            tx: &tx,
+            ended: &ended,
+        })?;
+        if let Some(dir) = &self.run_locks {
+            for run_id in ended.into_inner() {
+                let _ = std::fs::remove_file(run_lock_file(dir, &run_id));
+            }
+        }
         tx.commit()?;
         Ok(value)
     }
@@ -1294,6 +1323,9 @@ fn migrate(conn: &mut Connection) -> StoreResult<()> {
 /// A write transaction ([`Store::transaction`]).
 pub(super) struct Tx<'a> {
     tx: &'a rusqlite::Transaction<'a>,
+    /// The runs this transaction ended, whose lock files go before it
+    /// commits.
+    ended: &'a RefCell<Vec<String>>,
 }
 
 impl Tx<'_> {
@@ -3400,6 +3432,16 @@ impl Tx<'_> {
             {
                 self.coordinator_item(tenure, None, at_ms)?;
             }
+        }
+        // The run as this transaction leaves it decides: one it ends lets
+        // go of its lock file before the end is committed.
+        let mut ended = self.ended.borrow_mut();
+        ended.retain(|run_id| *run_id != run.info.run_id);
+        if matches!(
+            run.info.status,
+            TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
+        ) {
+            ended.push(run.info.run_id.clone());
         }
         Ok(seq)
     }
