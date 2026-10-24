@@ -4500,6 +4500,9 @@ user needs to decide or do.
   the counted 10 after the partial-close fix and the cost records (and,
   per sol and DeepSeek, readiness and routing). Coordinator practice until
   then: pause the queue, commit the TODO change, then abort.
+  Decided by the user 2026-10-24 (d-pn7azx54): the counted 10 start from
+  zero once the partial-close fix and the queue's cost records land;
+  today's runs are pilot data.
 
 - [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
   session (the user, 2026-10-23, same decision; round
