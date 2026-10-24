@@ -631,3 +631,115 @@ fn a_run_between_runs_of_its_coordinators_chain_offers_nothing_to_acknowledge() 
     assert!(!text.contains("acknowledge"), "{text}");
     assert_eq!(state.hits.overlay_primary.width, 0);
 }
+
+#[test]
+fn todo_flow_button_shows_after_a_hovered_space_name_and_opens_its_flow() {
+    let mut state = state_with(snapshot());
+    let workspace = state.snapshot.as_deref().unwrap().workspaces[0].clone();
+    state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(
+        state.hits.space_todo_flow.is_empty(),
+        "hidden without hover"
+    );
+    state.hovered_workspace_id = Some(workspace.workspace_id.clone());
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    let (button, workspace_id) = state.hits.space_todo_flow[0].clone();
+    assert_eq!(workspace_id, workspace.workspace_id);
+    let row = &frame_rows(&frame)[button.y as usize];
+    let glyph = row
+        .find(super::super::todo_flow::TODO_FLOW_GLYPH)
+        .expect("the button");
+    let name = row.find(workspace.label.as_str()).expect("the name");
+    assert!(name < glyph, "after the name: {row}");
+    left_click(&mut state, (button.x + 1, button.y));
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::TodoFlow(flow)) if flow.workspace_id == workspace.workspace_id)
+    );
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    assert!(frame_rows(&frame)
+        .iter()
+        .any(|row| row.contains("No TODO runs in this space")));
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.overlay.is_none());
+
+    // The space's menu has it too.
+    state.open_workspace_context_menu(workspace.workspace_id.clone(), 2, 2);
+    let labels = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    assert_eq!(labels.last().map(String::as_str), Some("TODO flow"));
+}
+
+#[test]
+fn todo_flow_button_fits_beside_the_name_line_buttons_or_is_hidden() {
+    // The default sidebar width and the minimum one.
+    for width in [36, 18] {
+        let mut config = config_with_sidebar_width(width);
+        config.spaces.tabs = true;
+        let mut state = ClientShellState::new(config);
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let workspace = state.snapshot.as_deref().unwrap().workspaces[0].clone();
+        state.hovered_workspace_id = Some(workspace.workspace_id.clone());
+        let frame = state.compose(WIDTH, HEIGHT).unwrap();
+        let rows = frame_rows(&frame);
+        let others: Vec<Rect> = [
+            &state.hits.space_new_tab,
+            &state.hits.space_launch_agent,
+            &state.hits.space_todo,
+            &state.hits.space_to_top,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(rect, _)| *rect)
+        .collect();
+        for (button, _) in &state.hits.space_todo_flow {
+            assert_eq!(button.width, 3, "whole, never clipped at {width}");
+            assert!(button.right() <= width, "inside the sidebar at {width}");
+            for other in &others {
+                assert!(
+                    !button.intersects(*other),
+                    "{button:?} overlaps {other:?} at {width}"
+                );
+            }
+            let row: Vec<char> = rows[button.y as usize].chars().collect();
+            let name = rows[button.y as usize]
+                .find(workspace.label.as_str())
+                .map(|at| rows[button.y as usize][..at].chars().count());
+            if let Some(name) = name {
+                assert!(
+                    name + workspace.label.chars().count() <= button.x as usize,
+                    "after the name at {width}: {}",
+                    rows[button.y as usize]
+                );
+            }
+            assert_eq!(
+                row[button.x as usize + 1].to_string(),
+                super::super::todo_flow::TODO_FLOW_GLYPH
+            );
+        }
+        if width == 36 {
+            assert_eq!(state.hits.space_todo_flow.len(), 1, "shown at 36");
+        }
+
+        // A name that fills the line leaves no room: hidden, not clipped.
+        let mut long = snapshot();
+        long.workspaces[0].label = "a-space-name-long-enough-to-fill-the-line".into();
+        state.set_snapshot(Box::new(long));
+        let frame = state.compose(WIDTH, HEIGHT).unwrap();
+        assert!(state.hits.space_todo_flow.is_empty(), "hidden at {width}");
+        let sidebar: String = frame_rows(&frame)
+            .iter()
+            .map(|row| row.chars().take(usize::from(width)).collect::<String>())
+            .collect();
+        assert!(
+            !sidebar.contains(super::super::todo_flow::TODO_FLOW_GLYPH),
+            "{sidebar}"
+        );
+    }
+}

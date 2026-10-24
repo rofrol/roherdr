@@ -31,6 +31,7 @@ impl ClientShellState {
                 .chain(&self.hits.space_launch_agent)
                 .chain(&self.hits.space_todo)
                 .chain(&self.hits.space_to_top)
+                .chain(&self.hits.space_todo_flow)
                 .any(|(rect, _)| super::contains(*rect, point)))
         .then(|| {
             self.hits.workspaces.iter().find(|hit| {
@@ -74,6 +75,7 @@ impl ClientShellState {
                 .or_else(|| at(&self.hits.space_todo, NameLineButton::Todo))
                 .or_else(|| at(&self.hits.space_new_tab, NameLineButton::NewTab))
                 .or_else(|| at(&self.hits.space_to_top, NameLineButton::ToTop))
+                .or_else(|| at(&self.hits.space_todo_flow, NameLineButton::TodoFlow))
         })
         .flatten();
         if self.hovered_name_button != hovered_button {

@@ -125,6 +125,8 @@ pub(super) struct ShellHitMap {
     pub(super) space_todo: Vec<(Rect, String)>,
     /// The `⤒` on a hovered space's name line: that space to the top.
     pub(super) space_to_top: Vec<(Rect, String)>,
+    /// The `⋔` on a hovered space's name line: that space's TODO flow.
+    pub(super) space_todo_flow: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// Glyphs without an action of their own (a tab line's state glyph and
@@ -469,6 +471,7 @@ impl ShellHitMap {
         shift_all(&mut self.space_launch_agent);
         shift_all(&mut self.space_todo);
         shift_all(&mut self.space_to_top);
+        shift_all(&mut self.space_todo_flow);
         self.legend_glyphs = std::mem::take(&mut self.legend_glyphs)
             .into_iter()
             .filter_map(|(rect, entry)| Some((shift_rect(rect, dy, visible)?, entry)))
@@ -509,6 +512,7 @@ impl ShellHitMap {
             space_launch_agent: self.space_launch_agent.clone(),
             space_todo: self.space_todo.clone(),
             space_to_top: self.space_to_top.clone(),
+            space_todo_flow: self.space_todo_flow.clone(),
             legend_glyphs: self.legend_glyphs.clone(),
             question_glyphs: self.question_glyphs.clone(),
             tooltips: self.tooltips.clone(),
@@ -529,6 +533,7 @@ impl ShellHitMap {
         self.space_launch_agent.extend(block.space_launch_agent);
         self.space_todo.extend(block.space_todo);
         self.space_to_top.extend(block.space_to_top);
+        self.space_todo_flow.extend(block.space_todo_flow);
         self.legend_glyphs.extend(block.legend_glyphs);
         self.question_glyphs.extend(block.question_glyphs);
         self.tooltips.extend(block.tooltips);
@@ -620,6 +625,7 @@ pub(super) enum ClientShellOverlayKind {
     Settings,
     Usage,
     ImagePicker,
+    TodoFlow,
 }
 
 #[derive(Debug)]
@@ -904,6 +910,8 @@ pub(super) enum ClientContextMenuAction {
     OpenWorkerLog,
     /// Ends a headless worker and resumes its session in a tab.
     TakeOverWorker,
+    /// Opens the space's TODO flow.
+    OpenTodoFlow,
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
@@ -917,6 +925,7 @@ pub(super) enum NameLineButton {
     Todo,
     NewTab,
     ToTop,
+    TodoFlow,
 }
 
 #[derive(Debug)]
@@ -1054,6 +1063,8 @@ pub(super) enum ClientShellOverlay {
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
     ImagePicker(super::image_picker::ImagePickerOverlay),
+    /// A space's TODO runs on the driver's state machine.
+    TodoFlow(super::todo_flow::TodoFlowOverlay),
 }
 
 impl ClientShellOverlay {
@@ -1077,6 +1088,7 @@ impl ClientShellOverlay {
             Self::RunDetails(_) => ClientShellOverlayKind::RunDetails,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
+            Self::TodoFlow(_) => ClientShellOverlayKind::TodoFlow,
             Self::ImagePicker(_) => ClientShellOverlayKind::ImagePicker,
         }
     }
@@ -2363,6 +2375,7 @@ impl ClientShellState {
         }
         let job_folds = self.saved_job_folds();
         self.snapshot = Some(snapshot);
+        self.observe_todo_flow_snapshot();
         self.forget_closed_kept_jobs();
         self.remember_focused_group_tab();
         self.release_unquiet_folds();
@@ -2680,6 +2693,10 @@ impl ClientShellState {
         let next = crate::ui::motion::Motion::at(now.saturating_duration_since(self.motion_epoch));
         let changed = next != self.motion;
         self.motion = next;
+        if changed {
+            // The TODO flow's pulse counts frames of this clock.
+            self.todo_flow_motion_frame();
+        }
         changed
     }
 

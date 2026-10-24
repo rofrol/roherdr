@@ -171,7 +171,21 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
     assert!(text.contains("client-shell"));
     assert!(text.contains("main"));
     assert!(text.contains("LIVE"));
-    assert!(!text.contains("1 1"));
+    // The cursor position (1, 1) must not leak into the pane as text. Look
+    // only right of the sidebar: its footer shows the build's tree hash and
+    // changed-file count, which can spell "1 1" in a dirty build.
+    let pane_text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .skip(26)
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!pane_text.contains("1 1"));
     assert_eq!(
         frame.cursor.as_ref().map(|cursor| (cursor.x, cursor.y)),
         Some((27, 2))

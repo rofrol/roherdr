@@ -73,6 +73,13 @@ impl ClientContextMenuOverlay {
                 action: ClientContextMenuAction::ToggleBookmark,
             });
         }
+        // The space's TODO runs, after everything else.
+        if matches!(self.target, ClientContextMenuTarget::Workspace { .. }) {
+            items.push(ClientContextMenuItem {
+                label: super::todo_flow::TODO_FLOW_MENU_LABEL.to_owned(),
+                action: ClientContextMenuAction::OpenTodoFlow,
+            });
+        }
         items
     }
 
@@ -726,6 +733,7 @@ impl ClientShellState {
         use crate::input::KeybindAction;
 
         match action {
+            ClientContextMenuAction::OpenTodoFlow => self.open_todo_flow(workspace_id, outcome),
             ClientContextMenuAction::Rename => {
                 let label = self
                     .snapshot

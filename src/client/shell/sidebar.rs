@@ -1107,6 +1107,50 @@ pub(crate) fn render_sidebar(
                 multiline: false,
             });
         }
+        // `⋔` at the end of a hovered space's name line opens its TODO
+        // flow; it shows only in free columns after the name's text, never
+        // over it, and not at all when the line has no room left.
+        let todo_flow_hovered = state.hovered_name_button
+            == Some((workspace.workspace_id.as_str(), NameLineButton::TodoFlow));
+        if let Some((_, end)) = drawn.name_line.filter(|(text_end, end)| {
+            config.mouse_capture
+                && end.saturating_sub(*text_end) >= TODO_FLOW_BUTTON_WIDTH
+                && (todo_flow_hovered
+                    || state.hovered_workspace_id == Some(workspace.workspace_id.as_str()))
+        }) {
+            let button = Rect::new(
+                end - TODO_FLOW_BUTTON_WIDTH,
+                wide.y,
+                TODO_FLOW_BUTTON_WIDTH,
+                1,
+            );
+            let style = if todo_flow_hovered {
+                Style::default().fg(palette.accent).bg(palette.surface1)
+            } else {
+                Style::default().fg(at_rest(palette.overlay1))
+            };
+            put_text(target, button.x, button.y, button.width, "   ", style);
+            put_text(
+                target,
+                button.x.saturating_add(1),
+                button.y,
+                1,
+                super::todo_flow::TODO_FLOW_GLYPH,
+                style,
+            );
+            let button = button.intersection(rect);
+            block_hits
+                .space_todo_flow
+                .push((button, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: button,
+                id: format!("space-todo-flow:{}", workspace.workspace_id),
+                text: "TODO flow: this space's runs on the driver's steps".into(),
+                bg: None,
+                starts_at_target: false,
+                multiline: false,
+            });
+        }
         let to_top_hovered = state.hovered_name_button
             == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
         if to_top_button
@@ -2183,6 +2227,9 @@ const LAUNCH_LABEL: &str = " A ";
 /// The launch chip, right of the `+`; its padding is the gaps around it.
 const LAUNCH_BUTTON_WIDTH: u16 = 3;
 
+/// The `⋔` on a hovered space's name line, padded to three columns.
+const TODO_FLOW_BUTTON_WIDTH: u16 = 3;
+
 /// The `⤒` in front of a space's name, with the column after it.
 const TO_TOP_BUTTON_WIDTH: u16 = 2;
 
@@ -2274,6 +2321,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
             .collect()
     };
     let mut focus_inside_rect = None;
+    // The name line's text columns, for the hover-only `⋔`.
+    let mut name_line = None;
     let reserved = |row_index: usize| {
         if vertical_tabs && row_index == 0 {
             NAME_LINE_ACTIONS_WIDTH
@@ -2429,6 +2478,13 @@ pub(in crate::client::shell) fn render_workspace_rows(
             name_end = git_x - 1;
         }
         let spans = fill_spans(style_for(&rest, usize::from(name_end.saturating_sub(x))));
+        if row_index == 0 {
+            let text_width = spans
+                .iter()
+                .map(|span| display_width(&span.content))
+                .sum::<u16>();
+            name_line = Some((x.saturating_add(text_width).min(name_end), name_end));
+        }
         Paragraph::new(Line::from(spans))
             .render(Rect::new(x, y, name_end.saturating_sub(x), 1), buffer);
         if jobs_width > 0 {
@@ -2483,6 +2539,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         jobs: jobs_rect,
         filled: fill.is_some(),
         focus_inside: focus_inside_rect,
+        name_line,
     }
 }
 
@@ -2495,6 +2552,8 @@ pub(in crate::client::shell) struct WorkspaceRowsDrawn {
     pub(in crate::client::shell) filled: bool,
     /// The "focus inside" cue of a collapsed group's parent.
     pub(in crate::client::shell) focus_inside: Option<Rect>,
+    /// Where the name line's text ends, and where its columns end.
+    pub(in crate::client::shell) name_line: Option<(u16, u16)>,
 }
 
 /// A collapsed space's name line (see [`render_workspace_rows`]).

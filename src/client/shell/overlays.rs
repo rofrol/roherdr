@@ -87,6 +87,7 @@ pub(crate) fn render_client_overlay(
         }
         ClientShellOverlay::Usage(v) => render_usage_overlay(b, v, p),
         ClientShellOverlay::RunDetails(v) => render_run_details(b, v, p),
+        ClientShellOverlay::TodoFlow(v) => super::super::todo_flow::render_todo_flow(b, v, p),
         ClientShellOverlay::ImagePicker(v) => {
             super::super::image_picker::render_image_picker(b, v, std::time::SystemTime::now(), p)
         }

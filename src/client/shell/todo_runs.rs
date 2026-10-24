@@ -471,6 +471,10 @@ impl ClientShellState {
         generation: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
+        if matches!(self.overlay, Some(ClientShellOverlay::TodoFlow(_))) {
+            let repaint = self.complete_todo_flow_status(&run_id, generation, &result);
+            return (repaint, Vec::new());
+        }
         let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() else {
             return (false, Vec::new());
         };

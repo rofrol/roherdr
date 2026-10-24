@@ -48,6 +48,7 @@ mod supervision;
 mod surface_patch;
 mod tab_groups;
 mod text_editor;
+mod todo_flow;
 mod todo_runs;
 mod tooltip;
 mod usage;

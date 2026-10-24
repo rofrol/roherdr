@@ -2138,6 +2138,10 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::TodoFlow(_))) {
+            self.todo_flow_mouse(mouse, outcome);
+            return;
+        }
         if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => details.scroll = details.scroll.saturating_sub(3),
@@ -3057,6 +3061,17 @@ impl ClientShellState {
                     .cloned();
                 if let Some((button, workspace_id)) = launch {
                     self.click_launch_button(workspace_id, button, outcome);
+                    return;
+                }
+                // The `⋔` opens the space's TODO flow.
+                let todo_flow = self
+                    .hits
+                    .space_todo_flow
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| workspace_id.clone());
+                if let Some(workspace_id) = todo_flow {
+                    self.open_todo_flow(workspace_id, outcome);
                     return;
                 }
                 // The todo crown runs the space's `todo_command`.

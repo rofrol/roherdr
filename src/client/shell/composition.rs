@@ -233,6 +233,7 @@ impl ClientShellState {
         self.motion_active =
             self.config.animations
                 && (legend_open
+                    || self.todo_flow_animates()
                     || self.snapshot.as_deref().is_some_and(|snapshot| {
                         snapshot.agents.iter().any(|agent| {
                             agent.agent_status == crate::api::schema::AgentStatus::Working

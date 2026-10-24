@@ -643,6 +643,11 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::TodoFlow(_))) {
+            self.todo_flow_key(key.code, outcome);
+            return;
+        }
+
         if let Some(ClientShellOverlay::RunDetails(details)) = self.overlay.as_mut() {
             match key.code {
                 KeyCode::Esc => self.overlay = None,
