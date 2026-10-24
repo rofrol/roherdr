@@ -3787,6 +3787,27 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     configuration change: the hook patch is approved by the user whole
     before it is applied); (5) the trial report.
 
+- [ ] In queue mode the queue works on by itself: technical decisions and [t-tw5cdkei]
+  consult rounds do not fall back to the user (the user, 2026-10-24, in
+  the lang-for-ai session, relayed by its coordinator: "that is not how
+  the queue was supposed to work, that you sit and wait for me; report it
+  to the herdr coordinator"). Observed in lang-for-ai: the model's
+  `consult_skipped_iff` makes an item without a decided round newer than
+  its target paths wait on the user ("with no coordinator nobody runs a
+  consult round"), so decisions the coordinator used to settle with a
+  round go to the user; that repository's AGENTS.md (afaa842) wrote that
+  rule down; drafts' questions land in the user's `?` list. Expected: a
+  draft's technical question (ordering, splitting, a prerequisite, a
+  design choice) is answered without the user: by a consult round the
+  queue runs (the pre-task step of t-4tpfl4if) or by the chat session,
+  which holds the tenure, running the round and answering the draft by
+  retry; only what the global rules reserve for the user (their data,
+  money, access, product decisions, actions only they can take) reaches
+  the `?` list. Covers part (3) of the Proposed "Queue readiness and
+  routing" item; change `consult_skipped_iff` and its README text in the
+  same commit; until it lands, the chat session answers drafts this way by
+  hand (told to lang-for-ai's coordinator 2026-10-24).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
