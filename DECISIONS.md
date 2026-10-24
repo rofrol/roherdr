@@ -3298,3 +3298,23 @@ Na liście kontrolnej nic nie znalazłem: nowa metoda nie zmienia istniejącego 
 Na później, poza zakresem tego zadania:
 1. Pierwsze odczytanie transkryptu sesji idzie w całości, synchronicznie, w pętli zdarzeń.
 2. Sesje headless workerów jeszcze się nie liczą. Tym zajmie się część 2.
+
+## The bookmarks button in the spaces header does not vanish when
+
+Landed by herdr's TODO queue: run r-nursgbhq, attempt 1, `fix: a clicked spaces header button keeps its place instead of vanishing` (acffbc8f2ae9), approved by the server's review.
+
+Review note: Zatwierdzam. Weryfikacja serwera przeszła w całości: lint, ui-architecture, cargo nextest run i windows-lint. Zmiany są tylko w src/client/shell/**, a różnica nie została ucięta.
+
+Co robi zmiana:
+- Jedna funkcja `HeaderLayout::place` ustala, które przyciski się pokazują i gdzie. Rysowanie i prostokąty kliknięć korzystają z tego samego wyniku. Funkcja `render_notification_log_button` i ciche `continue` w pętli rysującej zostały usunięte.
+- Liczniki powyżej 99 pokazują `99+`.
+- Kolejność oddawania miejsca: Bookmarks, Working, History, potem przycisk otwartej listy, a Asking na samym końcu. Przycisk otwartej listy zachowuje swoje x.
+- Gdy kursor jest nad nagłówkiem, układ zostaje taki, jak ostatnio narysowany, tym samym sposobem co kolejność spacji (`held_space_order`). Przelicza się po wyjściu kursora z wiersza albo po zmianie rozmiaru.
+
+Testy obejmują wszystko, o co prosi pozycja: szerokości needed−1, needed i needed+1 z otwartą listą i bez, klik i drugi klik w tę samą komórkę, Asking nigdy nie wypada, `99+` i zmianę rozmiaru. Według workera test reprodukcji pada na starym kodzie.
+
+Worker potwierdził przyczynę: to ścieżka (a), czyli licznik zyskujący cyfrę, gdy kursor jest już nad ★. Ścieżki (b) w praktyce nie było.
+
+Do wiadomości, bez blokowania:
+- Przy skrajnie wąskim nagłówku przycisk otwartej listy ustępuje przed Asking. To rozsądny wybór przy dwóch wymaganiach „nigdy nie znika”, które się wykluczają.
+- Przycisk, który pojawi się, gdy kursor jest nad nagłówkiem (np. pierwszy ◐), wejdzie dopiero po wyjściu kursora z wiersza. Worker sam to zgłosił.
