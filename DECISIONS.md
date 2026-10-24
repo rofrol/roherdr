@@ -3170,3 +3170,18 @@ TODO-deferred.md.
   worker cost with them. `measure.py`'s `todo_runs_done` and
   `*_per_done_run` outputs became `items_landed` and
   `*_cost_per_landed_item`.
+
+## A todo run lets go of its lock before the event that ends it (t-bwoecbyw, 2026-10-24)
+
+- `a_landing_approval_after_the_branch_moved_is_reviewed_again` failed
+  the install of run r-o6hgvr6b; alone it passed 30/30, under 12 `yes`
+  loads 3/40 failed. Cause: the driver committed and announced a run's
+  end (done, blocked, aborted) before it removed the run's lock file
+  (only in the next `drive()` pass), so a waiter that saw the end could
+  still find the file.
+- Landed (run r-j4tvfla5): `Tx::run_event` records the runs a transaction
+  ends and `Store::transaction` removes their lock files before it
+  commits; a hook test (`end_published`) fails without the fix; the
+  original test passed 40/40 under load. The install of r-o6hgvr6b was
+  skipped for this (`install_skipped`); this run's install brings both.
+  The failed-commit window is in "Proposed".
