@@ -3703,6 +3703,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `Unknown` for an idle agent's tab (`src/server/client_shell.rs`, the
   tab `agent_status`) and names it in its summary.
 
+- [ ] The weekly chart's pace tooltip explains the row in plain words (the [t-b7f4w4je]
+  user, 2026-10-24, with a screenshot of `+1pp · +7.9pp to 02:00`, asking
+  whether +1pp was the 5-hour window and +7.9pp the daily one: "make this
+  hover description clearer somehow, ELI5"). Both numbers are about the
+  7-day window; the tooltip says so first and reads each number in one
+  short sentence with the actual values, for example:
+  `7-day limit: 35% used, 34% of the week gone.` /
+  `+1pp: 1 point ahead of an even pace (14.3% a day).` /
+  `+7.9pp to 02:00: you can use 7.9 more points by Sun 02:00 and still be
+  on pace (a plan, not a limit).` / `The 5-hour limit is separate.` /
+  `Resets Thu 29 Oct 01:00 CET · source: Claude usage endpoint`; under pace
+  the first number reads "behind", over the target "N points over the
+  plan at <time>". Code: `pace_tooltip` and `daily_use_labels` in
+  `src/client/shell/usage.rs` (the boundary's weekday and the even daily
+  share are known there). Keep the tooltip's hit rect and the row as they
+  are; update the tooltip tests.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
