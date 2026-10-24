@@ -11,6 +11,13 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] `docs/todo-workflow-model/cost-baseline.md` says what `measure.py` [t-nmmjurv3]
+  reads now (follow-up of t-2tvx7res, commit 694f08cd7): around line 78 it
+  still says the script scans the worker journals; it reads the records
+  of `herdr worker records` (or `--records FILE`), and its outputs
+  `todo_runs_done` / `*_per_done_run` became `items_landed` /
+  `*_cost_per_landed_item`. Text only.
+
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
   new package; much less code than all of herdr; then various TUIs, GUIs
