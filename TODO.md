@@ -4198,6 +4198,18 @@ Items agents add. Not approved until the user moves them up.
   aborted (MiMo, DeepSeek): record the abort and act at the effect's
   acknowledgement.
 
+- [ ] The weekly window's start comes from the largest recorded `resets_at` [t-6ywv7p4s]
+  (`src/usage/samples.rs:177`, `max()` over samples within the 60 s
+  `SAME_WINDOW_SLACK_SECS`): Claude reports the same reset as
+  `2026-10-28T23:59:59Z` and `2026-10-29T00:00:00Z`, so the chart's
+  boundary label can read `01:59` until a `00:00:00` sample arrives, and a
+  reset the provider moves earlier by more than 60 s stays pinned to the
+  older, later stamp until it passes (round 20261024-104940-4e35: MiMo,
+  DeepSeek, Argon). Canonicalise one `resets_at` per window (e.g. the
+  latest sample's stamp, rounded to the minute), with a test. Found while
+  answering the user's question whether 02:00 is hardcoded (it is not: it
+  is 00:00 UTC in CEST; 01:00 after DST ends).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
