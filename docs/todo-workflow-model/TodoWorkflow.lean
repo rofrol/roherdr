@@ -5,8 +5,9 @@ A hand-written model (see README.md) of how a repository's TODO is worked
 through in herdr: the coordination tenure and its handoff, one item's run
 through `herdr todo run` and how a landed run is closed, the relay of a
 worker's questions to its owner, the read-only supervision that detects
-stuck coordinators and workers, and the coordinator's decision at an item
-boundary. Commands are
+stuck coordinators and workers, the coordinator's decision at an item
+boundary, and (`Landing`, at the end) the landing's transition core as the
+Rust code implements it, with its JSON traces. Commands are
 named in comments. Only behavior is modelled; no I/O.
 
 `none` from a `step` function means the command is refused or does not
@@ -110,7 +111,7 @@ inductive Run where
   | verifying (attempt : Nat)     -- herdr worker verify
   | unavailable (attempt : Nat)   -- a check could not run: not a pass
   | failed (attempt : Nat)        -- the coordinator may retry with a new task
-  | cherryPick
+  | cherryPick                    -- `cherryPick` .. `pushing`: refined by `Landing` below
   | installing                    -- [install] argv: just clean-install TODO.md
   | todoEdit                      -- approve --note / --close via todo_edit.py
   | pushing                       -- fast-forward only, never forced
@@ -211,11 +212,13 @@ closed, and `--continue-self` is refused once the tenure has ended. -/
 abbrev ItemId := String
 abbrev TenureId := String
 
-/-- A run that holds the folder slot: from admission until its commit is
-cherry-picked or the run ends (verify runs in the slot's worktree too). -/
+/-- A run that holds the folder slot: from admission until its push is
+acknowledged or the run ends (the worker's verify and the landing's verify of
+the integrated tree run in the slot's worktree; `Landing.release_only_after_push_or_abort`). -/
 def Run.busy : Run → Bool
   | .working _ | .stopping _ | .stillAlive _ | .verifying _ | .unavailable _
-  | .failed _ | .cherryPick => true
+  | .failed _ | .cherryPick | .installing | .todoEdit | .pushing
+  | .installFailed | .todoFailed | .pushFailed => true
   | _ => false
 
 def Run.finished : Run → Bool
@@ -1560,7 +1563,15 @@ both calls run on Opus only (the user, 2026-10-23).
 
 Below, a `Session` is one item's run: its agent and its typed calls.
 `PerItem.Queue` replaces `Coordinator.decide` once it is implemented; the
-run, git, relay and supervision machines above stay. -/
+run, git, relay and supervision machines above stay. A session's `land e` is
+its run's landing core (`Landing`, below) reaching `done`: verified on the
+integrated tree, landed, pushed, the slot freed after the push
+(`Landing.done_after_push`); `runTerminal` is that core reaching `done`,
+`blocked` or `aborted`. The queue's epoch is the tenure epoch of the core's
+fence: a session started in a newer epoch drives a run only once it adopted
+it, and the superseded one is refused there too (`Landing.adopt_fences_out`,
+`Landing.stale_fence_rejected`); the code does not pass a tenure's epoch to
+the core yet. -/
 
 namespace PerItem
 
@@ -1926,4 +1937,1400 @@ end PerItemProofs
 
 end PerItem
 
+/-! ## The landing's transition core (`src/workers/runs/core.rs`)
+
+A one-to-one model of `core::step` and `core::reconcile` as the code has them
+on 2026-10-24 (the landing items' slices 1 to 3, commits `dcf582edd` and
+before): same states, inputs, effects and rejections, the same order of
+checks. It refines `Run`'s `cherryPick` .. `pushing` above. From the review
+the landing goes: `approve` (in the repository rooted at the home directory,
+`ask_landing_approval` and the owner's `approve_landing` first) →
+`verify_integrated` (the approved commit picked onto the target branch's head
+as a commit outside the branch, and the checks run on that tree) →
+`cherry_pick` (that verified commit lands only while the branch's head is
+still its parent; a moved head is verified again, at most `maxReverifies`
+times) → `install` → `todo_edit` → `push` (fast-forward only) →
+`release_slot` with `cleanup` → done. Every input carries the sender's fence
+(tenure epoch, pane generation); the shell (`src/workers/runs/landing.rs`)
+runs the effects, feeds their acknowledgements back as inputs, and persists
+the state, the cursor and the pending effect's intent together, so a crash
+falls between an effect and its acknowledgement; `reconcile` decides at
+startup or handoff from what git shows.
+
+Not implemented in the code, so not modelled beyond the core: the shell gives
+every run the fence `(0, 0)` and feeds every input with the run's own fence,
+and nothing sends `adopt`, so no coordinator tenure's epoch or pane generation
+reaches the core yet (the tenure fence wiring, TODO item t-ic5rrxn3). The
+fence theorems below hold for the core; production inputs never carry another
+fence. -/
+
+namespace Landing
+
+/-- `TodoStep` of `src/api/schema/todo.rs`. -/
+inductive TodoStep where
+  | preflight | draft | start | attention | review | stop | verify | restart
+  | cherryPick | install | todo | push | cleanup | done | abort
+  deriving DecidableEq, Repr
+
+/-- `TodoRunStatus`. -/
+inductive TodoRunStatus where
+  | running | waiting | blocked | done | aborted
+  deriving DecidableEq, Repr
+
+/-- The `TodoEventKind` values the core emits. -/
+inductive TodoEventKind where
+  | review | verifyFailed | installFailed | todoFailed | pushFailed
+  | blocked | done | aborted | landingApproval
+  deriving DecidableEq, Repr
+
+/-- Who may drive the run: the coordinator tenure's epoch and the generation
+of the pane that holds it, ordered by epoch, then generation (`Fence`). -/
+structure Fence where
+  epoch : Nat
+  gen   : Nat
+  deriving DecidableEq, Repr
+
+/-- `a` is older than `b`: the lexicographic order of `Fence::key`. -/
+def Fence.lt (a b : Fence) : Bool :=
+  decide (a.epoch < b.epoch) || (decide (a.epoch = b.epoch) && decide (a.gen < b.gen))
+
+inductive Degraded where
+  | installSkipped | todoSkipped
+  deriving DecidableEq, Repr
+
+inductive Attention where
+  | cherryPickConflict | verifyFailed | installFailed | todoFailed | pushFailed
+  | pushDiverged | headKeptMoving | halted | landingApproval
+  deriving DecidableEq, Repr
+
+/-- `MAX_REVERIFIES`. -/
+def maxReverifies : Nat := 3
+
+inductive PendingEffect where
+  | cherryPick | verifyIntegrated | install | todoEdit | push | restoreBranch | cleanup
+  deriving DecidableEq, Repr
+
+/-- `CoreState`: what the store persists with the cursor and the effect intent. -/
+structure CoreState where
+  step           : TodoStep
+  status         : TodoRunStatus
+  fence          : Fence
+  slotHeld       : Bool
+  pending        : Option PendingEffect
+  degraded       : List Degraded
+  attention      : Option Attention
+  integrated     : Option String
+  picked         : Option String
+  pushed         : Option String
+  cursor         : Option String
+  abortRequested : Bool
+  reverifies     : Nat
+  ownerApproval  : Option String
+  pushSkipped    : Option String
+  deriving DecidableEq, Repr
+
+/-- `CoreEvent`: the coordinator's actions and the effects' acknowledgements. -/
+inductive CoreEvent where
+  | approve | answer | retry | verify | retryInstall | skipInstall | retryTodo | skipTodo
+  | retryPush | abort | adopt
+  | askLandingApproval (commit : String)
+  | approveLanding (commit branchAt : String)
+  | halted
+  | picked (sha : String) | pickFailed | headMoved
+  | verified (integrated : String) | verifyFailed | integrationConflict
+  | installed | installFailed | edited | todoFailed
+  | pushAcked (sha : String) | pushSkipped (reason : String) | pushRejected (diverged : Bool)
+  | branchRestored | cleanedUp | cancelled
+  deriving DecidableEq, Repr
+
+/-- The effect an event acknowledges (`CoreEvent::acknowledges`). -/
+def CoreEvent.acknowledges : CoreEvent → Option PendingEffect
+  | .picked _ | .pickFailed | .headMoved => some .cherryPick
+  | .verified _ | .verifyFailed | .integrationConflict => some .verifyIntegrated
+  | .installed | .installFailed => some .install
+  | .edited | .todoFailed => some .todoEdit
+  | .pushAcked _ | .pushSkipped _ | .pushRejected _ => some .push
+  | .branchRestored => some .restoreBranch
+  | .cleanedUp => some .cleanup
+  | _ => none
+
+/-- `CoreEffect`: what the shell runs. -/
+inductive CoreEffect where
+  | cherryPick | verifyIntegrated | install | todoEdit | push | restoreBranch
+  | settlePending | releaseSlot | cleanup
+  | emit (event : TodoEventKind)
+  deriving DecidableEq, Repr
+
+inductive Rejection where
+  | staleFence | fenceNotAdopted | duplicate | terminal | notInLanding
+  | effectInFlight | unexpectedAck | notAllowed
+  deriving DecidableEq, Repr
+
+structure Input where
+  id    : String
+  fence : Fence
+  event : CoreEvent
+  deriving DecidableEq, Repr
+
+/-- `in_landing`. -/
+def TodoStep.inLanding : TodoStep → Bool
+  | .cherryPick | .verify | .install | .todo | .push | .cleanup | .abort => true
+  | _ => false
+
+/-- `effect_of`. -/
+def effectOf : PendingEffect → CoreEffect
+  | .cherryPick => .cherryPick
+  | .verifyIntegrated => .verifyIntegrated
+  | .install => .install
+  | .todoEdit => .todoEdit
+  | .push => .push
+  | .restoreBranch => .restoreBranch
+  | .cleanup => .cleanup
+
+abbrev Out := CoreState × List CoreEffect
+
+/-- `go`: move to `st` and run `p`'s effect. -/
+def go (n : CoreState) (st : TodoStep) (p : PendingEffect) : Out :=
+  ({ n with step := st, status := .running, attention := none, pending := some p }, [effectOf p])
+
+/-- `wait`: wait for the coordinator, keeping the failed stage. -/
+def wait (n : CoreState) (a : Attention) (e : TodoEventKind) : Out :=
+  ({ n with status := .waiting, attention := some a }, [.emit e])
+
+/-- `stop`: stop for the user; only abort goes on. -/
+def stop (n : CoreState) (a : Attention) : Out :=
+  ({ n with status := .blocked, attention := some a }, [.emit .blocked])
+
+/-- `aborted`: the slot is released if the run still holds it. -/
+def aborted (n : CoreState) : Out :=
+  if n.slotHeld then
+    ({ n with step := .abort, status := .aborted, attention := none, slotHeld := false },
+     [.releaseSlot, .emit .aborted])
+  else
+    ({ n with step := .abort, status := .aborted, attention := none }, [.emit .aborted])
+
+/-- After an acknowledged or skipped push: free the slot before the cleanup. -/
+def release (r : Out) : Out :=
+  ({ r.1 with slotHeld := false }, .releaseSlot :: r.2)
+
+def CoreEvent.isBranchRestored : CoreEvent → Bool
+  | .branchRestored => true
+  | _ => false
+
+/-- While an abort is requested: what the settled effect did is kept. -/
+def settle (n : CoreState) (e : CoreEvent) : CoreState :=
+  let n := match e with
+    | .picked sha => { n with picked := some sha }
+    | .pushAcked sha => { n with pushed := some sha }
+    | .pushSkipped r => { n with pushSkipped := some r }
+    | _ => n
+  { n with abortRequested := false }
+
+/-- `acknowledged`: `n` has its pending effect cleared already. -/
+def acknowledged (n : CoreState) (e : CoreEvent) : Out :=
+  if n.abortRequested then
+    -- Settled: the abort goes on as one asked with nothing pending.
+    let n := settle n e
+    if n.pushed.isSome || e.isBranchRestored then aborted n
+    else go n .abort .restoreBranch
+  else match e with
+    | .verified x => go { n with integrated := some x } .cherryPick .cherryPick
+    | .verifyFailed => wait n .verifyFailed .verifyFailed
+    | .integrationConflict => stop n .cherryPickConflict
+    | .picked sha => go { n with picked := some sha } .install .install
+    | .pickFailed => stop n .cherryPickConflict
+    | .headMoved =>
+      if n.reverifies ≥ maxReverifies then stop { n with integrated := none } .headKeptMoving
+      else go { n with integrated := none, reverifies := n.reverifies + 1 } .verify .verifyIntegrated
+    | .installed => go n .todo .todoEdit
+    | .installFailed => wait n .installFailed .installFailed
+    | .edited => go n .push .push
+    | .todoFailed => wait n .todoFailed .todoFailed
+    | .pushAcked sha => release (go { n with pushed := some sha } .cleanup .cleanup)
+    | .pushSkipped r => release (go { n with pushSkipped := some r } .cleanup .cleanup)
+    | .pushRejected true => stop n .pushDiverged
+    | .pushRejected false => wait n .pushFailed .pushFailed
+    | .branchRestored => aborted n
+    | .cleanedUp => ({ n with step := .done, status := .done, attention := none }, [.emit .done])
+    | _ => (n, [])
+
+/-- `action` while the run waits in its review. -/
+def onReview (n : CoreState) (e : CoreEvent) : Except Rejection Out :=
+  if n.status ≠ .waiting then .error .notAllowed
+  else match e with
+    | .approve =>
+      if n.attention = none then .ok (go n .verify .verifyIntegrated) else .error .notAllowed
+    -- The owner approves first; the run shows the landing's verify as its step meanwhile.
+    | .askLandingApproval c =>
+      if n.attention = none then
+        .ok (wait { n with step := .verify, ownerApproval := some c } .landingApproval .landingApproval)
+      else .error .notAllowed
+    -- Nothing landed yet: the target branch was never touched.
+    | .abort => .ok (aborted n)
+    | _ => .error .notAllowed
+
+/-- `action` while the landing waits for its owner's approval. -/
+def onApproval (n : CoreState) (e : CoreEvent) : Except Rejection Out :=
+  if n.status ≠ .waiting ∨ n.pending ≠ none then .error .notAllowed
+  else match e with
+    | .abort => .ok (aborted n)
+    | .approveLanding c b =>
+      -- The branch moved since the approval was asked: reviewed again.
+      if n.ownerApproval ≠ some b then
+        .ok ({ n with step := .review, attention := none }, [.emit .review])
+      -- An approval of another commit approves nothing: asked again.
+      else if n.ownerApproval ≠ some c then .ok (n, [.emit .landingApproval])
+      else .ok (go n .verify .verifyIntegrated)
+    | _ => .error .notAllowed
+
+/-- `action` on a landing that waits for the coordinator with nothing pending:
+the retries and skips of the failed stage (the last `match` of `action`). -/
+def resume (n : CoreState) (e : CoreEvent) : Except Rejection Out :=
+  match e with
+  | .verify =>
+    if n.step = .verify ∧ n.attention = some .verifyFailed then .ok (go n .verify .verifyIntegrated)
+    else .error .notAllowed
+  | .retryInstall =>
+    if n.step = .install ∧ n.attention = some .installFailed then .ok (go n .install .install)
+    else .error .notAllowed
+  | .skipInstall =>
+    if n.step = .install ∧ n.attention = some .installFailed then
+      .ok (go { n with degraded := n.degraded ++ [.installSkipped] } .todo .todoEdit)
+    else .error .notAllowed
+  | .retryTodo =>
+    if n.step = .todo ∧ n.attention = some .todoFailed then .ok (go n .todo .todoEdit)
+    else .error .notAllowed
+  | .skipTodo =>
+    if n.step = .todo ∧ n.attention = some .todoFailed then
+      .ok (go { n with degraded := n.degraded ++ [.todoSkipped] } .push .push)
+    else .error .notAllowed
+  | .retryPush =>
+    if n.step = .push ∧ n.attention = some .pushFailed then .ok (go n .push .push)
+    else .error .notAllowed
+  | _ => .error .notAllowed
+
+/-- `action`: the coordinator's actions. -/
+def action (n : CoreState) (e : CoreEvent) : Except Rejection Out :=
+  if n.step = .review then onReview n e
+  else if n.step.inLanding = false then .error .notInLanding
+  else if n.attention = some .landingApproval then onApproval n e
+  -- The published commit stays; the slot is already free.
+  else if e = .abort ∧ n.pushed ≠ none then .ok (aborted { n with pending := none })
+  else match n.pending with
+    | some p =>
+      -- A halted run's effect may have begun: the abort settles it from git first.
+      if e = .abort ∧ n.status = .blocked then
+        .ok ({ n with abortRequested := true, step := .abort, status := .running,
+                      attention := none, pending := some p }, [.settlePending])
+      else .error .effectInFlight
+    | none =>
+      if e = .abort then .ok (go n .abort .restoreBranch)
+      else if n.status = .blocked then .error .notAllowed
+      else resume n e
+
+def CoreEvent.isAdopt : CoreEvent → Bool
+  | .adopt => true
+  | _ => false
+
+/-- `step`: apply one input. A rejection changes nothing and has no effects. -/
+def step (s : CoreState) (i : Input) : Except Rejection Out :=
+  if i.fence.lt s.fence then .error .staleFence
+  else if i.fence = s.fence ∧ i.event.isAdopt then .error .staleFence
+  else if s.fence.lt i.fence ∧ i.event.isAdopt = false then .error .fenceNotAdopted
+  else if s.cursor = some i.id then .error .duplicate
+  else if i.event.isAdopt then .ok ({ s with cursor := some i.id, fence := i.fence }, [])
+  else if s.status = .done ∨ s.status = .aborted then .error .terminal
+  else if i.event = .cancelled then
+    if s.abortRequested = false ∨ s.status ≠ .running then .error .notAllowed
+    else if s.pending = none then .error .unexpectedAck
+    else .ok (acknowledged { s with cursor := some i.id, pending := none } i.event)
+  else match i.event.acknowledges with
+    | some p =>
+      if s.pending ≠ some p then .error .unexpectedAck
+      else .ok (acknowledged { s with cursor := some i.id, pending := none } i.event)
+    | none =>
+      if i.event = .halted then
+        -- The pending effect stays: it may have begun.
+        if s.step.inLanding = false then .error .notInLanding
+        else .ok (stop { s with cursor := some i.id } .halted)
+      else action { s with cursor := some i.id } i.event
+
+/-! ### Reconcile after a crash or a handoff (`reconcile`) -/
+
+inductive Origin where
+  | contains (sha : String) | behind | diverged
+  deriving DecidableEq, Repr
+
+structure Observed where
+  picked        : Option String
+  installed     : Bool
+  todoCommitted : Bool
+  origin        : Origin
+  restored      : Bool
+  deriving DecidableEq, Repr
+
+inductive Reconciled where
+  | nothing
+  | ack (event : CoreEvent)
+  | rerun (effect : CoreEffect)
+  deriving DecidableEq, Repr
+
+def reconcile (s : CoreState) (o : Observed) : Reconciled :=
+  match s.pending with
+  | none => .nothing
+  | some .cherryPick =>
+    match o.picked with
+    | some sha => .ack (.picked sha)
+    | none => .rerun .cherryPick
+  | some .verifyIntegrated => .rerun .verifyIntegrated
+  | some .cleanup => .rerun .cleanup
+  | some .install => if o.installed then .ack .installed else .ack .installFailed
+  | some .todoEdit => if o.todoCommitted then .ack .edited else .ack .todoFailed
+  | some .push =>
+    match o.origin with
+    | .contains sha => .ack (.pushAcked sha)
+    | .diverged => .ack (.pushRejected true)
+    | .behind => .rerun .push
+  | some .restoreBranch => if o.restored then .ack .branchRestored else .rerun .restoreBranch
+
+
+/-- The observation shows the effect done: the landed commit with the run's
+trailers, the installed build, the TODO commit, origin containing what the
+push sent, the branch back where it was. The verify and the cleanup are not
+observed: running them again is safe (the verify runs on the branch's head
+as it is then; the cleanup deletes what is merged). -/
+def Observed.shows (o : Observed) : PendingEffect → Bool
+  | .cherryPick => o.picked.isSome
+  | .install => o.installed
+  | .todoEdit => o.todoCommitted
+  | .push => match o.origin with
+    | .contains _ => true
+    | _ => false
+  | .restoreBranch => o.restored
+  | .verifyIntegrated | .cleanup => false
+
+/-- A run whose worker's commit waits in its review: where `approve` (or
+the owner's landing approval) starts the landing. -/
+def CoreState.atReview (f : Fence) : CoreState :=
+  { step := .review, status := .waiting, fence := f, slotHeld := true, pending := none,
+    degraded := [], attention := none, integrated := none, picked := none, pushed := none,
+    cursor := none, abortRequested := false, reverifies := 0, ownerApproval := none,
+    pushSkipped := none }
+
+/-- Applies the inputs in order; a rejected input changes nothing (the shell
+reports it), so the result is the state and every effect, in order. -/
+def exec (s : CoreState) : List Input → CoreState × List CoreEffect
+  | [] => (s, [])
+  | i :: is =>
+    match step s i with
+    | .ok (n, es) => let r := exec n is; (r.1, es ++ r.2)
+    | .error _ => exec s is
+
+/-! ### Proofs -/
+
+section Proofs
+
+theorem Fence.eq_of_not_lt {a b : Fence} (h1 : a.lt b = false) (h2 : b.lt a = false) : a = b := by
+  cases a; cases b
+  simp only [Fence.lt, Bool.or_eq_false_iff, Bool.and_eq_false_iff, decide_eq_false_iff_not] at h1 h2
+  simp only [Fence.mk.injEq]
+  omega
+
+theorem Fence.lt_irrefl (a : Fence) : a.lt a = false := by
+  simp [Fence.lt]
+
+/-- What an applied input is: an adoption of a newer fence, or an input with
+the run's own fence on a run that is not terminal, which is an
+acknowledgement of the pending effect, a halt, or an action. -/
+theorem step_ok_cases {s : CoreState} {i : Input} {r : Out} (h : step s i = .ok r) :
+    (i.event.isAdopt = true ∧ s.fence.lt i.fence = true ∧
+      r = ({ s with cursor := some i.id, fence := i.fence }, [])) ∨
+    (i.fence = s.fence ∧ i.event.isAdopt = false ∧ s.status ≠ .done ∧ s.status ≠ .aborted ∧
+      ((∃ p, s.pending = some p ∧
+          (i.event.acknowledges = some p ∨
+            (i.event = .cancelled ∧ s.abortRequested = true ∧ s.status = .running)) ∧
+          r = acknowledged { s with cursor := some i.id, pending := none } i.event) ∨
+       (i.event = .halted ∧ s.step.inLanding = true ∧ r = stop { s with cursor := some i.id } .halted) ∨
+       (i.event.acknowledges = none ∧ i.event ≠ .halted ∧ i.event ≠ .cancelled ∧
+          action { s with cursor := some i.id } i.event = .ok r))) := by
+  unfold step at h
+  split at h
+  · cases h
+  rename_i hlt
+  split at h
+  · cases h
+  rename_i hadopt_eq
+  split at h
+  · cases h
+  rename_i hnot
+  split at h
+  · cases h
+  split at h
+  · rename_i ha
+    left
+    cases h
+    refine ⟨ha, ?_, rfl⟩
+    cases hl : s.fence.lt i.fence
+    · exact absurd (Fence.eq_of_not_lt (by simpa using hlt) hl) (fun he => hadopt_eq ⟨he, ha⟩)
+    · rfl
+  rename_i ha
+  have hfe : i.fence = s.fence := by
+    cases hl : s.fence.lt i.fence
+    · exact Fence.eq_of_not_lt (by simpa using hlt) hl
+    · simp [hl] at hnot; simp [hnot] at ha
+  simp only [Bool.not_eq_true] at ha
+  right
+  split at h
+  · cases h
+  rename_i hterm
+  simp only [not_or] at hterm
+  refine ⟨hfe, ha, hterm.1, hterm.2, ?_⟩
+  split at h
+  · rename_i hc
+    split at h
+    · cases h
+    rename_i hok
+    split at h
+    · cases h
+    rename_i hp
+    cases h
+    left
+    cases hps : s.pending with
+    | none => exact absurd hps hp
+    | some p =>
+      simp only [not_or, Bool.not_eq_false, ne_eq, Decidable.not_not] at hok
+      exact ⟨p, rfl, Or.inr ⟨hc, hok.1, hok.2⟩, rfl⟩
+  rename_i hc
+  split at h
+  · rename_i p hp
+    split at h
+    · cases h
+    rename_i hpe
+    cases h
+    left
+    exact ⟨p, by simpa using hpe, Or.inl hp, rfl⟩
+  · rename_i hn
+    split at h
+    · rename_i hh
+      split at h
+      · cases h
+      rename_i hl
+      cases h
+      right; left
+      exact ⟨hh, by simpa using hl, rfl⟩
+    · rename_i hh
+      right; right
+      exact ⟨hn, hh, hc, h⟩
+
+/-- What holds in every state a run reaches from its review (`Inv.init`,
+`exec_inv`). -/
+structure Inv (s : CoreState) : Prop where
+  /-- After the landing (install, TODO edit, push, cleanup) a commit is on the branch. -/
+  picked_step : (s.step = .install ∨ s.step = .todo ∨ s.step = .push ∨ s.step = .cleanup) →
+    s.picked.isSome = true
+  picked_pending : (s.pending = some .install ∨ s.pending = some .todoEdit ∨
+    s.pending = some .push ∨ s.pending = some .cleanup) → s.picked.isSome = true
+  /-- Before the landing nothing is on the branch. -/
+  unpicked_step : (s.step = .review ∨ s.step = .verify ∨ s.step = .cherryPick) → s.picked = none
+  unpicked_pending : (s.pending = some .verifyIntegrated ∨ s.pending = some .cherryPick) →
+    s.picked = none
+  unpicked_approval : s.attention = some .landingApproval → s.picked = none
+  /-- The landing lands only a verified integration commit. -/
+  integrated_pick : s.pending = some .cherryPick → s.integrated.isSome = true
+  integrated_picked : s.picked.isSome = true → s.integrated.isSome = true
+  review_idle : s.step = .review → s.pending = none
+  /-- The slot is free only after a push (acknowledged or skipped) or an abort. -/
+  slot : s.slotHeld = false →
+    s.pushed.isSome = true ∨ s.pushSkipped.isSome = true ∨ s.status = .aborted
+  cleanup : (s.pending = some .cleanup ∨ s.status = .done) →
+    s.slotHeld = false ∧ (s.pushed.isSome = true ∨ s.pushSkipped.isSome = true)
+  terminal : (s.status = .done ∨ s.status = .aborted) → s.pending = none ∧ s.slotHeld = false
+
+theorem settle_facts (s : CoreState) (id : String) (e : CoreEvent) (p : PendingEffect)
+    (hs : Inv s) (hp : s.pending = some p)
+    (he : e.acknowledges = some p ∨ e = .cancelled) :
+    let n := settle { s with cursor := some id, pending := none } e
+    n.pending = none ∧ (n.picked.isSome = true → n.integrated.isSome = true) ∧
+      (n.slotHeld = false → s.status ≠ .aborted → n.pushed.isSome = true ∨ n.pushSkipped.isSome = true) ∧
+      n.fence = s.fence ∧ n.slotHeld = s.slotHeld := by
+  intro n
+  have hsl := hs.slot
+  have hip := hs.integrated_picked
+  have hi6 := hs.integrated_pick
+  rcases he with he | rfl
+  · cases e <;> simp only [CoreEvent.acknowledges, Option.some.injEq, reduceCtorEq] at he <;>
+      subst he <;> simp_all [n, settle] <;>
+      (intro h1 h2; rcases hsl h1 with h | h | h <;> simp_all)
+  · simp_all [n, settle]
+    intro h1 h2; rcases hsl h1 with h | h | h <;> simp_all
+
+theorem abort_path_inv (n : CoreState) (h1 : n.pending = none)
+    (h2 : n.picked.isSome = true → n.integrated.isSome = true)
+    (h3 : n.slotHeld = false → n.pushed.isSome = true ∨ n.pushSkipped.isSome = true) :
+    Inv (aborted n).1 ∧ Inv (go n .abort .restoreBranch).1 := by
+  refine ⟨?_, ?_⟩
+  · unfold aborted
+    split <;> constructor <;> simp_all
+  · constructor <;> simp_all [go]
+
+theorem ack_ok_inv (s : CoreState) (id : String) (e : CoreEvent) (p : PendingEffect)
+    (hs : Inv s) (hd : s.status ≠ .done) (ha : s.status ≠ .aborted) (hp : s.pending = some p)
+    (he : e.acknowledges = some p) (hab : s.abortRequested = false) :
+    Inv (acknowledged { s with cursor := some id, pending := none } e).1 := by
+  rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+  cases e <;> simp only [CoreEvent.acknowledges, Option.some.injEq, reduceCtorEq] at he <;>
+    subst he <;>
+    (try rename_i d; cases d) <;>
+    simp only [acknowledged, hab, Bool.false_eq_true, ↓reduceIte, go, wait, stop, aborted, release] <;>
+    (repeat' split) <;>
+    constructor <;> simp_all
+
+theorem onReview_inv (n : CoreState) (e : CoreEvent) (r : Out) (hs : Inv n)
+    (hst : n.step = .review) (h : onReview n e = .ok r) : Inv r.1 := by
+  rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+  unfold onReview at h
+  split at h
+  · cases h
+  cases e <;> simp only [reduceCtorEq] at h <;> (try split at h) <;>
+    simp only [Except.ok.injEq, reduceCtorEq] at h <;> subst h <;>
+    simp only [go, wait, aborted] <;> (repeat' split) <;> constructor <;> simp_all
+
+theorem onApproval_inv (n : CoreState) (e : CoreEvent) (r : Out) (hs : Inv n)
+    (hat : n.attention = some .landingApproval) (h : onApproval n e = .ok r) : Inv r.1 := by
+  rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+  unfold onApproval at h
+  split at h
+  · cases h
+  rename_i hw
+  simp only [not_or, Decidable.not_not] at hw
+  cases e <;> simp only [reduceCtorEq] at h <;> (repeat' split at h) <;>
+    simp only [Except.ok.injEq] at h <;> subst h <;>
+    simp only [go, aborted] <;> (repeat' split) <;> constructor <;> simp_all
+
+theorem resume_inv (n : CoreState) (e : CoreEvent) (r : Out) (hs : Inv n)
+    (ha : n.status ≠ .aborted) (h : resume n e = .ok r) : Inv r.1 := by
+  rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+  cases e <;> simp only [resume, reduceCtorEq] at h <;> split at h <;>
+    simp only [Except.ok.injEq, reduceCtorEq] at h <;> subst h <;>
+    constructor <;> simp_all [go]
+
+theorem action_inv (s : CoreState) (id : String) (e : CoreEvent) (r : Out)
+    (hs : Inv s) (hd : s.status ≠ .done) (ha : s.status ≠ .aborted)
+    (h : action { s with cursor := some id } e = .ok r) : Inv r.1 := by
+  have hn : Inv { s with cursor := some id } := by
+    rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+    constructor <;> assumption
+  unfold action at h
+  split at h
+  · exact onReview_inv _ e r hn (by assumption) h
+  split at h
+  · cases h
+  rename_i hl
+  split at h
+  · exact onApproval_inv _ e r hn (by assumption) h
+  rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+  split at h
+  · simp only [Except.ok.injEq] at h; subst h
+    simp only [aborted]; split <;> constructor <;> simp_all
+  split at h
+  · split at h
+    · simp only [Except.ok.injEq] at h; subst h
+      constructor <;> simp_all
+    · cases h
+  · split at h
+    · simp only [Except.ok.injEq] at h; subst h
+      constructor <;> simp_all [go]
+    split at h
+    · cases h
+    exact resume_inv _ e r hn ha h
+
+theorem ack_inv (s : CoreState) (id : String) (e : CoreEvent) (p : PendingEffect)
+    (hs : Inv s) (hd : s.status ≠ .done) (ha : s.status ≠ .aborted) (hp : s.pending = some p)
+    (he : e.acknowledges = some p ∨ (e = .cancelled ∧ s.abortRequested = true)) :
+    Inv (acknowledged { s with cursor := some id, pending := none } e).1 := by
+  by_cases hab : s.abortRequested = true
+  · have hf := settle_facts s id e p hs hp (he.imp_right And.left)
+    obtain ⟨h1, h2, h3, -, -⟩ := hf
+    have hpath := abort_path_inv _ h1 h2 (fun h => h3 h ha)
+    unfold acknowledged
+    split
+    · dsimp only
+      split
+      · exact hpath.1
+      · exact hpath.2
+    · contradiction
+  · simp only [Bool.not_eq_true] at hab
+    rcases he with he | ⟨-, he⟩
+    · exact ack_ok_inv s id e p hs hd ha hp he hab
+    · simp [he] at hab
+
+theorem Inv.init (f : Fence) : Inv (CoreState.atReview f) := by
+  constructor <;> simp [CoreState.atReview]
+
+/-- Every applied input keeps the invariant. -/
+theorem step_inv {s n : CoreState} {i : Input} {es : List CoreEffect} (hs : Inv s)
+    (h : step s i = .ok (n, es)) : Inv n := by
+  rcases step_ok_cases h with ⟨-, -, hr⟩ | ⟨-, -, hd, ha, hc⟩
+  · simp only [Prod.mk.injEq] at hr
+    obtain ⟨rfl, -⟩ := hr
+    rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+    constructor <;> assumption
+  · rcases hc with ⟨p, hp, he, hr⟩ | ⟨-, -, hr⟩ | ⟨-, -, -, hact⟩
+    · have := ack_inv s i.id i.event p hs hd ha hp (he.imp_right fun h => ⟨h.1, h.2.1⟩)
+      rw [← hr] at this; exact this
+    · simp only [stop, Prod.mk.injEq] at hr
+      obtain ⟨rfl, -⟩ := hr
+      rcases hs with ⟨i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11⟩
+      constructor <;> simp_all
+    · have := action_inv s i.id i.event _ hs hd ha hact
+      exact this
+
+/-- Over any inputs, from any state that satisfies it. -/
+theorem exec_inv (is : List Input) (s : CoreState) (hs : Inv s) : Inv (exec s is).1 := by
+  induction is generalizing s with
+  | nil => exact hs
+  | cons i is ih =>
+    simp only [exec]
+    split
+    · rename_i n es h
+      exact ih n (step_inv hs h)
+    · exact ih s hs
+
+/-- What one applied, non-adopting input does to the fence, the slot, the
+landing and the push, from the state `s` it was applied to. -/
+structure Frame (s : CoreState) (e : CoreEvent) (n : CoreState) (es : List CoreEffect) : Prop where
+  fence : n.fence = s.fence
+  slot_stays_free : s.slotHeld = false → n.slotHeld = false
+  slot_release : s.slotHeld = true → n.slotHeld = false → .releaseSlot ∈ es
+  release_why : .releaseSlot ∈ es →
+    n.pushed.isSome = true ∨ n.pushSkipped.isSome = true ∨ n.status = .aborted
+  land_why : .cherryPick ∈ es → ∃ x, e = .verified x ∧ n.integrated = some x
+  land_pending : .cherryPick ∈ es → n.pending = some .cherryPick
+  push_pending : .push ∈ es → n.pending = some .push
+  integrated_from : ∀ x, n.integrated = some x → s.integrated = some x ∨ e = .verified x
+
+theorem settle_kept (n : CoreState) (e : CoreEvent) :
+    (settle n e).fence = n.fence ∧ (settle n e).slotHeld = n.slotHeld ∧
+      (settle n e).integrated = n.integrated := by
+  cases e <;> simp [settle]
+
+theorem abort_frame (n m : CoreState) (e : CoreEvent) (hf : m.fence = n.fence)
+    (hsl : m.slotHeld = n.slotHeld) (hi : m.integrated = n.integrated) :
+    Frame n e (aborted m).1 (aborted m).2 ∧ Frame n e (go m .abort .restoreBranch).1
+      (go m .abort .restoreBranch).2 := by
+  refine ⟨?_, ?_⟩
+  · unfold aborted; split <;> constructor <;> simp_all
+  · constructor <;> simp_all [go, effectOf]
+
+theorem ack_frame (n : CoreState) (e : CoreEvent) :
+    Frame n e (acknowledged n e).1 (acknowledged n e).2 := by
+  unfold acknowledged
+  split
+  · obtain ⟨hf, hsl, hi⟩ := settle_kept n e
+    have h := abort_frame n (settle n e) e hf hsl hi
+    dsimp only
+    split
+    · exact h.1
+    · exact h.2
+  · cases e <;> (try rename_i d; cases d) <;>
+      simp only [go, wait, stop, aborted, release] <;> (repeat' split) <;>
+      constructor <;> simp_all [effectOf]
+
+theorem stop_frame (n : CoreState) (e : CoreEvent) (a : Attention) :
+    Frame n e (stop n a).1 (stop n a).2 := by
+  constructor <;> simp [stop] <;> exact fun _ h => Or.inl h
+
+theorem onReview_frame (n : CoreState) (e : CoreEvent) (r : Out) (h : onReview n e = .ok r) :
+    Frame n e r.1 r.2 := by
+  unfold onReview at h
+  split at h
+  · cases h
+  cases e <;> simp only [reduceCtorEq] at h <;> (try split at h) <;>
+    simp only [Except.ok.injEq, reduceCtorEq] at h <;> subst h <;>
+    simp only [go, wait, aborted] <;> (repeat' split) <;> constructor <;> simp_all [effectOf]
+
+theorem onApproval_frame (n : CoreState) (e : CoreEvent) (r : Out) (h : onApproval n e = .ok r) :
+    Frame n e r.1 r.2 := by
+  unfold onApproval at h
+  split at h
+  · cases h
+  cases e <;> simp only [reduceCtorEq] at h <;> (repeat' split at h) <;>
+    simp only [Except.ok.injEq] at h <;> subst h <;>
+    simp only [go, aborted] <;> (repeat' split) <;> constructor <;> simp_all [effectOf]
+
+theorem resume_frame (n : CoreState) (e : CoreEvent) (r : Out) (h : resume n e = .ok r) :
+    Frame n e r.1 r.2 := by
+  cases e <;> simp only [resume, reduceCtorEq] at h <;> split at h <;>
+    simp only [Except.ok.injEq, reduceCtorEq] at h <;> subst h <;>
+    constructor <;> simp_all [go, effectOf]
+
+theorem action_frame (n : CoreState) (e : CoreEvent) (r : Out) (h : action n e = .ok r) :
+    Frame n e r.1 r.2 := by
+  unfold action at h
+  split at h
+  · exact onReview_frame n e r h
+  split at h
+  · cases h
+  split at h
+  · exact onApproval_frame n e r h
+  split at h
+  · simp only [Except.ok.injEq] at h; subst h
+    simp only [aborted]; split <;> constructor <;> simp_all
+  split at h
+  · split at h
+    · simp only [Except.ok.injEq] at h; subst h
+      constructor <;> simp_all
+    · cases h
+  · split at h
+    · simp only [Except.ok.injEq] at h; subst h
+      constructor <;> simp_all [go, effectOf]
+    split at h
+    · cases h
+    exact resume_frame n e r h
+
+theorem Frame.transfer {s s' n : CoreState} {e : CoreEvent} {es : List CoreEffect}
+    (h : Frame s' e n es) (hf : s'.fence = s.fence) (hsl : s'.slotHeld = s.slotHeld)
+    (hi : s'.integrated = s.integrated) : Frame s e n es := by
+  obtain ⟨a, b, c, d, f, g, k, l⟩ := h
+  exact ⟨a.trans hf, by rw [← hsl]; exact b, by rw [← hsl]; exact c, d, f, g, k,
+    fun x hx => by rw [← hi]; exact l x hx⟩
+
+/-- Every applied input that adopts no fence has the run's own fence and
+satisfies `Frame`. -/
+theorem step_frame {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (ha : i.event.isAdopt = false) :
+    i.fence = s.fence ∧ Frame s i.event n es := by
+  rcases step_ok_cases h with ⟨ha', -, -⟩ | ⟨hf, -, -, -, hc⟩
+  · simp [ha] at ha'
+  refine ⟨hf, ?_⟩
+  rcases hc with ⟨p, -, -, hr⟩ | ⟨-, -, hr⟩ | ⟨-, -, -, hact⟩
+  · have := ack_frame { s with cursor := some i.id, pending := none } i.event
+    rw [← hr] at this; exact Frame.transfer this rfl rfl rfl
+  · have := stop_frame { s with cursor := some i.id } i.event .halted
+    rw [← hr] at this; exact Frame.transfer this rfl rfl rfl
+  · exact Frame.transfer (action_frame _ _ _ hact) rfl rfl rfl
+
+/-! #### The fence: tenure epoch and pane generation -/
+
+/-- An adoption changes only the fence (and the cursor) and has no effect. -/
+theorem step_adopt {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (ha : i.event.isAdopt = true) :
+    n = { s with cursor := some i.id, fence := i.fence } ∧ es = [] ∧ s.fence.lt i.fence = true := by
+  rcases step_ok_cases h with ⟨-, hl, hr⟩ | ⟨-, ha', -⟩
+  · simp only [Prod.mk.injEq] at hr
+    exact ⟨hr.1, hr.2, hl⟩
+  · simp [ha] at ha'
+
+
+theorem Fence.lt_asymm {a b : Fence} (h : a.lt b = true) : b.lt a = false := by
+  cases a; cases b
+  simp only [Fence.lt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at h
+  simp only [Fence.lt, Bool.or_eq_false_iff, Bool.and_eq_false_iff, decide_eq_false_iff_not]
+  omega
+
+/-- An input from an older fence is rejected, so it has no effect. -/
+theorem stale_fence_rejected (s : CoreState) (i : Input) (h : i.fence.lt s.fence = true) :
+    step s i = .error .staleFence := by
+  simp [step, h]
+
+/-- An older tenure epoch is stale whatever its pane generation. -/
+theorem older_epoch_rejected (s : CoreState) (i : Input) (h : i.fence.epoch < s.fence.epoch) :
+    step s i = .error .staleFence :=
+  stale_fence_rejected s i (by simp [Fence.lt, h])
+
+/-- In the same tenure epoch, an older pane generation (the pane was
+replaced) is stale. -/
+theorem older_pane_rejected (s : CoreState) (i : Input) (he : i.fence.epoch = s.fence.epoch)
+    (hg : i.fence.gen < s.fence.gen) : step s i = .error .staleFence :=
+  stale_fence_rejected s i (by simp [Fence.lt, he, hg])
+
+/-- A newer fence drives the run only after it adopted it. -/
+theorem unadopted_fence_rejected (s : CoreState) (i : Input) (h : s.fence.lt i.fence = true)
+    (ha : i.event.isAdopt = false) : step s i = .error .fenceNotAdopted := by
+  have h1 := Fence.lt_asymm h
+  have h2 : ¬ i.fence = s.fence := fun he => by rw [he, Fence.lt_irrefl] at h; cases h
+  simp [step, h1, h2, h, ha]
+
+/-- No effect with a stale fence: every effect comes from an input that
+carries the run's own fence, and that input leaves the fence as it was. -/
+theorem effects_need_current_fence {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (hes : es ≠ []) : i.fence = s.fence ∧ n.fence = s.fence := by
+  cases ha : i.event.isAdopt
+  · obtain ⟨hf, fr⟩ := step_frame h ha
+    exact ⟨hf, fr.fence⟩
+  · obtain ⟨-, rfl, -⟩ := step_adopt h ha
+    exact absurd rfl hes
+
+/-- The fence only moves forward, and only by an adoption, which has no effect. -/
+theorem fence_monotone {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) :
+    n.fence = s.fence ∨ (i.event.isAdopt = true ∧ s.fence.lt n.fence = true ∧ es = []) := by
+  cases ha : i.event.isAdopt
+  · exact Or.inl (step_frame h ha).2.fence
+  · obtain ⟨rfl, rfl, hl⟩ := step_adopt h ha
+    exact Or.inr ⟨rfl, hl, rfl⟩
+
+/-- Once a newer tenure or pane adopted the run, every input of the fence
+it replaced is rejected. -/
+theorem adopt_fences_out {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (ha : i.event.isAdopt = true) (j : Input)
+    (hj : j.fence = s.fence) : step n j = .error .staleFence := by
+  obtain ⟨rfl, -, hl⟩ := step_adopt h ha
+  exact stale_fence_rejected _ _ (by rw [hj]; exact hl)
+
+/-! #### The slot: freed only after the push or an abort -/
+
+/-- `release_slot` is an effect only of an acknowledged or skipped push, or
+of the abort that ends the run. -/
+theorem release_only_after_push_or_abort {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (hr : .releaseSlot ∈ es) :
+    n.pushed.isSome = true ∨ n.pushSkipped.isSome = true ∨ n.status = .aborted := by
+  cases ha : i.event.isAdopt
+  · exact (step_frame h ha).2.release_why hr
+  · obtain ⟨-, rfl, -⟩ := step_adopt h ha
+    cases hr
+
+/-- A slot once freed is never taken back by the run. -/
+theorem slot_never_retaken {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (hs : s.slotHeld = false) : n.slotHeld = false := by
+  cases ha : i.event.isAdopt
+  · exact (step_frame h ha).2.slot_stays_free hs
+  · obtain ⟨rfl, -, -⟩ := step_adopt h ha
+    exact hs
+
+/-- The slot is freed only together with a `release_slot` effect. -/
+theorem slot_freed_by_release {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (hs : s.slotHeld = true) (hn : n.slotHeld = false) :
+    .releaseSlot ∈ es := by
+  cases ha : i.event.isAdopt
+  · exact (step_frame h ha).2.slot_release hs hn
+  · obtain ⟨rfl, -, -⟩ := step_adopt h ha
+    simp [hs] at hn
+
+/-- In every state a run reaches from its review, a free slot means the push
+was acknowledged or skipped, or the run ended aborted. -/
+theorem slot_free_after_push_or_abort (f : Fence) (is : List Input) :
+    let s := (exec (CoreState.atReview f) is).1
+    s.slotHeld = false → s.pushed.isSome = true ∨ s.pushSkipped.isSome = true ∨ s.status = .aborted :=
+  (exec_inv is _ (Inv.init f)).slot
+
+/-- A run that is done freed its slot after an acknowledged or skipped push. -/
+theorem done_after_push (f : Fence) (is : List Input) :
+    let s := (exec (CoreState.atReview f) is).1
+    s.status = .done → s.slotHeld = false ∧ (s.pushed.isSome = true ∨ s.pushSkipped.isSome = true) :=
+  fun hd => (exec_inv is _ (Inv.init f)).cleanup (Or.inr hd)
+
+/-! #### Verify on the integrated tree, then land -/
+
+/-- The landing (`cherry_pick`) is an effect only of a `verified`
+acknowledgement of the integration commit, which it then lands, and
+nothing of the run is on the target branch yet. -/
+theorem land_needs_verified {s n : CoreState} {i : Input} {es : List CoreEffect} (hs : Inv s)
+    (h : step s i = .ok (n, es)) (hc : .cherryPick ∈ es) :
+    ∃ x, i.event = .verified x ∧ n.integrated = some x ∧ n.picked = none ∧
+      n.pending = some .cherryPick := by
+  cases ha : i.event.isAdopt
+  · have fr := (step_frame h ha).2
+    obtain ⟨x, hx, hi⟩ := fr.land_why hc
+    have hp := fr.land_pending hc
+    exact ⟨x, hx, hi, (step_inv hs h).unpicked_pending (Or.inr hp), hp⟩
+  · obtain ⟨-, rfl, -⟩ := step_adopt h ha
+    cases hc
+
+/-- The integration commit the landing lands is set only by a `verified`
+acknowledgement (the verify of the approved commit picked onto the branch's
+head). -/
+theorem integrated_only_verified {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (x : String) (hx : n.integrated = some x) :
+    s.integrated = some x ∨ i.event = .verified x := by
+  cases ha : i.event.isAdopt
+  · exact (step_frame h ha).2.integrated_from x hx
+  · obtain ⟨rfl, -, -⟩ := step_adopt h ha
+    exact Or.inl hx
+
+/-- A commit on the target branch was verified on the integrated tree, in
+every state a run reaches from its review. -/
+theorem picked_was_verified (f : Fence) (is : List Input) :
+    let s := (exec (CoreState.atReview f) is).1
+    s.picked.isSome = true → s.integrated.isSome = true :=
+  (exec_inv is _ (Inv.init f)).integrated_picked
+
+/-- A target branch that moved since the verify drops the verified commit:
+it is verified again on the new head, or the run stops after the bounded
+re-verifies; nothing lands. -/
+theorem head_moved_reverifies {s n : CoreState} {i : Input} {es : List CoreEffect}
+    (h : step s i = .ok (n, es)) (he : i.event = .headMoved) (hab : s.abortRequested = false) :
+    n.integrated = none ∧ .cherryPick ∉ es ∧
+      (es = [.verifyIntegrated] ∨ (n.status = .blocked ∧ es = [.emit .blocked])) := by
+  rcases step_ok_cases h with ⟨ha, -, -⟩ | ⟨-, -, -, -, hc⟩
+  · simp [he, CoreEvent.isAdopt] at ha
+  rcases hc with ⟨p, -, -, hr⟩ | ⟨hh, -, -⟩ | ⟨hn, -, -, -⟩
+  · rw [he] at hr
+    simp only [acknowledged, hab, Bool.false_eq_true, ↓reduceIte] at hr
+    split at hr <;> simp only [go, stop, Prod.mk.injEq] at hr <;> obtain ⟨rfl, rfl⟩ := hr <;>
+      simp [effectOf]
+  · simp [he] at hh
+  · simp [he, CoreEvent.acknowledges] at hn
+
+/-! #### The push only after the landing of a verified commit -/
+
+/-- `push` is an effect only once a verified integration commit landed on
+the target branch, in every state a run reaches from its review. -/
+theorem push_needs_verified {s n : CoreState} {i : Input} {es : List CoreEffect} (hs : Inv s)
+    (h : step s i = .ok (n, es)) (hp : .push ∈ es) :
+    n.picked.isSome = true ∧ n.integrated.isSome = true := by
+  cases ha : i.event.isAdopt
+  · have hpend := (step_frame h ha).2.push_pending hp
+    have hn := step_inv hs h
+    have hpk := hn.picked_pending (by simp [hpend])
+    exact ⟨hpk, hn.integrated_picked hpk⟩
+  · obtain ⟨-, rfl, -⟩ := step_adopt h ha
+    cases hp
+
+/-- A push run again after a crash also needs that. -/
+theorem rerun_push_needs_verified (s : CoreState) (o : Observed) (hs : Inv s)
+    (h : reconcile s o = .rerun .push) : s.picked.isSome = true ∧ s.integrated.isSome = true := by
+  have hp : s.pending = some .push := by
+    unfold reconcile at h
+    split at h <;> (try split at h) <;> simp_all
+  have hpk := hs.picked_pending (by simp [hp])
+  exact ⟨hpk, hs.integrated_picked hpk⟩
+
+/-- A verify that failed waits for the coordinator with no push and nothing
+on the target branch. -/
+theorem verify_failed_no_push {s n : CoreState} {i : Input} {es : List CoreEffect} (hs : Inv s)
+    (h : step s i = .ok (n, es)) (he : i.event = .verifyFailed) (hab : s.abortRequested = false) :
+    .push ∉ es ∧ .cherryPick ∉ es ∧ n.picked = none ∧ n.status = .waiting := by
+  rcases step_ok_cases h with ⟨ha, -, -⟩ | ⟨-, -, -, -, hc⟩
+  · simp [he, CoreEvent.isAdopt] at ha
+  rcases hc with ⟨p, hp, hack, hr⟩ | ⟨hh, -, -⟩ | ⟨hn, -, -, -⟩
+  · rw [he] at hr hack
+    have hp' : p = .verifyIntegrated := by
+      rcases hack with hack | ⟨hc, -⟩
+      · simp [CoreEvent.acknowledges] at hack; exact hack.symm
+      · cases hc
+    subst hp'
+    have := hs.unpicked_pending (Or.inl hp)
+    simp only [acknowledged, hab, Bool.false_eq_true, ↓reduceIte, wait, Prod.mk.injEq] at hr
+    obtain ⟨rfl, rfl⟩ := hr
+    simp [this]
+  · simp [he] at hh
+  · simp [he, CoreEvent.acknowledges] at hn
+
+/-! #### Effect acknowledgements: a crash between an effect and its record -/
+
+theorem reconcile_ack_of_pending (s : CoreState) (o : Observed) (e : CoreEvent)
+    (h : reconcile s o = .ack e) : ∃ p, s.pending = some p ∧ e.acknowledges = some p := by
+  cases hp : s.pending with
+  | none => simp [reconcile, hp] at h
+  | some p =>
+    cases p <;> simp only [reconcile, hp] at h <;> (try split at h) <;>
+      simp only [Reconciled.ack.injEq, reduceCtorEq] at h <;> subst h <;> exact ⟨_, rfl, rfl⟩
+
+/-- An effect observed as done is acknowledged from what is observed, never
+run again. -/
+theorem reconcile_acks_done (s : CoreState) (o : Observed) (p : PendingEffect)
+    (hp : s.pending = some p) (ho : o.shows p = true) :
+    ∃ e, reconcile s o = .ack e ∧ e.acknowledges = some p := by
+  cases p with
+  | cherryPick =>
+    cases hpk : o.picked with
+    | none => simp [Observed.shows, hpk] at ho
+    | some sha => exact ⟨.picked sha, by simp [reconcile, hp, hpk], rfl⟩
+  | verifyIntegrated => simp [Observed.shows] at ho
+  | install => exact ⟨.installed, by simp_all [reconcile, Observed.shows], rfl⟩
+  | todoEdit => exact ⟨.edited, by simp_all [reconcile, Observed.shows], rfl⟩
+  | push =>
+    cases ho' : o.origin with
+    | contains sha => exact ⟨.pushAcked sha, by simp [reconcile, hp, ho'], rfl⟩
+    | behind => simp [Observed.shows, ho'] at ho
+    | diverged => simp [Observed.shows, ho'] at ho
+  | restoreBranch => exact ⟨.branchRestored, by simp_all [reconcile, Observed.shows], rfl⟩
+  | cleanup => simp [Observed.shows] at ho
+
+/-- Only an effect observed as not done is run again (or the verify and the
+cleanup, which are safe to repeat); an install or TODO edit not observed is
+a failure for the coordinator, never repeated by itself. -/
+theorem reconcile_reruns_only_undone (s : CoreState) (o : Observed) (x : CoreEffect)
+    (h : reconcile s o = .rerun x) :
+    ∃ p, s.pending = some p ∧ x = effectOf p ∧ o.shows p = false ∧
+      p ≠ .install ∧ p ≠ .todoEdit := by
+  cases hp : s.pending with
+  | none => simp [reconcile, hp] at h
+  | some p =>
+    cases p <;> simp only [reconcile, hp] at h <;> (try split at h) <;>
+      simp only [Reconciled.rerun.injEq, reduceCtorEq] at h <;> subst h <;>
+      exact ⟨_, rfl, rfl, by simp_all [Observed.shows], by simp, by simp⟩
+
+theorem acknowledges_not_adopt (e : CoreEvent) (p : PendingEffect) (h : e.acknowledges = some p) :
+    e.isAdopt = false := by
+  cases e <;> simp_all [CoreEvent.acknowledges, CoreEvent.isAdopt]
+
+/-- The acknowledgement a reconcile derives applies, with the run's fence and
+a fresh input id. -/
+theorem reconcile_ack_applies (s : CoreState) (o : Observed) (e : CoreEvent) (id : String)
+    (hs : Inv s) (h : reconcile s o = .ack e) (hid : s.cursor ≠ some id) :
+    ∃ r, step s ⟨id, s.fence, e⟩ = .ok r := by
+  obtain ⟨p, hp, hack⟩ := reconcile_ack_of_pending s o e h
+  have hna := acknowledges_not_adopt e p hack
+  have hnt : ¬ (s.status = .done ∨ s.status = .aborted) := fun ht => by
+    simp [(hs.terminal ht).1] at hp
+  have hnc : e ≠ .cancelled := by intro hc; subst hc; simp [CoreEvent.acknowledges] at hack
+  refine ⟨acknowledged { s with cursor := some id, pending := none } e, ?_⟩
+  simp [step, Fence.lt_irrefl, hna, hid, hnt, hnc, hack, hp]
+
+theorem acknowledged_clears (n : CoreState) (e : CoreEvent) (p : PendingEffect)
+    (hn : n.pending = none) (hack : e.acknowledges = some p) :
+    (acknowledged n e).1.pending ≠ some p := by
+  have hs : (settle n e).pending = none := by cases e <;> simp [settle, hn]
+  unfold acknowledged
+  split
+  · dsimp only
+    split
+    · unfold aborted; split <;> simp [hs]
+    · rename_i hb
+      simp only [go, ne_eq, Option.some.injEq]
+      intro hpe; subst hpe
+      cases e <;> simp_all [CoreEvent.acknowledges, CoreEvent.isBranchRestored]
+  · cases e <;> simp only [CoreEvent.acknowledges, Option.some.injEq, reduceCtorEq] at hack <;>
+      subst hack <;> (try rename_i d; cases d) <;>
+      simp only [go, wait, stop, aborted, release] <;> (repeat' split) <;> simp_all
+
+/-- An acknowledgement applies once: fed again (its record was persisted,
+then the shell crashed and fed it once more), with any id, it is rejected
+and has no effect. -/
+theorem ack_applies_once {s n : CoreState} {i : Input} {es : List CoreEffect} {p : PendingEffect}
+    (h : step s i = .ok (n, es)) (hack : i.event.acknowledges = some p) (j : Input)
+    (hj : j.event = i.event) : ∀ r, step n j ≠ .ok r := by
+  have hna := acknowledges_not_adopt _ _ hack
+  have hclear : n.pending ≠ some p := by
+    rcases step_ok_cases h with ⟨ha, -, -⟩ | ⟨-, -, -, -, hc⟩
+    · simp [hna] at ha
+    rcases hc with ⟨q, hq, hqa, hr⟩ | ⟨hh, -, -⟩ | ⟨hn, -, -, -⟩
+    · have := acknowledged_clears { s with cursor := some i.id, pending := none } i.event p rfl hack
+      rw [← hr] at this; exact this
+    · simp [hh, CoreEvent.acknowledges] at hack
+    · simp [hn] at hack
+  intro r hr
+  rcases step_ok_cases hr with ⟨ha, -, -⟩ | ⟨-, -, -, -, hc⟩
+  · rw [hj] at ha; simp [hna] at ha
+  rcases hc with ⟨q, hq, hqa, -⟩ | ⟨hh, -, -⟩ | ⟨hn, -, -, -⟩
+  · rcases hqa with hqa | ⟨hc, -⟩
+    · rw [hj, hack] at hqa
+      simp only [Option.some.injEq] at hqa
+      subst hqa; exact hclear hq
+    · rw [hj] at hc; rw [hc] at hack; simp [CoreEvent.acknowledges] at hack
+  · rw [hj] at hh; rw [hh] at hack; simp [CoreEvent.acknowledges] at hack
+  · rw [hj, hack] at hn; cases hn
+
+/-- After a crash between the landing and its record, the landing runs again
+only when no commit of the run is on the target branch: it never lands twice. -/
+theorem no_second_landing (s : CoreState) (o : Observed)
+    (h : reconcile s o = .rerun .cherryPick) : o.picked = none := by
+  cases hp : s.pending with
+  | none => simp [reconcile, hp] at h
+  | some p =>
+    cases p <;> simp only [reconcile, hp] at h <;> (try split at h) <;> simp_all
+
+/-- After a crash between the push and its record, the push runs again only
+when origin is behind what it sends: it never publishes twice, and a
+diverged origin is never pushed over. -/
+theorem no_second_push (s : CoreState) (o : Observed)
+    (h : reconcile s o = .rerun .push) : o.origin = .behind := by
+  cases hp : s.pending with
+  | none => simp [reconcile, hp] at h
+  | some p =>
+    cases p <;> simp only [reconcile, hp] at h <;> (try split at h) <;> (try simp at h)
+    cases ho : o.origin <;> simp_all
+
+end Proofs
+
+/-! ### Traces (format v1 of `src/workers/runs/core.rs`)
+
+A trace is a script of inputs and observations run through `step` and
+`reconcile`; every expectation is what the model computes, so the Rust test
+`lean_model_traces_replay` checks that the Rust core does what the model does.
+`recover` is a restart after a crash: it observes git, and when the reconcile
+derives an acknowledgement, feeds it as the next input. -/
+
+def jstr (s : String) : String :=
+  "\"" ++ (s.toList.map fun c =>
+    if c = '"' then "\\\"" else if c = '\\' then "\\\\" else c.toString).foldl (· ++ ·) "" ++ "\""
+
+def jopt (f : α → String) : Option α → String
+  | none => "null"
+  | some a => f a
+
+def jobj (kvs : List (String × String)) : String :=
+  "{" ++ ", ".intercalate (kvs.map fun (k, v) => jstr k ++ ": " ++ v) ++ "}"
+
+def jarr (vs : List String) : String := "[" ++ ", ".intercalate vs ++ "]"
+
+def jbool (b : Bool) : String := if b then "true" else "false"
+
+def TodoStep.json : TodoStep → String
+  | .preflight => jstr "preflight" | .draft => jstr "draft" | .start => jstr "start"
+  | .attention => jstr "attention" | .review => jstr "review" | .stop => jstr "stop"
+  | .verify => jstr "verify" | .restart => jstr "restart" | .cherryPick => jstr "cherry_pick"
+  | .install => jstr "install" | .todo => jstr "todo" | .push => jstr "push"
+  | .cleanup => jstr "cleanup" | .done => jstr "done" | .abort => jstr "abort"
+
+def TodoRunStatus.json : TodoRunStatus → String
+  | .running => jstr "running" | .waiting => jstr "waiting" | .blocked => jstr "blocked"
+  | .done => jstr "done" | .aborted => jstr "aborted"
+
+def TodoEventKind.json : TodoEventKind → String
+  | .review => jstr "review" | .verifyFailed => jstr "verify_failed"
+  | .installFailed => jstr "install_failed" | .todoFailed => jstr "todo_failed"
+  | .pushFailed => jstr "push_failed" | .blocked => jstr "blocked" | .done => jstr "done"
+  | .aborted => jstr "aborted" | .landingApproval => jstr "landing_approval"
+
+def Fence.json (f : Fence) : String :=
+  jobj [("tenure_epoch", toString f.epoch), ("pane_generation", toString f.gen)]
+
+def Degraded.json : Degraded → String
+  | .installSkipped => jstr "install_skipped" | .todoSkipped => jstr "todo_skipped"
+
+def Attention.json : Attention → String
+  | .cherryPickConflict => jstr "cherry_pick_conflict" | .verifyFailed => jstr "verify_failed"
+  | .installFailed => jstr "install_failed" | .todoFailed => jstr "todo_failed"
+  | .pushFailed => jstr "push_failed" | .pushDiverged => jstr "push_diverged"
+  | .headKeptMoving => jstr "head_kept_moving" | .halted => jstr "halted"
+  | .landingApproval => jstr "landing_approval"
+
+def PendingEffect.json : PendingEffect → String
+  | .cherryPick => jstr "cherry_pick" | .verifyIntegrated => jstr "verify_integrated"
+  | .install => jstr "install" | .todoEdit => jstr "todo_edit" | .push => jstr "push"
+  | .restoreBranch => jstr "restore_branch" | .cleanup => jstr "cleanup"
+
+def CoreState.json (s : CoreState) : String :=
+  jobj [("step", s.step.json), ("status", s.status.json), ("fence", s.fence.json),
+    ("slot_held", jbool s.slotHeld), ("pending", jopt PendingEffect.json s.pending),
+    ("degraded", jarr (s.degraded.map Degraded.json)),
+    ("attention", jopt Attention.json s.attention), ("integrated", jopt jstr s.integrated),
+    ("picked", jopt jstr s.picked), ("pushed", jopt jstr s.pushed),
+    ("cursor", jopt jstr s.cursor), ("abort_requested", jbool s.abortRequested),
+    ("reverifies", toString s.reverifies), ("owner_approval", jopt jstr s.ownerApproval),
+    ("push_skipped", jopt jstr s.pushSkipped)]
+
+def kind (k : String) (rest : List (String × String) := []) : String :=
+  jobj (("kind", jstr k) :: rest)
+
+def CoreEvent.json : CoreEvent → String
+  | .approve => kind "approve" | .answer => kind "answer" | .retry => kind "retry"
+  | .verify => kind "verify" | .retryInstall => kind "retry_install"
+  | .skipInstall => kind "skip_install" | .retryTodo => kind "retry_todo"
+  | .skipTodo => kind "skip_todo" | .retryPush => kind "retry_push" | .abort => kind "abort"
+  | .adopt => kind "adopt"
+  | .askLandingApproval c => kind "ask_landing_approval" [("commit", jstr c)]
+  | .approveLanding c b => kind "approve_landing" [("commit", jstr c), ("branch_at", jstr b)]
+  | .halted => kind "halted"
+  | .picked sha => kind "picked" [("sha", jstr sha)]
+  | .pickFailed => kind "pick_failed" | .headMoved => kind "head_moved"
+  | .verified x => kind "verified" [("integrated", jstr x)]
+  | .verifyFailed => kind "verify_failed"
+  | .integrationConflict => kind "integration_conflict"
+  | .installed => kind "installed" | .installFailed => kind "install_failed"
+  | .edited => kind "edited" | .todoFailed => kind "todo_failed"
+  | .pushAcked sha => kind "push_acked" [("sha", jstr sha)]
+  | .pushSkipped r => kind "push_skipped" [("reason", jstr r)]
+  | .pushRejected d => kind "push_rejected" [("diverged", jbool d)]
+  | .branchRestored => kind "branch_restored" | .cleanedUp => kind "cleaned_up"
+  | .cancelled => kind "cancelled"
+
+def CoreEffect.json : CoreEffect → String
+  | .cherryPick => kind "cherry_pick" | .verifyIntegrated => kind "verify_integrated"
+  | .install => kind "install" | .todoEdit => kind "todo_edit" | .push => kind "push"
+  | .restoreBranch => kind "restore_branch" | .settlePending => kind "settle_pending"
+  | .releaseSlot => kind "release_slot" | .cleanup => kind "cleanup"
+  | .emit e => kind "emit" [("event", e.json)]
+
+def Rejection.json : Rejection → String
+  | .staleFence => jstr "stale_fence" | .fenceNotAdopted => jstr "fence_not_adopted"
+  | .duplicate => jstr "duplicate" | .terminal => jstr "terminal"
+  | .notInLanding => jstr "not_in_landing" | .effectInFlight => jstr "effect_in_flight"
+  | .unexpectedAck => jstr "unexpected_ack" | .notAllowed => jstr "not_allowed"
+
+def Input.json (i : Input) : String :=
+  jobj [("id", jstr i.id), ("fence", i.fence.json), ("event", i.event.json)]
+
+def Origin.json : Origin → String
+  | .contains sha => jobj [("state", jstr "contains"), ("sha", jstr sha)]
+  | .behind => jobj [("state", jstr "behind")]
+  | .diverged => jobj [("state", jstr "diverged")]
+
+def Observed.json (o : Observed) : String :=
+  jobj [("picked", jopt jstr o.picked), ("installed", jbool o.installed),
+    ("todo_committed", jbool o.todoCommitted), ("origin", o.origin.json),
+    ("restored", jbool o.restored)]
+
+def Reconciled.json : Reconciled → String
+  | .nothing => kind "nothing"
+  | .ack e => kind "ack" [("event", e.json)]
+  | .rerun e => kind "rerun" [("effect", e.json)]
+
+inductive TraceStep where
+  | input (i : Input)
+  | observe (o : Observed)
+  | recover (id : String) (o : Observed)
+
+structure Trace where
+  name    : String
+  initial : CoreState
+  steps   : List TraceStep
+
+/-- The JSON line of one input from `s`, and the state after it. -/
+def inputLine (s : CoreState) (i : Input) : String × CoreState × List CoreEffect :=
+  match step s i with
+  | .ok (n, es) =>
+    (jobj [("input", i.json), ("expect", jobj [("state", n.json),
+      ("effects", jarr (es.map CoreEffect.json))])], n, es)
+  | .error r =>
+    (jobj [("input", i.json), ("expect", jobj [("rejection", r.json), ("state", s.json)])], s, [])
+
+def observeLine (s : CoreState) (o : Observed) : String :=
+  jobj [("observe", o.json), ("expect", jobj [("reconcile", (reconcile s o).json)])]
+
+/-- The steps from `s`, each with what the model computes: its JSON lines,
+then the final state and every effect in order. -/
+def runSteps (s : CoreState) : List TraceStep → List String × CoreState × List CoreEffect
+  | [] => ([], s, [])
+  | .input i :: rest =>
+    let (l, n, es) := inputLine s i
+    let (ls, f, fs) := runSteps n rest
+    (l :: ls, f, es ++ fs)
+  | .observe o :: rest =>
+    let (ls, f, fs) := runSteps s rest
+    (observeLine s o :: ls, f, fs)
+  | .recover id o :: rest =>
+    match reconcile s o with
+    | .ack e =>
+      let (l, n, es) := inputLine s ⟨id, s.fence, e⟩
+      let (ls, f, fs) := runSteps n rest
+      (observeLine s o :: l :: ls, f, es ++ fs)
+    | _ =>
+      let (ls, f, fs) := runSteps s rest
+      (observeLine s o :: ls, f, fs)
+
+def Trace.json (t : Trace) : String :=
+  "{\"version\": 1,\n \"initial\": " ++ t.initial.json ++ ",\n \"steps\": [\n  " ++
+    ",\n  ".intercalate (runSteps t.initial t.steps).1 ++ "]}\n"
+
+/-- The state the script reaches and every effect, in order. -/
+def Trace.final (t : Trace) : CoreState × List CoreEffect :=
+  ((runSteps t.initial t.steps).2.1, (runSteps t.initial t.steps).2.2)
+
+/-! #### The committed traces -/
+
+def run : Fence := ⟨4, 2⟩
+
+def ev (id : String) (e : CoreEvent) (f : Fence := run) : TraceStep := .input ⟨id, f, e⟩
+
+def seen (picked : Option String := none) (origin : Origin := .behind) (installed := false)
+    (todo := false) (restored := false) : Observed :=
+  ⟨picked, installed, todo, origin, restored⟩
+
+def happyLanding : Trace :=
+  { name := "happy-landing", initial := .atReview run,
+    steps := [ev "e1" .approve, ev "e2" (.verified "i1"), ev "e3" (.picked "p1"),
+      ev "e4" .installed, ev "e5" .edited, ev "e6" (.pushAcked "p1"), ev "e7" .cleanedUp] }
+
+/-- The shell landed the commit, then crashed before the acknowledgement was
+persisted; at restart the reconcile finds the commit by its trailers and
+acknowledges it (no second landing). Later the shell crashes before the push
+ran: the push runs again. -/
+def crashAfterLanding : Trace :=
+  { name := "crash-after-landing-before-ack", initial := .atReview run,
+    steps := [ev "e1" .approve, ev "e2" (.verified "i1"),
+      .recover "r1" (seen (picked := some "p1")),
+      ev "r2" (.picked "p1"),
+      ev "e3" .installed, ev "e4" .edited,
+      .observe (seen (picked := some "p1")),
+      ev "e5" (.pushAcked "p1"), ev "e6" .cleanedUp] }
+
+/-- The push reached origin, then the shell crashed before the
+acknowledgement was persisted: the reconcile acknowledges it from origin and
+frees the slot; the acknowledgement fed again, under its id or another, is
+rejected. The cleanup is repeated after the next crash. -/
+def crashAfterPush : Trace :=
+  { name := "crash-after-push-before-ack", initial := .atReview run,
+    steps := [ev "e1" .approve, ev "e2" (.verified "i1"), ev "e3" (.picked "p1"),
+      ev "e4" .installed, ev "e5" .edited,
+      .recover "r1" (seen (picked := some "p1") (origin := .contains "p1") (installed := true)
+        (todo := true)),
+      ev "r1" (.pushAcked "p1"),
+      ev "r2" (.pushAcked "p1"),
+      .observe (seen (picked := some "p1") (origin := .contains "p1")),
+      ev "e6" .cleanedUp] }
+
+/-- Inputs of an older tenure epoch or an older pane generation are rejected;
+a newer one is rejected until it adopts the run, and from then on the
+fence it replaced is stale. -/
+def staleFence : Trace :=
+  { name := "stale-fence-and-pane", initial := .atReview run,
+    steps := [ev "e1" .approve ⟨3, 9⟩, ev "e1" .approve ⟨4, 1⟩,
+      ev "e1" .approve ⟨4, 3⟩, ev "e2" .adopt ⟨4, 3⟩,
+      ev "e3" .approve, ev "e3" .adopt ⟨4, 3⟩,
+      ev "e3" .approve ⟨4, 3⟩, ev "e4" (.verified "i1") ⟨5, 0⟩,
+      ev "e5" .adopt ⟨5, 0⟩, ev "e6" (.verified "i1") ⟨4, 3⟩,
+      ev "e6" (.verified "i1") ⟨5, 0⟩] }
+
+/-- A verify of the integrated tree that fails waits for the coordinator:
+nothing landed, no push; verified again, it fails again, and the abort
+restores and frees the slot. -/
+def verifyFailed : Trace :=
+  { name := "verify-failed-no-push", initial := .atReview run,
+    steps := [ev "e1" .approve, ev "e2" .verifyFailed, ev "e3" .retryPush,
+      ev "e3" (.pushAcked "p1"), ev "e3" .verify, ev "e4" .verifyFailed,
+      ev "e5" .abort, ev "e6" .branchRestored] }
+
+/-- The target branch moved after the verify: the landing is refused, the
+commit is verified again on the new head, then lands. -/
+def headMoved : Trace :=
+  { name := "head-moved-reverify", initial := .atReview run,
+    steps := [ev "e1" .approve, ev "e2" (.verified "i1"), ev "e3" .headMoved,
+      ev "e4" (.picked "p1"), ev "e4" (.verified "i2"), ev "e5" (.picked "p2"),
+      ev "e6" .installed] }
+
+def traces : List Trace :=
+  [happyLanding, crashAfterLanding, crashAfterPush, staleFence, verifyFailed, headMoved]
+
+-- What the traces show, computed by the model.
+#guard happyLanding.final.1.status == .done
+#guard happyLanding.final.2 ==
+  [.verifyIntegrated, .cherryPick, .install, .todoEdit, .push, .releaseSlot, .cleanup, .emit .done]
+#guard crashAfterLanding.final.1.status == .done && crashAfterLanding.final.1.picked == some "p1"
+#guard (crashAfterLanding.final.2.filter (· == .cherryPick)).length == 1
+#guard crashAfterPush.final.1.status == .done
+#guard (crashAfterPush.final.2.filter (· == .releaseSlot)).length == 1
+#guard staleFence.final.1.fence == ⟨5, 0⟩
+#guard verifyFailed.final.1.status == .aborted && !verifyFailed.final.2.contains .push &&
+  !verifyFailed.final.2.contains .cherryPick
+#guard headMoved.final.1.integrated == some "i2" && headMoved.final.1.picked == some "p2"
+
+end Landing
+
 end TodoWorkflow
+
+open TodoWorkflow.Landing in
+/-- `lean --run TodoWorkflow.lean <dir>` writes the traces into `<dir>`;
+`lean --run TodoWorkflow.lean --check <dir>` exits 1 when a committed trace
+differs from what the model computes. -/
+def main (args : List String) : IO UInt32 := do
+  match args with
+  | [dir] =>
+    for t in traces do
+      IO.FS.writeFile (dir ++ "/" ++ t.name ++ ".json") t.json
+    return 0
+  | ["--check", dir] =>
+    let mut ok := true
+    for t in traces do
+      let path := dir ++ "/" ++ t.name ++ ".json"
+      let have_ ← (try IO.FS.readFile path catch _ => pure "")
+      if have_ != t.json then
+        IO.eprintln s!"{path} differs from the model's trace"
+        ok := false
+    return if ok then 0 else 1
+  | _ =>
+    IO.eprintln "usage: lean --run TodoWorkflow.lean [--check] <traces dir>"
+    return 2

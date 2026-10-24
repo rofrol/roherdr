@@ -1464,6 +1464,12 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/todo-traces")
     }
 
+    /// The traces the Lean model of this core computes
+    /// (`docs/todo-workflow-model/README.md`, "Traces").
+    fn lean_traces_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/todo-workflow-model/traces")
+    }
+
     fn replay(name: &str, trace: Trace) {
         assert_eq!(trace.version, 1, "{name}: unknown trace version");
         let mut s = trace.initial;
@@ -1506,15 +1512,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn traces_replay() {
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(traces_dir())
+    fn replay_dir(dir: &Path, at_least: usize) {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
             .expect("traces directory")
             .map(|entry| entry.expect("trace entry").path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect();
         paths.sort();
-        assert!(paths.len() >= 12, "expected the v1 traces, found {paths:?}");
+        assert!(
+            paths.len() >= at_least,
+            "expected the v1 traces, found {paths:?}"
+        );
         for path in paths {
             let name = path.display().to_string();
             let text = std::fs::read_to_string(&path).expect("trace readable");
@@ -1522,5 +1530,20 @@ mod tests {
                 serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
             replay(&name, trace);
         }
+    }
+
+    #[test]
+    fn traces_replay() {
+        replay_dir(&traces_dir(), 12);
+    }
+
+    /// Every step's rejection, whole state, effects and reconcile there is
+    /// what the Lean model computes: the core does what the model proves
+    /// things about (the happy landing, a crash after the landing and after
+    /// the push before their acknowledgements, a stale tenure epoch and pane
+    /// generation, a failed verify with no push, a moved head).
+    #[test]
+    fn lean_model_traces_replay() {
+        replay_dir(&lean_traces_dir(), 6);
     }
 }

@@ -4,15 +4,21 @@ A hand-written model of how a repository's TODO is worked through with herdr:
 the coordination tenure and its handoff, one item's run through
 `herdr todo run` and how a landed run is closed (`--next`, `--stop-reason`,
 `--continue-self`), the relay of a worker's questions to its owner, the
-read-only supervision that detects stuck coordinators and workers, and the
-coordinator's decision at an item boundary.
+read-only supervision that detects stuck coordinators and workers, the
+coordinator's decision at an item boundary, and the landing's transition core
+(`Landing`: the coordinator fence, effect acknowledgements and the landing
+order, as `src/workers/runs/core.rs` implements them), with JSON traces that
+a Rust test replays on that core.
 
 **These proofs establish properties of this model only.** `TodoWorkflow.lean`
 was written by hand on 2026-10-23 (at commit `8400a511e`; revised after consult rounds `20261023-133232-9be6`, `20261023-134902-c328`, `20261023-135828-a549`, `20261023-140629-1d9c`, `20261023-142050-c4f5`, `20261023-143108-0292`, `20261023-150255-21dc`, `20261023-150810-9b94` and `20261023-151322-2194`) from `AGENTS.md`,
 `DECISIONS.md`, `.herdr/checks.toml`, the CLI help and the global `todo` and
-`handoff` skills. It is not extracted from the Rust code, and nothing checks
-that the code still matches it. The Rust code and its tests are the source of
-truth; the diagram below only illustrates the model. Consult round
+`handoff` skills. It is not extracted from the Rust code. Only `Landing` is
+checked against the code: it was written on 2026-10-24 (at commit
+`53eb341cc`) as a one-to-one model of `core::step` and `core::reconcile`, and
+its traces are replayed on the Rust core by `cargo nextest` (see "Traces");
+nothing checks the other parts against the code. The Rust code and its tests
+are the source of truth; the diagram below only illustrates the model. Consult round
 `20261023-132611-0125` chose this place and form.
 
 ## Check
@@ -21,8 +27,37 @@ truth; the diagram below only illustrates the model. Consult round
 lean docs/todo-workflow-model/TodoWorkflow.lean   # Lean 4.34.0, no Mathlib
 ```
 
-It prints the one `#eval` (`TodoWorkflow.Action.dispatch "t-b"`) and nothing
-else when every theorem holds. Lean is not part of `just check`.
+It prints nothing when every theorem and `#guard` holds (about 20 s); no
+proof uses `sorry`. Lean is not part of `just check`; the replay of the
+committed traces is.
+
+## Traces
+
+`traces/*.json` are traces of the landing core in format v1 (described in
+`src/workers/runs/core.rs`): an initial state and a script of inputs and
+observations, each step with what the Lean model computes (the rejection, or
+the whole next state and the effects; the reconcile of an observation). The
+Rust test `workers::runs::core::tests::lean_model_traces_replay` feeds every
+committed trace to the real `core::step` and `core::reconcile` and compares
+each step, so `just check` fails when the Rust core no longer does what the
+model does. The traces: `happy-landing`, `crash-after-landing-before-ack`,
+`crash-after-push-before-ack` (a crash between an effect and its persisted
+acknowledgement, then the restart's reconcile and the acknowledgement fed
+again), `stale-fence-and-pane` (an older tenure epoch, an older pane
+generation, a newer fence before and after its adoption),
+`verify-failed-no-push` and `head-moved-reverify`. They are defined at the end
+of `TodoWorkflow.lean` (`Landing.traces`). Regenerate them after changing the
+model, and check that the committed ones are current, from the repository
+root:
+
+```sh
+lean --run docs/todo-workflow-model/TodoWorkflow.lean docs/todo-workflow-model/traces
+lean --run docs/todo-workflow-model/TodoWorkflow.lean --check docs/todo-workflow-model/traces
+```
+
+The second exits 1 naming each trace that differs. The hand-written traces
+under `tests/fixtures/todo-traces/` are replayed by `traces_replay` the same
+way.
 
 ## What it proves
 
@@ -39,8 +74,9 @@ Over any sequence of events, not just one step:
 - A question a worker asks is never lost: its number stays an open
   obligation, goes to the user, or is answered and acknowledged
   (`question_never_lost`).
-- At most one run holds the worker slot, from admission until its commit is
-  cherry-picked (`one_worker`).
+- At most one run holds the worker slot, from admission until its push is
+  acknowledged or the run ends (`one_worker`; `Run.busy` follows the core's
+  `slot_held`).
 - Obligation numbers stay fresh: a new one never reuses a number that is
   open, escalated or handled (`seqs_fresh`).
 - Neither origin's nor master's history is ever rewritten
@@ -93,7 +129,44 @@ For single steps:
 - The coordinator dispatches only from its own pane holding an unfrozen
   tenure, and stops when the queue is empty.
 
-Assumed, not proved: the content of the cherry-picked commit (herdr's verify
+The landing core (`Landing`), for one run, over any inputs from its review
+(`exec_inv`, from `Inv.init`) and for every single step:
+
+- The fence (tenure epoch, pane generation): an input from an older epoch, or
+  from an older pane generation in the same epoch, is rejected
+  (`stale_fence_rejected`, `older_epoch_rejected`, `older_pane_rejected`); a
+  newer fence is rejected until it adopts the run (`unadopted_fence_rejected`),
+  an adoption has no effect and fences out the fence it replaced
+  (`adopt_fences_out`, `fence_monotone`); every effect comes from an input
+  with the run's own fence (`effects_need_current_fence`).
+- The landing order: `cherry_pick` (the landing) is an effect only of a
+  `verified` acknowledgement of the integration commit, which it lands, with
+  nothing of the run on the branch yet (`land_needs_verified`,
+  `integrated_only_verified`); a commit on the branch was verified on the
+  integrated tree (`picked_was_verified`); a moved head drops the verified
+  commit and verifies again or stops (`head_moved_reverifies`); `push` is an
+  effect only after a verified commit landed, also when a crash runs it
+  again (`push_needs_verified`, `rerun_push_needs_verified`); a failed verify
+  waits with no push and nothing landed (`verify_failed_no_push`).
+- The slot: `release_slot` is an effect only of an acknowledged or skipped
+  push or of the abort that ends the run (`release_only_after_push_or_abort`);
+  the slot is freed only with that effect and never taken back
+  (`slot_freed_by_release`, `slot_never_retaken`); a free slot or a done run
+  means the push happened or was skipped, or the run aborted
+  (`slot_free_after_push_or_abort`, `done_after_push`).
+- Effect acknowledgements (an effect may succeed before its acknowledgement
+  persists): after a crash the reconcile acknowledges an effect it observes
+  done, never runs it again (`reconcile_acks_done`); it runs again only an
+  effect observed as not done, or the verify and the cleanup, and an install
+  or TODO edit not observed becomes a failure for the coordinator
+  (`reconcile_reruns_only_undone`); so the landing and the push never happen
+  twice (`no_second_landing`, `no_second_push`); the derived acknowledgement
+  is one of the pending effect and applies (`reconcile_ack_of_pending`,
+  `reconcile_ack_applies`); an acknowledgement fed again after it was
+  persisted is rejected, with any input id (`ack_applies_once`).
+
+Assumed, not proved: that the shell observes git correctly (`Observed`), that
+the verify and the cleanup are safe to repeat, the content of the cherry-picked commit (herdr's verify
 checks it), what the user does with an escalated question, and the composition of the parts (`Tenure`, `Repo`, `Git` and
 `Watch` are separate machines, so a frozen tenure stopping worker starts is
 not proved across them).
@@ -111,6 +184,7 @@ not proved across them).
 | `Repo`, `Disposition` | `src/workers/runs/`, the `--continue-self` item of `TODO.md` (not implemented yet) |
 | `Coordinator.decide` | the global `todo` skill (agent-kit), not herdr code |
 | `PerItem` | not implemented yet (the target design below; TODO items from 2026-10-23) |
+| `Landing.step`, `Landing.reconcile` | `src/workers/runs/core.rs` (`step`, `reconcile`), run by the shell in `src/workers/runs/landing.rs`; the fence is always `(0, 0)` there and nothing sends `adopt` (the tenure fence wiring, t-ic5rrxn3, is not implemented) |
 
 `Watch` is the question relay, not the supervisor: the supervisor of the
 global rules is supervision (`detect`, `Ledger`). Supervision also sweeps
@@ -123,7 +197,10 @@ check and auto-review.
 
 A commit that changes tenure, handoff, dispatch, verify, landing or a failed
 state updates the model and the diagram in the same commit, or says in its
-message why they are unaffected. Then update the commit and date above.
+message why they are unaffected. Then update the commit and date above. A
+change to `src/workers/runs/core.rs` updates `Landing` and regenerates the
+traces; `lean_model_traces_replay` fails when the core and the committed
+traces disagree, and `--check` when the traces and the model do.
 
 `todo-workflow.svg` is the diagram below, rendered with plain SVG text labels
 (so viewers without HTML-in-SVG show them). Re-render it whenever the
@@ -185,7 +262,13 @@ flowchart TD
     VF -->|"retry with a new task, n < 3"| W
     VU -->|abort| B
     VF -->|abort| B
-    V -->|verified| CP["cherry-pick onto master"]
+    V -->|verified| RV["review: approve (the owner's approve_landing in the home-directory repository)"]
+    RV --> VI{"verify the integrated tree: the commit picked onto master's head, outside master"}
+    VI -->|failed| VIF(["verify_failed: nothing landed, no push"])
+    VIF -->|"verify again"| VI
+    VIF -->|abort| B
+    VI -->|verified| CP["land: master moves to the verified commit only while its head is the verified parent"]
+    CP -->|"head moved, at most 3 times"| VI
     CP -->|fail| B
     CP -->|ok| I["install: just clean-install TODO.md"]
     I -->|fail| IF(["install_failed"])
@@ -198,7 +281,7 @@ flowchart TD
     E -->|ok| PU["push: only if origin is a prefix of master"]
     PU -->|fail| PF(["push_failed"])
     PF -->|retry-push| PU
-    PU -->|ok| DONE(["done"])
+    PU -->|"ok: release the slot, cleanup"| DONE(["done"])
     DONE -->|"--next"| NX(["next item's run started by the driver"])
     DONE -->|"--stop-reason"| ST(["stop: the user acknowledges"])
     DONE -->|"--continue-self"| BR(["between runs: nobody asked"])
@@ -290,9 +373,14 @@ sequenceDiagram
         C->>D: verify again
       else verified
         V-->>D: verified
-        D->>M: cherry-pick onto master (slot freed)
+        D->>V: verify the integrated tree (the commit picked onto master's head)
+        alt failed
+          V-->>D: verify_failed (nothing landed, no push)
+        else verified
+          D->>M: land it only while master's head is the verified parent (a moved head verifies again)
+        end
         D->>D: install (just clean-install), TODO edit
-        D->>M: push origin master
+        D->>M: push origin master (then the slot is released)
         alt origin is a prefix of master
           M-->>D: fast-forward pushed
           D-->>C: done
@@ -329,6 +417,36 @@ sequenceDiagram
     Note over SV: never answers, prompts, kills, restarts or marks work done
   end
   C-->>U: queue empty or every item waits on the user
+```
+
+## The landing core
+
+`Landing.step` (`src/workers/runs/core.rs`); every arrow is an input with the
+run's fence, every box's effect waits for its acknowledgement:
+
+```mermaid
+flowchart TD
+  F(["any input"]) -->|"older epoch, or older pane generation"| SF(["stale_fence: nothing changes, no effect"])
+  F -->|"newer fence, not adopt"| NA(["fence_not_adopted"])
+  F -->|"newer fence, adopt"| AD(["the run's fence becomes it; the old one is stale"])
+  F -->|"the run's fence"| R
+  R(["review: waiting"]) -->|"approve, or the owner's approve_landing"| VI["verify_integrated"]
+  VI -->|verified| CP["cherry_pick: land the verified commit (compare-and-swap)"]
+  VI -->|verify_failed| VF(["waiting: verify_failed"])
+  VF -->|verify| VI
+  CP -->|"head_moved (at most 3)"| VI
+  CP -->|picked| IN["install"]
+  IN -->|installed| TE["todo_edit"]
+  TE -->|edited| PU["push"]
+  PU -->|"push_acked or push_skipped"| RS["release_slot, cleanup"]
+  RS -->|cleaned_up| DN(["done"])
+  PU -->|"push_rejected, diverged"| BL(["blocked: only abort"])
+  VF -->|abort| RB["restore_branch"]
+  RB -->|branch_restored| AB(["aborted: release_slot"])
+  CR(["crash between an effect and its acknowledgement"]) -->|"reconcile from git"| RC{"observed done?"}
+  RC -->|yes| ACK(["feed the acknowledgement; fed again later it is rejected"])
+  RC -->|"no (or verify, cleanup)"| RR(["run the effect again"])
+  RC -->|"install, TODO edit not observed"| FL(["install_failed / todo_failed for the coordinator"])
 ```
 
 ## Target design: queue mode, one agent per item
