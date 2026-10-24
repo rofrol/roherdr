@@ -77,6 +77,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   session continues the same item and run (a new epoch, the pending
   questions and records kept, the old session fenced out of the landing).
 
+- [ ] The queue owns its environment and tenure itself, so no chat session [t-qez6y27w]
+  has to coordinate (the user, 2026-10-24: "you are still working in
+  coordinator mode, right? ask the models"; round 20261024-164636-3516,
+  sol, MiMo, DeepSeek, Argon agreeing: yes, this pane holds the tenure
+  c-bz36omvp and is the queue's owner pane, and in practice it also
+  reordered items, aborted and answered drafts and wrote items, which
+  duplicates the supervisor's role in the user's design). The queue keeps
+  the environment its checks, install and push need in a form that
+  survives a cold restart (today only the owner shell's memory) and holds
+  the repository's tenure while it is on; questions from its agents go to
+  the user's `?` list (with t-ecmzdigq). Then the chat session ends its
+  tenure and only talks with the user and records requests. Until this
+  lands the chat session stays owner and tenure holder, but does not
+  reorder, abort or answer the queue's technical drafts on its own; it
+  records the user's requests and asks the user (the queue design item
+  t-tjjsrhx6).
+
 - [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
   (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
   without it the trial's 35% criterion cannot be judged): `draft_task`
