@@ -3114,3 +3114,19 @@ user: "not ten items with Opus, then fifteen with Sonnet; only Opus": the
 trial and the agent run on Opus only; `--model` for Claude workers
 (t-b6of3yhr) and routing by class (t-iltryyob) are parked in
 TODO-deferred.md.
+
+## The default sidebar width of 36 and the chart row's fit (t-taxeg5ee, 2026-10-24)
+
+- Completes t-2wcx22ue. The user, 2026-10-23: "increase the default sidebar
+  width to 36", "36 is to be done together with what needed 34", and with a
+  screenshot: "add the indent back after all, the width goes up to 36".
+- Decided by the user: the over-pace form is `+2pp · 3.1pp over 01:04`
+  (d-flvke2bi); the sidebar toggle reserve (`SIDEBAR_TOGGLE_RESERVE`, 2
+  columns) stays only on the footer's last row, so the chart rows get 35
+  columns at 36 (d-gh4cvhnd; the first attempt stopped because every
+  footer row lost the reserve and the chart had 33).
+- Landed (run r-yvxqtrlu): default `sidebar_width` 36 (config, generated
+  comment, config reference); the chart rows indented by
+  `SHORT_WINDOW_COLUMN` again; a test derives the default-width usage area
+  from the config and the sidebar layout and checks both target forms fit.
+  A user-configured or saved sidebar width is unchanged.

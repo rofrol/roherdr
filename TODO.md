@@ -129,34 +129,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   remaining crash and race windows; tell the Lean session (herdr-67's
   successor) that the landing order is verify, then land.
 
-- [ ] Raise the default sidebar width to 36 columns (the user, 2026-10-23: [t-taxeg5ee]
-  "increase the default sidebar width to 36"). Found in review of
-  t-2wcx22ue (run r-qrmzbihv, commit 6dd671f90): at the default 32
-  columns the weekly chart's over-pace text (`+2pp · 3.1pp over at 01:04`
-  after the bars, 34 columns) does not fit and the target is dropped
-  whole; at 36 it fits. The default is `sidebar_width: 32` in
-  `src/config/model.rs:1432`, documented in the generated config comment
-  at `src/main.rs:252`; tests assert it at `src/config/model.rs:1920` and
-  `src/client/shell/tests/chrome_context.rs:317`. The maximum stays 44; a
-  width the user saved (session snapshot) or configured is kept.
-  The user, 2026-10-23: "36 is to be done together with what needed 34":
-  this completes t-2wcx22ue (the over-pace text it added), so it goes
-  right after the item in progress.
-  The user, 2026-10-23, with a screenshot of the chart at the left edge
-  (`····_·· -4pp · +6.6pp to 02:00`): "add the indent back after all, the
-  width goes up to 36". So this item also restores the chart rows' left
-  indent of `SHORT_WINDOW_COLUMN` (4) that t-2wcx22ue removed, both rows.
-  With the indent the under-pace row is 34 columns (fits at 36); the
-  over-pace row `+2pp · 3.1pp over at 01:04` is 38 (does not fit: the
-  target drops) — asked as a decision.
-  Decided by the user 2026-10-23 (d-flvke2bi): the over-pace form is
-  shortened to `+2pp · 3.1pp over 01:04` (35 columns with the indent).
-  Worker run r-yvxqtrlu stopped (WORKER-BLOCKED): at 36 the chart rows
-  get 33 columns (1 divider, 2 `SIDEBAR_TOGGLE_RESERVE`) and need 34/35.
-  Decided by the user 2026-10-24 (d-gh4cvhnd): the toggle reserve stays
-  only on the footer's last row, so the chart gets 35 columns at 36.
-  The blocked attempt's patch: the run's worker temp dir (w634).
-
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
   tagging? ask the models"; round 20261023-215046-6830, all four models: split
