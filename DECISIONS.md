@@ -3130,3 +3130,18 @@ TODO-deferred.md.
   `SHORT_WINDOW_COLUMN` again; a test derives the default-width usage area
   from the config and the sidebar layout and checks both target forms fit.
   A user-configured or saved sidebar width is unchanged.
+
+## The per-space TODO flow overlay (t-le4ejymr, 2026-10-24)
+
+- From the Lean model session (herdr-67), commit 001184e1b on
+  `feat/todo-flow`; decided by the user 2026-10-23 (d-arw6o6pv): land it
+  after the first slice of the transition core, through a todo run.
+- Landed (run r-lidljh5x): a `⋔` button at the end of a hovered space's
+  name line (hidden when the line has no free columns, checked at 36 and
+  18) and a "TODO flow" item in the space's right-click menu open an
+  overlay of that space's todo runs on the driver's steps, from the
+  snapshot (client only, no API change). The graph follows the landing
+  order of the transition core (verify on the integrated tree, then land,
+  install, TODO edit, push, cleanup; abort restores the branch); an
+  unknown step or status from a newer server shows a neutral `?` instead
+  of vanishing.
