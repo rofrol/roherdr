@@ -3280,3 +3280,21 @@ Kolejność landingu w modelu (najpierw verify na zintegrowanym drzewie, potem c
 Do zrobienia poza tą próbą:
 - Zaktualizowano diagramy mermaid w README, ale `todo-workflow.svg` nie jest wyrenderowany na nowo, bo w sandboksie nie było `mmdc`. Trzeba go przerenderować poleceniem z README.
 - Prawdziwe tenure epoch i pane generation jeszcze nie docierają do rdzenia: shell zawsze podaje fence `(0, 0)` i nigdy nie wysyła `adopt`. To zostaje na t-ic5rrxn3 i README mówi o tym wprost.
+
+## What each project costs: usage per space over time and per TODO item
+
+Landed by herdr's TODO queue: run r-3hdjreit, attempt 1, `feat(usage): persistent per-session usage ledger with per-space and per-window aggregates` (f26dae792018), approved by the server's review.
+
+Review note: Weryfikacja serwera przeszła: wszystkie zarejestrowane checki, ścieżki i czyste drzewo. Commit robi tylko część 1, zgodnie z decyzją d-yosljize.
+
+- **Ledger:** trwały, w SQLite. Kluczem jest (sesja, rodzaj, transkrypt, epoka, offset). Kursor zapisuje się w tej samej transakcji co wiersze. Przepisany plik dostaje nową epokę i nie liczy się drugi raz dzięki `response_key`.
+- **Data pokrycia:** `coverage_start` zapisuje się przy utworzeniu bazy i się nie zmienia.
+- **Kiedy zapisuje:** start serwera i live handoff, koniec tury, przejście w idle, raport sesji, wyjście agenta i śmierć panelu. Bez timera.
+- **API:** nowa metoda `usage.ledger` z polami opcjonalnymi. Artefakt schematu i `socket-api.mdx` są zaktualizowane, `PROTOCOL_VERSION` zostaje bez zmian.
+- **Testy:** są wszystkie przypadki, o które prosiło zadanie.
+
+Na liście kontrolnej nic nie znalazłem: nowa metoda nie zmienia istniejącego kontraktu, a przesunięcie strefy czasowej idzie przez `crate::platform`.
+
+Na później, poza zakresem tego zadania:
+1. Pierwsze odczytanie transkryptu sesji idzie w całości, synchronicznie, w pętli zdarzeń.
+2. Sesje headless workerów jeszcze się nie liczą. Tym zajmie się część 2.
