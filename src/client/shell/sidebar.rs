@@ -1988,7 +1988,9 @@ pub(in crate::client::shell) fn workspace_rows(
 /// notification history, the agents asking, the agents working, the
 /// bookmarks. They use the room right of `limit`; when it is short, whole
 /// buttons give way in a fixed order (bookmarks, then working agents, then
-/// the history), and the asking agents never do.
+/// the history), the one whose list is open only after them, and the asking
+/// agents last. [`HeaderLayout`] places them; the buttons are drawn exactly
+/// where it says, so the drawn buttons and their hit rects agree.
 fn render_header_indicators(
     buffer: &mut Buffer,
     area: Rect,
@@ -2000,7 +2002,8 @@ fn render_header_indicators(
     use super::notification_log::NotificationLogView as View;
     use HeaderIndicator as Indicator;
     let (working, asking) = state.agent_counts;
-    let label = |indicator: Indicator| match indicator {
+    let unread = state.notification_log_button.unwrap_or_default();
+    let labels = HEADER_ORDER.map(|indicator| match indicator {
         Indicator::History => state
             .notification_log_button
             .map(|unread| indicator.label(unread)),
@@ -2009,74 +2012,64 @@ fn render_header_indicators(
         Indicator::Bookmarks => {
             (state.bookmark_count > 0).then(|| indicator.label(state.bookmark_count))
         }
-    };
-    // Each button is its label with a cell on each side.
-    let mut shown: Vec<(Indicator, String)> = [
-        Indicator::History,
-        Indicator::Asking,
-        Indicator::Working,
-        Indicator::Bookmarks,
-    ]
-    .into_iter()
-    .filter_map(|indicator| label(indicator).map(|label| (indicator, label)))
-    .collect();
-    let room = area.right().saturating_sub(limit);
-    let needed = |shown: &[(Indicator, String)]| {
-        shown
-            .iter()
-            .map(|(_, label)| display_width(label) + 2)
-            .sum::<u16>()
-    };
-    for dropped in [Indicator::Bookmarks, Indicator::Working, Indicator::History] {
-        if needed(&shown) <= room {
-            break;
-        }
-        shown.retain(|(indicator, _)| *indicator != dropped);
-    }
-    let mut right = area.right();
-    for (indicator, label) in shown {
-        let width = display_width(&label);
-        if right < limit + width + 2 {
+    });
+    let widths = labels
+        .each_ref()
+        .map(|label| label.as_deref().map(header_button_width));
+    let open = state.open_list.map(|view| match view {
+        View::History => Indicator::History,
+        View::Asking => Indicator::Asking,
+        View::Working => Indicator::Working,
+        View::Bookmarks => Indicator::Bookmarks,
+    });
+    let layout = HeaderLayout::place(
+        widths,
+        limit,
+        area.right(),
+        open,
+        state.held_header,
+        state.pointer_on_header,
+    );
+    hits.space_header = Rect::new(area.x, area.y, area.width, 1);
+    hits.header_layout = layout;
+    // Whether leaving the header row would place them differently.
+    hits.header_held = layout != HeaderLayout::fresh(widths, limit, area.right(), open);
+    for indicator in HEADER_ORDER {
+        let index = indicator.index();
+        let (Some((x, width)), Some(label)) = (layout.slots[index], labels[index].as_deref())
+        else {
             continue;
-        }
-        let style = indicator.style(1, palette);
-        let (slot, view) = match indicator {
-            Indicator::History => {
-                hits.notification_log_button = render_notification_log_button(
-                    buffer,
-                    Rect::new(area.x, area.y, right.saturating_sub(area.x), 1),
-                    state.notification_log_button.unwrap_or_default(),
-                    state.open_list == Some(View::History),
-                    palette,
-                );
-                if hits.notification_log_button.width > 0 {
-                    right = hits.notification_log_button.x;
-                    hits.tooltips.push(super::tooltip::TooltipTarget {
-                        rect: hits.notification_log_button,
-                        id: format!("header-indicator:{}", indicator.name()),
-                        text: format!("{}{}", indicator.tooltip(), super::space_tabs::LEGEND_MENU),
-                        bg: None,
-                        starts_at_target: false,
-                        multiline: false,
-                    });
-                }
-                continue;
-            }
-            Indicator::Asking => (&mut hits.asking_list_button, View::Asking),
-            Indicator::Working => (&mut hits.working_list_button, View::Working),
-            Indicator::Bookmarks => (&mut hits.bookmarks_list_button, View::Bookmarks),
         };
-        let x = right - width - 1;
         // The pill, so the list opens under its left edge; an open list's
         // button is a filled pill, one cell wider on each side than its label.
-        let pill = Rect::new(x.saturating_sub(1), area.y, width + 2, 1);
-        let style = if state.open_list == Some(view) {
+        let pill = Rect::new(x, area.y, width, 1);
+        let style = indicator.style(
+            if indicator == Indicator::History {
+                unread
+            } else {
+                1
+            },
+            palette,
+        );
+        let style = if open == Some(indicator) {
             open_button_style(buffer, pill, style, palette)
         } else {
             style
         };
-        put_text(buffer, x, area.y, width, &label, style);
-        *slot = pill;
+        put_text(
+            buffer,
+            x.saturating_add(1),
+            area.y,
+            width.saturating_sub(2),
+            label,
+            style,
+        );
+        *match indicator {
+            Indicator::History => &mut hits.notification_log_button,
+            Indicator::Asking => &mut hits.asking_list_button,
+            Indicator::Working => &mut hits.working_list_button,
+            Indicator::Bookmarks => &mut hits.bookmarks_list_button,
+        } = pill;
         hits.tooltips.push(super::tooltip::TooltipTarget {
             rect: pill,
             id: format!("header-indicator:{}", indicator.name()),
@@ -2085,8 +2078,215 @@ fn render_header_indicators(
             starts_at_target: false,
             multiline: false,
         });
-        right = x.saturating_sub(1);
     }
+}
+
+/// The header's buttons right to left, as they stand from the sidebar's edge.
+const HEADER_ORDER: [HeaderIndicator; 4] = [
+    HeaderIndicator::History,
+    HeaderIndicator::Asking,
+    HeaderIndicator::Working,
+    HeaderIndicator::Bookmarks,
+];
+
+/// The cells a header button takes: its label with a cell on each side.
+fn header_button_width(label: &str) -> u16 {
+    display_width(label).saturating_add(2)
+}
+
+/// The order in which header buttons give way to a short header: the
+/// bookmarks, the working agents, the history, then the one whose list is
+/// open, and the asking agents only when nothing else is left.
+fn header_drop_order(open: Option<HeaderIndicator>) -> [HeaderIndicator; 4] {
+    use HeaderIndicator as Indicator;
+    let mut order = [Indicator::Asking; 4];
+    for (slot, indicator) in order.iter_mut().zip(
+        [Indicator::Bookmarks, Indicator::Working, Indicator::History]
+            .into_iter()
+            .filter(|indicator| Some(*indicator) != open)
+            .chain(open.filter(|open| *open != Indicator::Asking)),
+    ) {
+        *slot = indicator;
+    }
+    order
+}
+
+/// Where the header's buttons are: each shown button's pill as its x and
+/// width, indexed as [`HEADER_ORDER`], and the room they were placed in.
+/// The last drawn one is held while the pointer is over the header row, so
+/// a count that changes under the pointer cannot move or drop the button it
+/// is about to click, and the button of an open list keeps its x.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::client::shell) struct HeaderLayout {
+    limit: u16,
+    right: u16,
+    slots: [Option<(u16, u16)>; 4],
+}
+
+impl HeaderLayout {
+    /// Places the buttons of `widths` (none for a button with nothing to
+    /// show) between `limit` and `right`. With `held` placed in the same
+    /// room and the pointer at `pointer_column` of the header row, the held
+    /// buttons stay while each still fits its pill; when one outgrew it, the
+    /// button under the pointer keeps its x, else an open list's button
+    /// does. A new room (a resize) places them afresh.
+    pub(in crate::client::shell) fn place(
+        widths: [Option<u16>; 4],
+        limit: u16,
+        right: u16,
+        open: Option<HeaderIndicator>,
+        held: Option<Self>,
+        pointer_column: Option<u16>,
+    ) -> Self {
+        let held = held.filter(|held| held.limit == limit && held.right == right);
+        if pointer_column.is_some() {
+            if let Some(kept) = held.and_then(|held| held.kept(widths, open)) {
+                return kept;
+            }
+        }
+        let pin = |indicator: Option<HeaderIndicator>| {
+            let indicator = indicator?;
+            let (x, _) = held?.slots[indicator.index()]?;
+            Self::pinned(widths, limit, right, indicator, x)
+        };
+        let hovered = pointer_column.and_then(|column| held?.at(column));
+        pin(hovered)
+            .or_else(|| pin(open))
+            .unwrap_or_else(|| Self::fresh(widths, limit, right, open))
+    }
+
+    /// The button whose pill covers `column`.
+    fn at(&self, column: u16) -> Option<HeaderIndicator> {
+        HEADER_ORDER.into_iter().find(|indicator| {
+            self.slots[indicator.index()]
+                .is_some_and(|(x, width)| (x..x.saturating_add(width)).contains(&column))
+        })
+    }
+
+    /// The pill of `indicator`, as its x and width, when it is shown.
+    #[cfg(test)]
+    pub(in crate::client::shell) fn slot(&self, indicator: HeaderIndicator) -> Option<(u16, u16)> {
+        self.slots[indicator.index()]
+    }
+
+    /// This layout for `widths`, unless a button outgrew its pill or a
+    /// button that must show (the asking agents, an open list's) has none.
+    /// A button that has nothing to show leaves its place empty.
+    fn kept(&self, widths: [Option<u16>; 4], open: Option<HeaderIndicator>) -> Option<Self> {
+        let mut kept = *self;
+        for indicator in HEADER_ORDER {
+            let index = indicator.index();
+            match (self.slots[index], widths[index]) {
+                (Some((_, slot)), Some(width)) if width > slot => return None,
+                (Some(_), None) => kept.slots[index] = None,
+                (None, Some(_))
+                    if indicator == HeaderIndicator::Asking || Some(indicator) == open =>
+                {
+                    return None
+                }
+                _ => {}
+            }
+        }
+        Some(kept)
+    }
+
+    /// Packs the buttons from `right`, dropping them in
+    /// [`header_drop_order`] until the rest fit.
+    fn fresh(
+        widths: [Option<u16>; 4],
+        limit: u16,
+        right: u16,
+        open: Option<HeaderIndicator>,
+    ) -> Self {
+        let mut shown = widths;
+        let room = right.saturating_sub(limit);
+        for dropped in header_drop_order(open) {
+            if header_total(&shown) <= room {
+                break;
+            }
+            shown[dropped.index()] = None;
+        }
+        let mut layout = Self {
+            limit,
+            right,
+            slots: [None; 4],
+        };
+        let mut edge = right;
+        for (slot, width) in layout.slots.iter_mut().zip(shown) {
+            if let Some(width) = width {
+                edge = edge.saturating_sub(width);
+                *slot = Some((edge, width));
+            }
+        }
+        layout
+    }
+
+    /// `pin` stays at `x`; the buttons right of it pack from `right` and
+    /// the ones left of it from `x`, each side dropping in
+    /// [`header_drop_order`]. None when the pin does not fit or the asking
+    /// agents would have to give way.
+    fn pinned(
+        widths: [Option<u16>; 4],
+        limit: u16,
+        right: u16,
+        pin: HeaderIndicator,
+        x: u16,
+    ) -> Option<Self> {
+        let pin_index = pin.index();
+        let pin_width = widths[pin_index]?;
+        let pin_right = x.checked_add(pin_width).filter(|end| *end <= right)?;
+        if x < limit {
+            return None;
+        }
+        let mut shown = widths;
+        for (side, room) in [
+            (0..pin_index, right - pin_right),
+            (pin_index + 1..4, x - limit),
+        ] {
+            let fits = |shown: &[Option<u16>; 4]| header_total(&shown[side.clone()]) <= room;
+            for dropped in header_drop_order(Some(pin)) {
+                if fits(&shown) {
+                    break;
+                }
+                if dropped == pin || !side.contains(&dropped.index()) {
+                    continue;
+                }
+                if dropped == HeaderIndicator::Asking {
+                    return None;
+                }
+                shown[dropped.index()] = None;
+            }
+            if !fits(&shown) {
+                return None;
+            }
+        }
+        let mut layout = Self {
+            limit,
+            right,
+            slots: [None; 4],
+        };
+        let mut edge = right;
+        for (index, width) in shown.into_iter().enumerate() {
+            let Some(width) = width else {
+                continue;
+            };
+            if index == pin_index {
+                edge = x;
+            } else {
+                edge = edge.saturating_sub(width);
+            }
+            layout.slots[index] = Some((edge, width));
+        }
+        Some(layout)
+    }
+}
+
+/// The cells `widths` take side by side.
+fn header_total(widths: &[Option<u16>]) -> u16 {
+    widths
+        .iter()
+        .flatten()
+        .fold(0, |total, width| total.saturating_add(*width))
 }
 
 /// A button of the spaces header that counts something and opens its
@@ -2103,11 +2303,12 @@ pub(in crate::client::shell) enum HeaderIndicator {
 }
 
 impl HeaderIndicator {
-    /// The button's text for `count`.
+    /// The button's text for `count`; a count above 99 reads `99+`, so a
+    /// growing count widens a button by one cell at most once.
     pub(in crate::client::shell) fn label(self, count: usize) -> String {
-        let count = count.min(99);
+        let count = HeaderCount(count);
         match self {
-            Self::History if count == 0 => "✉".to_owned(),
+            Self::History if count.0 == 0 => "✉".to_owned(),
             Self::History => format!("✉{count}"),
             Self::Asking => format!("?{count}"),
             Self::Working => format!("{}{count}", crate::ui::motion::working_glyph()),
@@ -2140,6 +2341,16 @@ impl HeaderIndicator {
         }
     }
 
+    /// Its place in [`HEADER_ORDER`].
+    fn index(self) -> usize {
+        match self {
+            Self::History => 0,
+            Self::Asking => 1,
+            Self::Working => 2,
+            Self::Bookmarks => 3,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::History => "history",
@@ -2160,36 +2371,17 @@ impl HeaderIndicator {
     }
 }
 
-/// The notification history button at the right end of the spaces header:
-/// `✉` and the unread count, accent while there are unread ones.
-fn render_notification_log_button(
-    buffer: &mut Buffer,
-    area: Rect,
-    unread: usize,
-    open: bool,
-    palette: &Palette,
-) -> Rect {
-    let label = HeaderIndicator::History.label(unread);
-    let width = display_width(&label).saturating_add(1);
-    if area.width < width + 8 || area.height == 0 {
-        return Rect::default();
+/// A header button's count, `99+` above 99.
+struct HeaderCount(usize);
+
+impl std::fmt::Display for HeaderCount {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 > 99 {
+            formatter.write_str("99+")
+        } else {
+            write!(formatter, "{}", self.0)
+        }
     }
-    let rect = Rect::new(area.right().saturating_sub(width + 1), area.y, width + 1, 1);
-    let style = HeaderIndicator::History.style(unread, palette);
-    let style = if open {
-        open_button_style(buffer, rect, style, palette)
-    } else {
-        style
-    };
-    put_text(
-        buffer,
-        rect.x.saturating_add(1),
-        rect.y,
-        width,
-        &label,
-        style,
-    );
-    rect
 }
 
 /// Fills `pill` with a light accent tint (a sixth of the accent on light
@@ -2681,4 +2873,136 @@ fn focus_depth(
         depth += usize::from(line.height(squares_width));
     }
     0
+}
+
+#[cfg(test)]
+mod header_layout_tests {
+    use super::{HeaderIndicator as Indicator, HeaderLayout};
+
+    /// `★2 ◐3 ?10 ✉3`, indexed right to left: 4 + 5 + 4 + 4 cells.
+    const WIDTHS: [Option<u16>; 4] = [Some(4), Some(5), Some(4), Some(4)];
+    const NEEDED: u16 = 17;
+    const RIGHT: u16 = 40;
+
+    fn place(
+        widths: [Option<u16>; 4],
+        room: u16,
+        open: Option<Indicator>,
+        held: Option<HeaderLayout>,
+        pointer: Option<u16>,
+    ) -> HeaderLayout {
+        HeaderLayout::place(widths, RIGHT - room, RIGHT, open, held, pointer)
+    }
+
+    fn assert_inside_and_apart(layout: &HeaderLayout, room: u16) {
+        let mut slots = layout.slots.iter().flatten().copied().collect::<Vec<_>>();
+        slots.sort_unstable();
+        for (x, width) in &slots {
+            assert!(*x >= RIGHT - room && x + width <= RIGHT, "{layout:?}");
+        }
+        for pair in slots.windows(2) {
+            assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn the_boundary_widths_drop_the_bookmarks_first_unless_their_list_is_open() {
+        for room in [NEEDED - 1, NEEDED, NEEDED + 1] {
+            for open in [None, Some(Indicator::Bookmarks), Some(Indicator::History)] {
+                let layout = place(WIDTHS, room, open, None, None);
+                assert_inside_and_apart(&layout, room);
+                let shown = |indicator| layout.slot(indicator).is_some();
+                assert!(shown(Indicator::Asking) && shown(Indicator::History));
+                if room >= NEEDED {
+                    assert!(shown(Indicator::Working) && shown(Indicator::Bookmarks));
+                    assert_eq!(layout.slot(Indicator::Bookmarks), Some((RIGHT - NEEDED, 4)));
+                } else if open == Some(Indicator::Bookmarks) {
+                    // The open list's button stays; the working count goes.
+                    assert!(shown(Indicator::Bookmarks) && !shown(Indicator::Working));
+                } else {
+                    assert!(!shown(Indicator::Bookmarks) && shown(Indicator::Working));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asking_is_never_dropped() {
+        for open in [
+            None,
+            Some(Indicator::Bookmarks),
+            Some(Indicator::History),
+            Some(Indicator::Working),
+        ] {
+            let layout = place(WIDTHS, 5, open, None, None);
+            assert_eq!(
+                layout.slot(Indicator::Asking),
+                Some((RIGHT - 5, 5)),
+                "{open:?}"
+            );
+            assert_eq!(layout.slots.iter().flatten().count(), 1, "{open:?}");
+        }
+    }
+
+    #[test]
+    fn a_hovered_button_keeps_its_x_while_a_count_grows() {
+        let held = place(WIDTHS, NEEDED, None, None, None);
+        let (star, _) = held.slot(Indicator::Bookmarks).expect("bookmarks");
+        let grown = [Some(4), Some(6), Some(4), Some(4)];
+        // Not hovered: the wider count drops the bookmarks.
+        let fresh = place(grown, NEEDED, None, Some(held), None);
+        assert_eq!(fresh.slot(Indicator::Bookmarks), None);
+        // Hovered: the bookmarks keep their place; the working count goes.
+        let kept = place(grown, NEEDED, None, Some(held), Some(star + 1));
+        assert_eq!(kept.slot(Indicator::Bookmarks), Some((star, 4)));
+        assert_eq!(kept.slot(Indicator::Working), None);
+        assert!(kept.slot(Indicator::Asking).is_some());
+        assert_inside_and_apart(&kept, NEEDED);
+        // A count that shrinks keeps every button where it was.
+        let shrunk = [Some(4), Some(4), Some(4), Some(4)];
+        assert_eq!(
+            place(shrunk, NEEDED, None, Some(held), Some(star + 1)),
+            held
+        );
+    }
+
+    #[test]
+    fn an_open_lists_button_keeps_its_x_after_the_pointer_left() {
+        let open = Some(Indicator::Bookmarks);
+        let held = place(WIDTHS, NEEDED, open, None, None);
+        let grown = [Some(4), Some(6), Some(4), Some(4)];
+        let layout = place(grown, NEEDED, open, Some(held), None);
+        assert_eq!(
+            layout.slot(Indicator::Bookmarks),
+            held.slot(Indicator::Bookmarks)
+        );
+        assert_inside_and_apart(&layout, NEEDED);
+    }
+
+    #[test]
+    fn a_resize_places_the_buttons_afresh() {
+        let held = place(WIDTHS, NEEDED, None, None, None);
+        let (star, _) = held.slot(Indicator::Bookmarks).expect("bookmarks");
+        let layout = HeaderLayout::place(
+            WIDTHS,
+            RIGHT + 1 - NEEDED,
+            RIGHT + 1,
+            None,
+            Some(held),
+            Some(star + 1),
+        );
+        assert_eq!(
+            layout.slot(Indicator::Bookmarks),
+            Some((RIGHT + 1 - NEEDED, 4))
+        );
+    }
+
+    #[test]
+    fn counts_above_99_read_99_plus() {
+        assert_eq!(Indicator::Asking.label(99), "?99");
+        assert_eq!(Indicator::Asking.label(100), "?99+");
+        assert_eq!(Indicator::Bookmarks.label(1000), "★99+");
+        assert_eq!(Indicator::History.label(0), "✉");
+        assert_eq!(Indicator::History.label(250), "✉99+");
+    }
 }

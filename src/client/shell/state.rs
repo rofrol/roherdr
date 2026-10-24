@@ -203,6 +203,14 @@ pub(super) struct ShellHitMap {
     pub(super) asking_list_button: Rect,
     /// The `★` button that lists the bookmarked tabs.
     pub(super) bookmarks_list_button: Rect,
+    /// The spaces header's row: the pointer over it holds the header buttons.
+    pub(super) space_header: Rect,
+    /// Where the header's buttons were drawn, taken into
+    /// `held_header_layout` after each frame.
+    pub(super) header_layout: super::sidebar::HeaderLayout,
+    /// The header's buttons were drawn where the pointer held them, not
+    /// where they would go now.
+    pub(super) header_held: bool,
     /// The items of a header list row's menu, open over the list.
     pub(super) list_menu_rows: Vec<(Rect, usize)>,
     /// The rows of the image list.
@@ -1497,6 +1505,11 @@ pub(crate) struct ClientShellState {
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
     pub(super) held_space_order: Vec<String>,
+    /// The pointer's column while it is over the spaces header row.
+    pub(super) pointer_on_header: Option<u16>,
+    /// The header's buttons as last drawn, held while the pointer is over
+    /// the header row or one of their lists is open.
+    pub(super) held_header_layout: super::sidebar::HeaderLayout,
     /// What the last `⤒` click moved, to put it back.
     pub(super) space_to_top_undo: Option<super::space_sort::SpaceToTopUndo>,
     /// When the last image attached to each pane was taken.
@@ -1736,6 +1749,8 @@ impl ClientShellState {
             focus_history: HashMap::new(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
+            pointer_on_header: None,
+            held_header_layout: Default::default(),
             workspace_scroll: 0,
             workspace_scroll_anchor: None,
             space_to_top_undo: None,
@@ -1930,6 +1945,13 @@ impl ClientShellState {
             Some(held) => super::space_sort::held_entries(snapshot, sorted, held),
             None => sorted,
         }
+    }
+
+    /// The header buttons' layout the next frame starts from: held while
+    /// the pointer is over the header row or one of their lists is open.
+    pub(super) fn held_header(&self) -> Option<super::sidebar::HeaderLayout> {
+        (self.pointer_on_header.is_some() || self.open_notification_list().is_some())
+            .then_some(self.held_header_layout)
     }
 
     /// The order a sorted list holds while the pointer is over it.

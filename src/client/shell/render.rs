@@ -252,6 +252,12 @@ pub(super) struct ShellRenderState<'a> {
     /// While the pointer is over a sorted list: its spaces' order as last
     /// drawn, kept until the pointer leaves.
     pub(super) held_space_order: Option<&'a [String]>,
+    /// The header buttons as last drawn, while the pointer is over the
+    /// header row or one of their lists is open.
+    pub(super) held_header: Option<super::sidebar::HeaderLayout>,
+    /// The pointer's column while it is over the header row: the held
+    /// buttons then stay as they are, not only an open list's.
+    pub(super) pointer_on_header: Option<u16>,
     /// The space whose `⤒` would put its last move back.
     pub(super) space_to_top_undo: Option<&'a str>,
     pub(super) workspace_scroll: &'a mut usize,

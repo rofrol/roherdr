@@ -92,6 +92,8 @@ impl ClientShellState {
                 && !self.space_sort.allows_drag()
                 && !self.held_space_order.is_empty())
             .then_some(self.held_space_order.as_slice()),
+            held_header: self.held_header(),
+            pointer_on_header: self.pointer_on_header,
             held_squares: if self.pointer_over_spaces {
                 &self.held_squares
             } else {
@@ -382,6 +384,8 @@ impl ClientShellState {
                     && !self.space_sort.allows_drag()
                     && !self.held_space_order.is_empty())
                 .then_some(self.held_space_order.as_slice()),
+                held_header: self.held_header(),
+                pointer_on_header: self.pointer_on_header,
                 held_squares: if self.pointer_over_spaces {
                     &self.held_squares
                 } else {
@@ -441,6 +445,7 @@ impl ClientShellState {
         // The next frame holds this order while the pointer is over the list.
         self.held_squares = std::mem::take(&mut self.hits.space_tab_square_order);
         self.held_space_order = std::mem::take(&mut self.hits.space_order);
+        self.held_header_layout = self.hits.header_layout;
         self.hits.panes = surface
             .panes
             .iter()

@@ -1207,6 +1207,13 @@ impl ClientShellState {
             // Leaving lets closed jobs' blank slots go.
             outcome.repaint |= !self.hits.space_tab_gone.is_empty();
         }
+        let on_header = (!self.sidebar_collapsed
+            && super::contains(self.hits.space_header, (mouse.column, mouse.row)))
+        .then_some(mouse.column);
+        // Leaving places the held buttons afresh.
+        outcome.repaint |=
+            on_header.is_none() && self.pointer_on_header.is_some() && self.hits.header_held;
+        self.pointer_on_header = on_header;
         self.update_link_hover(mouse, outcome);
         self.update_workspace_hover(mouse, outcome);
         self.update_tooltip(mouse, outcome);

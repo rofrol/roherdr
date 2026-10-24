@@ -6625,3 +6625,183 @@ fn a_collapsed_worktree_parent_shows_the_focus_inside_and_only_its_own_git_statu
     );
     assert_ne!(frame_cell(&frame, toggle.x, toggle.y).bg, accent);
 }
+
+#[test]
+fn a_hovered_or_clicked_bookmarks_button_keeps_its_place_while_a_count_grows() {
+    use super::super::notification_log::NotificationLogView;
+    use crate::api::schema::AgentStatus::Working;
+    let with_asking = |state: &mut ClientShellState, asking: usize| {
+        let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+        projected.agents = (0..3)
+            .map(|i| header_agent(&format!("w{i}"), Working, false, "work"))
+            .chain((0..asking).map(|i| header_agent(&format!("a{i}"), Working, true, "ask")))
+            .collect();
+        projected.tabs[0].bookmarked = true;
+        projected.workspaces[0].bookmarked = true;
+        state.set_snapshot(Box::new(projected));
+    };
+    let move_to = |state: &mut ClientShellState, (column, row): (u16, u16)| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    };
+    let mut state = state_with_tabs(true);
+    for tab in ["tab_7", "tab_8", "tab_9"] {
+        state.notification_log_received(Some(tab));
+    }
+    with_asking(&mut state, 9);
+    // The narrowest sidebar that shows `★2 ◐3 ?9 ✉3`.
+    let needed = (26..60)
+        .find(|width| {
+            state.sidebar_width = *width;
+            state.compose(140, 30).unwrap();
+            state.hits.bookmarks_list_button.width > 0
+        })
+        .expect("a width that shows the bookmarks");
+    let star = state.hits.bookmarks_list_button;
+    let header = |state: &mut ClientShellState| {
+        let frame = state.compose(140, 30).unwrap();
+        frame_rows(&frame)[0].clone()
+    };
+
+    // Hovered, the button stays while the asking count gains a digit.
+    move_to(&mut state, (star.x + 1, star.y));
+    with_asking(&mut state, 10);
+    let text = header(&mut state);
+    assert_eq!(state.hits.bookmarks_list_button, star, "{text:?}");
+    assert!(text.contains("★2") && text.contains("?10"), "{text:?}");
+    assert_eq!(state.hits.asking_list_button.width, 5, "{text:?}");
+
+    // Clicked, its list opens under it and the button stays, also once the
+    // pointer goes down into the list.
+    left_click(&mut state, (star.x + 1, star.y));
+    let text = header(&mut state);
+    assert_eq!(
+        state.open_notification_list(),
+        Some(NotificationLogView::Bookmarks)
+    );
+    assert_eq!(state.hits.bookmarks_list_button, star, "{text:?}");
+    move_to(&mut state, (star.x + 1, star.y + 2));
+    let text = header(&mut state);
+    assert_eq!(state.hits.bookmarks_list_button, star, "{text:?}");
+
+    // A second click on the same cell closes the list.
+    move_to(&mut state, (star.x + 1, star.y));
+    left_click(&mut state, (star.x + 1, star.y));
+    assert_eq!(state.open_notification_list(), None);
+    header(&mut state);
+    assert_eq!(state.hits.bookmarks_list_button, star);
+
+    // Once the pointer leaves the header, the buttons are placed afresh:
+    // the wider count leaves no room for the bookmarks.
+    move_to(&mut state, (star.x + 1, star.y + 2));
+    let text = header(&mut state);
+    assert_eq!(state.hits.bookmarks_list_button.width, 0, "{text:?}");
+    assert!(state.hits.asking_list_button.width > 0, "{text:?}");
+    assert_eq!(state.sidebar_width, needed);
+}
+
+#[test]
+fn the_header_boundary_widths_with_and_without_an_open_list() {
+    use super::super::notification_log::NotificationLogView;
+    use crate::api::schema::AgentStatus::Working;
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = (0..3)
+        .map(|i| header_agent(&format!("w{i}"), Working, false, "work"))
+        .chain((0..10).map(|i| header_agent(&format!("a{i}"), Working, true, "ask")))
+        .collect();
+    projected.tabs[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    let needed = (26..60)
+        .find(|width| {
+            state.sidebar_width = *width;
+            state.compose(140, 30).unwrap();
+            state.hits.bookmarks_list_button.width > 0
+        })
+        .expect("a width that shows the bookmarks");
+    for width in [needed - 1, needed, needed + 1] {
+        for open in [
+            None,
+            Some(NotificationLogView::Bookmarks),
+            Some(NotificationLogView::Asking),
+        ] {
+            state.overlay = None;
+            state.sidebar_width = width;
+            if let Some(view) = open {
+                let mut outcome = ClientShellInput::default();
+                state.toggle_notification_view(view, &mut outcome);
+            }
+            let frame = state.compose(140, 30).unwrap();
+            let header = frame_rows(&frame)[0].clone();
+            let hits = &state.hits;
+            let shown = |rect: Rect| rect.width > 0;
+            assert!(
+                shown(hits.asking_list_button),
+                "{width} {open:?}: {header:?}"
+            );
+            let bookmarks = shown(hits.bookmarks_list_button);
+            let working = shown(hits.working_list_button);
+            if width >= needed || open == Some(NotificationLogView::Bookmarks) {
+                assert!(bookmarks, "{width} {open:?}: {header:?}");
+            } else {
+                assert!(!bookmarks && working, "{width} {open:?}: {header:?}");
+            }
+            // An open bookmarks list at the short width costs the working
+            // count instead.
+            assert_eq!(
+                working,
+                width >= needed || open != Some(NotificationLogView::Bookmarks),
+                "{width} {open:?}: {header:?}"
+            );
+            // Every hit rect is where its label is drawn, and none overlap.
+            let rects = [
+                (hits.notification_log_button, "✉"),
+                (hits.asking_list_button, "?"),
+                (hits.working_list_button, ""),
+                (hits.bookmarks_list_button, "★"),
+            ];
+            for (rect, glyph) in rects {
+                if rect.width == 0 || glyph.is_empty() {
+                    continue;
+                }
+                let cell =
+                    &frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 1];
+                assert_eq!(cell.symbol, glyph, "{width} {open:?}: {header:?}");
+            }
+            for (index, (a, _)) in rects.iter().enumerate() {
+                for (b, _) in &rects[index + 1..] {
+                    assert!(
+                        a.width == 0 || b.width == 0 || a.intersection(*b).is_empty(),
+                        "{width} {open:?}: {a:?} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn header_counts_above_99_read_99_plus() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = (0..120)
+        .map(|i| {
+            header_agent(
+                &format!("a{i}"),
+                crate::api::schema::AgentStatus::Working,
+                true,
+                "ask",
+            )
+        })
+        .collect();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(140, 30).unwrap();
+    let header = frame_rows(&frame)[0].clone();
+    assert!(header.contains("?99+"), "{header:?}");
+    assert_eq!(state.hits.asking_list_button.width, 6, "{header:?}");
+}
