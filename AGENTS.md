@@ -653,7 +653,7 @@ action (opening a dropdown). A background `notification.list` fetch broke
 ### Flaky tests
 
 A test that needs a longer timeout is a test with an asynchronous bug (see Rule 10
-in `~/personal_projects/agents.md/AGENTS.md`): do not raise the wait. Reproduce it
+in `~/personal_projects/agent-kit/AGENTS.md`): do not raise the wait. Reproduce it
 first with a stress loop while other processes keep the machine busy:
 
 ```bash
