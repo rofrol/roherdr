@@ -151,6 +151,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   target drops) — asked as a decision.
   Decided by the user 2026-10-23 (d-flvke2bi): the over-pace form is
   shortened to `+2pp · 3.1pp over 01:04` (35 columns with the indent).
+  Worker run r-yvxqtrlu stopped (WORKER-BLOCKED): at 36 the chart rows
+  get 33 columns (1 divider, 2 `SIDEBAR_TOGGLE_RESERVE`) and need 34/35.
+  Decided by the user 2026-10-24 (d-gh4cvhnd): the toggle reserve stays
+  only on the footer's last row, so the chart gets 35 columns at 36.
+  The blocked attempt's patch: the run's worker temp dir (w634).
 
 - [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
   (the user, 2026-10-23: "yes, introduce the changes; after the turn
