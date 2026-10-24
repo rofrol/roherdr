@@ -3708,6 +3708,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   share are known there). Keep the tooltip's hit rect and the row as they
   are; update the tooltip tests.
 
+- [ ] A pane's output shows through a sidebar tooltip (the user, 2026-10-24, [t-yqrng7aw]
+  with a screenshot: "Imaging shows through the tooltip"). The usage
+  footer's pace tooltip spans from the sidebar into the agent pane; its
+  last line read `resets Thu 29 Oct 01:00 * Imagining… : Claude usage
+  endpoint`: the pane's live status line (Claude Code's `* Imagining…`
+  spinner) was drawn over the tooltip's cells in the middle of the line.
+  So a pane update repaints cells a tooltip covers. Find which path draws
+  pane cells after or without the tooltip overlay (incremental pane
+  damage, a retained frame, the order of overlays in composition), fix it
+  so overlays always win over pane content in every frame, and add a test
+  that renders a tooltip over a pane, then a pane update under it, and
+  checks the tooltip's cells are unchanged. Mind the render hot-path rules
+  (AGENTS.md "Multiplicative performance paths").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
