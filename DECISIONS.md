@@ -3193,3 +3193,32 @@ TODO-deferred.md.
   `--workers-only` and the `items_landed` / `*_cost_per_landed_item`
   outputs, and says the baseline numbers were measured by the earlier
   version (journals of every repository, per done run). Run r-h7x2bhzs.
+
+## Folding subagents into one loop: what it means for herdr (2026-10-24)
+
+- The user, 2026-10-24: "to the TODO, analyse with the models" the post
+  https://x.com/Xudong07452910/status/2113800139005460534, summarising
+  Anthropic's "Building agents: When to fold subagents into your main
+  agent loop"
+  (https://claude.com/resources/articles/building-agents-when-to-fold-subagents-into-your-main-agent-loop),
+  and the reply https://x.com/XINXUANX/status/2113827263204741242 (folding
+  saves the cost of context lost between agents; the one benefit of a
+  split is independent verification, "no evidence, not done", which must
+  stay separate).
+- Round 20261024-133201-ba50 (sol, MiMo, DeepSeek, Argon): the article
+  supports the queue mode (the coordinator was a planner/router whose
+  handoffs cost $205 vs $155 of workers per 40 landings, 415K cache-read
+  tokens per message, 22% of worker tokens before the first edit) and the
+  deterministic gate ("validation gates move into tools"); separate
+  contexts stay for independent black-box verification (the review gate),
+  truly parallel work, and one fresh context per item. Cautions: folding
+  broke a passing step in one run out of two in the article, so a cost
+  criterion alone is not enough; `draft_task` and `review_run` may
+  recreate the split (Argon: let the item's agent plan itself and call
+  the review gate as a tool); four reviewers are themselves a multi-agent
+  design whose marginal value must be measured; changing the coordinator
+  and the review gate together confounds the trial (sol, DeepSeek, Argon).
+  Do not copy: org-chart agents, rubric-graded hill climbing (herdr's
+  ground truth is the registered checks and rework), one loop over many
+  items. Follow-ups: the Proposed item on evals and budgets, the
+  "Needs a decision" question on the trial's confound.

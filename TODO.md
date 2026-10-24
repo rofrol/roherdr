@@ -3777,11 +3777,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
   run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
 
-- [ ] Analyse with the models what the post [t-6umi4jgp]
-  https://x.com/Xudong07452910/status/2113800139005460534 means for herdr
-  (the user, 2026-10-24: "to the TODO, analyse with the models"). Round
-  pending.
-
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -4327,6 +4322,17 @@ Items agents add. Not approved until the user moves them up.
   the trial (runs refer to items). One reviewed change per file, the
   global rules through the dotfiles repository's own process.
 
+- [ ] Evals and budgets for the queue (round 20261024-133201-ba50, after [t-i7zqeybf]
+  Anthropic's "when to fold subagents" article; all four models): a
+  golden set of about 10 past landed items, replayed from their base
+  commit before and after each pipeline change, each run twice (the
+  article's fold broke a passing step in one run out of two); the
+  criterion "no golden item that passed now fails" next to cost; per-item
+  turn and cost budgets in the driver whose exhaustion escalates; record
+  whether the required steps ran (checks, escalations), not only the
+  final diff. Not rubric-graded hill climbing: the ground truth is the
+  registered checks and rework.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -4374,6 +4380,10 @@ user needs to decide or do.
   (t-ic5rrxn3) remain; the verify on a synthetic integration commit is a
   scope refinement to record (MiMo). Kept open; its remainder is those
   Proposed items.
+
+- [ ] [t-x2su445n] The queue trial changes two things at once (no coordinator, and the model-review gate): measure them apart?
+  Options: Run 10 items in queue mode without the gate first, then the gate (Recommended) | Keep the decided order (gate first, 20 items from its landing) and accept the confound | Replay a golden set under each configuration instead of live items
+  Checked: round 20261024-133201-ba50 (sol, DeepSeek, Argon raised it; the article: "change one thing at a time"); the user decided 2026-10-24 (d-a2fjdzhr) that the gate goes first and the trial counts from its landing.
 
 ### Needs you to act or watch
 
