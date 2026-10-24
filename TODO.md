@@ -3729,6 +3729,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   raw prompts and answers, rejected findings, ratings and costs;
   committed: code, the TODO note and DECISIONS.md entries for lasting
   decisions, citing round ids.
+  The user, 2026-10-24: "with this queue now, there must also be Lean code
+  and two kinds of diagrams in Mermaid; ask the models". Round
+  20261024-130041-33dc (sol, MiMo, DeepSeek, Argon): in the same commit as
+  the gate (the README rule; DeepSeek would do the model first as its own
+  item), `docs/todo-workflow-model/` gets: a `stateDiagram-v2` of one
+  item's run (draft, usage gate, pre-task consult with each model
+  answered or missing, worker, checks, post-implementation review,
+  dispositions, the blocked-review edge back to the worker with the
+  accepted findings, a changed commit voiding the review, escalation as a
+  blocking state, landing) and a `sequenceDiagram` of the actors (queue
+  server, driver, the four models, worker store, worker, coordinator,
+  user), both rendered to SVG as the README says; and `TodoWorkflow.lean`
+  gains the consult, review and escalation phases, per-model outcomes,
+  findings, dispositions and the reviewed commit, with theorems: landing
+  implies every finding of the reviewed commit has a disposition and the
+  accepted ones are resolved; a missing model never counts as an
+  approval; a new commit voids the review; the queue runs at most one
+  item; an unanswered escalation stops the queue and the worker.
 
 ## Proposed
 
