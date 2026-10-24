@@ -153,18 +153,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   approval wait has no landing state, so it takes the old path); MiMo timed
   out. Remaining of this item: the tenure fence (t-ic5rrxn3) and the crate.
 
-- [ ] Record every worker run's model, usage and outcome against its item [t-2tvx7res]
-  (the user, 2026-10-23: "yes, introduce the changes; after the turn
-  tagging? ask the models"; round 20261023-215046-6830, all four models: split
-  t-j2ayjqdl, this half gates the worker routing, turn kinds gate nothing).
-  Per worker run: run id, item id, the model that ran, input, cache-write,
-  cache-read and output tokens, cost, verify outcome, and whether it was a
-  first attempt or an escalation after a failed verify; pi workers
-  included (they ran with `--no-session` and recorded nothing); an exact
-  count of items per window for the trial's denominator. Exit:
-  `docs/todo-workflow-model/measure.py` reads these records instead of
-  journal scans, and one item's worker cost reconciles with them.
-
 - [ ] Trial queue mode with one Opus agent per item, and fill [t-ftnvhl7h]
   in the cost comparison (the user, 2026-10-23: "there will be only one
   agent, no workers", "save the table of estimates in the repo, then

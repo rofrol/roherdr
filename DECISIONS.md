@@ -3145,3 +3145,28 @@ TODO-deferred.md.
   install, TODO edit, push, cleanup; abort restores the branch); an
   unknown step or status from a newer server shows a neutral `?` instead
   of vanishing.
+
+## Worker run records: model, usage, outcome per item (t-2tvx7res, 2026-10-24)
+
+- The user, 2026-10-23: "yes, introduce the changes; after the turn
+  tagging? ask the models"; round 20261023-215046-6830 split t-j2ayjqdl:
+  this worker half first (it gates the worker routing), the coordinator's
+  turn kinds after.
+- Landed (run r-o6hgvr6b): the worker store records per worker its agent,
+  the model that ran, usage per model (input, output, cache read and
+  write) and cost, at each result or reply (a migration with a one-time
+  backfill from the stored result bodies; unknown is null, never 0).
+  Claude's `modelUsage` and `total_cost_usd` are cumulative over the
+  session, so the latest result replaces the previous (the old code summed
+  them); pi's per-reply `usage` (`input`, `output`, `cacheRead`,
+  `cacheWrite`, `cost.total`) is now kept by the RPC adapter and summed;
+  pi-anthropic's cost stays null (its proxy prices the model at zero, and
+  `credit_accounting` covers a whole `todo run`). New API method
+  `worker.run_records` and `herdr worker records [--item] [--repo]
+  [--since] [--until]`: the todo run, attempt, attempt kind (`first`,
+  `retry_after_verify`, `retry_after_review`), the driver's verdict, and
+  `items_landed` per window from the runs `done` with a landing.
+  `measure.py` reads these records; a Rust test reconciles one item's
+  worker cost with them. `measure.py`'s `todo_runs_done` and
+  `*_per_done_run` outputs became `items_landed` and
+  `*_cost_per_landed_item`.
