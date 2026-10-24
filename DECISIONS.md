@@ -3222,3 +3222,10 @@ TODO-deferred.md.
   ground truth is the registered checks and rework), one loop over many
   items. Follow-ups: the Proposed item on evals and budgets, the
   "Needs a decision" question on the trial's confound.
+- Another reply, https://x.com/Ockentap/status/2113906190115815774: a
+  cheap main loop with the expensive reasoning in a subagent that ends
+  with its task works; what breaks is a subagent needing context the main
+  loop already dropped. For herdr that is the case for a frozen task
+  packet built by code (the review gate item) and for the cross-item
+  context check (t-ctxfxkwf); its cron watchers are not copied (Rule 10:
+  no timers over our own events).
