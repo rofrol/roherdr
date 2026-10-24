@@ -4203,6 +4203,29 @@ Items agents add. Not approved until the user moves them up.
   announced, or restore it when the commit fails; a test with a hook
   failing the commit.
 
+- [ ] The driver runs the model review of an implementation itself, before [t-4tpfl4if]
+  landing (the user, 2026-10-24: "shouldn't the consultations before a
+  task and the evaluation of the implementation by the models be run
+  deterministically by the supervisor? ask the models"). Round
+  20261024-125222-f08b (sol, MiMo, DeepSeek, Argon): yes for the
+  post-implementation review (all four), as a `herdr todo run` step
+  between verify and landing; the pre-task consult mechanically triggered
+  by item labels or risk paths (sol, MiMo, DeepSeek; Argon would keep it
+  with the coordinator). Deterministic: the trigger (a risk predicate:
+  the landing driver, the TODO writer, install/push, git and store state,
+  check definitions, protocol/API; or an item label; not diff size
+  alone), the brief built by code (the item, the task, the full diff,
+  the touched functions in full, the checks' output, earlier findings),
+  dispatch to the consult set, a findings ledger bound to the commit, and
+  a gate: every finding accepted (with a fix or evidence) or dismissed
+  with a file:line reason before landing, a changed commit voids the
+  dispositions; a model that fails is recorded as missing, never as an
+  approval. The judgment (is a finding real) stays with the coordinator
+  or the user. Measure: confirmed findings per round, escaped defects
+  (reverts and fix commits on reviewed items), cost per round. Today's
+  evidence: the slice-2 review rounds found an unsafe reset and an
+  overwritten TODO edit after the worker reported done.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
