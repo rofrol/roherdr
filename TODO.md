@@ -11,6 +11,19 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Fix the race in `a_landing_approval_after_the_branch_moved_is_reviewed_again` [t-bwoecbyw]
+  (follow-up of t-ydd2vlwe slice 3, commit dcf582edd). It failed the
+  install of run r-o6hgvr6b (t-2tvx7res) at `src/workers/tests.rs:6479`,
+  `assert!(!fixture.supervisor.run_lock_path(run_id).exists())`; alone it
+  passes 30/30 (job 20261024-113934-ed0f), under 12 `yes` loads 3 of 40
+  fail (job 20261024-114314-b437). Find what releases the run lock after
+  the review the moved branch raises, and whether the test asserts before
+  a positive event or the code releases it late or not at all; fix the
+  cause (Rule 10: wait for the event that releases it, never a sleep or
+  retry), with the interleaving forced by a hook so the test fails on the
+  unfixed code. The install of r-o6hgvr6b was skipped for this; this
+  item's install brings both.
+
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
   new package; much less code than all of herdr; then various TUIs, GUIs
