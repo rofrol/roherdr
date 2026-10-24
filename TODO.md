@@ -4228,6 +4228,17 @@ Items agents add. Not approved until the user moves them up.
   answering the user's question whether 02:00 is hardcoded (it is not: it
   is 00:00 UTC in CEST; 01:00 after DST ends).
 
+- [ ] A todo run's end write that fails leaves the run without its lock [t-mvws56x5]
+  file (follow-up of t-bwoecbyw, commit b2a1c3025): the store removes an
+  ending run's `run-<id>.lock` before it commits, so a failed commit leaves
+  the run unended while its driver still holds the lock it opened and the
+  file is gone; during a live handoff a second server could then create
+  the file and drive the same run. The code before had the same weakness
+  (a driver that goes on after the end held the lock without the file).
+  Remove the file after a successful commit but before the end is
+  announced, or restore it when the commit fails; a test with a hook
+  failing the commit.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
