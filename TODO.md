@@ -3666,6 +3666,25 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   checks the tooltip's cells are unchanged. Mind the render hot-path rules
   (AGENTS.md "Multiplicative performance paths").
 
+- [ ] The sidebar lists only the todo runs that need the user (the user, [t-mzm54f57]
+  2026-10-24, with screenshots of `run r-h7x2bhzs · between runs`,
+  `run r-2pey3d2d · … waits 1m` and `↳ run r-2pey3d2d · t-ctxfx…` under
+  the coordinator's tab: "what is this noise? why do I need this? ask the
+  models"). Round 20261024-123834-7a24 (sol, MiMo, DeepSeek, Argon,
+  agreeing): a sidebar run line only for a run that needs the user (a
+  stop not yet acknowledged, a question escalated to the user), one line
+  per run, its TODO item's title and step rather than ids; a run that
+  waits on its coordinator or is in progress shows only in the
+  coordinator's tab line and the TODO flow overlay; the duplicate `↳` row
+  goes. The run details popup starts with who must act and shows the
+  pending question verbatim with its options (today it says only "waits
+  for its coordinator"). `between runs` (a `--continue-self` run) gets no
+  sidebar line, and `herdr todo queue on` ends that state durably for the
+  repository's runs (today r-h7x2bhzs stayed "between runs" after the
+  queue took over, and would turn into a "coordinator gone" stop when the
+  pane closes). Code: `run_lines` in `src/client/shell/todo_runs.rs`, the
+  run details overlay, the queue's `on` in `src/workers/runs/queue.rs`.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
