@@ -11,41 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
-  session (the user, 2026-10-23, same decision; round
-  20261023-215510-0b94). herdr keeps each item's content hash as of the
-  last accepted analysis; a change to any other item, a heading, the
-  order, or DECISIONS.md entries the items cite is dirty, while the
-  current session's own edits to its own item through `todo_edit.py`
-  (recorded against its generation) are not; a concurrent user edit of
-  the same item is a conflict, never absorbed. Dirty starts a read-only
-  analysis agent over the changed items (done, outdated, contradicting the
-  code or decisions, needing the user); herdr applies its verdicts and
-  records the analysed hashes in one step, between sessions, so its own
-  output never re-triggers it. Exit: the user's edit of another item holds
-  the next session until the analysis; a session's own notes do not.
-  Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
-  the item's run (its agent and its `draft_task` and `review_run` calls);
-  the analysis runs before the queue starts the next run. Start it once
-  the trial (t-ftnvhl7h) has shown where `draft_task` misses
-  cross-item context, so an untested gate does not spoil the trial.
-
-- [ ] Landing and abort in `herdr todo run` end in a known git state (the [t-cmjqsat2]
-  user, 2026-10-23, from the Lean model review, rounds
-  20261023-153329-be6c, 20261023-162239-cf7d and 20261023-162900-79da).
-  Scope: verify runs on the integrated tree (after the cherry-pick onto
-  the target branch, before the push), the worker slot is released only
-  after an acknowledged push, a diverged origin ends as a stop that asks
-  the user (never a wait or a blind retry-push), abort after the
-  cherry-pick restores the local branch (abort after an acknowledged push
-  is its own defined state: a published commit is not undone), and
-  skip-install/skip-todo leave an explicit degraded outcome. Persist the
-  intent of each effect and reconcile observed effects at startup and
-  handoff. Exit: fault injection at every boundary (diverged origin,
-  abort after cherry-pick, a crash between an effect and its
-  acknowledgement) fails on the current code and ends in a documented git
-  and store state after the fix.
-
 - [ ] The Lean workflow model covers what the coordinator fence and the [t-lckz54j4]
   landing items implement (the user, 2026-10-23, same rounds as the
   landing item above). Scope: tenure epoch and pane generation, effect
@@ -4234,6 +4199,31 @@ user needs to decide or do.
 
 ### Decide
 
+- [ ] Landing and abort in `herdr todo run` end in a known git state (the [t-cmjqsat2]
+  user, 2026-10-23, from the Lean model review, rounds
+  20261023-153329-be6c, 20261023-162239-cf7d and 20261023-162900-79da).
+  Scope: verify runs on the integrated tree (after the cherry-pick onto
+  the target branch, before the push), the worker slot is released only
+  after an acknowledged push, a diverged origin ends as a stop that asks
+  the user (never a wait or a blind retry-push), abort after the
+  cherry-pick restores the local branch (abort after an acknowledged push
+  is its own defined state: a published commit is not undone), and
+  skip-install/skip-todo leave an explicit degraded outcome. Persist the
+  intent of each effect and reconcile observed effects at startup and
+  handoff. Exit: fault injection at every boundary (diverged origin,
+  abort after cherry-pick, a crash between an effect and its
+  acknowledgement) fails on the current code and ends in a documented git
+  and store state after the fix.
+  2026-10-24: done by t-ydd2vlwe slices 2 and 3 (f075c90c6, dcf582edd)?
+  verify runs on a synthetic integration commit before the guarded
+  fast-forward (a refinement of "after the cherry-pick" decided in review
+  round 20261023-230513-039b), the slot is released only after an
+  acknowledged or skipped push, a diverged origin stops for the user,
+  abort restores the branch by compare-and-swap, skip-install/skip-todo
+  record `degraded`, effect intents persist and reconcile at startup and
+  handoff, with hook-forced fault tests. Close it as done?
+  Options: Close it as done by slices 2 and 3 (Recommended) | Keep it open for the remaining windows in "Proposed"
+
 ### Needs you to act or watch
 
 - [ ] Trial queue mode with one Opus agent per item, and fill [t-ftnvhl7h]
@@ -4261,3 +4251,26 @@ user needs to decide or do.
   coordinator pane (wR:p376), cutover 2026-10-24; t-ydd2vlwe was moved
   after its prerequisite t-ofobwsra so the queue does not draft the crate
   first. This item is the trial in progress, not a work item for the queue.
+
+- [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
+  session (the user, 2026-10-23, same decision; round
+  20261023-215510-0b94). herdr keeps each item's content hash as of the
+  last accepted analysis; a change to any other item, a heading, the
+  order, or DECISIONS.md entries the items cite is dirty, while the
+  current session's own edits to its own item through `todo_edit.py`
+  (recorded against its generation) are not; a concurrent user edit of
+  the same item is a conflict, never absorbed. Dirty starts a read-only
+  analysis agent over the changed items (done, outdated, contradicting the
+  code or decisions, needing the user); herdr applies its verdicts and
+  records the analysed hashes in one step, between sessions, so its own
+  output never re-triggers it. Exit: the user's edit of another item holds
+  the next session until the analysis; a session's own notes do not.
+  Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
+  the item's run (its agent and its `draft_task` and `review_run` calls);
+  the analysis runs before the queue starts the next run. Start it once
+  the trial (t-ftnvhl7h) has shown where `draft_task` misses
+  cross-item context, so an untested gate does not spoil the trial.
+  2026-10-24: the queue's draft of this item (run r-2pey3d2d, draft
+  decision d-bocwe6n5) asked what to do since the trial had no results
+  yet; aborted and moved here, as this item says it starts once the trial
+  (t-ftnvhl7h) has shown where `draft_task` misses cross-item context.
