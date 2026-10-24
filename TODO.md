@@ -11,24 +11,71 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The queue works as the user designed it, described by the Lean model [t-gt2pdx2r]
-  (the user, 2026-10-24: "There is to be a queue, described by Lean. The
+- [ ] The Lean model describes the queue as the user designed it (the [t-tjjsrhx6]
+  user, 2026-10-24: "There is to be a queue, described by Lean. The
   supervisor starts an agent to examine the TODO if the TODO is dirty.
   Once the agent has examined it, it is closed. A new agent session for
   the first item of the TODO. If the context overflows, handoff. And the
   agent asks me when something is unclear." And: "and also an analysis of
   what to do before, with the models, and then an analysis of the
-  implementation by the models"). Per item, in order: (1) if TODO.md is
-  dirty, the supervisor starts an analysis agent over it (t-ctxfxkwf),
-  applies its verdicts, and that agent is closed; (2) a pre-task analysis
-  with the models of what to do (the pre-task step of t-4tpfl4if); (3) a
-  new agent session for the first item; when its context overflows, it
-  hands off to a fresh session; (4) the post-implementation analysis by
-  the models (the review step of t-4tpfl4if); (5) landing. The agent asks
-  the user whenever something is unclear. This replaces an item the
-  coordinator wrote the same day from another session's paraphrase ("in
-  queue mode technical decisions do not fall back to the user"), which
-  the user rejected. Design gaps: round pending.
+  implementation by the models"). Round 20261024-164255-7c29 (sol, MiMo,
+  DeepSeek, Argon): `PerItem` in docs/todo-workflow-model/TodoWorkflow.lean
+  gets, per item in order: the dirty analysis as the queue's first step
+  (dirty -> start the examiner -> apply its verdicts and record the
+  hashes atomically -> close the examiner -> not dirty), the pre-task
+  analysis with the models, a new session for the first item, a handoff
+  within the item when its context overflows (a new epoch; the item, its
+  pending questions and records kept; the landing adopted through the
+  epoch fence), the agent's own question to the user parking the item
+  until answered, the post-implementation analysis by the models, and
+  landing; `consult_skipped_iff` is replaced so an item no longer waits on
+  the user merely because no consult round exists (sol, DeepSeek, Argon;
+  MiMo would keep it). The README's two Mermaid diagrams follow. This
+  replaces an item written the same day from another session's
+  paraphrase ("in queue mode technical decisions do not fall back to the
+  user"), which the user rejected: the agent asks him when something is
+  unclear.
+
+- [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
+  session (the user, 2026-10-23, same decision; round
+  20261023-215510-0b94). herdr keeps each item's content hash as of the
+  last accepted analysis; a change to any other item, a heading, the
+  order, or DECISIONS.md entries the items cite is dirty, while the
+  current session's own edits to its own item through `todo_edit.py`
+  (recorded against its generation) are not; a concurrent user edit of
+  the same item is a conflict, never absorbed. Dirty starts a read-only
+  analysis agent over the changed items (done, outdated, contradicting the
+  code or decisions, needing the user); herdr applies its verdicts and
+  records the analysed hashes in one step, between sessions, so its own
+  output never re-triggers it. Exit: the user's edit of another item holds
+  the next session until the analysis; a session's own notes do not.
+  Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
+  the item's run (its agent and its `draft_task` and `review_run` calls);
+  the analysis runs before the queue starts the next run. Start it once
+  the trial (t-ftnvhl7h) has shown where `draft_task` misses
+  cross-item context, so an untested gate does not spoil the trial.
+  2026-10-24: the queue's draft of this item (run r-2pey3d2d, draft
+  decision d-bocwe6n5) asked what to do since the trial had no results
+  yet; aborted and moved here, as this item says it starts once the trial
+  (t-ftnvhl7h) has shown where `draft_task` misses cross-item context.
+  2026-10-24: back in the queue as the queue's first step, per the user's
+  queue design (see the Lean item above; round 20261024-164255-7c29: the
+  deferral to the trial's results was wrong); its agent is closed after
+  its verdicts are applied.
+
+- [ ] The queue's per-item agent asks the user itself when something is [t-ecmzdigq]
+  unclear (the user's queue design, 2026-10-24, see the Lean item above;
+  round 20261024-164255-7c29): today only `draft_task` questions reach
+  the user's `?` list; the item's agent gets a typed question (with
+  options) that parks the item, shows in `?` and the owner pane, and
+  resumes the same item with the answer.
+
+- [ ] The queue's per-item agent hands off when its context overflows (the [t-5qqrvghj]
+  user's queue design, 2026-10-24, see the Lean item above; round
+  20261024-164255-7c29): at the configured share of its window (70% like
+  the coordinator) the item's session writes its handoff note and a new
+  session continues the same item and run (a new epoch, the pending
+  questions and records kept, the old session fenced out of the landing).
 
 - [ ] The queue records the cost of its own model calls per item [t-mqqkwgcm]
   (follow-up of t-ftnvhl7h, round 20261024-151528-003e, all four models:
@@ -4478,26 +4525,3 @@ user needs to decide or do.
   Decided by the user 2026-10-24 (d-pn7azx54): the counted 10 start from
   zero once the partial-close fix and the queue's cost records land;
   today's runs are pilot data.
-
-- [ ] TODO.md is "dirty" per item, and an analysis runs before the next [t-ctxfxkwf]
-  session (the user, 2026-10-23, same decision; round
-  20261023-215510-0b94). herdr keeps each item's content hash as of the
-  last accepted analysis; a change to any other item, a heading, the
-  order, or DECISIONS.md entries the items cite is dirty, while the
-  current session's own edits to its own item through `todo_edit.py`
-  (recorded against its generation) are not; a concurrent user edit of
-  the same item is a conflict, never absorbed. Dirty starts a read-only
-  analysis agent over the changed items (done, outdated, contradicting the
-  code or decisions, needing the user); herdr applies its verdicts and
-  records the analysed hashes in one step, between sessions, so its own
-  output never re-triggers it. Exit: the user's edit of another item holds
-  the next session until the analysis; a session's own notes do not.
-  Queue mode, 2026-10-23 (round 20261023-221441-3128): read "session" as
-  the item's run (its agent and its `draft_task` and `review_run` calls);
-  the analysis runs before the queue starts the next run. Start it once
-  the trial (t-ftnvhl7h) has shown where `draft_task` misses
-  cross-item context, so an untested gate does not spoil the trial.
-  2026-10-24: the queue's draft of this item (run r-2pey3d2d, draft
-  decision d-bocwe6n5) asked what to do since the trial had no results
-  yet; aborted and moved here, as this item says it starts once the trial
-  (t-ftnvhl7h) has shown where `draft_task` misses cross-item context.
