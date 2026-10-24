@@ -3229,3 +3229,8 @@ TODO-deferred.md.
   packet built by code (the review gate item) and for the cross-item
   context check (t-ctxfxkwf); its cron watchers are not copied (Rule 10:
   no timers over our own events).
+- A fourth reply, https://x.com/ProjectOannes/status/2113943174653604342:
+  the problem is prompts used in place of architecture; a prompt can ask
+  for a critical step but cannot guarantee it, so mandatory checks belong
+  in the system's design. That is the case for the driver's deterministic
+  review gate over a prose consult rule.
