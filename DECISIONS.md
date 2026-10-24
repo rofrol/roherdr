@@ -3334,3 +3334,9 @@ Diff robi to, o co prosi item:
 Testy obejmują trzy przypadki: odpowiedź na pytanie draftu zawężoną do części 1, ponowne uruchomienie po edycji tekstu itemu, kiedy przebieg całości zamyka item (to jest też test regresji), oraz akceptację przez koordynatora.
 
 Diff nie trafia w żadną pozycję z checklisty.
+
+## The usage footer's weekly percent shows the even-pace target at the
+
+Landed by herdr's TODO queue: run r-bbjpsrqf, attempt 1, `feat: the weekly usage percent shows the even-pace target at the next day boundary` (a80dc6868e89), approved by the server's review.
+
+Review note: Weryfikacja przeszła: lint, testy, ui-architecture i windows-lint są zielone, zmienione ścieżki są w zakresie, a drzewo robocze jest czyste. Diff realizuje d-r2ii2j6c i d-t63wh7gu. W wierszu 1 po tygodniowym procencie jest `39%→42.9%`, a wartość liczy jedna funkcja `even_pace_text`: jedno miejsce po przecinku, najwyżej 100. Dodatku nie ma, gdy następna granica to reset (`days_at_next_boundary_before_reset`). Gdy się nie mieści, znika w całości, także wtedy, gdy skróciłby tekst wygasania kredytu resetu. Tygodniowy procent ma nowy tooltip `usage:<provider>:weekly` z linią `even pace at Thu 02:00: 42.9%`, która znika razem z dodatkiem przy resecie. Z linii 2 usunięto `+X.Xpp to HH:MM`, a `target_label`, `day_ends` i `pace_with_target` wyszły z kodu. Testy pokrywają wszystkie punkty zadania. Uwaga: gdy dodatek nie mieści się w wierszu, tooltip zostaje na samym procencie i dalej podaje cel. Pasuje to do decyzji, że godzina granicy idzie do tooltipa.
